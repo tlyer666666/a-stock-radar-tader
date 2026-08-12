@@ -6,6 +6,7 @@
   "description": "A股涨停、多源校验、低延迟资讯、策略统计与多周期K线雷达桌面软件",
   "main": "electron/main.cjs",
   "author": "Codex",
+  "desktopName": "A-Share Quant Radar",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build:web": "vite build",
@@ -18,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:review": "tsc -p tsconfig.review.json --noEmit",
     "test:contracts": "node --test src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs",
-    "test": "node --test electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs",
+    "test": "node --test electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs qa/release-config.test.cjs",
     "qa:smoke:network": "node qa/run-market-refresh-smoke.cjs && node qa/run-backtest-linkage-smoke.cjs && node qa/run-portfolio-backtest-smoke.cjs && node qa/run-strategy-scan.cjs",
     "qa:strategy-validation": "node qa/run-strategy-validation.cjs",
     "docs:screenshots": "node qa/capture-readme-screenshots.cjs",
@@ -76,6 +77,7 @@
       "icon": "a-stock-radar-bull-v1.png",
       "category": "Finance",
       "executableName": "a-share-quant-radar",
+      "syncDesktopName": true,
       "artifactName": "A-Share-Quant-Radar-v${version}-Linux-${arch}.${ext}"
     }
   }

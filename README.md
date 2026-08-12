@@ -152,7 +152,7 @@ flowchart LR
 - Windows x64：`Windows-x64-Portable.zip`
 - Apple 芯片 Mac（M1 及更新）：`macOS-arm64.zip`
 - Intel Mac：`macOS-x64.zip`
-- Linux x64：`Linux-x64.AppImage`
+- Linux x64：`Linux-x86_64.AppImage`
 
 macOS 版本目前未使用 Apple Developer ID 签名与公证，首次运行可能需要在“系统设置 → 隐私与安全性”中手动允许。Linux AppImage 首次运行前需要授予执行权限：`chmod +x 文件名.AppImage`。
 

@@ -58,7 +58,12 @@ function buildElectronTarget(platform, architecture) {
   cleanOutput();
   runPnpm(["build:web"]);
   const target = platform === "darwin" ? "mac" : "linux";
-  runPnpm(["exec", "electron-builder", `--${target}`, `--${architecture}`]);
+  runPnpm(["exec", "electron-builder", `--${target}`, `--${architecture}`, "--publish", "never"]);
+  for (const name of fs.readdirSync(outputRoot)) {
+    if (name.endsWith(".blockmap")) {
+      fs.rmSync(path.join(outputRoot, name), { force: true });
+    }
+  }
 }
 
 const architecture = process.arch;
