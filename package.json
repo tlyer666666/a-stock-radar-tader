@@ -1,0 +1,43 @@
+{
+  "name": "a-stock-monitor",
+  "version": "0.9.19",
+  "packageManager": "pnpm@11.16.0",
+  "private": true,
+  "description": "A股涨停、多源校验、低延迟资讯、策略统计与多周期K线雷达桌面软件",
+  "main": "electron/main.cjs",
+  "author": "Codex",
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "build:web": "vite build",
+    "build:review": "vite build --config review.vite.config.ts",
+    "build": "vite build && node electron/build-unpacked.cjs",
+    "build:deploy": "pnpm build && node electron/deploy-formal.cjs",
+    "typecheck": "tsc --noEmit",
+    "typecheck:review": "tsc -p tsconfig.review.json --noEmit",
+    "test:contracts": "node --test src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs",
+    "test": "node --test electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs",
+    "qa:smoke:network": "node qa/run-market-refresh-smoke.cjs && node qa/run-backtest-linkage-smoke.cjs && node qa/run-portfolio-backtest-smoke.cjs && node qa/run-strategy-scan.cjs",
+    "qa:strategy-validation": "node qa/run-strategy-validation.cjs",
+    "test:e2e:packaged": "node qa/packaged-app.cjs",
+    "verify:release": "pnpm typecheck && pnpm typecheck:review && pnpm test && pnpm build && pnpm build:review && pnpm test:e2e:packaged"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/react": "18.3.31",
+    "@types/react-dom": "18.3.7",
+    "@vitejs/plugin-react": "4.7.0",
+    "concurrently": "9.2.4",
+    "electron": "43.3.0",
+    "lucide-react": "0.468.0",
+    "playwright-core": "1.62.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "typescript": "5.9.3",
+    "vite": "6.4.3",
+    "wait-on": "8.0.5"
+  },
+  "build": {
+    "appId": "com.codex.astockmonitor",
+    "productName": "A股雷达"
+  }
+}
