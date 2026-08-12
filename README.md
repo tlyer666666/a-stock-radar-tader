@@ -12,7 +12,7 @@
     <img src="https://img.shields.io/badge/Electron-43-47848F?style=flat-square&logo=electron" alt="Electron 43" />
     <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 18" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
-    <a href="https://github.com/f380329400/a-/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/f380329400/a-/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
+    <a href="https://github.com/f380329400/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/f380329400/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
   </p>
 
   <p>
@@ -212,7 +212,7 @@ pnpm build:deploy
 
 ## 🤝 贡献与反馈
 
-欢迎通过 [Issues](https://github.com/f380329400/a-/issues) 提交问题。请附上：版本号、股票代码、发生时间、所在模块、操作步骤和脱敏后的错误信息。不要上传行情账户令牌、个人持仓或其他敏感数据。
+欢迎通过 [Issues](https://github.com/f380329400/a-stock-radar-tader/issues) 提交问题。请附上：版本号、股票代码、发生时间、所在模块、操作步骤和脱敏后的错误信息。不要上传行情账户令牌、个人持仓或其他敏感数据。
 
 ## ⚠️ 风险声明
 
