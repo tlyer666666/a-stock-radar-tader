@@ -4,11 +4,11 @@
   <h1>A-Share Quant Radar</h1>
 
   <p><strong>A股雷达 · 面向 A 股研究的多源行情、策略信号与可审计回测桌面工作台</strong></p>
-  <p>从涨停生态到个股结构，从公告资讯到策略验证，把分散的研究流程收进一个 Windows 应用。</p>
+  <p>从涨停生态到个股结构，从公告资讯到策略验证，把分散的研究流程收进一个跨平台桌面应用。</p>
 
   <p>
     <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/tlyer666666/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
-    <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows" alt="Windows" />
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?style=flat-square" alt="Windows, macOS and Linux" />
     <img src="https://img.shields.io/badge/Electron-43-47848F?style=flat-square&logo=electron" alt="Electron 43" />
     <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 18" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
@@ -31,7 +31,7 @@
 
 ## 项目定位
 
-**A-Share Quant Radar（A股雷达）** 是一套本地优先的 Windows 桌面研究软件。它以涨停后 T+1 至 T+10 观察为核心，同时覆盖任意非 ST A 股、场内 ETF 与可转债的主动检索和行情分析。
+**A-Share Quant Radar（A股雷达）** 是一套本地优先的跨平台桌面研究软件。它以涨停后 T+1 至 T+10 观察为核心，同时覆盖任意非 ST A 股、场内 ETF 与可转债的主动检索和行情分析。
 
 项目强调三件事：
 
@@ -145,13 +145,16 @@ flowchart LR
 
 ## 🚀 使用方式
 
-### Windows 正式版
+### 正式版下载
 
-当前仓库以源码为主，正式运行目录由本地构建生成，不把大型二进制文件提交到 Git。构建完成后运行：
+大型二进制文件通过 [GitHub Releases](https://github.com/tlyer666666/a-stock-radar-tader/releases/latest) 分发，不提交到源码历史。请按系统与处理器下载：
 
-```text
-程序/A股雷达.exe
-```
+- Windows x64：`Windows-x64-Portable.zip`
+- Apple 芯片 Mac（M1 及更新）：`macOS-arm64.zip`
+- Intel Mac：`macOS-x64.zip`
+- Linux x64：`Linux-x64.AppImage`
+
+macOS 版本目前未使用 Apple Developer ID 签名与公证，首次运行可能需要在“系统设置 → 隐私与安全性”中手动允许。Linux AppImage 首次运行前需要授予执行权限：`chmod +x 文件名.AppImage`。
 
 ### 可选同花顺增强
 
@@ -161,7 +164,7 @@ flowchart LR
 
 ### 环境要求
 
-- Windows 10 / 11
+- Windows 10 / 11、macOS 或主流 x64 Linux
 - Node.js 24
 - pnpm 11.16.0
 
@@ -196,16 +199,24 @@ pnpm build:deploy
 
 构建与部署采用暂存目录、逐文件 SHA-256 清单和原子替换；发布新版本时会清理旧的临时产物与多余旧文件，同时尽量保留最后一个完整可恢复版本。
 
+### 构建当前系统发行包
+
+```powershell
+pnpm dist:platform
+```
+
+正式 Release 使用 GitHub 的 Windows、macOS Apple Silicon、macOS Intel 与 Linux 原生运行器分别构建，并生成统一的 `SHA256SUMS.txt`。
+
 ## ✅ 质量保障
 
-- GitHub Actions 在 Windows 上执行锁定依赖安装、关键漏洞审计、双入口类型检查、155 项无网络依赖测试和正式构建。
+- GitHub Actions 在 Windows 上执行锁定依赖安装、关键漏洞审计、双入口类型检查、无网络依赖测试和正式构建，并按版本标签在四个原生系统/架构运行器上生成发行包。
 - 行情、历史 K 线、公告、策略回放、组合账户、敏感数据、持久化与部署均有契约测试。
 - 前后端 IPC 只接受当前主窗口主 frame，并对外部 URL、证券标识和设置覆盖做白名单校验。
 - `.env`、用户数据、备份、缓存、构建产物和正式 EXE 均通过 `.gitignore` 排除。
 
 ## 🗺️ 路线图
 
-- [x] GitHub Releases 便携版下载页
+- [x] Windows、macOS 与 Linux 的 GitHub Releases 下载页
 - [ ] 更完整的历史税费与最低佣金模型
 - [ ] 回测结果的可分享静态报告
 - [ ] 更丰富的公告筛选和公司事件时间轴

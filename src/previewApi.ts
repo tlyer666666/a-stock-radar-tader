@@ -1421,8 +1421,11 @@ export function createPreviewApi(): Window["stockApi"] {
     async openExternal() {
       // External navigation is disabled in browser preview mode.
     },
+    getPlatform() {
+      return "browser";
+    },
     async getVersion() {
-      return "0.9.19-preview";
+      return "0.9.20-preview";
     }
   };
 }

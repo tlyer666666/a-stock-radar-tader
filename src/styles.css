@@ -25,6 +25,7 @@ button, input { font: inherit; }
 button { color: inherit; }
 .app-shell { height: 100vh; background: radial-gradient(circle at 68% -18%, rgba(65, 83, 145, .22), transparent 36%), var(--bg); display: grid; grid-template-columns: 232px 1fr; grid-template-rows: 40px 1fr; }
 .window-dragbar { grid-column: 1 / -1; height: 40px; -webkit-app-region: drag; display: flex; align-items: center; padding-left: 18px; color: #52617d; font-size: 11px; letter-spacing: .06em; border-bottom: 1px solid rgba(255,255,255,.035); }
+.window-title-macos { margin-left: 64px; }
 .sidebar { background: linear-gradient(180deg, #0a101d 0%, #070b14 100%); border-right: 1px solid var(--line); padding: 24px 16px 14px; display: flex; flex-direction: column; min-height: 0; }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 7px 27px; }
 .brand-mark { width: 40px; height: 40px; display: grid; place-items: center; color: var(--green); background: linear-gradient(145deg, rgba(226,75,95,.24), rgba(215,170,85,.06)); border: 1px solid rgba(226,75,95,.3); border-radius: 12px; box-shadow: inset 0 0 20px rgba(226,75,95,.08); }

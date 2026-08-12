@@ -294,7 +294,7 @@ test("main process wires secret storage, backtest filtering and debug logging th
   assert.doesNotMatch(backtestHandler[1], /\.\.\.\(options\?\.settings/);
 });
 
-test("main window close is intercepted for tray use and normal window loss does not quit", () => {
+test("desktop lifecycle uses the Windows tray, macOS Dock, and Linux normal quit", () => {
   const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
   assert.match(mainSource, /new Tray\(applicationIconPath\(true\)\)/);
   assert.match(mainSource, /label: "显示 A股雷达"/);
@@ -307,11 +307,13 @@ test("main window close is intercepted for tray use and normal window loss does 
   );
   assert.match(
     mainSource,
-    /createdWindow\.on\("close",[\s\S]*?event\.preventDefault\(\);[\s\S]*?createdWindow\.hide\(\)/
+    /createdWindow\.on\("close",[\s\S]*?process\.platform !== "win32"[\s\S]*?event\.preventDefault\(\);[\s\S]*?createdWindow\.hide\(\)/
   );
   const allClosedHandler = mainSource.match(
     /app\.on\("window-all-closed", \(\) => \{([\s\S]*?)\n\}\);/
   );
   assert.ok(allClosedHandler);
-  assert.doesNotMatch(allClosedHandler[1], /app\.quit\(/);
+  assert.match(allClosedHandler[1], /process\.platform === "darwin"[\s\S]*?return;/);
+  assert.match(allClosedHandler[1], /process\.platform !== "win32"[\s\S]*?app\.quit\(\)/);
+  assert.match(allClosedHandler[1], /tray process remains active/);
 });

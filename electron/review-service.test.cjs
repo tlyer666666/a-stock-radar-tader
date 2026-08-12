@@ -4,6 +4,7 @@ const services = require("./services.cjs");
 const {
   buildProfessionalReviewSnapshot,
   getProfessionalReview,
+  marketSession,
   resetProfessionalReviewCache
 } = require("./review-service.cjs");
 
@@ -23,6 +24,15 @@ function chart(lastClose, changes = [0.2, 0.4, 0.6, 0.8, 1]) {
     })
   };
 }
+
+test("market session always uses China Standard Time", () => {
+  assert.equal(marketSession("2026-07-30T01:14:00Z"), "盘前");
+  assert.equal(marketSession("2026-07-30T01:15:00Z"), "上午盘中");
+  assert.equal(marketSession("2026-07-30T03:30:00Z"), "午间");
+  assert.equal(marketSession("2026-07-30T05:00:00Z"), "下午盘中");
+  assert.equal(marketSession("2026-07-30T07:00:00Z"), "收盘复盘");
+  assert.equal(marketSession("2026-07-30T15:10:00+08:00"), "收盘复盘");
+});
 
 test("professional review derives regime, ecology and conditional playbook from facts", () => {
   const currentPool = [

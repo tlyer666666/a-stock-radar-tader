@@ -6,7 +6,7 @@
 
   <p>
     <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/tlyer666666/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
-    <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows" alt="Windows" />
+    <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?style=flat-square" alt="Windows, macOS and Linux" />
     <img src="https://img.shields.io/badge/Electron-43-47848F?style=flat-square&logo=electron" alt="Electron 43" />
     <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 18" />
     <a href="https://github.com/tlyer666666/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/tlyer666666/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
@@ -20,7 +20,7 @@
 
 ## Overview
 
-**A-Share Quant Radar** is a local-first Windows desktop research application centered on limit-up market structure, post-event observation, stock analysis, strategy validation, announcements, and historical replay.
+**A-Share Quant Radar** is a local-first, cross-platform desktop research application centered on limit-up market structure, post-event observation, stock analysis, strategy validation, announcements, and historical replay.
 
 Its design priorities are:
 
@@ -87,7 +87,7 @@ flowchart LR
 
 ## Development
 
-Requirements: Windows 10/11, Node.js 24, and pnpm 11.16.0.
+Requirements: Windows 10/11, macOS, or a mainstream x64 Linux distribution; Node.js 24; and pnpm 11.16.0.
 
 ```powershell
 pnpm install --frozen-lockfile
@@ -116,6 +116,14 @@ Deploy the verified build to the formal local program directory:
 pnpm build:deploy
 ```
 
+Build a distributable for the current operating system:
+
+```powershell
+pnpm dist:platform
+```
+
+Published releases are built natively on Windows x64, macOS Apple Silicon, macOS Intel, and Linux x64 runners. The macOS downloads are currently unsigned and not notarized, so Gatekeeper may require manual approval. Release assets include a shared `SHA256SUMS.txt` file.
+
 ## Security and Privacy
 
 - API tokens are encrypted with Electron `safeStorage` and remain in the local user-data directory.
@@ -125,7 +133,7 @@ pnpm build:deploy
 
 ## Roadmap
 
-- [x] Portable downloads through GitHub Releases
+- [x] Windows, macOS, and Linux downloads through GitHub Releases
 - [ ] More complete historical tax and minimum-commission modeling
 - [ ] Shareable static backtest reports
 - [ ] Richer announcement filters and corporate-event timelines

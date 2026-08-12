@@ -15,7 +15,7 @@ before(() => {
   previousCssLoader = require.extensions[".css"];
   require.extensions[".css"] = () => {};
   previousWindow = global.window;
-  global.window = { stockApi: {} };
+  global.window = { stockApi: { getPlatform: () => "win32" } };
   restoreTypeScript = registerTypeScript();
   App = require("./App.tsx").default;
 });
