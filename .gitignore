@@ -1,0 +1,29 @@
+# 依赖
+node_modules/
+
+# 构建产物 / 打包输出
+dist/
+release/
+程序/
+.vite/
+.pnpm-store/
+.web-build-deps/
+
+# 本地备份与个人/工具目录
+backups/
+.workbuddy/
+deliverables/
+
+# 密钥（纵深防御，即使误放也不会进仓库）
+.env
+.env.*
+*.local
+
+# 日志
+*.log
+
+# 编辑器 / 操作系统
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
