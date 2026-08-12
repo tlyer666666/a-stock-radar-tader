@@ -73,6 +73,7 @@ function createBuildInputs(projectRoot, version = "0.9.13") {
   const electronDist = path.join(projectRoot, "fake-electron-dist");
   write(path.join(electronDist, "electron.exe"), "runtime-entry");
   write(path.join(electronDist, "resources", "helper.exe"), "runtime-helper");
+  write(path.join(electronDist, "resources", "default_app.asar"), "unused-default-app");
   write(path.join(electronDist, "version"), "43.3.0\n");
   return electronDist;
 }
@@ -410,6 +411,10 @@ test("a successful staged build has a complete self-verifying manifest", () => {
     });
     assert.equal(result.appVersion, "0.9.13");
     assert.equal(fs.existsSync(path.join(result.outputRoot, BUILD_MANIFEST)), true);
+    assert.equal(
+      fs.existsSync(path.join(result.outputRoot, "resources", "default_app.asar")),
+      false
+    );
     assert.equal(validateBuildManifest(result.outputRoot).appVersion, "0.9.13");
     assert.equal(
       JSON.parse(

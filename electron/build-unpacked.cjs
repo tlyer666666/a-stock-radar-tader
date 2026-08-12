@@ -150,6 +150,8 @@ function buildUnpacked(options = {}) {
         copyTree(path.join(electronDist, name), path.join(stageRoot, name), fsImpl);
       }
 
+      fsImpl.rmSync(path.join(stageRoot, "resources", "default_app.asar"), { force: true });
+
       const executablePath = path.join(stageRoot, "electron.exe");
       const productExecutablePath = path.join(stageRoot, ENTRY_EXECUTABLE);
       fsImpl.renameSync(executablePath, productExecutablePath);

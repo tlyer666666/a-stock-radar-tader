@@ -5,6 +5,9 @@ node_modules/
 dist/
 release/
 release-builder/
+.formal-previous-*/
+.formal-stage-*/
+.formal-broken-*/
 程序/
 .vite/
 .pnpm-store/
