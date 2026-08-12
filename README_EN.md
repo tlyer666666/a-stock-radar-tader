@@ -5,14 +5,14 @@
   <p><strong>A multi-source market, strategy-signal, and auditable backtesting desktop workspace for China's A-share market.</strong></p>
 
   <p>
-    <a href="https://github.com/f380329400/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/f380329400/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/tlyer666666/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
     <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows" alt="Windows" />
     <img src="https://img.shields.io/badge/Electron-43-47848F?style=flat-square&logo=electron" alt="Electron 43" />
     <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 18" />
-    <a href="https://github.com/f380329400/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/f380329400/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/tlyer666666/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
   </p>
 
-  <p><a href="https://github.com/f380329400/a-stock-radar-tader/releases/latest">Download latest</a></p>
+  <p><a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest">Download latest</a></p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
 </div>
 
@@ -133,7 +133,7 @@ pnpm build:deploy
 
 ## Feedback
 
-Use [GitHub Issues](https://github.com/f380329400/a-stock-radar-tader/issues) and include the version, security code, timestamp, module, reproduction steps, and sanitized error information. Never upload market-account tokens, personal holdings, or other sensitive data.
+Use [GitHub Issues](https://github.com/tlyer666666/a-stock-radar-tader/issues) and include the version, security code, timestamp, module, reproduction steps, and sanitized error information. Never upload market-account tokens, personal holdings, or other sensitive data.
 
 ## Disclaimer
 

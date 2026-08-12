@@ -7,16 +7,16 @@
   <p>从涨停生态到个股结构，从公告资讯到策略验证，把分散的研究流程收进一个 Windows 应用。</p>
 
   <p>
-    <a href="https://github.com/f380329400/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/f380329400/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/tlyer666666/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
     <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows" alt="Windows" />
     <img src="https://img.shields.io/badge/Electron-43-47848F?style=flat-square&logo=electron" alt="Electron 43" />
     <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 18" />
     <img src="https://img.shields.io/badge/TypeScript-5.9-3178C6?style=flat-square&logo=typescript&logoColor=white" alt="TypeScript 5.9" />
-    <a href="https://github.com/f380329400/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/f380329400/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/tlyer666666/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
   </p>
 
   <p>
-    <a href="https://github.com/f380329400/a-stock-radar-tader/releases/latest">下载最新版</a> ·
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest">下载最新版</a> ·
     <a href="#-核心能力">核心能力</a> ·
     <a href="#-界面导览">界面导览</a> ·
     <a href="#-回测方法">回测方法</a> ·
@@ -213,7 +213,7 @@ pnpm build:deploy
 
 ## 🤝 贡献与反馈
 
-欢迎通过 [Issues](https://github.com/f380329400/a-stock-radar-tader/issues) 提交问题。请附上：版本号、股票代码、发生时间、所在模块、操作步骤和脱敏后的错误信息。不要上传行情账户令牌、个人持仓或其他敏感数据。
+欢迎通过 [Issues](https://github.com/tlyer666666/a-stock-radar-tader/issues) 提交问题。请附上：版本号、股票代码、发生时间、所在模块、操作步骤和脱敏后的错误信息。不要上传行情账户令牌、个人持仓或其他敏感数据。
 
 ## ⚠️ 风险声明
 
