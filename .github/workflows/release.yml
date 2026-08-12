@@ -1,0 +1,111 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows x64
+            runner: windows-latest
+            platform: win
+            arch: x64
+            artifact: windows-x64
+          - label: macOS Apple Silicon
+            runner: macos-15
+            platform: mac
+            arch: arm64
+            artifact: macos-arm64
+          - label: macOS Intel
+            runner: macos-15-intel
+            platform: mac
+            arch: x64
+            artifact: macos-x64
+          - label: Linux x64
+            runner: ubuntu-latest
+            platform: linux
+            arch: x64
+            artifact: linux-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify tag matches package version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node -e "const p=require('./package.json'); const expected='v'+p.version; if(process.env.RELEASE_TAG!==expected) throw new Error('Tag '+process.env.RELEASE_TAG+' does not match '+expected)"
+      - name: Build native package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: pnpm dist:platform
+      - name: Verify packaged artifact
+        shell: bash
+        run: |
+          node qa/verify-release-artifact.cjs release-builder "${{ matrix.platform }}" "${{ matrix.arch }}"
+      - name: Upload native package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: release-builder/A-Share-Quant-Radar-*
+          if-no-files-found: error
+          retention-days: 5
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Download native packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-*"
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SHA-256 checksums
+        working-directory: release-assets
+        run: sha256sum A-Share-Quant-Radar-* | sort -k 2 > SHA256SUMS.txt
+      - name: Publish assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --latest
+          fi
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber

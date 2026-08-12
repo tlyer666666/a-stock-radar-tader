@@ -1,6 +1,6 @@
 {
   "name": "a-stock-monitor",
-  "version": "0.9.19",
+  "version": "0.9.20",
   "packageManager": "pnpm@11.16.0",
   "private": true,
   "description": "A股涨停、多源校验、低延迟资讯、策略统计与多周期K线雷达桌面软件",
@@ -11,6 +11,8 @@
     "build:web": "vite build",
     "build:review": "vite build --config review.vite.config.ts",
     "build": "vite build && node electron/build-unpacked.cjs",
+    "build:app": "vite build && electron-builder --dir",
+    "dist:platform": "node electron/build-platform.cjs",
     "build:deploy": "pnpm build && node electron/deploy-formal.cjs",
     "typecheck": "tsc --noEmit",
     "typecheck:review": "tsc -p tsconfig.review.json --noEmit",
@@ -29,6 +31,7 @@
     "@vitejs/plugin-react": "4.7.0",
     "concurrently": "9.2.4",
     "electron": "43.3.0",
+    "electron-builder": "26.15.3",
     "lucide-react": "0.468.0",
     "playwright-core": "1.62.0",
     "react": "18.3.1",
@@ -39,6 +42,39 @@
   },
   "build": {
     "appId": "com.codex.astockmonitor",
-    "productName": "A股雷达"
+    "productName": "A股雷达",
+    "asar": false,
+    "directories": {
+      "output": "release-builder",
+      "buildResources": "assets"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*.cjs",
+      "assets/**/*",
+      "package.json",
+      "!electron/**/*.test.cjs",
+      "!electron/build-unpacked.cjs",
+      "!electron/deploy-formal.cjs"
+    ],
+    "win": {
+      "target": "zip",
+      "icon": "a-stock-radar-bull-v1.ico",
+      "artifactName": "A-Share-Quant-Radar-v${version}-Windows-${arch}-Portable.${ext}"
+    },
+    "mac": {
+      "target": "zip",
+      "icon": "a-stock-radar-bull-v1.png",
+      "identity": null,
+      "hardenedRuntime": false,
+      "artifactName": "A-Share-Quant-Radar-v${version}-macOS-${arch}.${ext}"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "a-stock-radar-bull-v1.png",
+      "category": "Finance",
+      "executableName": "a-share-quant-radar",
+      "artifactName": "A-Share-Quant-Radar-v${version}-Linux-${arch}.${ext}"
+    }
   }
 }

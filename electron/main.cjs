@@ -560,7 +560,7 @@ function createWindow() {
     minHeight: 720,
     backgroundColor: dark ? "#070b14" : "#f4f6fb",
     icon: applicationIconPath(),
-    titleBarStyle: "hidden",
+    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
@@ -573,6 +573,7 @@ function createWindow() {
   mainWindow = createdWindow;
   createdWindow.on("close", (event) => {
     if (isQuitting) return;
+    if (process.platform !== "win32") return;
     event.preventDefault();
     createTray();
     if (!createdWindow.isDestroyed()) createdWindow.hide();
@@ -654,7 +655,7 @@ if (!hasSingleInstanceLock) {
   app.whenReady().then(() => {
   debugLog("app ready");
   nativeTheme.on("updated", updateWindowChrome);
-  createTray();
+  if (process.platform === "win32") createTray();
   handleTrustedIpc("market:search", (_, query) => searchSecurities(query));
   handleTrustedIpc("market:analyze", (_, security, options = {}) =>
     analyzeSecurity(security, settingsForService({
@@ -808,5 +809,14 @@ app.on("before-quit", () => {
 app.on("will-quit", destroyTray);
 
 app.on("window-all-closed", () => {
+  if (process.platform === "darwin") {
+    debugLog("all windows closed; macOS application remains available from Dock");
+    return;
+  }
+  if (process.platform !== "win32") {
+    debugLog("all windows closed; quitting application");
+    app.quit();
+    return;
+  }
   debugLog("all windows closed; tray process remains active");
 });

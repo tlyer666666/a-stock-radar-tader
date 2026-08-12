@@ -4,6 +4,7 @@ node_modules/
 # 构建产物 / 打包输出
 dist/
 release/
+release-builder/
 程序/
 .vite/
 .pnpm-store/

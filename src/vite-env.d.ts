@@ -226,6 +226,7 @@ interface Window {
       action: "minimize" | "toggle-maximize" | "close"
     ): Promise<{ ok: boolean; maximized: boolean }>;
     openExternal(url: string): Promise<void>;
+    getPlatform(): "win32" | "darwin" | "linux" | string;
     getVersion(): Promise<string>;
   };
 }

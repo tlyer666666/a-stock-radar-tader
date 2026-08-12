@@ -2857,6 +2857,7 @@ type WindowControlAction = "minimize" | "toggle-maximize" | "close";
 
 function WindowTitleBar() {
   const [maximized, setMaximized] = useState(false);
+  const platform = window.stockApi.getPlatform?.() || "win32";
 
   const runControl = async (action: WindowControlAction) => {
     try {
@@ -2875,8 +2876,8 @@ function WindowTitleBar() {
         void runControl("toggle-maximize");
       }}
     >
-      <span>A股雷达</span>
-      <div className="window-controls" data-window-controls>
+      <span className={platform === "darwin" ? "window-title-macos" : undefined}>A股雷达</span>
+      {platform !== "darwin" && <div className="window-controls" data-window-controls>
         <button
           type="button"
           className="window-control window-control-minimize"
@@ -2907,7 +2908,7 @@ function WindowTitleBar() {
         >
           <X aria-hidden="true" />
         </button>
-      </div>
+      </div>}
     </div>
   );
 }

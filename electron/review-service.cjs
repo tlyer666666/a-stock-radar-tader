@@ -93,7 +93,8 @@ function indexReview(definition, chart) {
 
 function marketSession(generatedAt) {
   const date = new Date(generatedAt);
-  const minutes = date.getHours() * 60 + date.getMinutes();
+  const chinaTime = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const minutes = chinaTime.getUTCHours() * 60 + chinaTime.getUTCMinutes();
   if (minutes < 9 * 60 + 15) return "盘前";
   if (minutes < 11 * 60 + 30) return "上午盘中";
   if (minutes < 13 * 60) return "午间";
@@ -478,5 +479,6 @@ module.exports = {
   INDEX_DEFINITIONS,
   buildProfessionalReviewSnapshot,
   getProfessionalReview,
+  marketSession,
   resetProfessionalReviewCache
 };

@@ -37,5 +37,6 @@ contextBridge.exposeInMainWorld("stockApi", {
   setTheme: (theme) => ipcRenderer.invoke("app:set-theme", theme),
   controlWindow: (action) => ipcRenderer.invoke("app:window-control", action),
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
+  getPlatform: () => process.platform,
   getVersion: () => ipcRenderer.invoke("app:version")
 });

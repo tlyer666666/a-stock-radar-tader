@@ -71,7 +71,7 @@ function fetchJsonWithCurl(url, timeoutMs, referer = "") {
   return new Promise((resolve, reject) => {
     const timeoutSeconds = Math.max(3, Math.ceil(Number(timeoutMs || 12000) / 1000));
     execFile(
-      "curl.exe",
+      curlExecutable(),
       [
         "--http1.1",
         "--silent",
@@ -120,6 +120,10 @@ function fetchJsonWithCurl(url, timeoutMs, referer = "") {
       }
     );
   });
+}
+
+function curlExecutable(platform = process.platform) {
+  return platform === "win32" ? "curl.exe" : "curl";
 }
 
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
@@ -8024,6 +8028,7 @@ module.exports = {
   singleStockBacktestLookbackBars,
   loadBacktestHistory,
   buildPortfolioBacktestInWorker,
+  curlExecutable,
   runPortfolioBacktest,
   runBacktest
 };

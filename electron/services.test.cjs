@@ -41,6 +41,7 @@ const {
   singleStockBacktestLookbackBars,
   loadBacktestHistory,
   getStrategyDefinitions,
+  curlExecutable,
   runPortfolioBacktest,
   runBacktest,
   mergeBacktestSettings,
@@ -95,6 +96,12 @@ const mockRecentEastHistory = (length = 24) => mockRecentSinaHistory(length).map
 const mockJsonResponse = (value) => ({
   ok: true,
   json: async () => value
+});
+
+test("curl fallback resolves the native executable for each desktop platform", () => {
+  assert.equal(curlExecutable("win32"), "curl.exe");
+  assert.equal(curlExecutable("darwin"), "curl");
+  assert.equal(curlExecutable("linux"), "curl");
 });
 
 test("trade readiness uses its documented fill-rate fallback instead of a clamp boundary", () => {
