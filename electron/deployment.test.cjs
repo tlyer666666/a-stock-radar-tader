@@ -24,6 +24,13 @@ test("formal Windows build explicitly installs the Electron runtime", () => {
   assert.equal(packageJson.scripts["ensure:electron"], "install-electron");
   assert.match(packageJson.scripts.build, /pnpm ensure:electron/);
   assert.ok(packageJson.build.files.includes("!electron/build-platform.cjs"));
+  assert.equal(packageJson.desktopName, "A-Share Quant Radar");
+  assert.equal(packageJson.build.linux.syncDesktopName, true);
+  const platformBuilder = fs.readFileSync(
+    path.resolve(__dirname, "build-platform.cjs"),
+    "utf8"
+  );
+  assert.match(platformBuilder, /"--publish", "never"/);
 });
 const { buildUnpacked } = require("./build-unpacked.cjs");
 

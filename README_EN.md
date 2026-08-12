@@ -124,6 +124,8 @@ pnpm dist:platform
 
 Published releases are built natively on Windows x64, macOS Apple Silicon, macOS Intel, and Linux x64 runners. The macOS downloads are currently unsigned and not notarized, so Gatekeeper may require manual approval. Release assets include a shared `SHA256SUMS.txt` file.
 
+The Linux x64 download uses the standard `Linux-x86_64.AppImage` suffix.
+
 ## Security and Privacy
 
 - API tokens are encrypted with Electron `safeStorage` and remain in the local user-data directory.
