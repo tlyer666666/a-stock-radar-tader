@@ -18,6 +18,7 @@
     "test": "node --test electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs",
     "qa:smoke:network": "node qa/run-market-refresh-smoke.cjs && node qa/run-backtest-linkage-smoke.cjs && node qa/run-portfolio-backtest-smoke.cjs && node qa/run-strategy-scan.cjs",
     "qa:strategy-validation": "node qa/run-strategy-validation.cjs",
+    "docs:screenshots": "node qa/capture-readme-screenshots.cjs",
     "test:e2e:packaged": "node qa/packaged-app.cjs",
     "verify:release": "pnpm typecheck && pnpm typecheck:review && pnpm test && pnpm build && pnpm build:review && pnpm test:e2e:packaged"
   },
