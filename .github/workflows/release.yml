@@ -60,6 +60,8 @@ jobs:
           cache: pnpm
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install Electron desktop runtime
+        run: pnpm ensure:electron
       - name: Verify tag matches package version
         shell: bash
         env:
