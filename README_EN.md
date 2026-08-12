@@ -5,13 +5,14 @@
   <p><strong>A multi-source market, strategy-signal, and auditable backtesting desktop workspace for China's A-share market.</strong></p>
 
   <p>
-    <img src="https://img.shields.io/badge/version-0.9.19-E24B5F?style=flat-square" alt="Version 0.9.19" />
+    <a href="https://github.com/f380329400/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/f380329400/a-stock-radar-tader?style=flat-square&label=version&color=E24B5F" alt="Latest release" /></a>
     <img src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square&logo=windows" alt="Windows" />
     <img src="https://img.shields.io/badge/Electron-43-47848F?style=flat-square&logo=electron" alt="Electron 43" />
     <img src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 18" />
     <a href="https://github.com/f380329400/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/f380329400/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA status" /></a>
   </p>
 
+  <p><a href="https://github.com/f380329400/a-stock-radar-tader/releases/latest">Download latest</a></p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
 </div>
 
@@ -124,7 +125,7 @@ pnpm build:deploy
 
 ## Roadmap
 
-- [ ] Automated GitHub Releases distribution
+- [x] Portable downloads through GitHub Releases
 - [ ] More complete historical tax and minimum-commission modeling
 - [ ] Shareable static backtest reports
 - [ ] Richer announcement filters and corporate-event timelines
