@@ -16,6 +16,15 @@ const {
   validateRunnableAppTree,
   writeBuildManifest
 } = require("./deploy-formal.cjs");
+
+test("formal Windows build explicitly installs the Electron runtime", () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.resolve(__dirname, "..", "package.json"), "utf8")
+  );
+  assert.equal(packageJson.scripts["ensure:electron"], "install-electron");
+  assert.match(packageJson.scripts.build, /pnpm ensure:electron/);
+  assert.ok(packageJson.build.files.includes("!electron/build-platform.cjs"));
+});
 const { buildUnpacked } = require("./build-unpacked.cjs");
 
 function temporaryRoot(label) {

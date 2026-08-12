@@ -10,7 +10,8 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build:web": "vite build",
     "build:review": "vite build --config review.vite.config.ts",
-    "build": "vite build && node electron/build-unpacked.cjs",
+    "ensure:electron": "install-electron",
+    "build": "vite build && pnpm ensure:electron && node electron/build-unpacked.cjs",
     "build:app": "vite build && electron-builder --dir",
     "dist:platform": "node electron/build-platform.cjs",
     "build:deploy": "pnpm build && node electron/deploy-formal.cjs",
@@ -55,6 +56,7 @@
       "package.json",
       "!electron/**/*.test.cjs",
       "!electron/build-unpacked.cjs",
+      "!electron/build-platform.cjs",
       "!electron/deploy-formal.cjs"
     ],
     "win": {

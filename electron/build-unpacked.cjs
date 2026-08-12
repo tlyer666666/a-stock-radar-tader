@@ -167,6 +167,7 @@ function buildUnpacked(options = {}) {
         if (
           name.endsWith(".test.cjs") ||
           name === "build-unpacked.cjs" ||
+          name === "build-platform.cjs" ||
           name === "deploy-formal.cjs"
         ) {
           fsImpl.rmSync(path.join(appRoot, "electron", name), { force: true });
