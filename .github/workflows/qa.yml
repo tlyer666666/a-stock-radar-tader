@@ -37,4 +37,6 @@ jobs:
       - name: Build independent review module
         run: pnpm build:review
       - name: Run packaged desktop E2E
+        env:
+          PACKAGED_E2E_VISIBLE: "1"
         run: pnpm test:e2e:packaged

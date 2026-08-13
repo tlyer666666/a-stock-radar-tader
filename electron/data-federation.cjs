@@ -1,5 +1,9 @@
 const TENCENT_QUOTE = "https://qt.gtimg.cn/q=";
 const TUSHARE_API = "https://api.tushare.pro";
+const {
+  fetchArrayBufferWithPolicy,
+  fetchJsonWithPolicy
+} = require("./http-client.cjs");
 const tushareDailyCache = new Map();
 
 function marketPrefix(security) {
@@ -20,32 +24,25 @@ function formatTencentTime(value) {
   return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}T${digits.slice(8, 10)}:${digits.slice(10, 12)}:${digits.slice(12, 14)}+08:00`;
 }
 
-async function fetchResponse(url, options = {}, timeoutMs = 5000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-      headers: {
-        "User-Agent": "AStockRadar/0.6.5",
-        ...(options.headers || {})
-      }
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return response;
-  } finally {
-    clearTimeout(timer);
-  }
+function requestPolicy(options = {}, timeoutMs = 5000) {
+  const method = String(options?.method || "GET").toUpperCase();
+  return {
+    timeoutMs,
+    retries: method === "GET" || method === "HEAD" ? 1 : 0,
+    minimumGapMs: 100,
+    headers: { "User-Agent": "AStockRadar/0.9" }
+  };
 }
 
 async function tencentQuote(security) {
   const startedAt = Date.now();
   const symbol = `${marketPrefix(security)}${security.code}`;
-  const response = await fetchResponse(`${TENCENT_QUOTE}${symbol}`, {
-    headers: { Referer: "https://gu.qq.com/" }
-  });
-  const buffer = await response.arrayBuffer();
+  const options = { headers: { Referer: "https://gu.qq.com/" } };
+  const buffer = await fetchArrayBufferWithPolicy(
+    `${TENCENT_QUOTE}${symbol}`,
+    options,
+    requestPolicy(options)
+  );
   let text;
   try {
     text = new TextDecoder("gb18030").decode(buffer);
@@ -135,7 +132,7 @@ async function fetchTushareDailyQuote(security, token) {
   const start = new Date(end.getTime() - 14 * 86400000);
   const compact = (date) =>
     `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
-  const response = await fetchResponse(TUSHARE_API, {
+  const options = {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -148,8 +145,9 @@ async function fetchTushareDailyQuote(security, token) {
       },
       fields: "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
     })
-  }, 8000);
-  const rows = tableRows(await response.json());
+  };
+  const payload = await fetchJsonWithPolicy(TUSHARE_API, options, requestPolicy(options, 8000));
+  const rows = tableRows(payload);
   const row = rows[0];
   if (!row) throw new Error("暂无最近日线");
   const date = String(row.trade_date || "");

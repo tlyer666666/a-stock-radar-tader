@@ -39,6 +39,7 @@ const {
   buildSequentialSamplePath,
   buildSingleStockTradeLedger,
   singleStockBacktestLookbackBars,
+  normalizeSingleBacktestDate,
   loadBacktestHistory,
   getStrategyDefinitions,
   curlExecutable,
@@ -102,6 +103,14 @@ test("curl fallback resolves the native executable for each desktop platform", (
   assert.equal(curlExecutable("win32"), "curl.exe");
   assert.equal(curlExecutable("darwin"), "curl");
   assert.equal(curlExecutable("linux"), "curl");
+});
+
+test("single-stock backtest dates reject impossible calendar values", () => {
+  assert.equal(normalizeSingleBacktestDate("2026-02-28"), "2026-02-28");
+  assert.equal(normalizeSingleBacktestDate("2024-02-29"), "2024-02-29");
+  assert.equal(normalizeSingleBacktestDate("2026-02-29"), "");
+  assert.equal(normalizeSingleBacktestDate("2026-02-30"), "");
+  assert.equal(normalizeSingleBacktestDate("2026-02-28junk"), "");
 });
 
 test("trade readiness uses its documented fill-rate fallback instead of a clamp boundary", () => {

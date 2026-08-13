@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { _electron } = require("playwright-core");
 const packageJson = require("../package.json");
@@ -46,8 +47,25 @@ async function windowState(app) {
 
 async function run() {
   const executablePath = resolveExecutablePath();
-  const app = await _electron.launch({ executablePath: path.resolve(executablePath) });
+  const hiddenE2E = process.env.PACKAGED_E2E_VISIBLE !== "1";
+  const isolatedUserData = fs.mkdtempSync(path.join(os.tmpdir(), "a-stock-e2e-"));
+  let app;
   try {
+    app = await _electron.launch({
+      executablePath: path.resolve(executablePath),
+      args: [
+        `--user-data-dir=${isolatedUserData}`,
+        ...(hiddenE2E ? [
+          "--disable-gpu",
+          "--disable-gpu-compositing"
+        ] : [])
+      ],
+      env: {
+        ...process.env,
+        A_STOCK_E2E_HIDDEN: hiddenE2E ? "1" : "0",
+        A_STOCK_E2E_USER_DATA: isolatedUserData
+      }
+    });
     const page = await app.firstWindow();
     await page.setViewportSize({ width: 1480, height: 940 });
     const pageErrors = [];
@@ -311,7 +329,12 @@ async function run() {
       ) + "\n"
     );
   } finally {
-    await app.close().catch(() => {});
+    await app?.close().catch(() => {});
+    try {
+      fs.rmSync(isolatedUserData, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (cleanupError) {
+      process.stderr.write(`E2E temporary data cleanup warning: ${cleanupError?.message || cleanupError}\n`);
+    }
   }
 }
 

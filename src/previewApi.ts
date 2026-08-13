@@ -1425,7 +1425,7 @@ export function createPreviewApi(): Window["stockApi"] {
       return "browser";
     },
     async getVersion() {
-      return "0.9.20-preview";
+      return `${__APP_VERSION__}-preview`;
     }
   };
 }

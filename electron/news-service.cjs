@@ -2,6 +2,11 @@ const THS_BASE = "https://quantapi.51ifind.com/api/v1";
 const FAST_NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList";
 const ANNOUNCEMENT_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann";
 const CLS_TELEGRAPH_URL = "https://www.cls.cn/api/cache";
+const { fetchJsonWithPolicy } = require("./http-client.cjs");
+const {
+  thsProviderError,
+  withThsAccessToken
+} = require("./ths-token-manager.cjs");
 
 const sourceCaches = {
   fast: { value: null, expiresAt: 0, fetchedAt: "", key: "" },
@@ -9,7 +14,6 @@ const sourceCaches = {
   announcement: { value: null, expiresAt: 0, fetchedAt: "", key: "" },
   ths: { value: null, expiresAt: 0, fetchedAt: "", key: "" }
 };
-let thsTokenCache = { refreshToken: "", accessToken: "", expiresAt: 0 };
 const firstSeen = new Map();
 
 const SECTOR_TERMS = {
@@ -42,30 +46,15 @@ const MATERIAL_TERMS = [
 ];
 
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
-  let lastError;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          "User-Agent": "Mozilla/5.0 AStockRadar/0.6.5",
-          Accept: "application/json,text/plain,*/*",
-          ...(options.headers || {})
-        }
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 350));
-    } finally {
-      clearTimeout(timer);
+  const method = String(options?.method || "GET").toUpperCase();
+  return fetchJsonWithPolicy(url, options, {
+    timeoutMs,
+    retries: method === "GET" || method === "HEAD" ? 1 : 0,
+    minimumGapMs: /eastmoney\.com/i.test(String(url)) ? 160 : 80,
+    headers: {
+      "User-Agent": "Mozilla/5.0 AStockRadar/0.9"
     }
-  }
-  throw lastError;
+  });
 }
 
 function normalizeTitle(value = "") {
@@ -297,28 +286,6 @@ function normalizeEastAnnouncement(item) {
   };
 }
 
-async function thsAccessToken(refreshToken) {
-  if (
-    thsTokenCache.refreshToken === refreshToken &&
-    thsTokenCache.accessToken &&
-    thsTokenCache.expiresAt > Date.now()
-  ) {
-    return thsTokenCache.accessToken;
-  }
-  const json = await fetchJson(`${THS_BASE}/get_access_token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", refresh_token: refreshToken }
-  });
-  const accessToken = json?.data?.access_token;
-  if (!accessToken) throw new Error(json?.message || "同花顺资讯授权失败");
-  thsTokenCache = {
-    refreshToken,
-    accessToken,
-    expiresAt: Date.now() + 6.5 * 24 * 60 * 60 * 1000
-  };
-  return accessToken;
-}
-
 function thsRows(json) {
   if (Array.isArray(json?.tables)) {
     const envelope = json.tables[0];
@@ -389,21 +356,30 @@ function normalizeThsReport(row) {
 
 async function fetchThsReports(settings) {
   if (!settings?.refreshToken || settings.provider !== "ths") return [];
-  const token = await thsAccessToken(settings.refreshToken);
   const now = new Date();
   const since = new Date(now.getTime() - 36 * 60 * 60 * 1000);
   const dateText = (value) => value.toISOString().replace("T", " ").slice(0, 19);
-  const json = await fetchJson(`${THS_BASE}/report_query`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", access_token: token },
-    body: JSON.stringify({
-      codes: "",
-      functionpara: { mode: "allAStock" },
-      begincTime: dateText(since),
-      endcTime: dateText(now),
-      outputpara: "reportDate:Y,thscode:Y,secName:Y,ctime:Y,reportTitle:Y,pdfURL:Y,seq:Y"
-    })
-  }, 6000);
+  const json = await withThsAccessToken(settings.refreshToken, fetchJson, (token) =>
+    fetchJson(`${THS_BASE}/report_query`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", access_token: token },
+      body: JSON.stringify({
+        codes: "",
+        functionpara: { mode: "allAStock" },
+        begincTime: dateText(since),
+        endcTime: dateText(now),
+        outputpara: "reportDate:Y,thscode:Y,secName:Y,ctime:Y,reportTitle:Y,pdfURL:Y,seq:Y"
+      })
+    }, 6000).then((result) => {
+      if (Number(result?.errorcode || 0) !== 0) {
+        throw thsProviderError(result, `同花顺错误 ${result?.errorcode}`);
+      }
+      return result;
+    }), {
+      baseUrl: THS_BASE,
+      cacheKey: "ths-quant-api",
+      failureMessage: "同花顺资讯授权失败"
+    });
   return thsRows(json).map(normalizeThsReport);
 }
 

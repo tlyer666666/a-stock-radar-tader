@@ -1,8 +1,12 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { injectCspConnectSources } from "./src/contentSecurityPolicy";
+import packageJson from "./package.json";
 
 export default defineConfig(({ command }) => ({
+  define: {
+    __APP_VERSION__: JSON.stringify(packageJson.version)
+  },
   plugins: [
     react(),
     {

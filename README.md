@@ -143,6 +143,8 @@ flowchart LR
 | Persistence | 原子 JSON 写入、last-good 副本、敏感令牌 `safeStorage` 加密 |
 | Quality | TypeScript 类型检查、Node 测试、构建清单和 SHA-256 逐文件校验 |
 
+详细的模块边界、数据源规则和后续拆分顺序见 [架构与维护说明](docs/ARCHITECTURE.md)。
+
 ## 🚀 使用方式
 
 ### 正式版下载
