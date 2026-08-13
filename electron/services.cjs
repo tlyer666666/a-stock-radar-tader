@@ -7,6 +7,10 @@ const { execFile } = require("node:child_process");
 const path = require("node:path");
 const { Worker } = require("node:worker_threads");
 const {
+  thsProviderError,
+  withThsAccessToken
+} = require("./ths-token-manager.cjs");
+const {
   decorateLimitPoolItem,
   scoreFirstBoardQuality,
   computePatternStrategies,
@@ -28,7 +32,6 @@ const {
   STRATEGY_DEFINITIONS
 } = require("./strategy-signal-engine.cjs");
 
-let thsTokenCache = { refreshToken: "", accessToken: "", expiresAt: 0 };
 const marketEmotionCache = { value: null, expiresAt: 0, promise: null };
 const marketSnapshotCache = { value: null, expiresAt: 0, promise: null };
 const ladderPoolsCaches = new Map();
@@ -168,7 +171,11 @@ async function fetchJson(url, options = {}, timeoutMs = 12000) {
           ...(options.headers || {})
         }
       });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (!response.ok) {
+        const error = new Error(`HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
       const data = await response.json();
       if (data?.rc && data.rc !== 0) throw new Error(data.msg || `数据源错误 ${data.rc}`);
       return data;
@@ -1086,30 +1093,13 @@ async function eastChartCached(
   return promise;
 }
 
-async function thsAccessToken(refreshToken) {
-  if (!refreshToken) throw new Error("请先填写同花顺 refresh token");
-  if (
-    thsTokenCache.refreshToken === refreshToken &&
-    thsTokenCache.accessToken &&
-    thsTokenCache.expiresAt > Date.now()
-  ) {
-    return thsTokenCache.accessToken;
-  }
-  const json = await fetchJson(`${THS_BASE}/get_access_token`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      refresh_token: refreshToken
-    }
+function withThsToken(refreshToken, request) {
+  return withThsAccessToken(refreshToken, fetchJson, request, {
+    baseUrl: THS_BASE,
+    cacheKey: "ths-quant-api",
+    missingMessage: "请先填写同花顺 refresh token",
+    failureMessage: "同花顺 access token 获取失败"
   });
-  const accessToken = json?.data?.access_token;
-  if (!accessToken) throw new Error(json?.message || "同花顺 access token 获取失败");
-  thsTokenCache = {
-    refreshToken,
-    accessToken,
-    expiresAt: Date.now() + 6.5 * 24 * 60 * 60 * 1000
-  };
-  return accessToken;
 }
 
 function extractThsTable(json) {
@@ -1183,14 +1173,20 @@ function normalizeThsHistoryTable(table, limit = 160) {
 }
 
 async function thsQuote(security, settings) {
-  const token = await thsAccessToken(settings.refreshToken);
   const indicators =
     "open,high,low,latest,preClose,changeRatio,turnoverRatio,latestAmount,latestVolume";
-  const json = await fetchJson(`${THS_BASE}/real_time_quotation`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", access_token: token },
-    body: JSON.stringify({ codes: security.thscode, indicators })
-  });
+  const json = await withThsToken(settings.refreshToken, (token) =>
+    fetchJson(`${THS_BASE}/real_time_quotation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", access_token: token },
+      body: JSON.stringify({ codes: security.thscode, indicators })
+    }).then((result) => {
+      if (Number(result?.errorcode || 0) !== 0) {
+        throw thsProviderError(result, `同花顺错误 ${result?.errorcode}`);
+      }
+      return result;
+    })
+  );
   const t = extractThsTable(json);
   const latest = Number(firstValue(t, ["latest", "close"]));
   if (!Number.isFinite(latest) || latest <= 0) {
@@ -1213,22 +1209,28 @@ async function thsQuote(security, settings) {
 }
 
 async function thsHistory(security, settings, limit = 160) {
-  const token = await thsAccessToken(settings.refreshToken);
   const end = new Date().toISOString().slice(0, 10);
   const startDate = new Date(Date.now() - limit * 2 * 86400000)
     .toISOString()
     .slice(0, 10);
-  const json = await fetchJson(`${THS_BASE}/cmd_history_quotation`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", access_token: token },
-    body: JSON.stringify({
-      codes: security.thscode,
-      indicators: "open,high,low,close,volume,amount,changeRatio,turnoverRatio",
-      startdate: startDate,
-      enddate: end,
-      functionpara: { Fill: "Blank" }
+  const json = await withThsToken(settings.refreshToken, (token) =>
+    fetchJson(`${THS_BASE}/cmd_history_quotation`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", access_token: token },
+      body: JSON.stringify({
+        codes: security.thscode,
+        indicators: "open,high,low,close,volume,amount,changeRatio,turnoverRatio",
+        startdate: startDate,
+        enddate: end,
+        functionpara: { Fill: "Blank" }
+      })
+    }).then((result) => {
+      if (Number(result?.errorcode || 0) !== 0) {
+        throw thsProviderError(result, `同花顺错误 ${result?.errorcode}`);
+      }
+      return result;
     })
-  });
+  );
   const t = extractThsTable(json);
   return validateHistoryRows(normalizeThsHistoryTable(t, limit), {
     source: "ths",
@@ -2934,22 +2936,26 @@ function extractThsConceptRows(json) {
   return [...unique.values()];
 }
 
-async function thsSmartPickingConcepts(searchString, accessToken) {
-  const json = await fetchJson(`${THS_BASE}/smart_stock_picking`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      access_token: accessToken,
-      ifindlang: "cn"
-    },
-    body: JSON.stringify({
-      searchstring: searchString,
-      searchtype: "stock"
+async function thsSmartPickingConcepts(searchString, refreshToken) {
+  const json = await withThsToken(refreshToken, (accessToken) =>
+    fetchJson(`${THS_BASE}/smart_stock_picking`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        access_token: accessToken,
+        ifindlang: "cn"
+      },
+      body: JSON.stringify({
+        searchstring: searchString,
+        searchtype: "stock"
+      })
+    }).then((result) => {
+      if (Number(result?.errorcode || 0) !== 0) {
+        throw thsProviderError(result, "同花顺问财未返回结果");
+      }
+      return result;
     })
-  });
-  if (Number(json?.errorcode || 0) !== 0) {
-    throw new Error(json?.errmsg || json?.message || "同花顺问财未返回结果");
-  }
+  );
   return {
     query: searchString,
     rows: extractThsConceptRows(json)
@@ -3069,15 +3075,9 @@ async function getConceptChain(input, settings = {}) {
     if (!hasThsToken) {
       return freeConceptChain(input, rootName, query);
     }
-    let accessToken;
-    try {
-      accessToken = await thsAccessToken(settings.refreshToken);
-    } catch (error) {
-      return freeConceptChain(input, rootName, query, `同花顺增强连接失败：${error.message}`);
-    }
     let smart;
     try {
-      smart = await thsSmartPickingConcepts(query, accessToken);
+      smart = await thsSmartPickingConcepts(query, settings.refreshToken);
     } catch (error) {
       return freeConceptChain(input, rootName, query, `同花顺增强查询失败：${error.message}`);
     }
@@ -3503,22 +3503,25 @@ async function loadSinaSector(industry) {
 }
 
 async function loadThsSectorMembers(industry, settings = {}) {
-  const accessToken = await thsAccessToken(settings.refreshToken);
-  const result = await fetchJson(`${THS_BASE}/smart_stock_picking`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      access_token: accessToken,
-      ifindlang: "cn"
-    },
-    body: JSON.stringify({
-      searchstring: `${industry}板块的A股，列出股票代码、股票简称、最新价、涨跌幅、成交额、换手率、最高价、最低价、开盘价、昨收价、总市值、流通市值，剔除ST`,
-      searchtype: "stock"
+  const result = await withThsToken(settings.refreshToken, (accessToken) =>
+    fetchJson(`${THS_BASE}/smart_stock_picking`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        access_token: accessToken,
+        ifindlang: "cn"
+      },
+      body: JSON.stringify({
+        searchstring: `${industry}板块的A股，列出股票代码、股票简称、最新价、涨跌幅、成交额、换手率、最高价、最低价、开盘价、昨收价、总市值、流通市值，剔除ST`,
+        searchtype: "stock"
+      })
+    }).then((payload) => {
+      if (Number(payload?.errorcode || 0) !== 0) {
+        throw thsProviderError(payload, "同花顺板块查询失败");
+      }
+      return payload;
     })
-  });
-  if (Number(result?.errorcode || 0) !== 0) {
-    throw new Error(result?.errmsg || result?.message || "同花顺板块查询失败");
-  }
+  );
   const members = extractThsSectorMembers(result);
   if (!members.length) throw new Error("同花顺板块查询未返回可解析成分股");
   return members;
@@ -7322,10 +7325,12 @@ const SINGLE_STOCK_BACKTEST_MAX_BARS = 4000;
 const SINGLE_STOCK_BACKTEST_WARMUP_BARS = 120;
 
 function normalizeSingleBacktestDate(value) {
-  const text = String(value || "").trim().slice(0, 10);
+  const text = String(value || "").trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return "";
   const parsed = Date.parse(`${text}T00:00:00Z`);
-  return Number.isFinite(parsed) ? text : "";
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().slice(0, 10) === text
+    ? text
+    : "";
 }
 
 function singleStockBacktestLookbackBars(rawLookbackBars, startDate = "", now = new Date()) {
@@ -7460,7 +7465,7 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
   if (rawStartDate && !requestedStartDate) {
     throw new Error("回测起始日期格式无效，请重新选择日期");
   }
-  const today = new Date().toISOString().slice(0, 10);
+  const today = displayDate(todayInShanghai());
   if (requestedStartDate && requestedStartDate > today) {
     throw new Error("回测起始日期不能晚于今天");
   }
@@ -7533,18 +7538,32 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
   const slippageBps = clamp(Number(serviceBacktestSettings.slippageBps ?? 2), 0, 60);
   const expectedCostPercent = ((commissionBps + slippageBps) * 2) / 100;
 
-  const [history, benchmarkHistory] = await Promise.all([
+  const [historyResult, benchmarkResult] = await Promise.allSettled([
     loadBacktestHistory(
       security,
       serviceBacktestSettings,
       safeLookbackBars
-    ).catch(() => []),
+    ),
     loadBacktestHistory(
       benchmarkSecurity,
       serviceBacktestSettings,
       safeLookbackBars
-    ).catch(() => [])
+    )
   ]);
+  if (historyResult.status === "rejected") {
+    const detail = historyResult.reason instanceof Error
+      ? historyResult.reason.message
+      : String(historyResult.reason || "未知数据源错误");
+    throw new Error(`个股历史数据加载失败：${detail}`);
+  }
+  if (benchmarkResult.status === "rejected") {
+    const detail = benchmarkResult.reason instanceof Error
+      ? benchmarkResult.reason.message
+      : String(benchmarkResult.reason || "未知数据源错误");
+    throw new Error(`基准历史数据加载失败：${detail}`);
+  }
+  const history = historyResult.value;
+  const benchmarkHistory = benchmarkResult.value;
   if (!history.length || history.length < 80) {
     throw new Error("历史数据不足，无法进行回测。请扩大历史时间窗口后重试");
   }
@@ -8026,6 +8045,7 @@ module.exports = {
   buildSequentialSamplePath,
   buildSingleStockTradeLedger,
   singleStockBacktestLookbackBars,
+  normalizeSingleBacktestDate,
   loadBacktestHistory,
   buildPortfolioBacktestInWorker,
   curlExecutable,

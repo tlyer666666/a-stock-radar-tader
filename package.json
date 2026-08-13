@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "typecheck:review": "tsc -p tsconfig.review.json --noEmit",
     "test:contracts": "node --test src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs",
-    "test": "node --test electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs qa/release-config.test.cjs",
+    "test": "node --test electron/http-client.test.cjs electron/ths-token-manager.test.cjs electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/dateUtils.test.cjs src/domain/settings.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs qa/release-config.test.cjs",
     "qa:smoke:network": "node qa/run-market-refresh-smoke.cjs && node qa/run-backtest-linkage-smoke.cjs && node qa/run-portfolio-backtest-smoke.cjs && node qa/run-strategy-scan.cjs",
     "qa:strategy-validation": "node qa/run-strategy-validation.cjs",
     "docs:screenshots": "node qa/capture-readme-screenshots.cjs",

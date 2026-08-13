@@ -598,12 +598,16 @@ export default function PortfolioBacktestView({
   const [signalTimelineExpanded, setSignalTimelineExpanded] = useState(true);
   const [signalTimelinePage, setSignalTimelinePage] = useState(1);
   const requestId = useRef(0);
+  const strategyUniverseRequestId = useRef(0);
 
   const initialSecuritySignature = initialSecurities.map((item) => item.code).join(",");
   const contextSignature = contextStrategyIds.join(",");
 
   useEffect(() => {
     if (!initialSecurities.length) return;
+    strategyUniverseRequestId.current += 1;
+    setStrategyUniverseLoading(false);
+    setStrategyUniverseError("");
     if (initialStrategyContext?.universeSource === "strategy_current_matches") {
       setBasket(uniqueSecurities(initialSecurities));
       setBasketSource("strategy_current_matches");
@@ -620,6 +624,9 @@ export default function PortfolioBacktestView({
 
   useEffect(() => {
     if (!contextStrategyIds.length) return;
+    strategyUniverseRequestId.current += 1;
+    setStrategyUniverseLoading(false);
+    setStrategyUniverseMeta(null);
     setSelectedStrategyIds(contextStrategyIds);
     setMinimumVotes(Math.min(contextStrategyIds.length, Math.max(1, initialStrategyContext?.minimumVotes || 1)));
   }, [contextSignature, initialStrategyContext?.minimumVotes]);
@@ -703,6 +710,7 @@ export default function PortfolioBacktestView({
 
   useEffect(() => () => {
     requestId.current += 1;
+    strategyUniverseRequestId.current += 1;
   }, []);
 
   useEffect(() => {
@@ -736,6 +744,8 @@ export default function PortfolioBacktestView({
       setSearchError(`股票篮子最多 ${MAX_BASKET_SIZE} 只`);
       return;
     }
+    strategyUniverseRequestId.current += 1;
+    setStrategyUniverseLoading(false);
     setBasket((current) => [...current, security]);
     setBasketSource("manual");
     setStrategyUniverseMeta(null);
@@ -746,6 +756,8 @@ export default function PortfolioBacktestView({
   };
 
   const toggleStrategy = (id: string) => {
+    strategyUniverseRequestId.current += 1;
+    setStrategyUniverseLoading(false);
     setSelectedStrategyIds((current) => current.includes(id)
       ? current.filter((item) => item !== id)
       : [...current, id]
@@ -757,6 +769,12 @@ export default function PortfolioBacktestView({
 
   const loadStrategyUniverse = async () => {
     if (strategyUniverseLoading || !selectedStrategyIds.length) return;
+    const currentRequest = ++strategyUniverseRequestId.current;
+    const requestedStrategyIds = [...selectedStrategyIds];
+    const requestedMinimumVotes = Math.min(
+      requestedStrategyIds.length,
+      Math.max(1, minimumVotes)
+    );
     setStrategyUniverseLoading(true);
     setStrategyUniverseError("");
     try {
@@ -774,7 +792,7 @@ export default function PortfolioBacktestView({
       });
       const groups = Array.isArray(report?.strategies) ? report.strategies : [];
       const selectedGroups = groups.filter((group: any) =>
-        selectedStrategyIds.includes(String(group?.id || ""))
+        requestedStrategyIds.includes(String(group?.id || ""))
       );
       const optimized = report?.optimizedPortfolio;
       const optimizedIds = Array.isArray(optimized?.selectedStrategies)
@@ -783,9 +801,9 @@ export default function PortfolioBacktestView({
       let candidates: any[] = [];
       let source = "已发布策略的本轮命中";
       if (
-        selectedStrategyIds.length > 1 &&
+        requestedStrategyIds.length > 1 &&
         optimized?.publicationAccepted === true &&
-        selectedStrategyIds.every((id) => optimizedIds.includes(id))
+        requestedStrategyIds.every((id) => optimizedIds.includes(id))
       ) {
         candidates = Array.isArray(optimized.stocks) ? optimized.stocks : [];
         source = "稳健优选组合本轮命中";
@@ -802,13 +820,13 @@ export default function PortfolioBacktestView({
           }
         }
         candidates = [...votes.values()]
-          .filter((item) => item.count >= Math.min(selectedGroups.length, Math.max(1, minimumVotes)))
+          .filter((item) => item.count >= Math.min(selectedGroups.length, requestedMinimumVotes))
           .sort((left, right) => right.count - left.count || right.score - left.score)
           .map((item) => ({ ...item.stock, strategyVotes: item.count }));
       }
       const securities = uniqueSecurities(candidates, MAX_BASKET_SIZE);
       if (!securities.length) {
-        const missing = selectedStrategyIds.filter((id) =>
+        const missing = requestedStrategyIds.filter((id) =>
           !selectedGroups.some((group: any) => String(group?.id || "") === id)
         );
         throw new Error(
@@ -817,6 +835,7 @@ export default function PortfolioBacktestView({
             : "所选策略在本轮真实候选池中没有股票达到全部条件；系统不会放宽门槛凑数"
         );
       }
+      if (currentRequest !== strategyUniverseRequestId.current) return;
       setBasket(securities);
       setBasketSource("strategy_current_matches");
       setStrategyUniverseMeta({
@@ -829,9 +848,13 @@ export default function PortfolioBacktestView({
       });
       setSearchError("");
     } catch (reason) {
-      setStrategyUniverseError(reason instanceof Error ? reason.message : String(reason));
+      if (currentRequest === strategyUniverseRequestId.current) {
+        setStrategyUniverseError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setStrategyUniverseLoading(false);
+      if (currentRequest === strategyUniverseRequestId.current) {
+        setStrategyUniverseLoading(false);
+      }
     }
   };
 
@@ -1058,7 +1081,7 @@ export default function PortfolioBacktestView({
             {effectiveDefinitions.map((strategy) => {
               const selected = selectedStrategyIds.includes(strategy.id);
               return (
-                <button key={strategy.id} className={selected ? "selected" : ""} onClick={() => toggleStrategy(strategy.id)}>
+                <button key={strategy.id} className={selected ? "selected" : ""} disabled={strategyUniverseLoading} onClick={() => toggleStrategy(strategy.id)}>
                   <span>{selected ? "✓" : "+"}</span>
                   <div><b>{strategy.name}</b><small>{strategy.detail}</small></div>
                   <em className={strategy.publicationAccepted === true ? "passed" : strategy.publicationAccepted === false ? "review" : ""}>
@@ -1075,8 +1098,14 @@ export default function PortfolioBacktestView({
               min="1"
               max={Math.max(1, selectedStrategyIds.length)}
               value={Math.min(minimumVotes, Math.max(1, selectedStrategyIds.length))}
-              onChange={(event) => setMinimumVotes(Number(event.target.value))}
-              disabled={!selectedStrategyIds.length}
+              onChange={(event) => {
+                strategyUniverseRequestId.current += 1;
+                setStrategyUniverseLoading(false);
+                setMinimumVotes(Number(event.target.value));
+                setBasketSource("manual");
+                setStrategyUniverseMeta(null);
+              }}
+              disabled={!selectedStrategyIds.length || strategyUniverseLoading}
             />
             <small>票数越高，信号更少且更严格；组合回测不会自动放宽门槛凑交易。</small>
           </label>
@@ -1144,13 +1173,13 @@ export default function PortfolioBacktestView({
           {searchError && <small className="pbt-field-error">{searchError}</small>}
           <div className="pbt-basket-actions">
             <span>当前篮子</span>
-            <button disabled={!basket.length} onClick={() => { setBasket([]); setBasketSource("manual"); setStrategyUniverseMeta(null); }}><Trash2 size={14} />清空</button>
+            <button disabled={!basket.length} onClick={() => { strategyUniverseRequestId.current += 1; setStrategyUniverseLoading(false); setBasket([]); setBasketSource("manual"); setStrategyUniverseMeta(null); }}><Trash2 size={14} />清空</button>
           </div>
           <div className="pbt-basket-chips">
             {basket.map((item) => (
               <span key={item.code}>
                 <b>{item.name}</b><small>{item.code}</small>
-                <button aria-label={`删除${item.name}`} onClick={() => setBasket((current) => current.filter((row) => row.code !== item.code))}><X size={13} /></button>
+                <button aria-label={`删除${item.name}`} onClick={() => { strategyUniverseRequestId.current += 1; setStrategyUniverseLoading(false); setBasketSource("manual"); setStrategyUniverseMeta(null); setBasket((current) => current.filter((row) => row.code !== item.code)); }}><X size={13} /></button>
               </span>
             ))}
             {!basket.length && <div className="pbt-empty-basket"><Database size={23} /><span>先选择策略并生成对应股票池，也可以手工添加单只股票作补充验证</span></div>}

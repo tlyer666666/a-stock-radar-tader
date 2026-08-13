@@ -15,12 +15,55 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref }}-${{ inputs.tag || github.ref_name }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
+  verify:
+    name: Verify release source
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Install Electron desktop runtime
+        run: pnpm ensure:electron
+      - name: Audit critical dependency vulnerabilities
+        run: pnpm audit --audit-level critical
+      - name: Verify tag matches package version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          node -e "const p=require('./package.json'); const expected='v'+p.version; if(process.env.RELEASE_TAG!==expected) throw new Error('Tag '+process.env.RELEASE_TAG+' does not match '+expected)"
+      - name: Refuse to overwrite an existing release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists. Publish a new version instead of replacing assets."
+            exit 1
+          fi
+      - name: Verify application, review module and packaged runtime
+        env:
+          PACKAGED_E2E_VISIBLE: "1"
+        run: pnpm verify:release
+
   build:
     name: ${{ matrix.label }}
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -62,12 +105,6 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Electron desktop runtime
         run: pnpm ensure:electron
-      - name: Verify tag matches package version
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: |
-          node -e "const p=require('./package.json'); const expected='v'+p.version; if(process.env.RELEASE_TAG!==expected) throw new Error('Tag '+process.env.RELEASE_TAG+' does not match '+expected)"
       - name: Build native package
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -76,6 +113,22 @@ jobs:
         shell: bash
         run: |
           node qa/verify-release-artifact.cjs release-builder "${{ matrix.platform }}" "${{ matrix.arch }}"
+      - name: Smoke-test Linux AppImage contents
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          chmod +x release-builder/*.AppImage
+          release-builder/*.AppImage --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('squashfs-root/resources/app/package.json','utf8')); if(p.version!==require('./package.json').version) throw new Error('Embedded AppImage version mismatch')"
+      - name: Verify macOS application bundle contents
+        if: matrix.platform == 'mac'
+        shell: bash
+        run: |
+          mkdir -p release-builder/macos-smoke
+          unzip -q release-builder/*.zip -d release-builder/macos-smoke
+          test -x release-builder/macos-smoke/*.app/Contents/MacOS/*
+          node -e "const fs=require('fs'),path=require('path'); const app=fs.readdirSync('release-builder/macos-smoke').find(x=>x.endsWith('.app')); const p=JSON.parse(fs.readFileSync(path.join('release-builder/macos-smoke',app,'Contents','Resources','app','package.json'),'utf8')); if(p.version!==require('./package.json').version) throw new Error('Embedded macOS version mismatch')"
       - name: Upload native package
         uses: actions/upload-artifact@v4
         with:
@@ -86,7 +139,7 @@ jobs:
 
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -107,7 +160,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --latest
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes --draft
+          gh release upload "$RELEASE_TAG" release-assets/*
+          expected_count=$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')
+          actual_count=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')
+          if [ "$actual_count" != "$expected_count" ]; then
+            echo "Release asset count mismatch: expected $expected_count, received $actual_count"
+            exit 1
           fi
-          gh release upload "$RELEASE_TAG" release-assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest

@@ -7,6 +7,8 @@ const path = require("node:path");
 const test = require("node:test");
 const { cleanupPackagedScreenshots } = require("./packaged-app.cjs");
 
+const projectRoot = path.resolve(__dirname, "..");
+
 test("packaged E2E removes screenshots left by older package runs", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "a-stock-e2e-screenshots-"));
   try {
@@ -29,4 +31,18 @@ test("packaged E2E removes screenshots left by older package runs", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("packaged E2E runs with the desktop window hidden by default", () => {
+  const runner = fs.readFileSync(path.join(projectRoot, "qa", "packaged-app.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "electron", "main.cjs"), "utf8");
+
+  assert.match(runner, /PACKAGED_E2E_VISIBLE !== "1"/);
+  assert.match(runner, /A_STOCK_E2E_HIDDEN: hiddenE2E \? "1" : "0"/);
+  assert.match(runner, /A_STOCK_E2E_USER_DATA: isolatedUserData/);
+  assert.match(runner, /a-stock-e2e-/);
+  assert.match(runner, /--disable-gpu/);
+  assert.match(runner, /Minimize control did not minimize the BrowserWindow/);
+  assert.match(runner, /Maximize control did not maximize the BrowserWindow/);
+  assert.match(main, /show: !hiddenE2E/);
 });

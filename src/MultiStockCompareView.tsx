@@ -164,6 +164,7 @@ export default function MultiStockCompareView({
   );
   const searchTimer = useRef(0);
   const searchRequestId = useRef(0);
+  const analysisRequestId = useRef(0);
 
   useEffect(() => {
     if (initializedSelection.current || selected.length || !candidateList.length) return;
@@ -190,7 +191,14 @@ export default function MultiStockCompareView({
   }, [results]);
 
   useEffect(() => {
+    const requestId = ++analysisRequestId.current;
     if (!selected.length) {
+      setResults((current) => Object.fromEntries(
+        Object.entries(current).map(([code, result]) => [
+          code,
+          result.loading ? { ...result, loading: false } : result
+        ])
+      ));
       return;
     }
     const forceReload = previousReloadToken.current !== reloadToken;
@@ -201,9 +209,14 @@ export default function MultiStockCompareView({
           const existing = results[security.code];
           return !existing?.loading && !existing?.payload;
         });
-    if (!targets.length) return;
     setResults((current) => {
-      const next = { ...current };
+      const targetCodes = new Set(targets.map((security) => security.code));
+      const next = Object.fromEntries(
+        Object.entries(current).map(([code, result]) => [
+          code,
+          result.loading && !targetCodes.has(code) ? { ...result, loading: false } : result
+        ])
+      );
       for (const security of targets) {
         next[security.code] = {
           loading: true,
@@ -213,6 +226,7 @@ export default function MultiStockCompareView({
       }
       return next;
     });
+    if (!targets.length) return;
     Promise.allSettled(
       targets.map(async (security) => {
         try {
@@ -253,6 +267,7 @@ export default function MultiStockCompareView({
         }
       })
     ).then((settled) => {
+      if (requestId !== analysisRequestId.current) return;
       setResults((current) => {
         const next = { ...current };
         settled.forEach((item, index) => {
@@ -275,6 +290,11 @@ export default function MultiStockCompareView({
         return next;
       });
     });
+    return () => {
+      if (requestId === analysisRequestId.current) {
+        analysisRequestId.current += 1;
+      }
+    };
     // Results are intentionally omitted: selection changes only analyze missing stocks,
     // while reloadToken explicitly requests a full recalculation.
   }, [signature, reloadToken]);

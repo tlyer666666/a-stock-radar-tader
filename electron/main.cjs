@@ -11,6 +11,14 @@ const {
 const path = require("path");
 const fs = require("fs");
 const { pathToFileURL } = require("node:url");
+
+if (process.env.A_STOCK_E2E_USER_DATA) {
+  const isolatedUserData = path.resolve(process.env.A_STOCK_E2E_USER_DATA);
+  fs.mkdirSync(isolatedUserData, { recursive: true });
+  app.setPath("userData", isolatedUserData);
+  app.setPath("sessionData", path.join(isolatedUserData, "session"));
+}
+
 const {
   capItemsPreservingFavorites,
   readJsonWithBackup,
@@ -498,6 +506,7 @@ function requestExplicitQuit() {
 }
 
 function createTray() {
+  if (process.env.A_STOCK_E2E_HIDDEN === "1") return undefined;
   if (tray && !tray.isDestroyed()) return tray;
   try {
     const createdTray = new Tray(applicationIconPath(true));
@@ -553,7 +562,9 @@ function createWindow() {
   debugLog(`createWindow packaged=${app.isPackaged} dirname=${__dirname}`);
   applyWindowTheme(settingsForService().theme);
   const dark = nativeTheme.shouldUseDarkColors;
+  const hiddenE2E = process.env.A_STOCK_E2E_HIDDEN === "1";
   const createdWindow = new BrowserWindow({
+    show: !hiddenE2E,
     width: 1480,
     height: 940,
     minWidth: 1120,
@@ -570,6 +581,11 @@ function createWindow() {
       devTools: !app.isPackaged
     }
   });
+  if (hiddenE2E) {
+    createdWindow.on("show", () => {
+      if (!createdWindow.isDestroyed()) setImmediate(() => createdWindow.hide());
+    });
+  }
   mainWindow = createdWindow;
   createdWindow.on("close", (event) => {
     if (isQuitting) return;
