@@ -25,6 +25,10 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./portfolio-backtest.css";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
+import {
+  matchesInitialStrategySignature,
+  resolvePublishedStrategyUniverse
+} from "./portfolioBacktestLogic";
 
 export type PortfolioBacktestStrategyContext = {
   source?: "single_strategy" | "optimized_portfolio" | string;
@@ -790,50 +794,14 @@ export default function PortfolioBacktestView({
         walkForwardFolds: 4,
         refresh: false
       });
-      const groups = Array.isArray(report?.strategies) ? report.strategies : [];
-      const selectedGroups = groups.filter((group: any) =>
-        requestedStrategyIds.includes(String(group?.id || ""))
+      const { candidates, source } = resolvePublishedStrategyUniverse(
+        report,
+        requestedStrategyIds,
+        requestedMinimumVotes
       );
-      const optimized = report?.optimizedPortfolio;
-      const optimizedIds = Array.isArray(optimized?.selectedStrategies)
-        ? optimized.selectedStrategies.map((item: any) => String(item?.id || ""))
-        : [];
-      let candidates: any[] = [];
-      let source = "已发布策略的本轮命中";
-      if (
-        requestedStrategyIds.length > 1 &&
-        optimized?.publicationAccepted === true &&
-        requestedStrategyIds.every((id) => optimizedIds.includes(id))
-      ) {
-        candidates = Array.isArray(optimized.stocks) ? optimized.stocks : [];
-        source = "稳健优选组合本轮命中";
-      } else {
-        const votes = new Map<string, { stock: any; count: number; score: number }>();
-        for (const group of selectedGroups) {
-          for (const stock of Array.isArray(group?.stocks) ? group.stocks : []) {
-            const code = String(stock?.code || "");
-            if (!/^\d{6}$/.test(code)) continue;
-            const current = votes.get(code) || { stock, count: 0, score: 0 };
-            current.count += 1;
-            current.score = Math.max(current.score, Number(stock?.signalScore || stock?.score || 0));
-            votes.set(code, current);
-          }
-        }
-        candidates = [...votes.values()]
-          .filter((item) => item.count >= Math.min(selectedGroups.length, requestedMinimumVotes))
-          .sort((left, right) => right.count - left.count || right.score - left.score)
-          .map((item) => ({ ...item.stock, strategyVotes: item.count }));
-      }
       const securities = uniqueSecurities(candidates, MAX_BASKET_SIZE);
       if (!securities.length) {
-        const missing = requestedStrategyIds.filter((id) =>
-          !selectedGroups.some((group: any) => String(group?.id || "") === id)
-        );
-        throw new Error(
-          missing.length
-            ? `所选策略尚未通过发布复核或当前无可发布股票：${missing.join("、")}`
-            : "所选策略在本轮真实候选池中没有股票达到全部条件；系统不会放宽门槛凑数"
-        );
+        throw new Error("所选策略在本轮真实候选池中没有股票达到设定票数；系统不会放宽门槛凑数");
       }
       if (currentRequest !== strategyUniverseRequestId.current) return;
       setBasket(securities);
@@ -878,12 +846,27 @@ export default function PortfolioBacktestView({
     setRunning(true);
     setError("");
     try {
+      const reuseInitialContext = matchesInitialStrategySignature(
+        initialStrategyContext,
+        selectedStrategyIds,
+        safeVotes
+      );
       const strategyContext = {
-        source: initialStrategyContext?.source || (selectedStrategyIds.length > 1 ? "optimized_portfolio" : "single_strategy"),
-        strategyEngine: initialStrategyContext?.strategyEngine || "verified-signal-v2",
-        strategyId: initialStrategyContext?.strategyId || (selectedStrategyIds.length > 1 ? "custom_portfolio_vote" : primaryStrategyId),
-        strategyName: initialStrategyContext?.strategyName || (selectedStrategyIds.length > 1 ? "自定义多策略投票" : effectiveDefinitions.find((item) => item.id === primaryStrategyId)?.name || primaryStrategyId),
-        ...(initialStrategyContext?.strategyVersion
+        source: reuseInitialContext
+          ? initialStrategyContext?.source || "single_strategy"
+          : selectedStrategyIds.length > 1 ? "optimized_portfolio" : "single_strategy",
+        strategyEngine: reuseInitialContext
+          ? initialStrategyContext?.strategyEngine || "verified-signal-v2"
+          : "verified-signal-v2",
+        strategyId: reuseInitialContext
+          ? initialStrategyContext?.strategyId || primaryStrategyId
+          : selectedStrategyIds.length > 1 ? "custom_portfolio_vote" : primaryStrategyId,
+        strategyName: reuseInitialContext
+          ? initialStrategyContext?.strategyName || primaryStrategyId
+          : selectedStrategyIds.length > 1
+            ? "自定义多策略投票"
+            : effectiveDefinitions.find((item) => item.id === primaryStrategyId)?.name || primaryStrategyId,
+        ...(reuseInitialContext && initialStrategyContext?.strategyVersion
           ? { strategyVersion: initialStrategyContext.strategyVersion }
           : {}),
         strategyIds: selectedStrategyIds,

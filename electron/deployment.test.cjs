@@ -12,6 +12,7 @@ const {
   acquireArtifactLock,
   deployFormal,
   recoverArtifactOrphans,
+  resolveSourceCommit,
   validateBuildManifest,
   validateRunnableAppTree,
   writeBuildManifest
@@ -92,6 +93,96 @@ function proxyFs(overrides) {
 function appMarker(root) {
   return fs.readFileSync(path.join(root, "resources", "app", "marker.txt"), "utf8");
 }
+
+test("build manifests record a deterministic CI source identity", () => {
+  const root = temporaryRoot("build-identity");
+  try {
+    const payload = writeBuildManifest(root, "1.2.3", fs, {
+      builtAt: "2026-08-20T09:10:11Z",
+      env: {
+        GITHUB_SHA: "A".repeat(40),
+        CI_COMMIT_SHA: "B".repeat(40)
+      },
+      execFileSync() {
+        throw new Error("git must not run when GITHUB_SHA is valid");
+      }
+    });
+    assert.equal(payload.builtAt, "2026-08-20T09:10:11.000Z");
+    assert.equal(payload.sourceCommit, "a".repeat(40));
+    assert.equal(payload.buildId, `1.2.3+${"a".repeat(12)}`);
+    assert.deepEqual(
+      validateBuildManifest(root, fs, { requireBuildIdentity: true }),
+      payload
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("source identity falls back from CI variables to a safe git lookup and unknown", () => {
+  const root = temporaryRoot("source-identity");
+  try {
+    let gitCalls = 0;
+    const fromGit = resolveSourceCommit({
+      env: {},
+      projectRoot: root,
+      execFileSync(command, args, options) {
+        gitCalls += 1;
+        assert.equal(command, "git");
+        assert.deepEqual(args, ["rev-parse", "--verify", "HEAD"]);
+        assert.equal(options.cwd, root);
+        assert.equal(options.windowsHide, true);
+        return `${"c".repeat(40)}\n`;
+      }
+    });
+    assert.equal(fromGit, "c".repeat(40));
+    assert.equal(gitCalls, 1);
+    assert.equal(
+      resolveSourceCommit({
+        env: { GITHUB_SHA: "invalid", CI_COMMIT_SHA: "D".repeat(40) },
+        execFileSync() {
+          throw new Error("git must not run when CI_COMMIT_SHA is valid");
+        }
+      }),
+      "d".repeat(40)
+    );
+    assert.equal(
+      resolveSourceCommit({
+        env: {},
+        projectRoot: root,
+        execFileSync() {
+          throw new Error("git unavailable");
+        }
+      }),
+      "unknown"
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy manifests remain readable but cannot satisfy a new formal build", () => {
+  const root = temporaryRoot("legacy-manifest");
+  const manifestPath = path.join(root, BUILD_MANIFEST);
+  try {
+    const legacy = { schemaVersion: 1, appVersion: "0.9.12", files: {} };
+    fs.writeFileSync(manifestPath, `${JSON.stringify(legacy)}\n`, "utf8");
+    assert.deepEqual(validateBuildManifest(root), legacy);
+    assert.throws(
+      () => validateBuildManifest(root, fs, { requireBuildIdentity: true }),
+      /identity is required/
+    );
+
+    fs.writeFileSync(
+      manifestPath,
+      `${JSON.stringify({ ...legacy, builtAt: 42, sourceCommit: "unknown", buildId: "legacy" })}\n`,
+      "utf8"
+    );
+    assert.throws(() => validateBuildManifest(root), /identity is invalid/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("artifact lock rejects a live concurrent owner and is released safely", () => {
   const root = temporaryRoot("artifact-lock");
@@ -407,7 +498,9 @@ test("a successful staged build has a complete self-verifying manifest", () => {
       projectRoot: root,
       electronDist,
       minimumExecutableBytes: 1,
-      token: "successful-build"
+      token: "successful-build",
+      now: Date.parse("2026-08-20T10:11:12Z"),
+      env: { GITHUB_SHA: "E".repeat(40) }
     });
     assert.equal(result.appVersion, "0.9.13");
     assert.equal(fs.existsSync(path.join(result.outputRoot, BUILD_MANIFEST)), true);
@@ -415,7 +508,13 @@ test("a successful staged build has a complete self-verifying manifest", () => {
       fs.existsSync(path.join(result.outputRoot, "resources", "default_app.asar")),
       false
     );
-    assert.equal(validateBuildManifest(result.outputRoot).appVersion, "0.9.13");
+    const manifest = validateBuildManifest(result.outputRoot, fs, {
+      requireBuildIdentity: true
+    });
+    assert.equal(manifest.appVersion, "0.9.13");
+    assert.equal(manifest.builtAt, "2026-08-20T10:11:12.000Z");
+    assert.equal(manifest.sourceCommit, "e".repeat(40));
+    assert.equal(manifest.buildId, `0.9.13+${"e".repeat(12)}`);
     assert.equal(
       JSON.parse(
         fs.readFileSync(path.join(result.outputRoot, "resources", "app", "package.json"), "utf8")

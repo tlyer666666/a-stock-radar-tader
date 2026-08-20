@@ -674,8 +674,8 @@ export function createPreviewApi(): Window["stockApi"] {
       const settings = { ...previewSettings, ...(options.settings || {}) };
       const startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.startDate || ""))
         ? String(options.startDate).slice(0, 10)
-        : new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
-      const signalTo = new Date().toISOString().slice(0, 10);
+        : previewShanghaiDate(new Date(Date.now() - 365 * 86400000));
+      const signalTo = previewShanghaiDate();
       const minimumSamples = Math.max(18, Number(options.minSamples) || 18);
       const signalStrategyIds = Array.isArray(options.signalStrategyIds)
         ? [...new Set(options.signalStrategyIds.map(String).filter(Boolean))]
@@ -688,7 +688,9 @@ export function createPreviewApi(): Window["stockApi"] {
           ...(options.strategyContext || {}),
           strategyEngine: "verified-signal-v2",
           strategyIds: signalStrategyIds,
-          componentNames: signalStrategyIds
+          componentNames: signalStrategyIds.map((id) =>
+            previewVerifiedStrategies.find((item) => item.id === id)?.name || id
+          )
         }
         : undefined;
       const walkForwardValidation = {

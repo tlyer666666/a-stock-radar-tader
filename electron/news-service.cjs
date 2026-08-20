@@ -8,12 +8,31 @@ const {
   withThsAccessToken
 } = require("./ths-token-manager.cjs");
 
+function emptySourceCache() {
+  return {
+    value: null,
+    expiresAt: 0,
+    fetchedAt: "",
+    cachedAtMs: 0,
+    key: "",
+    promise: null,
+    promiseKey: "",
+    generation: 0
+  };
+}
+
 const sourceCaches = {
-  fast: { value: null, expiresAt: 0, fetchedAt: "", key: "" },
-  cls: { value: null, expiresAt: 0, fetchedAt: "", key: "" },
-  announcement: { value: null, expiresAt: 0, fetchedAt: "", key: "" },
-  ths: { value: null, expiresAt: 0, fetchedAt: "", key: "" }
+  fast: emptySourceCache(),
+  cls: emptySourceCache(),
+  announcement: emptySourceCache(),
+  ths: emptySourceCache()
 };
+const NEWS_SOURCE_MAX_STALE_MS = Object.freeze({
+  fast: 2 * 60 * 1000,
+  cls: 2 * 60 * 1000,
+  announcement: 30 * 60 * 1000,
+  ths: 30 * 60 * 1000
+});
 const firstSeen = new Map();
 
 const SECTOR_TERMS = {
@@ -383,11 +402,23 @@ async function fetchThsReports(settings) {
   return thsRows(json).map(normalizeThsReport);
 }
 
-async function cachedSource(id, ttlMs, factory, key = "") {
-  const cache = sourceCaches[id];
+async function cachedSource(id, ttlMs, factory, key = "", options = {}) {
+  const cache = sourceCaches[id] || emptySourceCache();
+  sourceCaches[id] = cache;
+  const clock = typeof options.now === "function" ? options.now : Date.now;
+  const nowMs = () => {
+    const value = Number(clock());
+    return Number.isFinite(value) ? value : Date.now();
+  };
+  const currentTime = nowMs();
+  const configuredMaxStale = Number(
+    options.maxStaleMs ?? NEWS_SOURCE_MAX_STALE_MS[id] ?? 5 * 60 * 1000
+  );
+  const ttlDurationMs = Math.max(0, Number(ttlMs) || 0);
+  const maxStaleMs = Math.max(ttlDurationMs, configuredMaxStale || 0);
   if (
     cache?.value &&
-    cache.expiresAt > Date.now() &&
+    cache.expiresAt > currentTime &&
     (!key || cache.key === key)
   ) {
     return {
@@ -397,28 +428,64 @@ async function cachedSource(id, ttlMs, factory, key = "") {
       stale: false
     };
   }
-  try {
-    const items = await factory();
-    const fetchedAt = new Date().toISOString();
-    sourceCaches[id] = {
-      value: items,
-      expiresAt: Date.now() + ttlMs,
-      fetchedAt,
-      key
-    };
-    return { items, fetchedAt, fromCache: false, stale: false };
-  } catch (error) {
-    if (cache?.value && (!key || cache.key === key)) {
-      return {
-        items: cache.value,
-        fetchedAt: cache.fetchedAt,
-        fromCache: true,
-        stale: true,
-        warning: String(error?.message || error)
-      };
+  if (cache.promise && cache.promiseKey === key) return cache.promise;
+
+  const fallbackValue = cache.value && (!key || cache.key === key) ? cache.value : null;
+  const fallbackFetchedAt = fallbackValue ? cache.fetchedAt : "";
+  const fallbackCachedAtMs = fallbackValue
+    ? Number(cache.cachedAtMs || Date.parse(cache.fetchedAt || ""))
+    : Number.NaN;
+  const generation = Number(cache.generation || 0) + 1;
+  cache.generation = generation;
+  const promise = (async () => {
+    await Promise.resolve();
+    try {
+      const items = await factory();
+      const cachedAtMs = nowMs();
+      const fetchedAt = new Date(cachedAtMs).toISOString();
+      if (cache.generation === generation) {
+        cache.value = items;
+        cache.expiresAt = cachedAtMs + ttlDurationMs;
+        cache.fetchedAt = fetchedAt;
+        cache.cachedAtMs = cachedAtMs;
+        cache.key = key;
+      }
+      return { items, fetchedAt, fromCache: false, stale: false };
+    } catch (error) {
+      const cacheAgeMs = Number.isFinite(fallbackCachedAtMs)
+        ? Math.max(0, nowMs() - fallbackCachedAtMs)
+        : Number.POSITIVE_INFINITY;
+      if (fallbackValue && cacheAgeMs <= maxStaleMs) {
+        return {
+          items: fallbackValue,
+          fetchedAt: fallbackFetchedAt,
+          fromCache: true,
+          stale: true,
+          warning: String(error?.message || error)
+        };
+      }
+      throw error;
+    } finally {
+      if (cache.promise === promise) {
+        cache.promise = null;
+        cache.promiseKey = "";
+      }
     }
-    throw error;
-  }
+  })();
+  cache.promise = promise;
+  cache.promiseKey = key;
+  return promise;
+}
+
+function cachedSourceStatus(itemCount, result) {
+  const warning = String(result?.warning || "").trim();
+  const stale = Boolean(result?.stale);
+  return {
+    message: `${itemCount}条${stale ? " · 使用缓存" : ""}${
+      stale && warning ? ` · 降级原因：${warning}` : ""
+    }`,
+    warning
+  };
 }
 
 async function fetchPublicFeed(settings) {
@@ -497,6 +564,10 @@ async function fetchPublicFeed(settings) {
   const clsTelegraphs = clsResult?.items || [];
   const announcements = announcementResult?.items || [];
   const thsReports = thsResult?.items || [];
+  const fastStatus = cachedSourceStatus(fast.length, fastResult);
+  const clsStatus = cachedSourceStatus(clsTelegraphs.length, clsResult);
+  const announcementStatus = cachedSourceStatus(announcements.length, announcementResult);
+  const thsStatus = cachedSourceStatus(thsReports.length, thsResult);
   const status = [
     {
       id: "fast",
@@ -504,8 +575,11 @@ async function fetchPublicFeed(settings) {
       ok: results[0].status === "fulfilled",
       level: "B",
       message: results[0].status === "fulfilled"
-        ? `${fast.length}条${fastResult?.stale ? " · 使用缓存" : ""}`
+        ? fastStatus.message
         : results[0].reason?.message,
+      warning: results[0].status === "fulfilled"
+        ? fastStatus.warning
+        : String(results[0].reason?.message || results[0].reason || ""),
       fetchedAt: fastResult?.fetchedAt || "",
       pollSeconds: 6,
       stale: Boolean(fastResult?.stale)
@@ -516,8 +590,11 @@ async function fetchPublicFeed(settings) {
       ok: results[1].status === "fulfilled",
       level: "B",
       message: results[1].status === "fulfilled"
-        ? `${clsTelegraphs.length}条${clsResult?.stale ? " · 使用缓存" : ""}`
+        ? clsStatus.message
         : results[1].reason?.message,
+      warning: results[1].status === "fulfilled"
+        ? clsStatus.warning
+        : String(results[1].reason?.message || results[1].reason || ""),
       fetchedAt: clsResult?.fetchedAt || "",
       pollSeconds: 6,
       stale: Boolean(clsResult?.stale)
@@ -528,8 +605,11 @@ async function fetchPublicFeed(settings) {
       ok: results[2].status === "fulfilled",
       level: "B",
       message: results[2].status === "fulfilled"
-        ? `${announcements.length}条${announcementResult?.stale ? " · 使用缓存" : ""}`
+        ? announcementStatus.message
         : results[2].reason?.message,
+      warning: results[2].status === "fulfilled"
+        ? announcementStatus.warning
+        : String(results[2].reason?.message || results[2].reason || ""),
       fetchedAt: announcementResult?.fetchedAt || "",
       pollSeconds: 15,
       stale: Boolean(announcementResult?.stale)
@@ -541,16 +621,24 @@ async function fetchPublicFeed(settings) {
       level: "A/B",
       message: thsEnabled
         ? results[3].status === "fulfilled"
-          ? `${thsReports.length}条${thsResult?.stale ? " · 使用缓存" : ""}`
+          ? thsStatus.message
           : results[3].reason?.message
         : "未启用",
+      warning: thsEnabled
+        ? results[3].status === "fulfilled"
+          ? thsStatus.warning
+          : String(results[3].reason?.message || results[3].reason || "")
+        : "",
       fetchedAt: thsResult?.fetchedAt || "",
       pollSeconds: 30,
       stale: Boolean(thsResult?.stale)
     }
   ];
   if (!fast.length && !clsTelegraphs.length && !announcements.length && !thsReports.length) {
-    throw new Error("实时资讯源暂时不可用");
+    const sourceWarnings = status.map((source) => source.warning).filter(Boolean);
+    throw new Error(
+      `实时资讯源暂时不可用${sourceWarnings.length ? `：${sourceWarnings.join("；")}` : ""}`
+    );
   }
   return { items: [...thsReports, ...announcements, ...clsTelegraphs, ...fast], status };
 }
@@ -655,15 +743,28 @@ async function getNewsFeed(input = {}, settings = {}) {
   };
 }
 
-function resetNewsCache() {
+function resetNewsCache(options = {}) {
+  const clearValues = options === true || options?.clear === true;
   for (const cache of Object.values(sourceCaches)) {
     cache.expiresAt = 0;
+    cache.generation = Number(cache.generation || 0) + 1;
+    cache.promise = null;
+    cache.promiseKey = "";
+    if (clearValues) {
+      cache.value = null;
+      cache.fetchedAt = "";
+      cache.cachedAtMs = 0;
+      cache.key = "";
+    }
   }
 }
 
 module.exports = {
   getNewsFeed,
   resetNewsCache,
+  cachedSource,
+  cachedSourceStatus,
+  NEWS_SOURCE_MAX_STALE_MS,
   normalizeFastNews,
   normalizeClsTelegraph,
   normalizeEastAnnouncement,

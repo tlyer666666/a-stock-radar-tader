@@ -164,6 +164,34 @@ test("all eighteen strategies replay identically with a shared feature timeline"
   }
 });
 
+test("signals before the requested date window do not consume cooldown", () => {
+  const history = replayableHistory();
+  const featureTimeline = Array.from({ length: history.length }, () => null);
+  featureTimeline[20] = { hit: true, date: dateAt(20) };
+  featureTimeline[22] = { hit: true, date: dateAt(22) };
+  const replay = replayStrategy(
+    {
+      id: "date_window_boundary",
+      name: "日期窗口边界",
+      matches: (feature) => feature?.hit === true
+    },
+    "600001",
+    "日期窗口样本",
+    history,
+    new Map(flatBenchmark().map((row) => [row.date, row])),
+    resolvedOptions({
+      signalFrom: dateAt(22),
+      signalTo: dateAt(40),
+      cooldownDays: 5,
+      horizonDays: 1
+    }),
+    { featureTimeline }
+  );
+
+  assert.equal(replay.samples.length, 1);
+  assert.equal(replay.samples[0].signalDate, dateAt(22));
+});
+
 test("returns eighteen auditable strategy groups and refuses current matches without OHLCV history", () => {
   const candidates = [
     {

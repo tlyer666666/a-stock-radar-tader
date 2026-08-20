@@ -19,7 +19,15 @@ const {
   buildFreeConceptGroups,
   buildSectorBreadthDiagnostics,
   eastPriceFromRaw,
+  normalizeEastQuote,
   normalizeTencentQuote,
+  publicQuoteWithFallback,
+  dataByProvider,
+  thsStockAnnouncements,
+  eastStockAnnouncements,
+  loadStockAnnouncements,
+  resetStockAnnouncementCache,
+  applyStockAnnouncementEvidence,
   isConvertibleBondCode,
   assetTypeFromExactCode,
   searchableAssetType,
@@ -38,11 +46,14 @@ const {
   currentLadderPools,
   buildSequentialSamplePath,
   buildSingleStockTradeLedger,
+  singleStockBenchmarkReturns,
   singleStockBacktestLookbackBars,
   normalizeSingleBacktestDate,
   loadBacktestHistory,
   getStrategyDefinitions,
   curlExecutable,
+  serviceRequestPolicy,
+  serviceFetchJson,
   runPortfolioBacktest,
   runBacktest,
   mergeBacktestSettings,
@@ -103,6 +114,497 @@ test("curl fallback resolves the native executable for each desktop platform", (
   assert.equal(curlExecutable("win32"), "curl.exe");
   assert.equal(curlExecutable("darwin"), "curl");
   assert.equal(curlExecutable("linux"), "curl");
+});
+
+test("single-stock benchmark windows use close-to-close returns", () => {
+  const history = [100, 110, 120, 130, 140, 150].map((close, index) => ({
+    date: `2026-08-${String(index + 1).padStart(2, "0")}`,
+    open: 10 + index,
+    close
+  }));
+  const result = singleStockBenchmarkReturns(history, 5);
+
+  assert.equal(result.r1, (150 / 140 - 1) * 100);
+  assert.equal(result.r3, 25);
+  assert.equal(result.r5, 50);
+  assert.equal(result.spanBars, 5);
+});
+
+test("service JSON transport applies shared origin policy and retry classification", async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => {
+    global.fetch = originalFetch;
+  });
+  let attempts = 0;
+  global.fetch = async (_url, options) => {
+    attempts += 1;
+    assert.equal(options.headers.Accept, "application/json, text/plain, */*");
+    assert.equal(options.headers["User-Agent"], "AStockRadar/0.9");
+    if (attempts === 1) {
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (name) => name === "retry-after" ? "0" : null }
+      };
+    }
+    return mockJsonResponse({ ok: true });
+  };
+
+  assert.deepEqual(
+    await serviceFetchJson("https://quantapi.51ifind.com/api/v1/ping", {}, 1000),
+    { ok: true }
+  );
+  assert.equal(attempts, 2);
+  assert.equal(
+    serviceRequestPolicy("https://quantapi.51ifind.com/api/v1/ping").minimumGapMs,
+    250
+  );
+  assert.equal(
+    serviceRequestPolicy("https://push2.eastmoney.com/api/qt/stock/get").minimumGapMs,
+    120
+  );
+
+  attempts = 0;
+  global.fetch = async () => {
+    attempts += 1;
+    return { ok: false, status: 400, headers: { get: () => null } };
+  };
+  await assert.rejects(
+    serviceFetchJson("https://example.test/permanent", {}, 1000),
+    /HTTP 400/
+  );
+  assert.equal(attempts, 1);
+});
+
+test("invalid Eastmoney key prices trigger the Tencent quote relay", async () => {
+  const security = toSecurity("600519");
+  const invalidPayload = {
+    data: {
+      f43: 0,
+      f44: 1250,
+      f45: 1200,
+      f46: 1210,
+      f57: "600519",
+      f58: "贵州茅台",
+      f59: 2,
+      f60: 1220
+    }
+  };
+  assert.throws(
+    () => normalizeEastQuote(security, invalidPayload),
+    /有效最新价/
+  );
+  assert.throws(
+    () => normalizeEastQuote(security, {
+      data: { ...invalidPayload.data, f43: 1234, f60: 0 }
+    }),
+    /有效昨收价/
+  );
+
+  let tencentCalls = 0;
+  const result = await publicQuoteWithFallback(security, 1000, {
+    eastmoney: async () => normalizeEastQuote(security, invalidPayload),
+    tencent: async () => {
+      tencentCalls += 1;
+      return {
+        securityCode: "600519",
+        securityName: "贵州茅台",
+        latest: 12.34,
+        preClose: 12.2,
+        open: 12.1,
+        high: 12.5,
+        low: 12
+      };
+    }
+  });
+  assert.equal(tencentCalls, 1);
+  assert.equal(result.actualProvider, "tencent");
+  assert.equal(result.quote.latest, 12.34);
+  assert.match(result.warning, /腾讯公开行情/);
+});
+
+test("THS quote remains primary when only THS history needs Eastmoney fallback", async () => {
+  const security = toSecurity("600519");
+  const fallbackHistory = [{
+    date: "2026-08-19",
+    open: 12,
+    high: 12.5,
+    low: 11.9,
+    close: 12.4,
+    volume: 1000
+  }];
+  const result = await dataByProvider(
+    security,
+    { provider: "ths", refreshToken: "configured", fallbackEnabled: true },
+    {
+      thsQuote: async () => ({
+        code: "600519",
+        name: "THS名称",
+        latest: 12.34,
+        source: "ths"
+      }),
+      thsHistory: async () => {
+        throw new Error("history rate limited");
+      },
+      publicQuote: async () => ({
+        quote: {
+          name: "贵州茅台",
+          industry: "白酒",
+          secid: "1.600519",
+          limitUp: 13.42,
+          limitDown: 10.98
+        },
+        actualProvider: "eastmoney",
+        warning: ""
+      }),
+      eastHistory: async () => fallbackHistory
+    }
+  );
+
+  assert.equal(result.actualProvider, "ths");
+  assert.equal(result.quote.latest, 12.34);
+  assert.equal(result.quote.name, "贵州茅台");
+  assert.equal(result.history, fallbackHistory);
+  assert.equal(result.historyProvider, "eastmoney");
+  assert.equal(result.primaryStatus, "partial");
+  assert.match(result.warning, /同花顺历史行情连接失败/);
+});
+
+test("THS stock announcement query follows the official per-code report contract", async () => {
+  const security = toSecurity("600519");
+  let requestUrl = "";
+  let requestOptions = null;
+  const rows = await thsStockAnnouncements(
+    security,
+    { refreshToken: "configured" },
+    {
+      withToken: async (refreshToken, request) => {
+        assert.equal(refreshToken, "configured");
+        return request("access-token");
+      },
+      fetchJson: async (url, options) => {
+        requestUrl = String(url);
+        requestOptions = options;
+        return {
+          errorcode: 0,
+          tables: [{
+            thscode: "600519.SH",
+            table: {
+              reportTitle: ["贵州茅台收到证监会立案告知书并提示退市风险"],
+              seq: ["ann-1"],
+              ctime: ["2026-08-19 10:00:00"],
+              reportDate: ["2026-08-19"],
+              secName: ["贵州茅台"],
+              pdfURL: ["https://www.sse.com.cn/disclosure/ann-1.pdf"]
+            }
+          }]
+        };
+      }
+    }
+  );
+
+  const payload = JSON.parse(requestOptions.body);
+  assert.match(requestUrl, /quantapi\.51ifind\.com\/api\/v1\/report_query$/);
+  assert.equal(requestOptions.headers.access_token, "access-token");
+  assert.equal(payload.codes, "600519.SH");
+  assert.equal(payload.functionpara.reportType, "901");
+  assert.match(payload.beginrDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(payload.endrDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].art_code, "ann-1");
+  assert.equal(rows[0].transportProvider, "同花顺 QuantAPI");
+  assert.equal(rows[0].impactScore, rows[0].importanceScore);
+  assert.equal(rows[0].riskSeverity, 3);
+});
+
+test("Eastmoney announcement pagination marks an incomplete 120-day risk window", async () => {
+  let calls = 0;
+  const rows = await eastStockAnnouncements("600519", {
+    fetchJson: async (url) => {
+      calls += 1;
+      const page = Number(new URL(String(url)).searchParams.get("page_index"));
+      return {
+        data: {
+          list: Array.from({ length: 50 }, (_, index) => ({
+            art_code: `page-${page}-ann-${index}`,
+            title: `分页公告 ${page}-${index}`,
+            display_time: `${shanghaiDate()} 10:00:00`,
+            codes: [{ stock_code: "600519", short_name: "贵州茅台", market_code: "1" }],
+            columns: [{ column_name: "公司公告" }]
+          }))
+        }
+      };
+    }
+  });
+
+  assert.equal(calls, 5);
+  assert.equal(rows.length, 250);
+  assert.equal(rows.coverageTruncated, true);
+  assert.ok(rows.every((item) => item.id && item.sourceUrl && item.publishedAt));
+});
+
+test("stock announcements use THS first, then Eastmoney, and expose unknown dual-source failure", async (t) => {
+  resetStockAnnouncementCache();
+  t.after(resetStockAnnouncementCache);
+  const security = toSecurity("600519");
+  let eastmoneyCalls = 0;
+  const primary = await loadStockAnnouncements(
+    security,
+    { refreshToken: "configured", fallbackEnabled: true, forceRefresh: true },
+    {
+      ths: async () => [{ title: "同花顺公告" }],
+      eastmoney: async () => {
+        eastmoneyCalls += 1;
+        return [{ title: "东方财富公告" }];
+      }
+    }
+  );
+  assert.equal(primary.items[0].title, "同花顺公告");
+  assert.equal(primary.dataQuality.actualProvider, "ths");
+  assert.equal(primary.dataQuality.riskKnown, true);
+  assert.equal(eastmoneyCalls, 0);
+
+  const emptyPrimary = await loadStockAnnouncements(
+    security,
+    { refreshToken: "configured", fallbackEnabled: true, forceRefresh: true },
+    {
+      ths: async () => [],
+      eastmoney: async () => { throw new Error("must remain on THS"); }
+    }
+  );
+  assert.deepEqual(emptyPrimary.items, []);
+  assert.equal(emptyPrimary.dataQuality.status, "active");
+  assert.equal(emptyPrimary.dataQuality.riskKnown, true);
+
+  const fallback = await loadStockAnnouncements(
+    security,
+    { refreshToken: "configured", fallbackEnabled: true, forceRefresh: true },
+    {
+      ths: async () => { throw new Error("THS rate limited"); },
+      eastmoney: async () => [{ title: "东方财富公告" }]
+    }
+  );
+  assert.equal(fallback.items[0].title, "东方财富公告");
+  assert.equal(fallback.dataQuality.status, "fallback");
+  assert.equal(fallback.dataQuality.actualProvider, "eastmoney");
+  assert.equal(fallback.dataQuality.fallbackUsed, true);
+  assert.equal(fallback.dataQuality.riskKnown, true);
+  assert.match(fallback.warning, /东方财富公告次源接力/);
+
+  const cappedRows = Array.from({ length: 250 }, (_, index) => ({
+    title: `分页公告${index + 1}`
+  }));
+  Object.defineProperty(cappedRows, "coverageTruncated", {
+    value: true,
+    enumerable: false
+  });
+  const partialCoverage = await loadStockAnnouncements(
+    security,
+    { refreshToken: "configured", fallbackEnabled: true, forceRefresh: true },
+    {
+      ths: async () => { throw new Error("THS unavailable"); },
+      eastmoney: async () => cappedRows
+    }
+  );
+  assert.equal(partialCoverage.dataQuality.status, "partial");
+  assert.equal(partialCoverage.dataQuality.complete, false);
+  assert.equal(partialCoverage.dataQuality.riskKnown, false);
+  assert.equal(partialCoverage.dataQuality.truncated, true);
+  assert.match(partialCoverage.warning, /120日风险覆盖不完整/);
+
+  let disabledFallbackCalls = 0;
+  const missingTokenError = new Error("同花顺公告主源未配置 Refresh Token");
+  missingTokenError.code = "THS_ANNOUNCEMENT_TOKEN_MISSING";
+  const strictUnknown = await loadStockAnnouncements(
+    security,
+    { refreshToken: "", fallbackEnabled: false, forceRefresh: true },
+    {
+      ths: async () => { throw missingTokenError; },
+      eastmoney: async () => {
+        disabledFallbackCalls += 1;
+        return [];
+      }
+    }
+  );
+  assert.equal(disabledFallbackCalls, 0);
+  assert.equal(strictUnknown.dataQuality.status, "unknown");
+  assert.equal(strictUnknown.dataQuality.primaryStatus, "missing_token");
+  assert.equal(strictUnknown.dataQuality.riskKnown, false);
+  assert.match(strictUnknown.warning, /备用公告源已关闭/);
+
+  const unknown = await loadStockAnnouncements(
+    security,
+    { refreshToken: "configured", fallbackEnabled: true, forceRefresh: true },
+    {
+      ths: async () => { throw new Error("THS unavailable"); },
+      eastmoney: async () => { throw new Error("Eastmoney unavailable"); }
+    }
+  );
+  assert.deepEqual(unknown.items, []);
+  assert.equal(unknown.dataQuality.status, "unknown");
+  assert.equal(unknown.dataQuality.complete, false);
+  assert.equal(unknown.dataQuality.riskKnown, false);
+  assert.equal(unknown.dataQuality.sources.every((source) => source.ok === false), true);
+  assert.match(unknown.warning, /公告风险状态未知/);
+
+  const knownEvidence = applyStockAnnouncementEvidence(
+    { riskPenalty: 5, risks: [] },
+    [],
+    fallback.dataQuality
+  );
+  assert.equal(knownEvidence.infoScore, 50);
+  assert.equal(knownEvidence.infoRiskSeverity, 0);
+  assert.equal(knownEvidence.riskPenalty, 5);
+
+  const ninthRisk = applyStockAnnouncementEvidence(
+    { riskPenalty: 0, risks: [] },
+    [
+      ...Array.from({ length: 8 }, (_, index) => ({
+        title: `普通公告${index + 1}`,
+        direction: "neutral",
+        riskSeverity: 0
+      })),
+      {
+        title: "收到证监会立案告知书",
+        direction: "negative",
+        impactScore: 95,
+        riskSeverity: 3
+      }
+    ],
+    fallback.dataQuality
+  );
+  assert.equal(ninthRisk.infoRiskSeverity, 3);
+  assert.equal(ninthRisk.infoRiskPenalty, 25);
+  assert.match(ninthRisk.risks[0], /证监会立案告知书/);
+
+  const unknownEvidence = applyStockAnnouncementEvidence(
+    { riskPenalty: 5, risks: [] },
+    [],
+    unknown.dataQuality
+  );
+  assert.equal(unknownEvidence.infoScore, 0);
+  assert.equal(unknownEvidence.infoRiskSeverity, null);
+  assert.equal(unknownEvidence.infoRiskPenalty, 15);
+  assert.equal(unknownEvidence.riskPenalty, 20);
+  assert.match(unknownEvidence.risks[0], /公告风险状态未知/);
+
+  const definitions = strategyDefinitionsFor({
+    announcementRiskKnown: unknown.dataQuality.riskKnown,
+    infoScore: 50,
+    infoRiskSeverity: 0,
+    limitEvent: null,
+    heldSupport: true,
+    avwap: 0,
+    maBull: true,
+    slopesUp: true,
+    trendLabel: "多头排列",
+    volumeRatio: 0.8,
+    relativeTurnover: 1,
+    divergence: 0,
+    closePosition: 0.8,
+    stockReturn3: 1,
+    sectorScore: 70,
+    rsSector: 1,
+    maxDrawdown: 3,
+    eventCount60: 0,
+    preLimitReturn20: 0,
+    isLowFirstBoard: false,
+    platformHigh: 0,
+    platformRange: 0,
+    sectorLadderScore: 0,
+    marketEmotion: null
+  }, { latest: 10 });
+  const information = definitions.find((item) => item.id === "information");
+  const riskVeto = definitions.find((item) => item.id === "riskVeto");
+  assert.equal(information.matched, false);
+  assert.match(information.detail, /风险状态未知/);
+  assert.equal(riskVeto.matched, false);
+  assert.match(riskVeto.detail, /公告风险数据不可用/);
+});
+
+test("stock announcement cache deduplicates requests, honors TTL, and preserves force refresh", async (t) => {
+  resetStockAnnouncementCache();
+  t.after(resetStockAnnouncementCache);
+  const security = toSecurity("600519");
+  let nowMs = 1_000_000;
+  let calls = 0;
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const loaders = {
+    now: () => nowMs,
+    ths: async () => {
+      calls += 1;
+      const callNumber = calls;
+      if (callNumber === 1) await firstGate;
+      return [{ title: `公告请求 ${callNumber}` }];
+    },
+    eastmoney: async () => {
+      throw new Error("THS success must not use fallback");
+    }
+  };
+  const settings = { refreshToken: "configured", fallbackEnabled: true };
+
+  const firstRequest = loadStockAnnouncements(security, settings, loaders);
+  const concurrentRequest = loadStockAnnouncements(security, settings, loaders);
+  assert.equal(calls, 1);
+  releaseFirst();
+  const [first, concurrent] = await Promise.all([firstRequest, concurrentRequest]);
+  assert.strictEqual(first, concurrent);
+  assert.equal(calls, 1);
+
+  nowMs += 44_999;
+  const cached = await loadStockAnnouncements(security, settings, loaders);
+  assert.strictEqual(cached, first);
+  assert.equal(calls, 1);
+
+  nowMs += 1;
+  const expired = await loadStockAnnouncements(security, settings, loaders);
+  assert.equal(expired.items[0].title, "公告请求 2");
+  assert.equal(calls, 2);
+
+  const forceSettings = { ...settings, forceRefresh: true };
+  const [forced, forcedConcurrent] = await Promise.all([
+    loadStockAnnouncements(security, forceSettings, loaders),
+    loadStockAnnouncements(security, forceSettings, loaders)
+  ]);
+  assert.strictEqual(forced, forcedConcurrent);
+  assert.equal(forced.items[0].title, "公告请求 3");
+  assert.equal(calls, 3);
+
+  const rotatedToken = await loadStockAnnouncements(
+    security,
+    { ...settings, refreshToken: "rotated-token" },
+    loaders
+  );
+  assert.equal(rotatedToken.items[0].title, "公告请求 4");
+  assert.equal(calls, 4);
+});
+
+test("stock announcement cache evicts the least recently used stock after 200 keys", async (t) => {
+  resetStockAnnouncementCache();
+  t.after(resetStockAnnouncementCache);
+  let calls = 0;
+  const loaders = {
+    now: () => 2_000_000,
+    ths: async () => {
+      calls += 1;
+      return [];
+    }
+  };
+  const settings = { refreshToken: "configured", fallbackEnabled: true };
+  const securities = Array.from({ length: 201 }, (_, index) => ({
+    code: String(index).padStart(6, "0"),
+    thscode: `${String(index).padStart(6, "0")}.SZ`
+  }));
+  for (const security of securities) {
+    await loadStockAnnouncements(security, settings, loaders);
+  }
+  assert.equal(calls, 201);
+
+  await loadStockAnnouncements(securities[0], settings, loaders);
+  assert.equal(calls, 202);
 });
 
 test("single-stock backtest dates reject impossible calendar values", () => {

@@ -106,21 +106,64 @@ function verifyEqual(source, destination, fsImpl = fs) {
   );
 }
 
-function writeBuildManifest(root, appVersion, fsImpl = fs) {
+function normalizedSourceCommit(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  return /^[0-9a-f]{7,64}$/.test(normalized) ? normalized : "";
+}
+
+function resolveSourceCommit(options = {}) {
+  const env = options.env || process.env;
+  for (const key of ["GITHUB_SHA", "CI_COMMIT_SHA"]) {
+    const commit = normalizedSourceCommit(env?.[key]);
+    if (commit) return commit;
+  }
+  const run = options.execFileSync || execFileSync;
+  const projectRoot = path.resolve(options.projectRoot || path.resolve(__dirname, ".."));
+  try {
+    const output = run("git", ["rev-parse", "--verify", "HEAD"], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    return normalizedSourceCommit(output) || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function buildIdentity(appVersion, options = {}) {
+  const timestamp = new Date(options.builtAt ?? options.now ?? Date.now());
+  if (!Number.isFinite(timestamp.getTime())) {
+    throw new Error(`Build timestamp is invalid: ${options.builtAt ?? options.now}`);
+  }
+  const sourceCommit = resolveSourceCommit(options);
+  const shortCommit = sourceCommit === "unknown" ? "unknown" : sourceCommit.slice(0, 12);
+  const version = String(appVersion || "unknown");
+  return {
+    builtAt: timestamp.toISOString(),
+    sourceCommit,
+    buildId: `${version}+${shortCommit}`
+  };
+}
+
+function writeBuildManifest(root, appVersion, fsImpl = fs, options = {}) {
   const manifestPath = path.join(root, BUILD_MANIFEST);
   const files = Object.fromEntries(
     directoryManifest(root, { fsImpl, exclude: [BUILD_MANIFEST] })
   );
+  const identity = buildIdentity(appVersion, options);
   const payload = {
     schemaVersion: 1,
     appVersion: String(appVersion || ""),
+    ...identity,
     files
   };
   fsImpl.writeFileSync(manifestPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   return payload;
 }
 
-function validateBuildManifest(root, fsImpl = fs) {
+function validateBuildManifest(root, fsImpl = fs, options = {}) {
   const manifestPath = path.join(root, BUILD_MANIFEST);
   requirePath(manifestPath, "Build manifest", fsImpl);
   let parsed;
@@ -136,6 +179,27 @@ function validateBuildManifest(root, fsImpl = fs) {
     Array.isArray(parsed.files)
   ) {
     throw new Error("Build manifest has an unsupported schema");
+  }
+  const identityKeys = ["builtAt", "sourceCommit", "buildId"];
+  const identityKeyCount = identityKeys.filter((key) =>
+    Object.prototype.hasOwnProperty.call(parsed, key)
+  ).length;
+  if (identityKeyCount > 0 && identityKeyCount < identityKeys.length) {
+    throw new Error("Build manifest identity is incomplete");
+  }
+  if (identityKeyCount === identityKeys.length) {
+    if (
+      typeof parsed.builtAt !== "string" ||
+      !Number.isFinite(Date.parse(parsed.builtAt)) ||
+      typeof parsed.sourceCommit !== "string" ||
+      !/^(?:unknown|[0-9a-f]{7,64})$/.test(parsed.sourceCommit) ||
+      typeof parsed.buildId !== "string" ||
+      !parsed.buildId.trim()
+    ) {
+      throw new Error("Build manifest identity is invalid");
+    }
+  } else if (options.requireBuildIdentity === true) {
+    throw new Error("Build manifest identity is required");
   }
   const expected = new Map(Object.entries(parsed.files));
   const actual = directoryManifest(root, { fsImpl, exclude: [BUILD_MANIFEST] });
@@ -168,7 +232,9 @@ function validateRunnableAppTree(root, options = {}) {
   }
   let manifest = null;
   if (options.requireManifest === true || fsImpl.existsSync(path.join(root, BUILD_MANIFEST))) {
-    manifest = validateBuildManifest(root, fsImpl);
+    manifest = validateBuildManifest(root, fsImpl, {
+      requireBuildIdentity: options.requireBuildIdentity === true
+    });
     if (String(manifest.appVersion || "") !== String(packageJson.version || "")) {
       throw new Error(
         `Build manifest version mismatch: ${manifest.appVersion || "missing"} != ${packageJson.version || "missing"}`
@@ -514,7 +580,8 @@ function deployFormal(options = {}) {
     validateRunnableAppTree(sourceRoot, {
       fsImpl,
       minimumExecutableBytes,
-      requireManifest: true
+      requireManifest: true,
+      requireBuildIdentity: true
     });
     (options.assertAppNotRunning || (() => assertFormalAppNotRunning()))();
 
@@ -539,7 +606,8 @@ function deployFormal(options = {}) {
     validateRunnableAppTree(stageRoot, {
       fsImpl,
       minimumExecutableBytes,
-      requireManifest: true
+      requireManifest: true,
+      requireBuildIdentity: true
     });
 
     let movedPrevious = false;
@@ -587,7 +655,8 @@ function deployFormal(options = {}) {
       validateRunnableAppTree(formalRoot, {
         fsImpl,
         minimumExecutableBytes,
-        requireManifest: true
+        requireManifest: true,
+        requireBuildIdentity: true
       });
     } catch (error) {
       const rollbackErrors = rollbackInstallation({
@@ -655,6 +724,7 @@ module.exports = {
   publishVerifiedCopy,
   recoverArtifactOrphans,
   removeTreeBestEffort,
+  resolveSourceCommit,
   validateBuildManifest,
   validateRunnableAppTree,
   verifyEqual,

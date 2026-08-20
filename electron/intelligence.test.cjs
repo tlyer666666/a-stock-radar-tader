@@ -11,6 +11,10 @@ const {
   normalizeEastAnnouncement,
   normalizeClsTelegraph,
   thsRows,
+  cachedSource,
+  cachedSourceStatus,
+  resetNewsCache,
+  NEWS_SOURCE_MAX_STALE_MS,
   dedupeItems,
   filterItems,
   classifyEvent,
@@ -87,6 +91,92 @@ test("THS announcement rows unwrap the official nested table envelope", () => {
   assert.equal(rows[0].thscode, "600000.SH");
   assert.equal(rows[0].reportTitle, "公告甲");
   assert.equal(rows[1].seq, "2");
+});
+
+test("news source cache uses one request, honors TTL, and rejects cache beyond max stale", async (t) => {
+  resetNewsCache({ clear: true });
+  t.after(() => resetNewsCache({ clear: true }));
+  let nowMs = 1_000;
+  let calls = 0;
+  let failWith = null;
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => {
+    releaseFirst = resolve;
+  });
+  const factory = async () => {
+    calls += 1;
+    if (calls === 1) await firstGate;
+    if (failWith) throw failWith;
+    return [{ id: `news-${calls}` }];
+  };
+  const options = { now: () => nowMs, maxStaleMs: 3_000 };
+
+  const firstRequest = cachedSource("fast", 1_000, factory, "", options);
+  const concurrentRequest = cachedSource("fast", 1_000, factory, "", options);
+  releaseFirst();
+  const [first, concurrent] = await Promise.all([firstRequest, concurrentRequest]);
+  assert.deepEqual(first.items, [{ id: "news-1" }]);
+  assert.deepEqual(concurrent.items, first.items);
+  assert.equal(calls, 1);
+
+  nowMs = 1_999;
+  const fresh = await cachedSource("fast", 1_000, factory, "", options);
+  assert.equal(fresh.fromCache, true);
+  assert.equal(fresh.stale, false);
+  assert.equal(calls, 1);
+
+  const upstreamError = new Error("upstream 429 retry-after=30");
+  failWith = upstreamError;
+  nowMs = 2_000;
+  const stale = await cachedSource("fast", 1_000, factory, "", options);
+  assert.equal(stale.fromCache, true);
+  assert.equal(stale.stale, true);
+  assert.equal(stale.warning, upstreamError.message);
+  assert.equal(calls, 2);
+
+  nowMs = 4_001;
+  await assert.rejects(
+    cachedSource("fast", 1_000, factory, "", options),
+    (error) => error === upstreamError
+  );
+  assert.equal(calls, 3);
+});
+
+test("news source cache does not reuse a stale THS result for another token key", async (t) => {
+  resetNewsCache({ clear: true });
+  t.after(() => resetNewsCache({ clear: true }));
+  let nowMs = 10_000;
+  await cachedSource(
+    "ths",
+    1_000,
+    async () => [{ id: "token-a-result" }],
+    "token-a",
+    { now: () => nowMs, maxStaleMs: 30_000 }
+  );
+  nowMs = 11_000;
+  const tokenBError = new Error("token-b unauthorized");
+  await assert.rejects(
+    cachedSource(
+      "ths",
+      1_000,
+      async () => { throw tokenBError; },
+      "token-b",
+      { now: () => nowMs, maxStaleMs: 30_000 }
+    ),
+    (error) => error === tokenBError
+  );
+});
+
+test("stale news source status preserves the upstream warning", () => {
+  const status = cachedSourceStatus(8, {
+    stale: true,
+    warning: "source timed out"
+  });
+  assert.equal(status.warning, "source timed out");
+  assert.match(status.message, /使用缓存/);
+  assert.match(status.message, /降级原因：source timed out/);
+  assert.equal(NEWS_SOURCE_MAX_STALE_MS.fast, 2 * 60 * 1000);
+  assert.equal(NEWS_SOURCE_MAX_STALE_MS.announcement, 30 * 60 * 1000);
 });
 
 test("first-board quality uses real seal, break, turnover and float-cap fields", () => {

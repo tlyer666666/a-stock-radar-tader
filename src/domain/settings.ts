@@ -261,6 +261,21 @@ export const normalizeSettings = (input: Settings): NormalizedSettings => {
   };
 };
 
+export const mergeSettingsDraft = (
+  current: Settings,
+  incoming: Settings,
+  dirtyFields: ReadonlySet<keyof Settings>
+): Settings => {
+  const next: Settings = { ...incoming, provider: "ths" };
+  const mutableNext = next as unknown as Record<string, unknown>;
+  const currentValues = current as unknown as Record<string, unknown>;
+  for (const field of dirtyFields) {
+    if (field === "provider") continue;
+    mutableNext[field] = currentValues[field];
+  }
+  return next;
+};
+
 export const riskProfileLabel = (value: Settings["riskProfile"]) =>
   value === "conservative" ? "稳健保守" : value === "aggressive" ? "积极进取" : "平衡稳健";
 

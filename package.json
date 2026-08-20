@@ -1,6 +1,6 @@
 {
   "name": "a-stock-monitor",
-  "version": "0.9.20",
+  "version": "0.9.21",
   "packageManager": "pnpm@11.16.0",
   "private": true,
   "description": "A股涨停、多源校验、低延迟资讯、策略统计与多周期K线雷达桌面软件",
@@ -18,8 +18,8 @@
     "build:deploy": "pnpm build && node electron/deploy-formal.cjs",
     "typecheck": "tsc --noEmit",
     "typecheck:review": "tsc -p tsconfig.review.json --noEmit",
-    "test:contracts": "node --test src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs",
-    "test": "node --test electron/http-client.test.cjs electron/ths-token-manager.test.cjs electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/dateUtils.test.cjs src/domain/settings.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/contentSecurityPolicy.test.cjs qa/packaged-app.test.cjs qa/release-config.test.cjs",
+    "test:contracts": "node --test src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/FilterChipGroup.test.cjs src/InlineDecisionBar.test.cjs src/contentSecurityPolicy.test.cjs src/portfolioBacktestLogic.test.cjs src/multiStockCompareLogic.test.cjs src/asyncRequestGate.test.cjs src/watchlistLogic.test.cjs",
+    "test": "node --test electron/http-client.test.cjs electron/ths-token-manager.test.cjs electron/services.test.cjs electron/intelligence.test.cjs electron/review-service.test.cjs electron/strategy-signal-engine.test.cjs electron/strategy-signal-service.test.cjs electron/portfolio-backtest.test.cjs electron/persistence.test.cjs electron/security-policy.test.cjs electron/deployment.test.cjs src/dateUtils.test.cjs src/domain/settings.test.cjs src/previewApi.test.cjs src/ProfessionalReview.test.cjs src/App.test.cjs src/FilterChipGroup.test.cjs src/InlineDecisionBar.test.cjs src/contentSecurityPolicy.test.cjs src/portfolioBacktestLogic.test.cjs src/multiStockCompareLogic.test.cjs src/asyncRequestGate.test.cjs src/watchlistLogic.test.cjs qa/packaged-app.test.cjs qa/release-config.test.cjs",
     "qa:smoke:network": "node qa/run-market-refresh-smoke.cjs && node qa/run-backtest-linkage-smoke.cjs && node qa/run-portfolio-backtest-smoke.cjs && node qa/run-strategy-scan.cjs",
     "qa:strategy-validation": "node qa/run-strategy-validation.cjs",
     "docs:screenshots": "node qa/capture-readme-screenshots.cjs",
