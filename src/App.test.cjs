@@ -1,6 +1,8 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { after, before, test } = require("node:test");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
@@ -46,4 +48,10 @@ test("renderer initial shell exposes navigation, window controls and risk notice
   assert.match(html, /专业复盘/);
   assert.match(html, /仅供研究，不构成投资建议/);
   assert.ok((html.match(/class="nav-item/g) || []).length >= 9);
+});
+
+test("renderer never uses blocking browser dialog APIs", () => {
+  const source = fs.readFileSync(path.join(__dirname, "App.tsx"), "utf8");
+  assert.doesNotMatch(source, /window\.(?:alert|confirm|prompt)\s*\(/);
+  assert.match(source, /<InlineDecisionBar/);
 });

@@ -101,3 +101,26 @@ test("preview A-share announcement feed honors the independent content contract"
   });
   assert.deepEqual(holdingFeed.items.map((item) => item.relatedStocks[0].code), [holding.code]);
 });
+
+test("preview verified backtest keeps strategy names and Shanghai date context", async () => {
+  const api = createPreviewApi();
+  const definitions = await api.getStrategyDefinitions();
+  const selected = definitions.slice(0, 2);
+  const result = await api.runBacktest("600519", {
+    signalStrategyIds: selected.map((item) => item.id),
+    strategyContext: {
+      strategyId: "custom_strategy_vote",
+      strategyName: "多策略组合",
+      minimumVotes: 1
+    }
+  });
+  const shanghaiToday = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+
+  assert.deepEqual(result.strategyContext.componentNames, selected.map((item) => item.name));
+  assert.equal(result.range.signalTo, shanghaiToday);
+});

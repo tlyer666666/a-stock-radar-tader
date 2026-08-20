@@ -19,7 +19,15 @@ export default defineConfig(({ command }) => ({
   base: "./",
   server: {
     port: 5173,
-    strictPort: true
+    strictPort: true,
+    watch: {
+      ignored: [
+        "**/tmp/**",
+        "**/release/**",
+        "**/release-builder/**",
+        "**/程序/**"
+      ]
+    }
   },
   build: {
     outDir: "dist",

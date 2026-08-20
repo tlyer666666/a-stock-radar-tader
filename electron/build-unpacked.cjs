@@ -176,11 +176,17 @@ function buildUnpacked(options = {}) {
         }
       }
 
-      writeBuildManifest(stageRoot, packageJson.version, fsImpl);
+      writeBuildManifest(stageRoot, packageJson.version, fsImpl, {
+        projectRoot,
+        env: options.env,
+        now: options.now,
+        execFileSync: options.execFileSync
+      });
       validateRunnableAppTree(stageRoot, {
         fsImpl,
         minimumExecutableBytes,
-        requireManifest: true
+        requireManifest: true,
+        requireBuildIdentity: true
       });
     } catch (error) {
       removeTreeBestEffort(stageRoot, cleanupWarnings, fsImpl);
@@ -229,7 +235,8 @@ function buildUnpacked(options = {}) {
       validateRunnableAppTree(outputRoot, {
         fsImpl,
         minimumExecutableBytes,
-        requireManifest: true
+        requireManifest: true,
+        requireBuildIdentity: true
       });
       installedFileCount = directoryManifest(outputRoot, { fsImpl }).size;
     } catch (error) {

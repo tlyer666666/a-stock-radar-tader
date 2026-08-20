@@ -4,8 +4,10 @@ const EAST_DELAY_QUOTE = "https://push2delay.eastmoney.com/api/qt";
 const EAST_HISTORY = "https://push2his.eastmoney.com/api/qt";
 const SEARCH_API = "https://searchapi.eastmoney.com/api/suggest/get";
 const { execFile } = require("node:child_process");
+const { createHash } = require("node:crypto");
 const path = require("node:path");
 const { Worker } = require("node:worker_threads");
+const { fetchJsonWithPolicy } = require("./http-client.cjs");
 const {
   thsProviderError,
   withThsAccessToken
@@ -20,7 +22,9 @@ const {
 const {
   getNewsFeed,
   resetNewsCache,
-  classifyEvent
+  classifyEvent,
+  normalizeThsReport,
+  thsRows
 } = require("./news-service.cjs");
 const {
   tencentQuote,
@@ -40,13 +44,13 @@ const chartCache = new Map();
 const federationCache = new Map();
 const topicPoolCache = new Map();
 const conceptChainCache = new Map();
-const eastmoneyOriginQueues = new Map();
 const sectorLookupCache = new Map();
 const sectorStrengthCache = new Map();
 const sectorProviderHealth = new Map();
 const sinaSectorCatalogCache = { value: null, expiresAt: 0, promise: null };
 const sinaOriginQueue = { lastRequestAt: 0, queue: Promise.resolve() };
 const securitySearchCache = new Map();
+const stockAnnouncementCache = new Map();
 const strategySignalCache = new Map();
 const strategyValidationUniverseCache = { value: null, expiresAt: 0, promise: null };
 const STRATEGY_SIGNAL_HISTORY_BARS = 720;
@@ -57,6 +61,8 @@ const STRATEGY_SIGNAL_WORKER_TIMEOUT_MS = 2 * 60 * 1000;
 const PORTFOLIO_BACKTEST_MIN_BARS = 120;
 const PORTFOLIO_BACKTEST_MAX_BARS = 120;
 const PORTFOLIO_BACKTEST_WARMUP_BARS = 80;
+const STOCK_ANNOUNCEMENT_CACHE_TTL_MS = 45 * 1000;
+const STOCK_ANNOUNCEMENT_CACHE_MAX_ENTRIES = 200;
 const SECTOR_PROVIDER_PRIORITY = Object.freeze([
   "同花顺 QuantAPI",
   "东方财富实时",
@@ -129,62 +135,51 @@ function curlExecutable(platform = process.platform) {
   return platform === "win32" ? "curl.exe" : "curl";
 }
 
+function serviceRequestPolicy(url, options = {}, timeoutMs = 12000) {
+  let hostname = "";
+  try {
+    hostname = new URL(String(url)).hostname.toLowerCase();
+  } catch {
+    // fetchJsonWithPolicy will report the malformed URL with the original context.
+  }
+  const isEastmoney = hostname === "eastmoney.com" || hostname.endsWith(".eastmoney.com");
+  const isThs = hostname === "quantapi.51ifind.com";
+  const minimumGapMs = isThs
+    ? 250
+    : isEastmoney
+      ? (hostname.startsWith("push2") ? 120 : 180)
+      : 0;
+  return {
+    timeoutMs,
+    retries: 1,
+    minimumGapMs,
+    headers: {
+      "User-Agent": isEastmoney
+        ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36"
+        : "AStockRadar/0.9",
+      ...(isEastmoney
+        ? { Referer: "https://quote.eastmoney.com/" }
+        : {})
+    }
+  };
+}
+
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
-  let lastError;
   const requestUrl = String(url);
+  let lastError;
   const isEastmoney = /\.eastmoney\.com\//i.test(requestUrl);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (isEastmoney) {
-      const hostname = new URL(requestUrl).hostname;
-      const state = eastmoneyOriginQueues.get(hostname) || {
-        lastRequestAt: 0,
-        queue: Promise.resolve()
-      };
-      eastmoneyOriginQueues.set(hostname, state);
-      const minimumGap = hostname.startsWith("push2") ? 120 : 180;
-      const scheduled = state.queue.then(async () => {
-        const remaining = minimumGap - (Date.now() - state.lastRequestAt);
-        if (remaining > 0) {
-          await new Promise((resolve) => setTimeout(resolve, remaining));
-        }
-        state.lastRequestAt = Date.now();
-      });
-      state.queue = scheduled.catch(() => {});
-      await scheduled;
+  try {
+    const data = await fetchJsonWithPolicy(
+      requestUrl,
+      options,
+      serviceRequestPolicy(requestUrl, options, timeoutMs)
+    );
+    if (data?.rc && data.rc !== 0) {
+      throw new Error(data.msg || `数据源错误 ${data.rc}`);
     }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          "Accept": "application/json, text/plain, */*",
-          "User-Agent": isEastmoney
-            ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36"
-            : "AStockMonitor/0.8",
-          ...(isEastmoney
-            ? {
-              "Referer": "https://quote.eastmoney.com/"
-            }
-            : {}),
-          ...(options.headers || {})
-        }
-      });
-      if (!response.ok) {
-        const error = new Error(`HTTP ${response.status}`);
-        error.status = response.status;
-        throw error;
-      }
-      const data = await response.json();
-      if (data?.rc && data.rc !== 0) throw new Error(data.msg || `数据源错误 ${data.rc}`);
-      return data;
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 350));
-    } finally {
-      clearTimeout(timer);
-    }
+    return data;
+  } catch (error) {
+    lastError = error;
   }
   if (isEastmoney) {
     try {
@@ -542,15 +537,8 @@ async function resolveBacktestSecurity(input, search = searchSecurities) {
   );
 }
 
-async function eastQuote(security, timeoutMs = 12000) {
-  const fields =
-    "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f59,f60,f116,f117,f127,f168,f169,f170,f171";
-  const json = await fetchJson(
-    `${EAST_QUOTE}/stock/get?secid=${encodeURIComponent(String(security.secid))}&fields=${fields}`,
-    {},
-    timeoutMs
-  );
-  const d = json.data;
+function normalizeEastQuote(security, json = {}) {
+  const d = json?.data;
   if (!d) throw new Error("未找到股票行情");
   const rawPrecision = Number(d.f59);
   const pricePrecision =
@@ -560,7 +548,7 @@ async function eastQuote(security, timeoutMs = 12000) {
   const price = (value) => eastPriceFromRaw(value, pricePrecision);
   const percent = (value) =>
     Number.isFinite(Number(value)) ? Number(value) / 100 : 0;
-  return {
+  const quote = {
     code: d.f57,
     name: d.f58,
     secid: security.secid,
@@ -587,6 +575,27 @@ async function eastQuote(security, timeoutMs = 12000) {
     amplitude: percent(d.f171),
     source: "eastmoney"
   };
+  if (!(quote.latest > 0)) {
+    throw new Error("东方财富未返回有效最新价");
+  }
+  if (!(quote.preClose > 0)) {
+    throw new Error("东方财富未返回有效昨收价");
+  }
+  if (quote.high > 0 && quote.low > 0 && quote.high < quote.low) {
+    throw new Error("东方财富返回的最高价低于最低价");
+  }
+  return quote;
+}
+
+async function eastQuote(security, timeoutMs = 12000) {
+  const fields =
+    "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f59,f60,f116,f117,f127,f168,f169,f170,f171";
+  const json = await fetchJson(
+    `${EAST_QUOTE}/stock/get?secid=${encodeURIComponent(String(security.secid))}&fields=${fields}`,
+    {},
+    timeoutMs
+  );
+  return normalizeEastQuote(security, json);
 }
 
 function normalizeTencentQuote(security, quote = {}) {
@@ -629,10 +638,16 @@ function normalizeTencentQuote(security, quote = {}) {
   };
 }
 
-async function publicQuoteWithFallback(security, timeoutMs = 12000) {
+async function publicQuoteWithFallback(
+  security,
+  timeoutMs = 12000,
+  loaders = {}
+) {
+  const loadEastmoney = loaders.eastmoney || eastQuote;
+  const loadTencent = loaders.tencent || tencentQuote;
   try {
     return {
-      quote: await eastQuote(security, timeoutMs),
+      quote: await loadEastmoney(security, timeoutMs),
       actualProvider: "eastmoney",
       warning: ""
     };
@@ -640,7 +655,7 @@ async function publicQuoteWithFallback(security, timeoutMs = 12000) {
     try {
       const quote = normalizeTencentQuote(
         security,
-        await tencentQuote(security)
+        await loadTencent(security)
       );
       return {
         quote,
@@ -1725,6 +1740,16 @@ function returnFor(history, days) {
   return base ? ((latest / base) - 1) * 100 : 0;
 }
 
+function singleStockBenchmarkReturns(history, requestedBenchmarks = 2) {
+  const rows = Array.isArray(history) ? history : [];
+  return {
+    r1: returnFor(rows, 1),
+    r3: returnFor(rows, 3),
+    r5: returnFor(rows, 5),
+    spanBars: Math.min(Number(requestedBenchmarks) || 0, rows.length)
+  };
+}
+
 function clampScore(value, min = 0, max = 100) {
   const score = Number(value);
   return Number.isFinite(score)
@@ -2644,7 +2669,9 @@ function strategyDefinitionsFor(analysis, quote) {
   ) {
     hardRiskReasons.push("下跌时换手失衡，成交放大且承压");
   }
-  if (analysis.infoRiskSeverity >= 3) {
+  if (analysis.announcementRiskKnown === false) {
+    hardRiskReasons.push("公告风险数据不可用，风险状态未知");
+  } else if (analysis.infoRiskSeverity >= 3) {
     hardRiskReasons.push("存在高可信重大风险公告");
   }
   return [
@@ -2711,8 +2738,13 @@ function strategyDefinitionsFor(analysis, quote) {
     {
       id: "information",
       label: "信息催化确认",
-      matched: analysis.infoScore >= 60 && (analysis.infoRiskSeverity || 0) < 2,
-      detail: `催化 ${analysis.infoScore} 分 / 风险级别 ${analysis.infoRiskSeverity || 0}`
+      matched:
+        analysis.announcementRiskKnown !== false &&
+        analysis.infoScore >= 60 &&
+        (analysis.infoRiskSeverity || 0) < 2,
+      detail: analysis.announcementRiskKnown === false
+        ? "公告主备源均不可用，风险状态未知"
+        : `催化 ${analysis.infoScore} 分 / 风险级别 ${analysis.infoRiskSeverity || 0}`
     },
     {
       id: "exactNode",
@@ -3896,12 +3928,24 @@ async function analyzeSector(input, options = {}) {
 
 function scoreAnnouncement(item) {
   const title = item.title || "";
-  const date = new Date(item.display_time || item.notice_date);
+  const publishedAt = String(item.display_time || item.notice_date || "");
+  const date = new Date(publishedAt);
   const ageHours = Math.max(0, (Date.now() - date.getTime()) / 3600000);
   const classification = classifyEvent(title, "", "B");
   const freshness = ageHours < 24 ? 20 : ageHours < 72 ? 15 : ageHours < 168 ? 9 : 3;
+  const artCode = String(item.art_code || "");
+  const stockCode = String(item.codes?.[0]?.stock_code || "");
+  const sourceUrl = artCode && stockCode
+    ? `https://data.eastmoney.com/notices/detail/${stockCode}/${artCode}.html`
+    : "https://data.eastmoney.com/notices/";
   return {
     ...item,
+    id: `east-ann-${artCode || `${stockCode}-${publishedAt}-${title}`}`,
+    type: "announcement",
+    source: "东方财富公告聚合",
+    sourceUrl,
+    source_url: sourceUrl,
+    publishedAt,
     category: item.columns?.[0]?.column_name || "公司公告",
     score: Math.max(0, Math.min(100, classification.importanceScore + freshness - 10)),
     impactScore: classification.importanceScore,
@@ -3915,12 +3959,375 @@ function scoreAnnouncement(item) {
   };
 }
 
-async function announcements(code) {
-  const url =
-    "https://np-anotice-stock.eastmoney.com/api/security/ann" +
-    `?sr=-1&page_size=8&page_index=1&ann_type=A&client_source=web&stock_list=${encodeURIComponent(String(code))}`;
-  const json = await fetchJson(url);
-  return (json?.data?.list || []).map(scoreAnnouncement);
+function scoreThsAnnouncement(row) {
+  const item = normalizeThsReport(row);
+  const legacyCode = String(row?.seq || row?.SEQ || item.id || "").replace(/^ths-ann-/, "");
+  const impactScore = Number(item.importanceScore || 0);
+  const freshness = Number(item.freshnessScore || 0) >= 75
+    ? 15
+    : Number(item.freshnessScore || 0) >= 55
+      ? 9
+      : 3;
+  return {
+    ...item,
+    art_code: legacyCode,
+    display_time: item.publishedAt,
+    notice_date: item.publishedAt,
+    source_url: item.sourceUrl,
+    score: Math.max(0, Math.min(100, impactScore + freshness - 10)),
+    impactScore,
+    confidenceScore: Number(item.credibilityScore || 0),
+    reasons: Array.isArray(item.reasons) ? item.reasons : []
+  };
+}
+
+function stockAnnouncementDateRange(days = 120) {
+  const end = displayDate(todayInShanghai());
+  const startDate = new Date(`${end}T12:00:00+08:00`);
+  startDate.setUTCDate(startDate.getUTCDate() - Math.max(1, Number(days) || 120));
+  return {
+    from: startDate.toISOString().slice(0, 10),
+    to: end
+  };
+}
+
+async function eastStockAnnouncements(code, dependencies = {}) {
+  const requestJson = dependencies.fetchJson || fetchJson;
+  const pageSize = 50;
+  const maxPages = 5;
+  const range = stockAnnouncementDateRange();
+  const rangeStart = Date.parse(`${range.from}T00:00:00+08:00`);
+  const rawItems = [];
+  let coverageTruncated = false;
+  for (let page = 1; page <= maxPages; page += 1) {
+    const url =
+      "https://np-anotice-stock.eastmoney.com/api/security/ann" +
+      `?sr=-1&page_size=${pageSize}&page_index=${page}&ann_type=A&client_source=web&stock_list=${encodeURIComponent(String(code))}`;
+    const json = await requestJson(url);
+    if (!json?.data || !Array.isArray(json.data.list)) {
+      throw new Error("东方财富公告接口返回结构异常");
+    }
+    const pageItems = json.data.list;
+    rawItems.push(...pageItems);
+    if (pageItems.length < pageSize) break;
+    const pageTimes = pageItems
+      .map((item) => Date.parse(String(item.display_time || item.notice_date || "")))
+      .filter(Number.isFinite);
+    const oldestPageTime = pageTimes.length ? Math.min(...pageTimes) : Number.NaN;
+    if (Number.isFinite(oldestPageTime) && oldestPageTime <= rangeStart) break;
+    if (page === maxPages) coverageTruncated = true;
+  }
+  const items = rawItems
+    .map(scoreAnnouncement)
+    .filter((item) => {
+      const publishedTime = Date.parse(String(item.publishedAt || ""));
+      return !Number.isFinite(publishedTime) || publishedTime >= rangeStart;
+    })
+    .sort((left, right) =>
+      Date.parse(String(right.publishedAt || "")) - Date.parse(String(left.publishedAt || ""))
+    );
+  Object.defineProperty(items, "coverageTruncated", {
+    value: coverageTruncated,
+    enumerable: false
+  });
+  return items;
+}
+
+async function thsStockAnnouncements(security, settings = {}, dependencies = {}) {
+  if (!String(settings?.refreshToken || "").trim()) {
+    const error = new Error("同花顺公告主源未配置 Refresh Token");
+    error.code = "THS_ANNOUNCEMENT_TOKEN_MISSING";
+    throw error;
+  }
+  const range = stockAnnouncementDateRange();
+  const requestWithToken = dependencies.withToken || withThsToken;
+  const requestJson = dependencies.fetchJson || fetchJson;
+  const json = await requestWithToken(settings.refreshToken, (token) =>
+    requestJson(`${THS_BASE}/report_query`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        access_token: token,
+        ifindlang: "cn"
+      },
+      body: JSON.stringify({
+        codes: security.thscode,
+        functionpara: { reportType: "901" },
+        beginrDate: range.from,
+        endrDate: range.to,
+        outputpara: "reportDate:Y,thscode:Y,secName:Y,ctime:Y,reportTitle:Y,pdfURL:Y,seq:Y"
+      })
+    }).then((result) => {
+      if (Number(result?.errorcode || 0) !== 0) {
+        throw thsProviderError(result, `同花顺公告错误 ${result?.errorcode}`);
+      }
+      return result;
+    })
+  );
+  const recognizedPayload = Array.isArray(json?.tables) ||
+    Array.isArray(json?.data) ||
+    Array.isArray(json?.tables?.data);
+  if (!recognizedPayload) {
+    throw new Error("同花顺公告接口返回结构异常");
+  }
+  return thsRows(json)
+    .map(scoreThsAnnouncement)
+    .sort((left, right) =>
+      Date.parse(String(right.publishedAt || "")) - Date.parse(String(left.publishedAt || ""))
+    );
+}
+
+function announcementCapabilityResult({
+  items = [],
+  status,
+  actualProvider = "",
+  primaryStatus,
+  warning = "",
+  primaryError = "",
+  secondaryError = "",
+  secondaryEnabled = true
+}) {
+  const sourceAvailable = status !== "unknown";
+  const truncated = actualProvider === "eastmoney" && items?.coverageTruncated === true;
+  const riskKnown = sourceAvailable && !truncated;
+  const resolvedStatus = truncated ? "partial" : status;
+  const coverageWarning = truncated
+    ? "东方财富公告次源达到250条分页上限，120日风险覆盖不完整。"
+    : "";
+  const resolvedWarning = [warning, coverageWarning].filter(Boolean).join("；");
+  const fetchedAt = new Date().toISOString();
+  return {
+    items: Array.isArray(items) ? items : [],
+    warning: resolvedWarning,
+    dataQuality: {
+      capability: "stock_announcements",
+      status: resolvedStatus,
+      complete: riskKnown,
+      riskKnown,
+      requestedPrimary: "ths",
+      actualProvider,
+      primaryStatus,
+      fallbackUsed: actualProvider === "eastmoney",
+      requestedLookbackDays: 120,
+      coverageDays: riskKnown ? 120 : null,
+      itemLimit: actualProvider === "eastmoney" ? 250 : null,
+      pageSize: actualProvider === "eastmoney" ? 50 : null,
+      itemCount: Array.isArray(items) ? items.length : 0,
+      truncated,
+      fetchedAt,
+      sources: [
+        {
+          id: "ths",
+          name: "同花顺公告接口",
+          role: "primary",
+          enabled: primaryStatus !== "missing_token",
+          ok: primaryStatus === "active" ? true : primaryStatus === "standby" ? null : false,
+          message: primaryError
+        },
+        {
+          id: "eastmoney",
+          name: "东方财富公告聚合",
+          role: "secondary",
+          enabled: secondaryEnabled,
+          ok: actualProvider === "eastmoney" ? true : secondaryError ? false : null,
+          message: secondaryError
+        }
+      ]
+    }
+  };
+}
+
+async function loadStockAnnouncementsUncached(security, settings = {}, loaders = {}) {
+  const loadThs = loaders.ths || thsStockAnnouncements;
+  const loadEastmoney = loaders.eastmoney || eastStockAnnouncements;
+  let primaryError = null;
+  try {
+    const items = await loadThs(security, settings);
+    if (!Array.isArray(items)) throw new Error("同花顺公告主源未返回公告数组");
+    return announcementCapabilityResult({
+      items,
+      status: "active",
+      actualProvider: "ths",
+      primaryStatus: "active"
+    });
+  } catch (error) {
+    primaryError = error;
+  }
+
+  const primaryMessage = String(primaryError?.message || primaryError || "同花顺公告主源不可用");
+  const primaryStatus = primaryError?.code === "THS_ANNOUNCEMENT_TOKEN_MISSING"
+    ? "missing_token"
+    : "unavailable";
+  if (settings?.fallbackEnabled !== false) {
+    try {
+      const items = await loadEastmoney(security.code, settings);
+      if (!Array.isArray(items)) throw new Error("东方财富公告次源未返回公告数组");
+      return announcementCapabilityResult({
+        items,
+        status: "fallback",
+        actualProvider: "eastmoney",
+        primaryStatus,
+        primaryError: primaryMessage,
+        warning: `${primaryMessage}；已由东方财富公告次源接力。`
+      });
+    } catch (secondaryError) {
+      const secondaryMessage = String(
+        secondaryError?.message || secondaryError || "东方财富公告次源不可用"
+      );
+      return announcementCapabilityResult({
+        status: "unknown",
+        primaryStatus,
+        primaryError: primaryMessage,
+        secondaryError: secondaryMessage,
+        warning: `公告风险状态未知：同花顺主源与东方财富次源均不可用。${primaryMessage}；${secondaryMessage}`
+      });
+    }
+  }
+
+  return announcementCapabilityResult({
+    status: "unknown",
+    primaryStatus,
+    primaryError: primaryMessage,
+    secondaryEnabled: false,
+    warning: `公告风险状态未知：${primaryMessage}；备用公告源已关闭。`
+  });
+}
+
+function stockAnnouncementCacheKey(security) {
+  return String(security?.thscode || security?.code || "").trim().toUpperCase();
+}
+
+function stockAnnouncementCacheVariant(settings = {}) {
+  const refreshToken = String(settings?.refreshToken || "").trim();
+  const tokenFingerprint = refreshToken
+    ? createHash("sha256").update(refreshToken).digest("hex").slice(0, 16)
+    : "no-token";
+  return [
+    String(settings?.provider || "ths").toLowerCase(),
+    tokenFingerprint,
+    settings?.fallbackEnabled === false ? "strict" : "fallback"
+  ].join(":");
+}
+
+function touchStockAnnouncementCache(key, entry) {
+  if (stockAnnouncementCache.get(key) !== entry) return;
+  stockAnnouncementCache.delete(key);
+  stockAnnouncementCache.set(key, entry);
+}
+
+function trimStockAnnouncementCache() {
+  while (stockAnnouncementCache.size >= STOCK_ANNOUNCEMENT_CACHE_MAX_ENTRIES) {
+    const oldestKey = stockAnnouncementCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    stockAnnouncementCache.delete(oldestKey);
+  }
+}
+
+function resetStockAnnouncementCache() {
+  stockAnnouncementCache.clear();
+}
+
+async function loadStockAnnouncements(security, settings = {}, loaders = {}) {
+  const key = stockAnnouncementCacheKey(security);
+  if (!key) return loadStockAnnouncementsUncached(security, settings, loaders);
+
+  const variant = stockAnnouncementCacheVariant(settings);
+  const forceRefresh = settings?.forceRefresh === true;
+  const now = typeof loaders.now === "function" ? loaders.now : Date.now;
+  const currentTime = Number(now());
+  let entry = stockAnnouncementCache.get(key);
+  if (entry?.variant !== variant) {
+    stockAnnouncementCache.delete(key);
+    entry = null;
+  }
+  if (!entry) {
+    trimStockAnnouncementCache();
+    entry = {
+      variant,
+      value: null,
+      expiresAt: 0,
+      promise: null,
+      refreshPromise: null,
+      generation: 0
+    };
+    stockAnnouncementCache.set(key, entry);
+  } else {
+    touchStockAnnouncementCache(key, entry);
+  }
+
+  if (!forceRefresh && entry.value && entry.expiresAt > currentTime) {
+    return entry.value;
+  }
+  if (forceRefresh && entry.refreshPromise) return entry.refreshPromise;
+  if (!forceRefresh && entry.refreshPromise) return entry.refreshPromise;
+  if (!forceRefresh && entry.promise) return entry.promise;
+
+  const promiseField = forceRefresh ? "refreshPromise" : "promise";
+  const generation = ++entry.generation;
+  const promise = loadStockAnnouncementsUncached(security, settings, loaders)
+    .then((result) => {
+      if (
+        stockAnnouncementCache.get(key) === entry &&
+        entry.variant === variant &&
+        entry.generation === generation
+      ) {
+        entry.value = result;
+        entry.expiresAt = Number(now()) + STOCK_ANNOUNCEMENT_CACHE_TTL_MS;
+        touchStockAnnouncementCache(key, entry);
+      }
+      return result;
+    })
+    .finally(() => {
+      if (entry[promiseField] === promise) entry[promiseField] = null;
+    });
+  entry[promiseField] = promise;
+  return promise;
+}
+
+function applyStockAnnouncementEvidence(analysis, items = [], dataQuality = {}) {
+  const news = Array.isArray(items) ? items : [];
+  const recentNews = news.slice(0, 8);
+  const positiveImpact = recentNews
+    .filter((item) => item.direction === "positive")
+    .reduce((max, item) => Math.max(max, Number(item.impactScore || item.score || 0)), 0);
+  const negativeImpact = recentNews
+    .filter((item) => item.direction === "negative" || item.direction === "mixed")
+    .reduce((max, item) => Math.max(max, Number(item.impactScore || item.score || 0)), 0);
+  analysis.announcementDataQuality = dataQuality;
+  analysis.announcementRiskKnown = dataQuality?.riskKnown === true;
+  analysis.risks = Array.isArray(analysis.risks) ? analysis.risks : [];
+  analysis.riskPenalty = Number(analysis.riskPenalty || 0);
+  if (analysis.announcementRiskKnown) {
+    analysis.infoRiskSeverity = news.reduce(
+      (max, item) => Math.max(max, Number(item.riskSeverity || 0)),
+      0
+    );
+    analysis.infoScore = news.length
+      ? Math.round(Math.max(0, Math.min(100, 50 + positiveImpact * 0.42 - negativeImpact * 0.48)))
+      : 50;
+    analysis.infoRiskPenalty =
+      analysis.infoRiskSeverity >= 3 ? 25 :
+        analysis.infoRiskSeverity === 2 ? 12 :
+          analysis.infoRiskSeverity === 1 ? 5 : 0;
+    if (analysis.infoRiskPenalty) {
+      analysis.riskPenalty += analysis.infoRiskPenalty;
+      const riskNews = news.find(
+        (item) => Number(item.riskSeverity || 0) === analysis.infoRiskSeverity
+      );
+      analysis.risks.push(
+        analysis.infoRiskSeverity >= 3
+          ? `重大公告风险：${riskNews?.title || "高风险事件"}`
+          : `资讯风险级别 ${analysis.infoRiskSeverity}`
+      );
+    }
+  } else {
+    analysis.infoRiskSeverity = null;
+    analysis.infoScore = 0;
+    analysis.infoRiskPenalty = 15;
+    analysis.riskPenalty += analysis.infoRiskPenalty;
+    analysis.risks.push("公告主源与备用源均不可用，公告风险状态未知");
+  }
+  return analysis;
 }
 
 function sourceFromQuote(id, name, quote, options = {}) {
@@ -4096,13 +4503,20 @@ async function quoteFederation(security, core, settings) {
   };
 }
 
-async function dataByProvider(security, settings = {}) {
+async function dataByProvider(security, settings = {}, loaders = {}) {
   const serviceSettings = settings || {};
   const startedAt = Date.now();
+  const loadPublicQuote = loaders.publicQuote || publicQuoteWithFallback;
+  const loadEastHistory = loaders.eastHistory || ((target) =>
+    eastHistoryCached(target, 160, 1, 8 * 60 * 1000, serviceSettings));
+  const loadThsQuote = loaders.thsQuote || ((target) =>
+    thsQuote(target, serviceSettings));
+  const loadThsHistory = loaders.thsHistory || ((target) =>
+    thsHistoryCached(target, serviceSettings));
   if (serviceSettings.provider !== "ths") {
     const [publicQuote, history] = await Promise.all([
-      publicQuoteWithFallback(security),
-      eastHistoryCached(security, 160, 1, 8 * 60 * 1000, serviceSettings)
+      loadPublicQuote(security),
+      loadEastHistory(security)
     ]);
     return {
       quote: publicQuote.quote,
@@ -4116,8 +4530,8 @@ async function dataByProvider(security, settings = {}) {
   }
   if (!String(serviceSettings.refreshToken || "").trim()) {
     const [publicQuote, history] = await Promise.all([
-      publicQuoteWithFallback(security),
-      eastHistoryCached(security, 160, 1, 8 * 60 * 1000, serviceSettings)
+      loadPublicQuote(security),
+      loadEastHistory(security)
     ]);
     return {
       quote: publicQuote.quote,
@@ -4132,14 +4546,27 @@ async function dataByProvider(security, settings = {}) {
       providerLatencyMs: Date.now() - startedAt
     };
   }
-  try {
-    const [[quote, history], publicMeta] = await Promise.all([
-      Promise.all([
-        thsQuote(security, serviceSettings),
-        thsHistoryCached(security, serviceSettings)
-      ]),
-      publicQuoteWithFallback(security).catch(() => null)
-    ]);
+  const [quoteResult, historyResult, publicResult] = await Promise.allSettled([
+    loadThsQuote(security),
+    loadThsHistory(security),
+    loadPublicQuote(security)
+  ]);
+  const quoteAvailable = quoteResult.status === "fulfilled";
+  const historyAvailable = historyResult.status === "fulfilled";
+  if ((!quoteAvailable || !historyAvailable) && serviceSettings.fallbackEnabled === false) {
+    const failed = !quoteAvailable ? quoteResult.reason : historyResult.reason;
+    throw failed;
+  }
+
+  let publicMeta = publicResult.status === "fulfilled" ? publicResult.value : null;
+  if (!quoteAvailable && !publicMeta) {
+    throw publicResult.reason || quoteResult.reason;
+  }
+  const quote = quoteAvailable ? quoteResult.value : publicMeta.quote;
+  const history = historyAvailable
+    ? historyResult.value
+    : await loadEastHistory(security);
+  if (quoteAvailable) {
     if (publicMeta?.quote) {
       quote.name = publicMeta.quote.name;
       quote.industry = publicMeta.quote.industry;
@@ -4147,36 +4574,35 @@ async function dataByProvider(security, settings = {}) {
       quote.limitUp = publicMeta.quote.limitUp;
       quote.limitDown = publicMeta.quote.limitDown;
     }
-    return {
-      quote,
-      history,
-      actualProvider: "ths",
-      requestedPrimary: "ths",
-      primaryStatus: "active",
-      warning: "",
-      verificationQuote: publicMeta?.quote || null,
-      verificationProvider: publicMeta?.actualProvider || "",
-      providerLatencyMs: Date.now() - startedAt
-    };
-  } catch (error) {
-    if (serviceSettings.fallbackEnabled === false) throw error;
-    const [publicQuote, history] = await Promise.all([
-      publicQuoteWithFallback(security),
-      eastHistoryCached(security, 160, 1, 8 * 60 * 1000, serviceSettings)
-    ]);
-    return {
-      quote: publicQuote.quote,
-      history,
-      actualProvider: publicQuote.actualProvider,
-      requestedPrimary: "ths",
-      primaryStatus: "unavailable",
-      warning: [
-        `同花顺连接失败，已切换免费行情：${error.message}`,
-        publicQuote.warning
-      ].filter(Boolean).join(" "),
-      providerLatencyMs: Date.now() - startedAt
-    };
   }
+  const capabilityWarnings = [];
+  if (!quoteAvailable) {
+    capabilityWarnings.push(
+      `同花顺实时报价连接失败，已切换免费行情：${quoteResult.reason?.message || quoteResult.reason}`
+    );
+    if (publicMeta.warning) capabilityWarnings.push(publicMeta.warning);
+  }
+  if (!historyAvailable) {
+    capabilityWarnings.push(
+      `同花顺历史行情连接失败，已切换东方财富历史行情：${historyResult.reason?.message || historyResult.reason}`
+    );
+  }
+  return {
+    quote,
+    history,
+    actualProvider: quoteAvailable ? "ths" : publicMeta.actualProvider,
+    requestedPrimary: "ths",
+    primaryStatus: quoteAvailable && historyAvailable
+      ? "active"
+      : quoteAvailable || historyAvailable
+        ? "partial"
+        : "unavailable",
+    warning: capabilityWarnings.join(" "),
+    historyProvider: historyAvailable ? "ths" : "eastmoney",
+    verificationQuote: quoteAvailable ? publicMeta?.quote || null : null,
+    verificationProvider: quoteAvailable ? publicMeta?.actualProvider || "" : "",
+    providerLatencyMs: Date.now() - startedAt
+  };
 }
 
 async function analyzeSecurity(input, settings = {}) {
@@ -4189,14 +4615,20 @@ async function analyzeSecurity(input, settings = {}) {
     throw new Error(`${core.quote.name} 属于 ST 或退市风险股票，已按策略剔除`);
   }
   const [
-    news,
+    announcementResult,
     marketEmotion,
     marketSnapshot,
     ladderPools,
     replayHistory,
     replayBenchmarkHistory
   ] = await Promise.all([
-    isStockAsset ? announcements(security.code).catch(() => []) : Promise.resolve([]),
+    isStockAsset
+      ? loadStockAnnouncements(security, settings)
+      : Promise.resolve(announcementCapabilityResult({
+          status: "not_applicable",
+          primaryStatus: "standby",
+          secondaryEnabled: false
+        })),
     marketEmotionSnapshot(settings).catch(() => null),
     isStockAsset
       ? wholeMarketSnapshot(settings).catch(() => ({ breadth: 0.5, averageReturn: 0 }))
@@ -4222,6 +4654,9 @@ async function analyzeSecurity(input, settings = {}) {
         ).catch(() => [])
       : Promise.resolve([])
   ]);
+  const news = Array.isArray(announcementResult?.items)
+    ? announcementResult.items
+    : [];
   const dataFederation = await quoteFederation(security, core, settings).catch(() => {
     const providerMeta = quoteProviderMeta(core.actualProvider);
     return buildQuoteConsensus([
@@ -4248,6 +4683,9 @@ async function analyzeSecurity(input, settings = {}) {
     marketEmotion,
     replayBenchmarkHistory
   );
+  analysis.announcementDataQuality = announcementResult.dataQuality;
+  analysis.announcementRiskKnown = announcementResult.dataQuality?.riskKnown === true;
+  analysis.announcementWarning = String(announcementResult.warning || "");
   const isSearchOnlyAsset =
     security.assetType === "etf" || security.assetType === "convertibleBond";
   analysis.analysisScope = isSearchOnlyAsset
@@ -4389,6 +4827,7 @@ async function analyzeSecurity(input, settings = {}) {
       sector: null,
       dataFederation,
       announcements: news,
+      dataQuality: { announcements: announcementResult.dataQuality },
       actualProvider: core.actualProvider,
       warning: `${assetLabel} 已接入实时行情与多周期 K 线；默认列表保持隐藏，仅主动搜索显示`,
       updatedAt: new Date().toISOString()
@@ -4403,34 +4842,7 @@ async function analyzeSecurity(input, settings = {}) {
     : null;
   analysis.sectorLadder = sector?.ladder || null;
   analysis.sectorLadderScore = sector?.ladder?.score || 0;
-
-  const recentNews = news.slice(0, 8);
-  const positiveImpact = recentNews
-    .filter((item) => item.direction === "positive")
-    .reduce((max, item) => Math.max(max, Number(item.impactScore || item.score || 0)), 0);
-  const negativeImpact = recentNews
-    .filter((item) => item.direction === "negative" || item.direction === "mixed")
-    .reduce((max, item) => Math.max(max, Number(item.impactScore || item.score || 0)), 0);
-  analysis.infoRiskSeverity = recentNews.reduce(
-    (max, item) => Math.max(max, Number(item.riskSeverity || 0)),
-    0
-  );
-  analysis.infoScore = news.length
-    ? Math.round(Math.max(0, Math.min(100, 50 + positiveImpact * 0.42 - negativeImpact * 0.48)))
-    : 50;
-  analysis.infoRiskPenalty =
-    analysis.infoRiskSeverity >= 3 ? 25 :
-      analysis.infoRiskSeverity === 2 ? 12 :
-        analysis.infoRiskSeverity === 1 ? 5 : 0;
-  if (analysis.infoRiskPenalty) {
-    analysis.riskPenalty += analysis.infoRiskPenalty;
-    const riskNews = recentNews.find((item) => Number(item.riskSeverity || 0) === analysis.infoRiskSeverity);
-    analysis.risks.push(
-      analysis.infoRiskSeverity >= 3
-        ? `重大公告风险：${riskNews?.title || "高风险事件"}`
-        : `资讯风险级别 ${analysis.infoRiskSeverity}`
-    );
-  }
+  applyStockAnnouncementEvidence(analysis, news, announcementResult.dataQuality);
 
   const strategyDefinitions = strategyDefinitionsFor(analysis, core.quote);
   const selectedSet = new Set(
@@ -4440,7 +4852,6 @@ async function analyzeSecurity(input, settings = {}) {
   );
   selectedSet.add("riskVeto");
   const selectedIds = [...selectedSet];
-  analysis.risks = Array.isArray(analysis.risks) ? analysis.risks : [];
   analysis.historicalStats = buildHistoricalStrategyStats(
     replayHistory,
     security.code,
@@ -4513,8 +4924,9 @@ async function analyzeSecurity(input, settings = {}) {
     sector,
     dataFederation,
     announcements: news,
+    dataQuality: { announcements: announcementResult.dataQuality },
     actualProvider: core.actualProvider,
-    warning: core.warning,
+    warning: [core.warning, announcementResult.warning].filter(Boolean).join("；"),
     updatedAt: new Date().toISOString()
   };
 }
@@ -7580,20 +7992,10 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
     historyBars: history.length
   };
 
-  const toPercentReturn = (rows, bars) => {
-    if (!Array.isArray(rows) || rows.length <= bars) return 0;
-    const rightIndex = rows.length - 1;
-    const leftIndex = Math.max(0, rows.length - bars - 1);
-    const right = Number(rows[rightIndex]?.close);
-    const left = Number(rows[leftIndex]?.open);
-    return right && left ? ((right / left - 1) * 100) : 0;
-  };
-  const benchmarkReturns = {
-    r1: toPercentReturn(benchmarkHistory, 1),
-    r3: toPercentReturn(benchmarkHistory, 3),
-    r5: toPercentReturn(benchmarkHistory, 5),
-    spanBars: Math.min(requestedBenchmarks, benchmarkHistory.length)
-  };
+  const benchmarkReturns = singleStockBenchmarkReturns(
+    benchmarkHistory,
+    requestedBenchmarks
+  );
 
   if (usesVerifiedSignalStrategy) {
     const strategyName = String(
@@ -8013,7 +8415,17 @@ module.exports = {
   priceLimitRate,
   isRiskStockName,
   eastPriceFromRaw,
+  normalizeEastQuote,
   normalizeTencentQuote,
+  publicQuoteWithFallback,
+  dataByProvider,
+  scoreThsAnnouncement,
+  eastStockAnnouncements,
+  thsStockAnnouncements,
+  announcementCapabilityResult,
+  loadStockAnnouncements,
+  resetStockAnnouncementCache,
+  applyStockAnnouncementEvidence,
   isConvertibleBondCode,
   assetTypeFromExactCode,
   searchableAssetType,
@@ -8044,11 +8456,14 @@ module.exports = {
   getStrategyDefinitions,
   buildSequentialSamplePath,
   buildSingleStockTradeLedger,
+  singleStockBenchmarkReturns,
   singleStockBacktestLookbackBars,
   normalizeSingleBacktestDate,
   loadBacktestHistory,
   buildPortfolioBacktestInWorker,
   curlExecutable,
+  serviceRequestPolicy,
+  serviceFetchJson: fetchJson,
   runPortfolioBacktest,
   runBacktest
 };

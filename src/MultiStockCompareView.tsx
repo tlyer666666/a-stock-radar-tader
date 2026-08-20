@@ -12,17 +12,12 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  loadComparePayload,
+  selectCompareTargets,
+  type ComparePayload
+} from "./multiStockCompareLogic";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
-
-type ComparePayload = {
-  security: Security;
-  quote: Record<string, any>;
-  history: Array<Record<string, any>>;
-  analysis: Record<string, any>;
-  sector?: Record<string, any> | null;
-  actualProvider?: string;
-  updatedAt?: string;
-};
 
 type CompareResult = {
   loading: boolean;
@@ -203,12 +198,7 @@ export default function MultiStockCompareView({
     }
     const forceReload = previousReloadToken.current !== reloadToken;
     previousReloadToken.current = reloadToken;
-    const targets = forceReload
-      ? selected
-      : selected.filter((security) => {
-          const existing = results[security.code];
-          return !existing?.loading && !existing?.payload;
-        });
+    const targets = selectCompareTargets(selected, results, forceReload);
     setResults((current) => {
       const targetCodes = new Set(targets.map((security) => security.code));
       const next = Object.fromEntries(
@@ -228,44 +218,10 @@ export default function MultiStockCompareView({
     });
     if (!targets.length) return;
     Promise.allSettled(
-      targets.map(async (security) => {
-        try {
-          return {
-            code: security.code,
-            payload: await window.stockApi.analyze(security)
-          };
-        } catch (analysisError) {
-          const [snapshot, chart] = await Promise.all([
-            window.stockApi.getQuoteSnapshot(security),
-            window.stockApi.getChart(security, "101", {
-              range: "3m",
-              limit: 90,
-              adjustment: "front"
-            })
-          ]);
-          const history = chart?.rows || [];
-          return {
-            code: security.code,
-            payload: {
-              security: snapshot?.security || security,
-              quote: snapshot?.quote || {},
-              history,
-              analysis: {
-                trendLabel: "深度策略暂不可用",
-                risks: [
-                  analysisError instanceof Error
-                    ? analysisError.message
-                    : "该股票当前仅返回行情与日线数据"
-                ]
-              },
-              sector: null,
-              actualProvider:
-                snapshot?.actualProvider || snapshot?.provider || chart?.source || "行情源",
-              updatedAt: snapshot?.updatedAt || new Date().toISOString()
-            }
-          };
-        }
-      })
+      targets.map(async (security) => ({
+        code: security.code,
+        payload: await loadComparePayload(security, window.stockApi)
+      }))
     ).then((settled) => {
       if (requestId !== analysisRequestId.current) return;
       setResults((current) => {

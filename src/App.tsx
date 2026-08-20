@@ -49,12 +49,23 @@
 } from "lucide-react";
 import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { StrategyBacktestRequest } from "./StrategySignalsView";
+import FilterChipGroup from "./FilterChipGroup";
+import InlineDecisionBar, { type InlineDecisionPrompt } from "./InlineDecisionBar";
+import { createAsyncRequestGate } from "./asyncRequestGate";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
 import { shanghaiDateTag, shiftShanghaiDate } from "./dateUtils";
+import {
+  mergeObservationPool,
+  normalizeObservationExclusions,
+  removeObservationFromWatchlist,
+  upsertObservationExclusion,
+  type ObservationExclusion
+} from "./watchlistLogic";
 import {
   buildSettingsByRiskProfile,
   clampNumber,
   initialSettings,
+  mergeSettingsDraft,
   normalizeRiskProfile,
   normalizeSettings,
   riskProfileLabel,
@@ -237,6 +248,12 @@ type ExecutionDecisionLog = {
   reasons: string[];
 };
 
+type PendingInlineDecision = {
+  prompt: InlineDecisionPrompt;
+  onConfirm: () => void;
+  onCancel: () => void;
+};
+
 type BacktestStrategyProfile = {
   selectedStrategies: string[];
   riskProfile: Settings["riskProfile"];
@@ -318,6 +335,7 @@ const BACKTEST_HISTORY_KEY = "a-stock-radar-v054-backtest-history-v1";
 const BACKTEST_HISTORY_LIMIT = 30;
 const EXECUTION_DECISION_LOG_KEY = "a-stock-radar-v054-execution-decision-log-v1";
 const EXECUTION_DECISION_LOG_LIMIT = 30;
+const OBSERVATION_EXCLUSIONS_KEY = "a-stock-radar:observation-exclusions-v1";
 const PAPER_SIM_COOLDOWN_MINUTES = 4;
 const PAPER_SIM_COOLDOWN_MS = PAPER_SIM_COOLDOWN_MINUTES * 60 * 1000;
 
@@ -2541,41 +2559,6 @@ const fmtMoney = (value: number) => {
   return String(Math.round(value));
 };
 
-function mergeObservationPool(current: WatchItem[], recentLimitUps: any[]) {
-  const favoriteItems = current.filter(
-    (item) => (item.favorite || !item.autoAdded) && !/ST|退/i.test(item.name)
-  );
-  const merged = new Map<string, WatchItem>();
-  for (const item of recentLimitUps.filter(
-    (entry) => Number(entry.tradingDaysSince) >= 1 && Number(entry.tradingDaysSince) <= 10
-  )) {
-    merged.set(item.code, {
-      ...item,
-      createdAt: item.limitDate || new Date().toISOString(),
-      observationNode: `T+${item.tradingDaysSince}`,
-      note: `涨停后第 ${item.tradingDaysSince} 个交易日 · ${item.limitDate || ""}`,
-      autoAdded: true
-    });
-  }
-  for (const item of favoriteItems) {
-    const observation = merged.get(item.code);
-    if (observation) {
-      merged.set(item.code, {
-        ...observation,
-        favorite: true,
-        favoriteAddedAt: item.favoriteAddedAt || item.createdAt
-      });
-    } else {
-      merged.set(item.code, {
-        ...item,
-        favorite: true,
-        autoAdded: false
-      });
-    }
-  }
-  return [...merged.values()];
-}
-
 type WindowControlAction = "minimize" | "toggle-maximize" | "close";
 
 function WindowTitleBar() {
@@ -2684,6 +2667,7 @@ function App() {
   const [backtestLoading, setBacktestLoading] = useState(false);
   const [backtestError, setBacktestError] = useState("");
   const [backtestResult, setBacktestResult] = useState<any>(null);
+  const [backtestCurrentRecord, setBacktestCurrentRecord] = useState<BacktestHistoryRecord | null>(null);
   const [backtestHistory, setBacktestHistory] = useState<BacktestHistoryRecord[]>(
     loadBacktestHistory(initialSettings)
   );
@@ -2698,6 +2682,7 @@ function App() {
   const [version, setVersion] = useState("0.1.0");
   const [paperState, setPaperState] = useState<PaperSimulationState>(loadPaperState);
   const [executionDecisionLog, setExecutionDecisionLog] = useState<ExecutionDecisionLog[]>(loadExecutionDecisionLog);
+  const [pendingDecision, setPendingDecision] = useState<PendingInlineDecision | null>(null);
   const searchTimer = useRef<number>();
   const searchRequestId = useRef(0);
   const analysisRequestId = useRef(0);
@@ -2706,11 +2691,22 @@ function App() {
   const limitPoolManualRefresh = useRef(false);
   const sectorBoardRequestId = useRef(0);
   const sectorBoardBusy = useRef(false);
+  const backtestRequestId = useRef(0);
+  const backtestComparisonRequestId = useRef(0);
   const toastTimer = useRef<number>();
   const voiceSeenIds = useRef<Set<string>>(new Set());
   const voiceFeedSeeded = useRef(false);
+  const paperStateRef = useRef(paperState);
   const settingsRef = useRef<Settings>(normalizeSettings(initialSettings));
   const settingsChangedDuringStartupRef = useRef(false);
+  const observationExclusionsRef = useRef<ObservationExclusion[]>([]);
+  const observationExclusionsLoadedRef = useRef(false);
+  if (!observationExclusionsLoadedRef.current) {
+    observationExclusionsLoadedRef.current = true;
+    observationExclusionsRef.current = normalizeObservationExclusions(
+      loadSafeLocalJson<unknown>(OBSERVATION_EXCLUSIONS_KEY, [])
+    );
+  }
 
   const showToast = (message: string) => {
     window.clearTimeout(toastTimer.current);
@@ -2718,7 +2714,39 @@ function App() {
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
   };
 
+  const requestInlineDecision = (
+    prompt: InlineDecisionPrompt,
+    onConfirm: () => void,
+    onCancel: () => void
+  ) => {
+    setPendingDecision({
+      prompt,
+      onConfirm: () => {
+        setPendingDecision(null);
+        onConfirm();
+      },
+      onCancel: () => {
+        setPendingDecision(null);
+        onCancel();
+      }
+    });
+  };
+
+  const updateBacktestDraft = (updater: (current: BacktestDraft) => BacktestDraft) => {
+    backtestRequestId.current += 1;
+    backtestComparisonRequestId.current += 1;
+    setBacktestLoading(false);
+    setBacktestError("");
+    setBacktestResult(null);
+    setBacktestCurrentRecord(null);
+    setBacktestProfileComparisons(null);
+    setBacktestDraft(updater);
+  };
+
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => {
+    paperStateRef.current = paperState;
+  }, [paperState]);
 
   const commitLimitUpPool = useCallback((snapshot: any, requestId: number, trigger: LimitPoolMeta["trigger"]) => {
     if (requestId !== limitPoolRequestId.current) return null;
@@ -3345,27 +3373,35 @@ const buildBacktestExecutionPlan = (
   };
 
   const runBacktest = async (draft: BacktestDraft) => {
-    const code = String(draft.securityCode || "").trim();
+    const normalizedDraft = normalizeBacktestDraft(draft);
+    const code = String(normalizedDraft.securityCode || "").trim();
     if (!code || !/^\d{6}$/.test(code)) {
       setBacktestError("请先选择股票名称或输入6位A股代码");
       return;
     }
+    const requestId = ++backtestRequestId.current;
+    backtestComparisonRequestId.current += 1;
+    const settingsSnapshot = normalizeSettings(settings);
     setBacktestLoading(true);
     setBacktestError("");
     setBacktestResult(null);
+    setBacktestCurrentRecord(null);
     setBacktestProfileComparisons(null);
     try {
-      const safeSettings = normalizeSettings(settings);
-      const result = await runBacktestWithSettings(draft, safeSettings);
+      const result = await runBacktestWithSettings(normalizedDraft, settingsSnapshot);
+      if (requestId !== backtestRequestId.current) return;
+      const record = buildBacktestHistoryRecord(normalizedDraft, result, settingsSnapshot);
       setBacktestResult(result);
-      const record = buildBacktestHistoryRecord(draft, result, settings);
+      setBacktestCurrentRecord(record);
       setBacktestHistory((current) =>
         [record, ...current.filter((item) => item.id !== record.id)].slice(0, BACKTEST_HISTORY_LIMIT)
       );
     } catch (reason) {
-      setBacktestError(reason instanceof Error ? reason.message : String(reason));
+      if (requestId === backtestRequestId.current) {
+        setBacktestError(reason instanceof Error ? reason.message : String(reason));
+      }
     } finally {
-      setBacktestLoading(false);
+      if (requestId === backtestRequestId.current) setBacktestLoading(false);
     }
   };
 
@@ -3375,6 +3411,7 @@ const buildBacktestExecutionPlan = (
       setBacktestError("请先选择股票名称或输入6位A股代码，再运行风险档位对比");
       return;
     }
+    const requestId = ++backtestComparisonRequestId.current;
     const normalizedDraft = normalizeBacktestDraft(draft);
     const seed = {
       sourceCode: code,
@@ -3394,6 +3431,7 @@ const buildBacktestExecutionPlan = (
       try {
         const profileSettings = buildSettingsByRiskProfile(baseSettings, preset.id);
         const result = await runBacktestWithSettings(normalizedDraft, profileSettings);
+        if (requestId !== backtestComparisonRequestId.current) return;
         const record = buildBacktestHistoryRecord(normalizedDraft, result, profileSettings);
         nextItem = {
           profile: preset.id,
@@ -3409,6 +3447,7 @@ const buildBacktestExecutionPlan = (
           record: null
         };
       }
+      if (requestId !== backtestComparisonRequestId.current) return;
       nextItems.push(nextItem);
       setBacktestProfileComparisons((current) => {
         if (!current || current.comparedAt !== seed.comparedAt) return current;
@@ -3418,6 +3457,7 @@ const buildBacktestExecutionPlan = (
         };
       });
     }
+    if (requestId !== backtestComparisonRequestId.current) return;
     setBacktestProfileComparisons({
       sourceCode: seed.sourceCode,
       comparedAt: seed.comparedAt,
@@ -3671,40 +3711,47 @@ const buildBacktestExecutionPlan = (
 
     if (readiness.level === "wait") {
       const deRiskResult = buildBacktestDeRiskProfile(strategyProfile, readiness);
-      const confirmMessage = `${waitDeRiskMessage}\n建议：${readiness.recommendation}\n\n` +
-        `已自动生成“等待确认”降仓档位：\n${deRiskResult.adjustments.join("；")}\n\n` +
-        "是否按该保守档位继续应用？";
-      const confirmed = window.confirm(confirmMessage);
-      if (!confirmed) {
-        appendExecutionDecisionLog({
-          source,
-          result: "REJECTED",
-          level: "wait",
-          securityCode,
-          securityName,
-          summary: `${label}回测参数应用已取消`,
-          score: readiness.score,
-          reasons: readiness.reasons
-        });
-        showToast("已取消应用回测参数");
-        return;
-      }
-      applyBacktestProfile(record, deRiskResult.profile);
-      appendExecutionDecisionLog({
-        source,
-        result: "APPROVED",
-        level: "wait",
-        securityCode,
-        securityName,
-        summary: `${label}回测参数已应用（等待确认降仓档位）`,
-        score: readiness.score,
-        reasons: [
-          `等待确认风险评估：${readiness.recommendation}`,
-          ...deRiskResult.adjustments,
-          ...readiness.reasons
-        ]
-      });
-      showToast("已按“等待确认”降仓档位应用回测参数");
+      requestInlineDecision(
+        {
+          id: `backtest-profile-${record.id}`,
+          title: "确认应用保守回测档位",
+          description: `${waitDeRiskMessage} ${readiness.recommendation}`,
+          details: deRiskResult.adjustments,
+          confirmLabel: "按保守档位应用",
+          cancelLabel: "暂不应用"
+        },
+        () => {
+          applyBacktestProfile(record, deRiskResult.profile);
+          appendExecutionDecisionLog({
+            source,
+            result: "APPROVED",
+            level: "wait",
+            securityCode,
+            securityName,
+            summary: `${label}回测参数已应用（等待确认降仓档位）`,
+            score: readiness.score,
+            reasons: [
+              `等待确认风险评估：${readiness.recommendation}`,
+              ...deRiskResult.adjustments,
+              ...readiness.reasons
+            ]
+          });
+          showToast("已按“等待确认”降仓档位应用回测参数");
+        },
+        () => {
+          appendExecutionDecisionLog({
+            source,
+            result: "REJECTED",
+            level: "wait",
+            securityCode,
+            securityName,
+            summary: `${label}回测参数应用已取消`,
+            score: readiness.score,
+            reasons: readiness.reasons
+          });
+          showToast("已取消应用回测参数");
+        }
+      );
       return;
     }
 
@@ -3727,20 +3774,19 @@ const buildBacktestExecutionPlan = (
   };
 
   const applyCurrentBacktestToPaper = () => {
-    if (!backtestResult) {
+    if (!backtestCurrentRecord) {
       showToast("请先运行回测后再应用");
       return;
     }
-    const record = buildBacktestHistoryRecord(backtestDraft, backtestResult, settings);
-    applyBacktestProfileWithGovernance(record, "BACKTEST_CURRENT", "当前");
+    applyBacktestProfileWithGovernance(backtestCurrentRecord, "BACKTEST_CURRENT", "当前");
   };
 
   const exportCurrentBacktest = (format: "csv" | "json") => {
-    if (!backtestResult) {
+    if (!backtestCurrentRecord) {
       showToast("请先运行回测后再导出");
       return;
     }
-    exportBacktestPayload(buildBacktestHistoryRecord(backtestDraft, backtestResult, settings), format);
+    exportBacktestPayload(backtestCurrentRecord, format);
   };
 
   const applyHistoryToSettings = (record: BacktestHistoryRecord) => {
@@ -3748,12 +3794,16 @@ const buildBacktestExecutionPlan = (
   };
 
   const loadBacktestRecord = (record: BacktestHistoryRecord) => {
+    backtestRequestId.current += 1;
+    backtestComparisonRequestId.current += 1;
     const restoredDraft = normalizeBacktestDraft(record.draft);
     const restoredStrategyContext = normalizeBacktestStrategyContext(
       restoredDraft.strategyContext || record.rawResult?.strategyContext
     );
     setBacktestDraft(restoredDraft);
     setBacktestResult(record.rawResult || null);
+    setBacktestCurrentRecord(record.rawResult ? record : null);
+    setBacktestLoading(false);
     setBacktestProfileComparisons(null);
     setBacktestError("");
     const restoredSecurity = record.rawResult?.security && typeof record.rawResult.security === "object"
@@ -3834,7 +3884,7 @@ const buildBacktestExecutionPlan = (
     const next = typeof security === "string"
       ? security
       : upstreamSecurity?.code || (view === "backtest" ? backtestDraft.securityCode : "");
-    setBacktestDraft((current) => normalizeBacktestDraft({
+    updateBacktestDraft((current) => normalizeBacktestDraft({
       ...current,
       securityCode: next || (view === "backtest" ? current.securityCode : ""),
       security:
@@ -3877,9 +3927,6 @@ const buildBacktestExecutionPlan = (
       dashboardMode: view === "dashboard" ? dashboardMode : "pool"
     });
     setBacktestReturnMode(view === "dashboard" && dashboardMode === "analysis" ? "analysis" : "pool");
-    setBacktestError("");
-    setBacktestResult(null);
-    setBacktestProfileComparisons(null);
     setView("backtest");
   };
 
@@ -3921,19 +3968,20 @@ const buildBacktestExecutionPlan = (
     }
   };
 
-const executePaperTrade = () => {
+  const executePaperTrade = () => {
     if (!payload) {
       showToast("请先在分析页选择标的");
       return;
     }
-    const readiness = evaluatePaperExecutionReadiness(paperState, payload, settingsRef.current);
+    const targetPayload = payload;
+    const readiness = evaluatePaperExecutionReadiness(paperStateRef.current, targetPayload, settingsRef.current);
     if (readiness.level === "block") {
       appendExecutionDecisionLog({
         source: "PAPER_TRADE",
         result: "BLOCKED",
         level: "block",
-        securityCode: String(payload.security?.code || ""),
-        securityName: String(payload.security?.name || payload.security?.code || "UNKNOWN"),
+        securityCode: String(targetPayload.security?.code || ""),
+        securityName: String(targetPayload.security?.name || targetPayload.security?.code || "UNKNOWN"),
         summary: readiness.summary,
         score: readiness.score,
         reasons: readiness.reasons
@@ -3941,39 +3989,73 @@ const executePaperTrade = () => {
       showToast(`${readiness.summary}，${readiness.recommendation}`);
       return;
     }
-    if (readiness.level === "wait") {
-      const confirmMessage = `${readiness.summary}\n${readiness.recommendation}\n\n${readiness.reasons.join("；")}\n\n是否继续执行模拟下单？`;
-      const confirmed = window.confirm(confirmMessage);
-      if (!confirmed) {
+
+    const completePaperTrade = () => {
+      const currentReadiness = evaluatePaperExecutionReadiness(
+        paperStateRef.current,
+        targetPayload,
+        settingsRef.current
+      );
+      if (currentReadiness.level === "block") {
         appendExecutionDecisionLog({
           source: "PAPER_TRADE",
-          result: "REJECTED",
-          level: "wait",
-          securityCode: String(payload.security?.code || ""),
-          securityName: String(payload.security?.name || payload.security?.code || "UNKNOWN"),
-          summary: "用户取消执行",
-          score: readiness.score,
-          reasons: readiness.reasons
+          result: "BLOCKED",
+          level: "block",
+          securityCode: String(targetPayload.security?.code || ""),
+          securityName: String(targetPayload.security?.name || targetPayload.security?.code || "UNKNOWN"),
+          summary: currentReadiness.summary,
+          score: currentReadiness.score,
+          reasons: currentReadiness.reasons
         });
-        showToast("已取消本次模拟下单");
+        showToast(`${currentReadiness.summary}，${currentReadiness.recommendation}`);
         return;
       }
+      const action = openPaperPositionFromSignal(paperStateRef.current, targetPayload, settingsRef.current);
+      if (action.changed) {
+        paperStateRef.current = action.state;
+        setPaperState(action.state);
+      }
+      appendExecutionDecisionLog({
+        source: "PAPER_TRADE",
+        result: action.changed ? "APPROVED" : "BLOCKED",
+        level: action.changed ? currentReadiness.level : "block",
+        securityCode: String(targetPayload.security?.code || ""),
+        securityName: String(targetPayload.security?.name || targetPayload.security?.code || "UNKNOWN"),
+        summary: action.message,
+        score: currentReadiness.score,
+        reasons: currentReadiness.reasons
+      });
+      showToast(action.message);
+    };
+
+    if (readiness.level === "wait") {
+      requestInlineDecision(
+        {
+          id: `paper-trade-${targetPayload.security?.code || Date.now()}`,
+          title: "确认模拟下单",
+          description: `${readiness.summary}。${readiness.recommendation}`,
+          details: readiness.reasons,
+          confirmLabel: "继续模拟下单",
+          cancelLabel: "取消下单"
+        },
+        completePaperTrade,
+        () => {
+          appendExecutionDecisionLog({
+            source: "PAPER_TRADE",
+            result: "REJECTED",
+            level: "wait",
+            securityCode: String(targetPayload.security?.code || ""),
+            securityName: String(targetPayload.security?.name || targetPayload.security?.code || "UNKNOWN"),
+            summary: "用户取消执行",
+            score: readiness.score,
+            reasons: readiness.reasons
+          });
+          showToast("已取消本次模拟下单");
+        }
+      );
+      return;
     }
-    const action = openPaperPositionFromSignal(paperState, payload, settingsRef.current);
-    if (action.changed) {
-      setPaperState(action.state);
-    }
-  appendExecutionDecisionLog({
-    source: "PAPER_TRADE",
-    result: action.changed ? "APPROVED" : "BLOCKED",
-    level: action.changed ? readiness.level : "block",
-    securityCode: String(payload.security?.code || ""),
-    securityName: String(payload.security?.name || payload.security?.code || "UNKNOWN"),
-      summary: action.message,
-      score: readiness.score,
-      reasons: readiness.reasons
-    });
-    showToast(action.message);
+    completePaperTrade();
   };
 
   const closePaperTradeForCode = (code: string, reason: PaperClosedPosition["closeReason"] = "MANUAL") => {
@@ -4250,7 +4332,11 @@ const executePaperTrade = () => {
       const recentLimitUps = recentResult.status === "fulfilled" && Array.isArray(recentResult.value)
         ? recentResult.value
         : [];
-      const completeWatchlist = mergeObservationPool(savedWatchlist, recentLimitUps);
+      const completeWatchlist = mergeObservationPool(
+        savedWatchlist,
+        recentLimitUps,
+        observationExclusionsRef.current
+      );
       setWatchlist(completeWatchlist);
       if (watchlistResult.status === "fulfilled") {
         void window.stockApi.saveWatchlist(completeWatchlist).catch(() => {
@@ -4441,7 +4527,11 @@ const executePaperTrade = () => {
         const recent = await window.stockApi.discoverRecentLimitUps(11);
         if (!active) return;
         setWatchlist((current) => {
-          const next = mergeObservationPool(current, recent);
+          const next = mergeObservationPool(
+            current,
+            recent,
+            observationExclusionsRef.current
+          );
           window.stockApi.saveWatchlist(next).catch(() => {});
           return next;
         });
@@ -4532,6 +4622,7 @@ const executePaperTrade = () => {
 
   const toggleFavorite = async (security = payload?.security) => {
     if (!security) return;
+    const previousWatchlist = watchlist;
     const existing = watchlist.find((item) => item.code === security.code);
     const currentlyFavorite = Boolean(existing && (existing.favorite || !existing.autoAdded));
     const next: WatchItem[] = currentlyFavorite
@@ -4564,15 +4655,34 @@ const executePaperTrade = () => {
             }
           ];
     setWatchlist(next);
-    await window.stockApi.saveWatchlist(next);
-    showToast(currentlyFavorite ? "已移出自选板块" : "已加入自选板块");
+    try {
+      await window.stockApi.saveWatchlist(next);
+      showToast(currentlyFavorite ? "已移出自选板块" : "已加入自选板块");
+    } catch {
+      setWatchlist(previousWatchlist);
+      showToast("自选板块保存失败，已恢复原状态");
+    }
   };
 
   const removeObservation = async (security: WatchItem) => {
-    const next = watchlist.filter((item) => item.code !== security.code);
+    const previousWatchlist = watchlist;
+    const previousExclusions = observationExclusionsRef.current;
+    const nextExclusions = upsertObservationExclusion(previousExclusions, security);
+    const next = removeObservationFromWatchlist(watchlist, security.code);
+    observationExclusionsRef.current = nextExclusions;
+    saveSafeLocalJson(OBSERVATION_EXCLUSIONS_KEY, nextExclusions);
     setWatchlist(next);
-    await window.stockApi.saveWatchlist(next);
-    showToast("已从当前观察列表移除");
+    try {
+      await window.stockApi.saveWatchlist(next);
+      showToast(security.favorite
+        ? "已从观察列表移除，自选收藏继续保留"
+        : "已从当前观察列表移除");
+    } catch {
+      observationExclusionsRef.current = previousExclusions;
+      saveSafeLocalJson(OBSERVATION_EXCLUSIONS_KEY, previousExclusions);
+      setWatchlist(previousWatchlist);
+      showToast("观察列表保存失败，已恢复原状态");
+    }
   };
 
   const saveHoldings = async (next: HoldingItem[]) => {
@@ -4832,6 +4942,13 @@ const executePaperTrade = () => {
         </header>
 
         <div className={`page ${view === "review" ? "review-page-host" : ""}`}>
+          {pendingDecision && (
+            <InlineDecisionBar
+              prompt={pendingDecision.prompt}
+              onConfirm={pendingDecision.onConfirm}
+              onCancel={pendingDecision.onCancel}
+            />
+          )}
           {view === "dashboard" && (
             <Dashboard
               payload={payload}
@@ -4986,7 +5103,7 @@ const executePaperTrade = () => {
                   result={backtestResult}
                   history={backtestHistory}
                   profileComparisons={backtestProfileComparisons}
-                  onDraftChange={setBacktestDraft}
+                  onDraftChange={updateBacktestDraft}
                   onRun={runBacktest}
                   onRunProfileComparisons={runBacktestProfileComparisons}
                   onApplyProfileComparison={(record) =>
@@ -5918,8 +6035,10 @@ function Dashboard({
           {announcements.slice(0, 4).map((item: any) => (
             <button
               className="news-item"
-              key={item.art_code}
-              onClick={() => window.stockApi.openExternal(`https://data.eastmoney.com/notices/detail/${quote.code}/${item.art_code}.html`)}
+              key={item.art_code || item.sourceUrl || `${item.title}-${item.display_time}`}
+              onClick={() => window.stockApi.openExternal(
+                item.sourceUrl || `https://data.eastmoney.com/notices/detail/${quote.code}/${item.art_code}.html`
+              )}
             >
               <span className={`news-score ${item.direction}`}>{item.score}</span>
               <span className="news-copy"><b>{item.title}</b><small>{item.category} · {item.display_time?.slice(0, 16)}</small></span>
@@ -7227,7 +7346,7 @@ function BacktestView({
         title="策略单股回测"
         description="选择一套或多套策略、一只股票和起始日期，逐笔回放历史买卖，并直接对比各策略与组合收益。"
         actions={
-          <>
+          <div className="backtest-heading-actions">
             <button className="secondary-btn" onClick={onBack}>
               <ChevronLeft size={17} />
               {backLabel}
@@ -7273,7 +7392,7 @@ function BacktestView({
                   ? "应用到执行（需确认）"
                   : "应用到执行策略"}
             </button>
-          </>
+          </div>
         }
       />
       <section className="panel backtest-context-panel">
@@ -8117,53 +8236,62 @@ function HoldingsView({
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
-  const quoteRefreshRequestId = useRef(0);
+  const quoteRefreshGate = useMemo(() => createAsyncRequestGate(), []);
 
-  const refreshQuotes = useCallback(async () => {
-    const requestId = ++quoteRefreshRequestId.current;
-    if (!items.length) {
-      if (requestId === quoteRefreshRequestId.current) {
-        setQuotes({});
-        setRefreshing(false);
-      }
+  const refreshQuotes = useCallback(async (force = false) => {
+    if (!force && document.hidden) {
+      setRefreshing(false);
       return;
     }
-    setRefreshing(true);
-    const pending = [...items];
-    const results: Array<readonly [string, any]> = [];
-    const workerCount = Math.min(4, pending.length);
-    await Promise.all(Array.from({ length: workerCount }, async () => {
-      while (pending.length) {
-        const item = pending.shift();
-        if (!item) return;
-        try {
-          const snapshot = await window.stockApi.getQuoteSnapshot(item);
-          results.push([item.code, snapshot?.quote || null] as const);
-        } catch {
-          results.push([item.code, null] as const);
+    const requestId = quoteRefreshGate.begin();
+    if (requestId === null) return;
+    try {
+      if (!items.length) {
+        if (quoteRefreshGate.isCurrent(requestId)) setQuotes({});
+        return;
+      }
+      setRefreshing(true);
+      const pending = [...items];
+      const results: Array<readonly [string, any]> = [];
+      const workerCount = Math.min(4, pending.length);
+      await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (pending.length) {
+          const item = pending.shift();
+          if (!item) return;
+          try {
+            const snapshot = await window.stockApi.getQuoteSnapshot(item);
+            results.push([item.code, snapshot?.quote || null] as const);
+          } catch {
+            results.push([item.code, null] as const);
+          }
         }
-      }
-    }));
-    if (requestId !== quoteRefreshRequestId.current) return;
-    setQuotes((current) => {
-      const next = { ...current };
-      for (const [itemCode, quote] of results) {
-        if (quote) next[itemCode] = quote;
-      }
-      return next;
-    });
-    if (requestId === quoteRefreshRequestId.current) setRefreshing(false);
-  }, [items]);
+      }));
+      if (!quoteRefreshGate.isCurrent(requestId)) return;
+      setQuotes((current) => {
+        const next = { ...current };
+        for (const [itemCode, quote] of results) {
+          if (quote) next[itemCode] = quote;
+        }
+        return next;
+      });
+    } finally {
+      if (quoteRefreshGate.finish(requestId)) setRefreshing(false);
+    }
+  }, [items, quoteRefreshGate]);
 
   useEffect(() => {
     void refreshQuotes();
-    if (!live || !items.length) return;
-    const timer = window.setInterval(
-      () => void refreshQuotes(),
-      Math.max(5, Number(settings.quoteRefreshSeconds) || 5) * 1000
-    );
-    return () => window.clearInterval(timer);
-  }, [items.length, live, settings.quoteRefreshSeconds, refreshQuotes]);
+    const timer = live && items.length
+      ? window.setInterval(
+          () => void refreshQuotes(),
+          Math.max(5, Number(settings.quoteRefreshSeconds) || 5) * 1000
+        )
+      : undefined;
+    return () => {
+      if (timer !== undefined) window.clearInterval(timer);
+      quoteRefreshGate.invalidate();
+    };
+  }, [items.length, live, settings.quoteRefreshSeconds, refreshQuotes, quoteRefreshGate]);
 
   const rows = useMemo(() => items.map((item) => {
     const quote = quotes[item.code] || null;
@@ -8263,7 +8391,7 @@ function HoldingsView({
         eyebrow="PERSONAL HOLDINGS BOARD"
         title="持仓股"
         description="持仓数据仅保存在本机；行情沿用同花顺主源和三线校验，不连接券商、不会发出交易指令。"
-        actions={<button className="secondary-btn" onClick={() => void refreshQuotes()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新行情</button>}
+        actions={<button className="secondary-btn" onClick={() => void refreshQuotes(true)} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新行情</button>}
       />
       <section className="panel holdings-summary-panel">
         <PanelTitle title="持仓总览" subtitle={`已取得 ${summary.pricedCount}/${items.length} 条有效报价`} icon={WalletCards} badge={`${items.length} 只`} />
@@ -9152,10 +9280,15 @@ function NewsView({
           : "准实时聚合 7×24 快讯与公司公告；可信度、方向和影响强度分别计算。"}
         actions={
           <>
-            <button className={`secondary-btn news-live-switch ${autoRefresh ? "active" : ""}`} onClick={() => setAutoRefresh((value) => !value)}>
+            <button
+              type="button"
+              className={`secondary-btn news-live-switch ${autoRefresh ? "active" : ""}`}
+              aria-pressed={autoRefresh}
+              onClick={() => setAutoRefresh((value) => !value)}
+            >
               <span className="live-dot" />{autoRefresh ? "自动刷新中" : "自动刷新已停"}
             </button>
-            <button className="primary-btn" onClick={() => loadFeed(true)}>
+            <button type="button" className="primary-btn" disabled={loading} onClick={() => loadFeed(true)}>
               <RefreshCw size={17} className={loading ? "spin" : ""} />立即刷新
             </button>
           </>
@@ -9193,8 +9326,10 @@ function NewsView({
           {scopes.map((item) => (
             <button
               key={item.id}
+              type="button"
               disabled={item.disabled}
               className={scope === item.id ? "active" : ""}
+              aria-pressed={scope === item.id}
               onClick={() => setScope(item.id)}
             >
               {item.label}
@@ -9202,31 +9337,50 @@ function NewsView({
           ))}
         </div>
         <div className="news-filters">
-          <label><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={announcementOnly ? "搜索股票、公告标题、事件关键词" : "搜索股票、板块、事件关键词"} /></label>
-          <div><Filter size={15} />
-            {[
+          <label>
+            <Search size={16} />
+            <input
+              value={query}
+              aria-label={announcementOnly ? "搜索A股公告" : "搜索资讯"}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={announcementOnly ? "搜索股票、公告标题、事件关键词" : "搜索股票、板块、事件关键词"}
+            />
+          </label>
+          <FilterChipGroup
+            label="方向"
+            icon={<Filter size={15} />}
+            value={direction}
+            onChange={setDirection}
+            options={[
               { id: "all", label: "全部方向" },
               { id: "positive", label: "正向" },
               { id: "negative", label: "风险" },
               { id: "mixed", label: "多空混合" },
               { id: "neutral", label: "中性" }
-            ].map((item) => <button key={item.id} className={direction === item.id ? "active" : ""} onClick={() => setDirection(item.id)}>{item.label}</button>)}
-          </div>
-          {announcementOnly && <div><Gauge size={15} />
-            {[
+            ]}
+          />
+          {announcementOnly && <FilterChipGroup
+            label="重要性"
+            icon={<Gauge size={15} />}
+            value={importance}
+            onChange={setImportance}
+            options={[
               { id: "all", label: "全部重要性" },
               { id: "major", label: "重大" },
               { id: "risk", label: "风险" },
               { id: "corrected", label: "更正/修订" }
-            ].map((item) => <button key={item.id} className={importance === item.id ? "active" : ""} onClick={() => setImportance(item.id)}>{item.label}</button>)}
-          </div>}
-          {announcementOnly && <div><FileText size={15} />
-            {["all", "业绩", "股东行为", "并购重组", "监管风险", "经营订单", "公司公告"].map((item) => (
-              <button key={item} className={eventType === item ? "active" : ""} onClick={() => setEventType(item)}>
-                {item === "all" ? "全部类型" : item}
-              </button>
-            ))}
-          </div>}
+            ]}
+          />}
+          {announcementOnly && <FilterChipGroup
+            label="公告类型"
+            icon={<FileText size={15} />}
+            value={eventType}
+            onChange={setEventType}
+            options={["all", "业绩", "股东行为", "并购重组", "监管风险", "经营订单", "公司公告"].map((item) => ({
+              id: item,
+              label: item === "all" ? "全部类型" : item
+            }))}
+          />}
         </div>
       </div>
 
@@ -9307,16 +9461,39 @@ function NewsView({
 }
 
 function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Settings) => Promise<void> }) {
-  const [draft, setDraft] = useState<Settings>({ ...value, provider: "ths" });
+  const [draft, setDraftState] = useState<Settings>({ ...value, provider: "ths" });
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const settingsMounted = useRef(true);
-  useEffect(() => () => {
-    settingsMounted.current = false;
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const dirtyFields = useRef<Set<keyof Settings>>(new Set());
+  const draftRevision = useRef(0);
+  const setDraft = useCallback((next: Settings | ((current: Settings) => Settings)) => {
+    const current = draftRef.current;
+    const resolved = typeof next === "function" ? next(current) : next;
+    const changedFields = (Object.keys(resolved) as Array<keyof Settings>)
+      .filter((field) => !Object.is(current[field], resolved[field]));
+    if (changedFields.length) {
+      draftRevision.current += 1;
+      changedFields.forEach((field) => dirtyFields.current.add(field));
+    }
+    draftRef.current = resolved;
+    setDraftState(resolved);
   }, []);
-  useEffect(() => setDraft({ ...value, provider: "ths" }), [value]);
+  useEffect(() => {
+    settingsMounted.current = true;
+    return () => {
+      settingsMounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    const merged = mergeSettingsDraft(draftRef.current, value, dirtyFields.current);
+    draftRef.current = merged;
+    setDraftState(merged);
+  }, [value]);
   const test = async () => {
     setTesting(true);
     setTestResult(null);
@@ -9359,6 +9536,7 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
   const activeRiskProfile = riskProfilePresets.find((item) => item.id === draft.riskProfile) || riskProfilePresets[0]!;
   const saveDraft = async () => {
     if (saving) return;
+    const submittedRevision = draftRevision.current;
     const normalizedDraft: Settings = {
       ...draft,
     provider: "ths",
@@ -9404,6 +9582,11 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
     setSaveError("");
     try {
       await onSave(normalizedDraft);
+      if (settingsMounted.current && draftRevision.current === submittedRevision) {
+        dirtyFields.current.clear();
+        draftRef.current = normalizedDraft;
+        setDraftState(normalizedDraft);
+      }
     } catch (error) {
       if (settingsMounted.current) {
         setSaveError(error instanceof Error ? error.message : "设置保存失败，请稍后重试");

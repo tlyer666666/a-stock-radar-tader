@@ -1276,8 +1276,6 @@ function replayStrategy(
       ? featureTimeline[index]
       : featureSnapshot(history, index, code, name);
     if (!feature || !definition.matches(feature)) continue;
-    if (index - lastSignalIndex <= options.cooldownDays) continue;
-    lastSignalIndex = index;
     const signal = history[index];
     if (
       (options.signalFrom && signal.date < options.signalFrom) ||
@@ -1285,6 +1283,8 @@ function replayStrategy(
     ) {
       continue;
     }
+    if (index - lastSignalIndex <= options.cooldownDays) continue;
+    lastSignalIndex = index;
     const signalBase = replaySignalBase(
       definition,
       code,

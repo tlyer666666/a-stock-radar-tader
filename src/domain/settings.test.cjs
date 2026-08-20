@@ -38,3 +38,27 @@ test("risk profile presets apply through the same normalization boundary", () =>
   assert.equal(conservative.maxDailyTrades, 6);
   assert.ok(conservative.selectedStrategies.includes("riskVeto"));
 });
+
+test("settings draft sync preserves only fields with unsaved edits", () => {
+  const current = {
+    ...settings.initialSettings,
+    refreshToken: "unsaved-token",
+    newsVoiceEnabled: false
+  };
+  const incoming = {
+    ...settings.initialSettings,
+    refreshToken: "stored-token",
+    newsVoiceEnabled: true,
+    theme: "dark"
+  };
+  const merged = settings.mergeSettingsDraft(
+    current,
+    incoming,
+    new Set(["refreshToken", "newsVoiceEnabled"])
+  );
+
+  assert.equal(merged.refreshToken, "unsaved-token");
+  assert.equal(merged.newsVoiceEnabled, false);
+  assert.equal(merged.theme, "dark");
+  assert.equal(merged.provider, "ths");
+});
