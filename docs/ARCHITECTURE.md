@@ -11,6 +11,7 @@
 - `electron/news-service.cjs`：资讯和 A 股公告聚合。
 - `electron/services.cjs`：现有行情与回测编排；后续拆分时应保持公开导出契约不变。
 - `qa/`：桌面端到端、发布产物和工作流契约验证。
+- `src/review-entry.tsx`：把“专业复盘”页面单独打包成可在浏览器里挂载的模块（`pnpm build:review` / `tsconfig.review.json`）。浏览器中没有 Electron 预加载 API 时使用明确标注的预览数据，桌面应用本身仍走主入口。
 
 ## 数据源规则
 
@@ -22,10 +23,10 @@
 
 本地重新打包会先清理旧的 `release/win-unpacked`；跨平台发布会先清理 `release-builder`。不要手工把历史构建复制回正式目录。
 
-## 下一阶段拆分顺序
+## 已知技术债
 
-1. 将 `electron/services.cjs` 的 providers、cache、backtest 和 strategy 编排逐块迁到独立模块。
-2. 将 `src/App.tsx` 的纸面交易领域逻辑和各页面迁入 feature 目录。
-3. 建立 renderer/preload/main 共用的 IPC 契约与边界解码器，逐步消除 `any`。
+- `electron/services.cjs` 接近 300KB，provider、缓存、回测和策略编排混在一起，按模块拆出时保持公开导出契约不变。
+- `src/App.tsx` 约 440KB，纸面交易领域逻辑和各页面还没有拆到 feature 目录。
+- renderer / preload / main 之间缺少统一的 IPC 契约与边界解码器，`any` 仍然较多。
 
-每次迁移都先搬纯函数、补契约测试，再替换调用方；不要在结构迁移中同时修改交易算法。
+迁移时先搬纯函数、补契约测试，再替换调用方；不要在结构迁移的同一个改动里修改交易算法。
