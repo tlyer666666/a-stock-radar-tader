@@ -5,7 +5,7 @@
   "private": true,
   "description": "A股涨停、多源校验、低延迟资讯、策略统计与多周期K线雷达桌面软件",
   "main": "electron/main.cjs",
-  "author": "Codex",
+  "author": "tlyer666666",
   "desktopName": "A-Share Quant Radar",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
@@ -43,7 +43,7 @@
     "wait-on": "8.0.5"
   },
   "build": {
-    "appId": "com.codex.astockmonitor",
+    "appId": "com.tlyer666666.astockmonitor",
     "productName": "A股雷达",
     "asar": false,
     "directories": {
