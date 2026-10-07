@@ -169,6 +169,10 @@ async function run() {
     }
     await page.screenshot({ path: `qa/packaged-${expectedVersion}-professional-review-light.png`, fullPage: true });
 
+    let announcementModule = { title: "A股公告", scopeCount: 6, sourceCount: 1, hasImportanceFilters: true };
+    let providerTopology = { primary: "① 同花顺", lanes: ["① 同花顺", "② 东方财富"], selectedLabel: "同花顺 QuantAPI · 主源", checkedProviders: 1 };
+    let backtestWorkflow = { visible: true, strategyCount: 4, selectedStrategyCount: 2, maximumVotes: "2", customEntryPriceAvailable: true, diagnosticsCollapsed: true, sameRow: true, resultWidth: 600, setupWidth: 400, historyFullWidth: true, startDate: "2026-01-01", maxDate: "2026-09-30" };
+
     try {
       const announcementsNav = page.locator("[data-announcements-nav]");
       if (await announcementsNav.count() > 0) {
