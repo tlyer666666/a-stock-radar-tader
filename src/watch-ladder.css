@@ -1,0 +1,34 @@
+html .terminal-shell .ten-day-workspace .board-ladder { display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; margin:0; border:1px solid var(--watch-line); border-radius:3px; box-shadow:none; overflow:hidden; background:var(--terminal-panel); }
+.board-ladder-heading { flex-shrink:0; border-bottom:1px solid var(--watch-line,var(--terminal-line)); }
+.board-ladder-heading > div:first-child { display:flex; align-items:center; gap:8px; min-height:36px; padding:0 10px; }
+.board-ladder-heading h3 { margin:0; font-size:14px; font-weight:600; color:var(--terminal-text,var(--text)); }
+.board-ladder-heading > div:first-child > span { margin-left:auto; font-size:11px; color:var(--terminal-muted,var(--muted)); white-space:nowrap; }
+.board-ladder-sorts { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:center; padding:0 8px 0 50px; background:var(--watch-soft,var(--terminal-soft)); }
+.board-ladder-sorts > span { display:none; }
+.board-ladder-sorts button { min-width:0; min-height:28px; padding:4px 0; color:var(--terminal-muted,var(--muted)); border:0; border-radius:0; background:transparent; cursor:pointer; font-size:11px; white-space:nowrap; text-align:left; }
+.board-ladder-sorts button:nth-last-child(2) { text-align:center; }
+.board-ladder-sorts button:last-child { text-align:right; }
+.board-ladder-sorts button[aria-pressed="true"] { color:var(--terminal-text,var(--text)); font-weight:500; }
+.board-ladder-sorts button:hover { color:var(--terminal-accent,var(--red)); }
+.board-ladder-groups { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; }
+.board-ladder-level { display:grid; grid-template-columns:40px minmax(0,1fr); border-bottom:1px solid var(--watch-line,var(--terminal-line)); }
+.board-ladder-level:last-child { border-bottom:0; }
+.board-ladder-height { display:flex; flex-direction:column; align-items:center; justify-content:flex-start; gap:2px; padding:7px 2px; background:var(--watch-soft,var(--terminal-soft)); border-right:1px solid var(--watch-line,var(--terminal-line)); }
+.board-ladder-height > strong { font-size:17px; line-height:22px; color:var(--terminal-text,var(--text)); font-weight:500; font-variant-numeric:tabular-nums; }
+.board-ladder-height small { font-size:11px; margin-left:2px; font-weight:400; }
+.board-ladder-height > span { font-size:10px; line-height:16px; color:var(--terminal-muted,var(--muted)); }
+.board-ladder-stocks { display:flex; flex-direction:column; min-width:0; }
+.board-ladder-stock { width:100%; text-align:left; color:var(--terminal-text,var(--text)); border:0; border-bottom:1px solid color-mix(in srgb,var(--terminal-text) 8%,var(--terminal-panel)); background:var(--terminal-panel,var(--panel)); border-radius:0; padding:6px 10px; cursor:pointer; min-width:0; }
+.board-ladder-stock:last-child { border-bottom:0; }
+.board-ladder-stock:hover { background:var(--terminal-accent-soft,var(--panel)); }
+.board-ladder-stock > div { display:flex; align-items:center; gap:6px; min-width:0; line-height:20px; }
+.board-ladder-stock > div strong { font-size:13px; font-weight:500; white-space:nowrap; }
+.board-ladder-stock > div code { font-size:11px; color:var(--terminal-muted,var(--muted)); }
+.board-stock-industry { flex:1; min-width:0; text-align:right; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--terminal-muted,var(--muted)); font-size:11px; }
+.board-ladder-stock dl { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); margin:1px 0 0; line-height:19px; }
+.board-ladder-stock dl > div:nth-child(2) { text-align:center; }
+.board-ladder-stock dl > div:last-child { text-align:right; }
+.board-ladder-stock dt { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.board-ladder-stock dd { font-size:12px; margin:0; font-variant-numeric:tabular-nums; }
+.board-ladder-empty { padding:16px 12px; margin:0; color:var(--terminal-muted,var(--muted)); font-size:13px; line-height:1.6; }
+@media(max-width:1150px) { .board-ladder-groups { flex:none; max-height:420px; min-height:0; } }

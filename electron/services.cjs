@@ -5,7 +5,14 @@ const EAST_HISTORY = "https://push2his.eastmoney.com/api/qt";
 const SEARCH_API = "https://searchapi.eastmoney.com/api/suggest/get";
 const { execFile } = require("node:child_process");
 const path = require("node:path");
-const { Worker } = require("node:worker_threads");
+const { createServiceRuntime, semanticKey } = require("./service-runtime.cjs");
+const { BoundedCache, credentialFingerprint } = require("./bounded-cache.cjs");
+const { createWorkerRunner, busyError } = require("./worker-runner.cjs");
+const { fetchJsonWithPolicy, fetchArrayBufferWithPolicy, runWithTransportSlot } = require("./http-client.cjs");
+const serviceController = new AbortController();
+const workerRunner = createWorkerRunner();
+const serviceRuntime = createServiceRuntime({ controller: serviceController, now: () => Date.now() });
+const serviceRequests = new Set();
 const {
   thsProviderError,
   withThsAccessToken
@@ -14,46 +21,46 @@ const {
   decorateLimitPoolItem,
   scoreFirstBoardQuality,
   computePatternStrategies,
-  buildHistoricalStrategyStats,
   buildSectorLadder
 } = require("./strategy-intelligence.cjs");
 const {
   getNewsFeed,
   resetNewsCache,
+  shutdownNewsService,
   classifyEvent
 } = require("./news-service.cjs");
 const {
   tencentQuote,
   collectAuxiliarySources,
+  shutdownDataFederation,
   buildQuoteConsensus
 } = require("./data-federation.cjs");
 const {
-  buildSelectedStrategyReplay,
   STRATEGY_DEFINITIONS
 } = require("./strategy-signal-engine.cjs");
 
 const marketEmotionCache = { value: null, expiresAt: 0, promise: null };
 const marketSnapshotCache = { value: null, expiresAt: 0, promise: null };
-const ladderPoolsCaches = new Map();
-const historyCache = new Map();
-const chartCache = new Map();
-const federationCache = new Map();
-const topicPoolCache = new Map();
-const conceptChainCache = new Map();
-const eastmoneyOriginQueues = new Map();
-const sectorLookupCache = new Map();
-const sectorStrengthCache = new Map();
+const ladderPoolsCaches = new BoundedCache({ maxBytes: 2 * 1024 * 1024, maxEntries: 16, staleTtlMs: 0, now: () => Date.now() });
+const historyCache = new BoundedCache({ maxBytes: 32 * 1024 * 1024, maxEntries: 128, staleTtlMs: 0, now: () => Date.now() });
+const chartCache = new BoundedCache({ maxBytes: 16 * 1024 * 1024, maxEntries: 96, staleTtlMs: 0, now: () => Date.now() });
+const federationCache = new BoundedCache({ maxBytes: 2 * 1024 * 1024, maxEntries: 256, staleTtlMs: 0, now: () => Date.now() });
+const topicPoolCache = new BoundedCache({ maxBytes: 8 * 1024 * 1024, maxEntries: 128, staleTtlMs: 0, now: () => Date.now() });
+const conceptChainCache = new BoundedCache({ maxBytes: 4 * 1024 * 1024, maxEntries: 64, staleTtlMs: 0, now: () => Date.now() });
+const sectorLookupCache = new BoundedCache({ maxBytes: 512 * 1024, maxEntries: 256, staleTtlMs: 1800000, now: () => Date.now() });
+const sectorStrengthCache = new BoundedCache({ maxBytes: 4 * 1024 * 1024, maxEntries: 128, staleTtlMs: 0, now: () => Date.now() });
+const sectorExplorer = require("./sector-explorer.cjs").createSectorExplorer();
 const sectorProviderHealth = new Map();
 const sinaSectorCatalogCache = { value: null, expiresAt: 0, promise: null };
-const sinaOriginQueue = { lastRequestAt: 0, queue: Promise.resolve() };
-const securitySearchCache = new Map();
-const strategySignalCache = new Map();
+const securitySearchCache = new BoundedCache({ maxBytes: 512 * 1024, maxEntries: 256, staleTtlMs: 0, now: () => Date.now() });
+const strategySignalCache = new BoundedCache({ maxEntries: 12, maxBytes: 8 * 1024 * 1024, now: () => Date.now() });
+// Only active loaders own generations; finally removes them without retaining query keys.
+const strategySignalLoads = new Map();
 const strategyValidationUniverseCache = { value: null, expiresAt: 0, promise: null };
 const STRATEGY_SIGNAL_HISTORY_BARS = 720;
 const STRATEGY_SIGNAL_MAX_UNIVERSE = 300;
 const STRATEGY_SIGNAL_VALIDATION_SAMPLE = 120;
 const STRATEGY_SIGNAL_FETCH_CONCURRENCY = 4;
-const STRATEGY_SIGNAL_WORKER_TIMEOUT_MS = 2 * 60 * 1000;
 const PORTFOLIO_BACKTEST_MIN_BARS = 120;
 const PORTFOLIO_BACKTEST_MAX_BARS = 120;
 const PORTFOLIO_BACKTEST_WARMUP_BARS = 80;
@@ -70,10 +77,56 @@ try {
   // Some Electron runtimes do not expose this option; requests still have fallback handling.
 }
 
-function fetchJsonWithCurl(url, timeoutMs, referer = "") {
-  return new Promise((resolve, reject) => {
+function serviceSignal(signal) {
+  return serviceRuntime.signal(signal);
+}
+
+function shutdownServiceResources() {
+  serviceController.abort(new DOMException("应用正在退出，任务已取消", "AbortError"));
+  return Promise.allSettled([
+    ...serviceRequests,
+    serviceRuntime.shutdown(serviceController.signal.reason),
+    shutdownNewsService(),
+    shutdownDataFederation(),
+    workerRunner.shutdown(serviceController.signal.reason),
+    sectorExplorer.dispose()
+  ]).then(() => undefined);
+}
+
+function trackServiceRequest(promise) {
+  serviceRequests.add(promise);
+  promise.then(() => serviceRequests.delete(promise), () => serviceRequests.delete(promise));
+  return promise;
+}
+
+function cancelServiceJob(request) { return serviceRuntime.cancel(request); }
+function cancelServiceOwner(owner) { return serviceRuntime.cancelOwner(owner); }
+function getServiceDiagnostics() {
+  return { ...serviceRuntime.getDiagnostics(), caches: Object.fromEntries(Object.entries({ historyCache, chartCache, federationCache, topicPoolCache, conceptChainCache, sectorLookupCache, sectorStrengthCache, securitySearchCache, ladderPoolsCaches, strategySignalCache }).map(([name, cache]) => [name, cache.getDiagnostics()])) };
+}
+
+function fetchJsonWithCurl(url, timeoutMs, referer = "", signal) {
+  return Promise.resolve().then(() => serviceRuntime.track(() => {
+    const producerSignal = serviceSignal(signal);
+    return trackServiceRequest(runWithTransportSlot(() => executeJsonWithCurl(url, timeoutMs, referer, producerSignal), {
+      url, signal: producerSignal, minimumGapMs: 180
+    }));
+  }));
+}
+
+function executeJsonWithCurl(url, timeoutMs, referer, signal) {
+  return new Promise((settleResolve, settleReject) => {
+    let child, initialized = false, physicallyClosed = false, outcome;
+    const finish = () => {
+      if (!initialized || !outcome || (child?.once && !physicallyClosed)) return;
+      if (Object.prototype.hasOwnProperty.call(outcome, "error")) settleReject(outcome.error);
+      else settleResolve(outcome.value);
+    };
+    const resolve = value => { outcome = { value }; finish(); };
+    const reject = error => { outcome = { error }; finish(); };
+    signal.throwIfAborted();
     const timeoutSeconds = Math.max(3, Math.ceil(Number(timeoutMs || 12000) / 1000));
-    execFile(
+    child = execFile(
       curlExecutable(),
       [
         "--http1.1",
@@ -94,11 +147,13 @@ function fetchJsonWithCurl(url, timeoutMs, referer = "") {
       ],
       {
         windowsHide: true,
+        signal,
         timeout: timeoutSeconds * 1000 + 2000,
         maxBuffer: 16 * 1024 * 1024,
         encoding: "utf8"
       },
       (error, stdout, stderr) => {
+        if (signal.aborted) { reject(signal.reason); return; }
         if (error) {
           const detail = String(stderr || error.message || "").trim();
           reject(new Error(`行情备用通道失败：${detail || "curl error"}`));
@@ -122,6 +177,11 @@ function fetchJsonWithCurl(url, timeoutMs, referer = "") {
         }
       }
     );
+    // execFile's abort callback can precede physical exit. Keep admission until
+    // close confirms the process and its stdio handles have actually drained.
+    child?.once?.("close", () => { physicallyClosed = true; finish(); });
+    initialized = true;
+    finish();
   });
 }
 
@@ -129,113 +189,64 @@ function curlExecutable(platform = process.platform) {
   return platform === "win32" ? "curl.exe" : "curl";
 }
 
-async function fetchJson(url, options = {}, timeoutMs = 12000) {
-  let lastError;
-  const requestUrl = String(url);
-  const isEastmoney = /\.eastmoney\.com\//i.test(requestUrl);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (isEastmoney) {
-      const hostname = new URL(requestUrl).hostname;
-      const state = eastmoneyOriginQueues.get(hostname) || {
-        lastRequestAt: 0,
-        queue: Promise.resolve()
-      };
-      eastmoneyOriginQueues.set(hostname, state);
-      const minimumGap = hostname.startsWith("push2") ? 120 : 180;
-      const scheduled = state.queue.then(async () => {
-        const remaining = minimumGap - (Date.now() - state.lastRequestAt);
-        if (remaining > 0) {
-          await new Promise((resolve) => setTimeout(resolve, remaining));
-        }
-        state.lastRequestAt = Date.now();
-      });
-      state.queue = scheduled.catch(() => {});
-      await scheduled;
-    }
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          "Accept": "application/json, text/plain, */*",
-          "User-Agent": isEastmoney
-            ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36"
-            : "AStockMonitor/0.8",
-          ...(isEastmoney
-            ? {
-              "Referer": "https://quote.eastmoney.com/"
-            }
-            : {}),
-          ...(options.headers || {})
-        }
-      });
-      if (!response.ok) {
-        const error = new Error(`HTTP ${response.status}`);
-        error.status = response.status;
-        throw error;
-      }
-      const data = await response.json();
-      if (data?.rc && data.rc !== 0) throw new Error(data.msg || `数据源错误 ${data.rc}`);
-      return data;
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 350));
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-  if (isEastmoney) {
-    try {
-      return await fetchJsonWithCurl(
-        requestUrl,
-        timeoutMs,
-        "https://quote.eastmoney.com/"
-      );
-    } catch (curlError) {
-      if (curlError && typeof curlError === "object" && !curlError.cause) {
-        curlError.cause = lastError;
-      }
-      lastError = curlError;
-    }
-  }
-  throw lastError;
+function fetchJson(url, options = {}, timeoutMs = 12000) {
+  return Promise.resolve().then(() => serviceRuntime.track(() => trackServiceRequest(performFetchJson(url, options, timeoutMs))));
 }
 
-async function fetchDecodedText(url, options = {}, timeoutMs = 12000, encoding = "utf-8") {
-  let lastError;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const scheduled = sinaOriginQueue.queue.then(async () => {
-      const remaining = 450 - (Date.now() - sinaOriginQueue.lastRequestAt);
-      if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
-      sinaOriginQueue.lastRequestAt = Date.now();
+async function performFetchJson(url, options = {}, timeoutMs = 12000) {
+  const requestUrl = String(url);
+  const isEastmoney = /\.eastmoney\.com\//i.test(requestUrl);
+  const signal = serviceSignal(options.signal);
+  signal.throwIfAborted();
+  const hostname = isEastmoney ? new URL(requestUrl).hostname : "";
+  try {
+    const data = await fetchJsonWithPolicy(url, { ...options, signal }, {
+      timeoutMs,
+      retries: 1,
+      minimumGapMs: isEastmoney ? (hostname.startsWith("push2") ? 120 : 180) : 0,
+      headers: {
+        "User-Agent": isEastmoney
+          ? "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36"
+          : "AStockMonitor/0.8",
+        ...(isEastmoney ? { Referer: "https://quote.eastmoney.com/" } : {})
+      }
     });
-    sinaOriginQueue.queue = scheduled.catch(() => {});
-    await scheduled;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    signal.throwIfAborted();
+    if (data?.rc && data.rc !== 0) throw new Error(data.msg || `数据源错误 ${data.rc}`);
+    return data;
+  } catch (error) {
+    signal.throwIfAborted();
+    // Queue pressure is local capacity, not a provider outage. Falling back
+    // would create another request for a workload we have already rejected.
+    if (["QUEUE_FULL", "QUEUE_TIMEOUT"].includes(error?.code)) throw error;
+    if (!isEastmoney) throw error;
     try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal,
-        headers: {
-          "Accept": "application/json, text/javascript, text/plain, */*",
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36",
-          "Referer": "https://vip.stock.finance.sina.com.cn/mkt/",
-          ...(options.headers || {})
-        }
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return new TextDecoder(encoding).decode(await response.arrayBuffer());
-    } catch (error) {
-      lastError = error;
-      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
-    } finally {
-      clearTimeout(timer);
+      return await fetchJsonWithCurl(requestUrl, timeoutMs, "https://quote.eastmoney.com/", signal);
+    } catch (curlError) {
+      signal.throwIfAborted();
+      if (curlError && typeof curlError === "object" && !curlError.cause) curlError.cause = error;
+      throw curlError;
     }
   }
-  throw lastError;
+}
+
+function fetchDecodedText(url, options = {}, timeoutMs = 12000, encoding = "utf-8") {
+  return Promise.resolve().then(() => serviceRuntime.track(() => trackServiceRequest(performFetchDecodedText(url, options, timeoutMs, encoding))));
+}
+
+async function performFetchDecodedText(url, options = {}, timeoutMs = 12000, encoding = "utf-8") {
+  const signal = serviceSignal(options.signal);
+  signal.throwIfAborted();
+  const buffer = await fetchArrayBufferWithPolicy(url, { ...options, signal }, {
+    timeoutMs, retries: 1, minimumGapMs: 450,
+    headers: {
+      Accept: "application/json, text/javascript, text/plain, */*",
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/138.0.0.0 Safari/537.36",
+      Referer: "https://vip.stock.finance.sina.com.cn/mkt/"
+    }
+  });
+  signal.throwIfAborted();
+  return new TextDecoder(encoding).decode(buffer);
 }
 
 function marketFromCode(code) {
@@ -261,7 +272,7 @@ function securityExchangeFromCode(code = "", assetType = "stock") {
   if (assetType === "stock") {
     if (!isAStockCode(normalizedCode)) return "";
     if (/^(?:60[0135]|68[89])\d{3}$/.test(normalizedCode)) return "SH";
-    if (/^(?:00[0-3]|30[01])\d{3}$/.test(normalizedCode)) return "SZ";
+    if (/^(?:00[0-3]|30[012])\d{3}$/.test(normalizedCode)) return "SZ";
     if (/^[489]\d{5}$/.test(normalizedCode)) return "BJ";
     return "";
   }
@@ -317,6 +328,7 @@ function searchableAssetType(item = {}) {
 }
 
 function normalizeSearchSecurity(item = {}) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) return null;
   const assetType = searchableAssetType(item);
   if (!assetType) return null;
   const code = String(item.Code || "");
@@ -431,15 +443,19 @@ function isRiskStockName(name = "") {
 async function searchSecurities(query) {
   const text = String(query || "").trim();
   if (!text) return [];
-  const cacheKey = text.toLowerCase();
-  const cached = securitySearchCache.get(cacheKey);
-  if (cached?.value && cached.expiresAt > Date.now()) return cached.value;
+  return serviceRuntime.cached(securitySearchCache, text.toLowerCase(), 5 * 60 * 1000,
+    () => loadSecuritySuggestions(text), { shouldCache: rows => rows.length > 0 });
+}
+
+async function loadSecuritySuggestions(text) {
   const url = `${SEARCH_API}?input=${encodeURIComponent(text)}&count=40&type=14`;
   let rows = [];
   try {
     const json = await fetchJson(url, {}, 3500);
-    rows = json?.QuotationCodeTable?.Data || [];
+    const suggestions = json?.QuotationCodeTable?.Data;
+    rows = Array.isArray(suggestions) ? suggestions : [];
   } catch {
+    serviceRuntime.checkpoint();
     rows = [];
   }
   const result = rows
@@ -458,18 +474,12 @@ async function searchSecurities(query) {
     const direct = await directSearchAsset(text).catch(() => null);
     if (direct) result.push(direct);
   }
-  if (result.length) {
-    securitySearchCache.set(cacheKey, {
-      value: result,
-      expiresAt: Date.now() + 5 * 60 * 1000
-    });
-  }
   return result;
 }
 
 function isAStockCode(code = "") {
   const value = String(code).trim();
-  return /^(?:00[0-3]|30[01]|60[0135]|68[89])\d{3}$/.test(value) ||
+  return /^(?:00[0-3]|30[012]|60[0135]|68[89])\d{3}$/.test(value) ||
     /^[489]\d{5}$/.test(value);
 }
 
@@ -542,6 +552,19 @@ async function resolveBacktestSecurity(input, search = searchSecurities) {
   );
 }
 
+// Preserve quote completeness before legacy numeric defaults erase the
+// distinction between a real zero and an absent provider field.
+function missingMonitorQuoteFields(values, upstream = []) {
+  const prior = new Set(Array.isArray(upstream) ? upstream : []);
+  return ["latest", "changePct", "turnover", "amount"].filter((field) => {
+    const value = values[field];
+    return prior.has(field) ||
+      !["number", "string"].includes(typeof value) ||
+      (typeof value === "string" && !value.trim()) ||
+      !Number.isFinite(Number(value));
+  });
+}
+
 async function eastQuote(security, timeoutMs = 12000) {
   const fields =
     "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f59,f60,f116,f117,f127,f168,f169,f170,f171";
@@ -585,7 +608,10 @@ async function eastQuote(security, timeoutMs = 12000) {
     change: price(d.f169),
     changePct: percent(d.f170),
     amplitude: percent(d.f171),
-    source: "eastmoney"
+    source: "eastmoney",
+    missingFields: missingMonitorQuoteFields({
+      latest: d.f43, changePct: d.f170, turnover: d.f168, amount: d.f48
+    })
   };
 }
 
@@ -625,7 +651,8 @@ function normalizeTencentQuote(security, quote = {}) {
     changePct: numeric(quote.changePct),
     amplitude: numeric(quote.amplitude),
     updatedAt: String(quote.updatedAt || ""),
-    source: "tencent"
+    source: "tencent",
+    missingFields: missingMonitorQuoteFields(quote, quote.missingFields)
   };
 }
 
@@ -743,7 +770,8 @@ async function tencentHistory(security, limit = 160, fqt = 0) {
   try {
     json = await fetchJson(url, {}, 15000);
   } catch {
-    json = await fetchJsonWithCurl(url, 15000, "https://gu.qq.com/");
+    serviceRuntime.checkpoint();
+    json = await fetchJsonWithCurl(url, 15000, "https://gu.qq.com/", serviceSignal());
   }
   const payload = json?.data?.[symbol] || {};
   const field = adjustment ? `${adjustment}day` : "day";
@@ -960,31 +988,9 @@ function aggregateHistoryRows(rawRows, period = "week") {
   return result;
 }
 
-async function eastHistoryCached(
-  security,
-  limit = 160,
-  fqt = 1,
-  ttlMs = 8 * 60 * 1000,
-  options = {}
-) {
-  const key = `${security.secid}:${limit}:${fqt}`;
-  const forceRefresh = options?.forceRefresh === true;
-  const cached = historyCache.get(key);
-  if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise && (!forceRefresh || cached.forceRefresh === true)) return cached.promise;
-  const promise = eastHistory(security, limit, fqt)
-    .then((value) => {
-      if (historyCache.get(key)?.promise === promise) {
-        historyCache.set(key, { value, expiresAt: Date.now() + ttlMs });
-      }
-      return value;
-    })
-    .catch((error) => {
-      if (historyCache.get(key)?.promise === promise) historyCache.delete(key);
-      throw error;
-    });
-  historyCache.set(key, { promise, expiresAt: 0, forceRefresh });
-  return promise;
+async function eastHistoryCached(security, limit = 160, fqt = 1, ttlMs = 8 * 60 * 1000, options = {}) {
+  return serviceRuntime.cached(historyCache, `${security.secid}:${limit}:${fqt}`, ttlMs,
+    () => eastHistory(security, limit, fqt), options);
 }
 
 async function eastChart(security, interval = "101", limit = 160, adjustment = 1) {
@@ -1065,32 +1071,9 @@ async function eastChart(security, interval = "101", limit = 160, adjustment = 1
   }
 }
 
-async function eastChartCached(
-  security,
-  interval,
-  limit,
-  adjustment,
-  ttlMs,
-  options = {}
-) {
-  const key = `${security.secid}:${interval}:${limit}:${adjustment}`;
-  const forceRefresh = options?.forceRefresh === true;
-  const cached = chartCache.get(key);
-  if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise && (!forceRefresh || cached.forceRefresh === true)) return cached.promise;
-  const promise = eastChart(security, interval, limit, adjustment)
-    .then((value) => {
-      if (chartCache.get(key)?.promise === promise) {
-        chartCache.set(key, { value, expiresAt: Date.now() + ttlMs });
-      }
-      return value;
-    })
-    .catch((error) => {
-      if (chartCache.get(key)?.promise === promise) chartCache.delete(key);
-      throw error;
-    });
-  chartCache.set(key, { promise, expiresAt: 0, forceRefresh });
-  return promise;
+async function eastChartCached(security, interval, limit, adjustment, ttlMs, options = {}) {
+  return serviceRuntime.cached(chartCache, `${security.secid}:${interval}:${limit}:${adjustment}`, ttlMs,
+    () => eastChart(security, interval, limit, adjustment), options);
 }
 
 function withThsToken(refreshToken, request) {
@@ -1188,7 +1171,13 @@ async function thsQuote(security, settings) {
     })
   );
   const t = extractThsTable(json);
-  const latest = Number(firstValue(t, ["latest", "close"]));
+  const monitorValues = {
+    latest: firstValue(t, ["latest", "close"]),
+    changePct: firstValue(t, ["changeRatio", "changePct"]),
+    turnover: firstValue(t, ["turnoverRatio", "turnover"]),
+    amount: firstValue(t, ["latestAmount", "amount"])
+  };
+  const latest = Number(monitorValues.latest);
   if (!Number.isFinite(latest) || latest <= 0) {
     throw new Error("同花顺实时行情缺少有效最新价");
   }
@@ -1199,12 +1188,13 @@ async function thsQuote(security, settings) {
     low: Number(firstValue(t, ["low"])),
     open: Number(firstValue(t, ["open"])),
     preClose: Number(firstValue(t, ["preClose", "preclose"])),
-    changePct: Number(firstValue(t, ["changeRatio", "changePct"])),
-    turnover: Number(firstValue(t, ["turnoverRatio", "turnover"])),
-    amount: Number(firstValue(t, ["latestAmount", "amount"])),
+    changePct: Number(monitorValues.changePct),
+    turnover: Number(monitorValues.turnover),
+    amount: Number(monitorValues.amount),
     volume: Number(firstValue(t, ["latestVolume", "volume"])),
     industry: "",
-    source: "ths"
+    source: "ths",
+    missingFields: missingMonitorQuoteFields(monitorValues)
   };
 }
 
@@ -1239,24 +1229,8 @@ async function thsHistory(security, settings, limit = 160) {
 }
 
 async function thsHistoryCached(security, settings, limit = 160) {
-  const key = `ths:${security.thscode}:${limit}`;
-  const forceRefresh = settings?.forceRefresh === true;
-  const cached = historyCache.get(key);
-  if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise && (!forceRefresh || cached.forceRefresh === true)) return cached.promise;
-  const promise = thsHistory(security, settings, limit)
-    .then((value) => {
-      if (historyCache.get(key)?.promise === promise) {
-        historyCache.set(key, { value, expiresAt: Date.now() + 15 * 60 * 1000 });
-      }
-      return value;
-    })
-    .catch((error) => {
-      if (historyCache.get(key)?.promise === promise) historyCache.delete(key);
-      throw error;
-    });
-  historyCache.set(key, { promise, expiresAt: 0, forceRefresh });
-  return promise;
+  const key = `ths:${security.thscode}:${limit}:${credentialFingerprint(settings?.refreshToken)}`;
+  return serviceRuntime.cached(historyCache, key, 15 * 60 * 1000, () => thsHistory(security, settings, limit), settings);
 }
 
 function average(values) {
@@ -1708,7 +1682,7 @@ function buildTradePlan(analysis, quote, history, settings) {
 
 function priceLimitRate(code, name = "") {
   if (/ST|\*ST/i.test(name)) return 0.05;
-  if (/^(300|301|688|689)/.test(code)) return 0.2;
+  if (/^(300|301|302|688|689)/.test(code)) return 0.2;
   if (/^(8|4|9)/.test(code)) return 0.3;
   return 0.1;
 }
@@ -2080,10 +2054,6 @@ async function topicPoolForDate(date, type = "limit", options = {}) {
     : "eastmoney";
   const fallbackEnabled = options?.fallbackEnabled !== false;
   const key = `${type}:${compactDate}:${preferredProvider}:${fallbackEnabled ? "fallback" : "strict"}`;
-  const forceRefresh = options?.forceRefresh === true;
-  const cached = topicPoolCache.get(key);
-  if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise && (!forceRefresh || cached.forceRefresh === true)) return cached.promise;
   const endpoint = type === "failed" ? "getTopicZBPool" : "getTopicZTPool";
   const url =
     `https://push2ex.eastmoney.com/${endpoint}` +
@@ -2123,61 +2093,17 @@ async function topicPoolForDate(date, type = "limit", options = {}) {
       }
     }
   };
-  const promise = (type !== "limit"
+  const ttl = compactDate === todayInShanghai()
+    ? type === "failed" ? 15000 : 12000 : 24 * 60 * 60 * 1000;
+  return serviceRuntime.cached(topicPoolCache, key, ttl, () => type !== "limit"
     ? loadEastmoney()
     : preferredProvider === "ths"
-      ? loadWithFallback(
-          () => thsTopicPoolForDate(compactDate),
-          loadEastmoney
-        )
-      : loadWithFallback(
-          loadEastmoney,
-          () => thsTopicPoolForDate(compactDate)
-        ))
-    .then((value) => {
-      const isCurrentTradingDate = compactDate === todayInShanghai();
-      const ttl = isCurrentTradingDate
-        ? type === "failed" ? 15 * 1000 : 12 * 1000
-        : 24 * 60 * 60 * 1000;
-      if (topicPoolCache.get(key)?.promise === promise) {
-        topicPoolCache.set(key, { value, expiresAt: Date.now() + ttl });
-      }
-      return value;
-    })
-    .catch((error) => {
-      if (topicPoolCache.get(key)?.promise === promise) topicPoolCache.delete(key);
-      throw error;
-    });
-  topicPoolCache.set(key, { promise, expiresAt: 0, forceRefresh });
-  return promise;
+      ? loadWithFallback(() => thsTopicPoolForDate(compactDate), loadEastmoney)
+      : loadWithFallback(loadEastmoney, () => thsTopicPoolForDate(compactDate)), options);
 }
 
 function withSingleFlightCache(cache, ttlMs, loader, options = {}) {
-  const forceRefresh = options === true || options?.forceRefresh === true;
-  if (!forceRefresh && cache.value && cache.expiresAt > Date.now()) {
-    return Promise.resolve(cache.value);
-  }
-  if (cache.promise && (!forceRefresh || cache.promiseForceRefresh === true)) return cache.promise;
-  const promise = Promise.resolve().then(loader);
-  cache.promise = promise;
-  cache.promiseForceRefresh = forceRefresh;
-  promise
-    .then(
-      (value) => {
-        if (cache.promise === promise) {
-          cache.value = value;
-          cache.expiresAt = Date.now() + ttlMs;
-        }
-      },
-      () => {}
-    )
-    .finally(() => {
-      if (cache.promise === promise) {
-        cache.promise = null;
-        cache.promiseForceRefresh = false;
-      }
-    });
-  return promise;
+  return serviceRuntime.cachedObject(cache, ttlMs, loader, { ...options, forceRefresh: options === true || options?.forceRefresh === true, maxBytes: cache === marketSnapshotCache ? 8 * 1024 * 1024 : 2 * 1024 * 1024 });
 }
 
 async function recentLimitUpPools(count = 1, options = {}) {
@@ -2245,10 +2171,7 @@ async function currentLadderPools(options = {}) {
     options?.fallbackEnabled === false ? "strict" : "fallback",
     options?.multiSourceEnabled === false ? "single" : "cross"
   ].join(":");
-  if (!ladderPoolsCaches.has(cacheKey)) {
-    ladderPoolsCaches.set(cacheKey, { value: null, expiresAt: 0, promise: null });
-  }
-  return withSingleFlightCache(ladderPoolsCaches.get(cacheKey), 15 * 1000, async () => {
+  return serviceRuntime.cached(ladderPoolsCaches, cacheKey, 15 * 1000, async () => {
     const pools = await recentLimitUpPools(2, options);
     const current = pools[0] || { date: "", pool: [] };
     const previous = pools[1] || current;
@@ -2787,27 +2710,20 @@ async function findSector(industry) {
   if (!industry || industry === "未分类") return null;
   const key = String(industry).trim().toLowerCase();
   const cached = sectorLookupCache.get(key);
-  if (cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise) return cached.promise;
-  const promise = fetchJson(
-    `${SEARCH_API}?input=${encodeURIComponent(industry)}&count=20&type=14`
-  ).then((json) => {
-    const items = json?.QuotationCodeTable?.Data || [];
-    const match =
-      items.find((x) => x.Classify === "BK" && x.Name === industry) ||
-      items.find((x) => x.Classify === "BK" && (x.Name.includes(industry) || industry.includes(x.Name)));
-    const value = match
-      ? { code: match.Code, name: match.Name, secid: match.QuoteID }
-      : null;
-    sectorLookupCache.set(key, { value, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
-    return value;
-  }).catch((error) => {
-    if (cached?.value) return cached.value;
-    sectorLookupCache.delete(key);
-    throw error;
-  });
-  sectorLookupCache.set(key, { ...cached, promise, expiresAt: cached?.expiresAt || 0 });
-  return promise;
+  let stale = false;
+  return serviceRuntime.cached(sectorLookupCache, key, () => stale ? 0 : 6 * 60 * 60 * 1000, async () => {
+    try {
+      const json = await fetchJson(`${SEARCH_API}?input=${encodeURIComponent(industry)}&count=20&type=14`);
+      const items = json?.QuotationCodeTable?.Data || [];
+      const match = items.find(x => x.Classify === "BK" && x.Name === industry)
+        || items.find(x => x.Classify === "BK" && (x.Name.includes(industry) || industry.includes(x.Name)));
+      return match ? { code: match.Code, name: match.Name, secid: match.QuoteID } : null;
+    } catch (error) {
+      serviceRuntime.checkpoint();
+      if (cached?.value) { stale = true; return cached.value; }
+      throw error;
+    }
+  }, { shouldCache: () => !stale });
 }
 
 async function searchSectors(query) {
@@ -3065,12 +2981,8 @@ async function getConceptChain(input, settings = {}) {
   if (!rootName) return null;
   const hasThsToken = Boolean(settings.refreshToken);
   const sectorCode = typeof input === "object" ? String(input?.code || "") : "";
-  const cacheKey = `${rootName.toLowerCase()}:${sectorCode}:${hasThsToken ? "ths" : "public"}`;
-  const cached = conceptChainCache.get(cacheKey);
-  if (cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise) return cached.promise;
-
-  const promise = (async () => {
+  const cacheKey = `${rootName.toLowerCase()}:${sectorCode}:${credentialFingerprint(settings.refreshToken)}`;
+  return serviceRuntime.cached(conceptChainCache, cacheKey, 30 * 60 * 1000, async () => {
     const query = `${rootName}概念股，列出所属同花顺概念、股票简称和股票代码，剔除ST`;
     if (!hasThsToken) {
       return freeConceptChain(input, rootName, query);
@@ -3135,20 +3047,7 @@ async function getConceptChain(input, settings = {}) {
     return groups.length
       ? value
       : freeConceptChain(input, rootName, query, "同花顺增强未返回可解析细分，已自动切换免费行情");
-  })()
-    .then((value) => {
-      conceptChainCache.set(cacheKey, {
-        value,
-        expiresAt: Date.now() + 30 * 60 * 1000
-      });
-      return value;
-    })
-    .catch((error) => {
-      conceptChainCache.delete(cacheKey);
-      throw error;
-    });
-  conceptChainCache.set(cacheKey, { promise, expiresAt: 0 });
-  return promise;
+  });
 }
 
 function buildSectorBreadthDiagnostics(rawMembers = []) {
@@ -3454,27 +3353,15 @@ function extractThsSectorMembers(json) {
 }
 
 async function getSinaSectorCatalog() {
-  if (sinaSectorCatalogCache.value && sinaSectorCatalogCache.expiresAt > Date.now()) {
-    return sinaSectorCatalogCache.value;
-  }
-  if (sinaSectorCatalogCache.promise) return sinaSectorCatalogCache.promise;
-  const promise = fetchDecodedText(
-    "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php",
-    {},
-    10000,
-    "gb18030"
-  ).then(parseSinaSectorCatalog).then((value) => {
-    sinaSectorCatalogCache.value = value;
-    sinaSectorCatalogCache.expiresAt = Date.now() + 30 * 60 * 1000;
-    sinaSectorCatalogCache.promise = null;
-    return value;
-  }).catch((error) => {
-    sinaSectorCatalogCache.promise = null;
-    if (sinaSectorCatalogCache.value) return sinaSectorCatalogCache.value;
-    throw error;
+  return withSingleFlightCache(sinaSectorCatalogCache, 30 * 60 * 1000, async () => {
+    try {
+      return parseSinaSectorCatalog(await fetchDecodedText("https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php", {}, 10000, "gb18030"));
+    } catch (error) {
+      serviceRuntime.checkpoint();
+      if (sinaSectorCatalogCache.value) return sinaSectorCatalogCache.value;
+      throw error;
+    }
   });
-  sinaSectorCatalogCache.promise = promise;
-  return promise;
 }
 
 async function loadSinaSector(industry) {
@@ -3804,46 +3691,22 @@ async function sectorStrength(industryOrSector, context = {}) {
   );
   if (!cacheKey) return null;
   const cached = sectorStrengthCache.get(cacheKey);
-  const forceRefresh = context.options?.forceRefresh === true;
-  if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise) return cached.promise;
-  const promise = loadSectorStrength(industryOrSector, context)
-    .then((value) => {
-      if (value) {
-        sectorStrengthCache.set(cacheKey, {
-          value,
-          staleUntil: Date.now() + 30 * 60 * 1000,
-          expiresAt: Date.now() + 90 * 1000
-        });
-        return value;
-      }
-      if (cached?.value && cached.staleUntil > Date.now()) {
-        return {
-          ...cached.value,
-          partial: true,
-          sourceState: "上次有效数据接力",
-          dataSource: `${cached.value.dataSource || "板块源"}缓存`,
-          warning: "实时板块源本次均不可用，已保留最近30分钟内的有效详情；请留意数据时间。"
-        };
-      }
-      sectorStrengthCache.delete(cacheKey);
-      return null;
-    })
-    .catch((error) => {
-      if (cached?.value && cached.staleUntil > Date.now()) {
-        return {
-          ...cached.value,
-          partial: true,
-          sourceState: "上次有效数据接力",
-          dataSource: `${cached.value.dataSource || "板块源"}缓存`,
-          warning: "实时板块源本次均不可用，已保留最近30分钟内的有效详情；请留意数据时间。"
-        };
-      }
-      sectorStrengthCache.delete(cacheKey);
-      throw error;
-    });
-  sectorStrengthCache.set(cacheKey, { ...cached, promise, expiresAt: cached?.expiresAt || 0 });
-  return promise;
+  return serviceRuntime.cached(sectorStrengthCache, cacheKey, 90000, async () => {
+    let failure;
+    try {
+      const value = await loadSectorStrength(industryOrSector, context);
+      serviceRuntime.checkpoint();
+      if (value) return value;
+    } catch (error) { serviceRuntime.checkpoint(); failure = error; }
+    if (cached?.value && cached.staleUntil > Date.now()) {
+      return { ...cached.value, partial: true, sourceState: "上次有效数据接力",
+        dataSource: `${cached.value.dataSource || "板块源"}缓存`,
+        warning: "实时板块源本次均不可用，已保留最近30分钟内的有效详情；请留意数据时间。" };
+    }
+    if (failure) throw failure;
+    return null;
+  }, { forceRefresh: context.options?.forceRefresh === true, staleTtlMs: 30 * 60 * 1000,
+    shouldCache: value => Boolean(value) && !value.partial });
 }
 
 async function analyzeSector(input, options = {}) {
@@ -4441,7 +4304,7 @@ async function analyzeSecurity(input, settings = {}) {
   selectedSet.add("riskVeto");
   const selectedIds = [...selectedSet];
   analysis.risks = Array.isArray(analysis.risks) ? analysis.risks : [];
-  analysis.historicalStats = buildHistoricalStrategyStats(
+  analysis.historicalStats = await buildHistoricalStrategyStatsInWorker(
     replayHistory,
     security.code,
     core.quote.name,
@@ -4580,13 +4443,10 @@ async function getDataFederation(input, settings = {}) {
     security.code,
     settings.provider || "eastmoney",
     settings.multiSourceEnabled === false ? "single" : "multi",
-    settings.refreshToken ? "ths" : "",
-    settings.tushareToken ? "ts" : ""
+    credentialFingerprint(settings.refreshToken, settings.tushareToken),
+    settings.fallbackEnabled === false ? "strict" : "fallback"
   ].join(":");
-  const cached = federationCache.get(key);
-  if (cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise) return cached.promise;
-  const promise = (async () => {
+  return serviceRuntime.cached(federationCache, key, 15000, async () => {
     const snapshot = await getQuoteSnapshot(security, settings);
     const core = {
       quote: snapshot.quote,
@@ -4596,17 +4456,7 @@ async function getDataFederation(input, settings = {}) {
       providerLatencyMs: snapshot.latencyMs
     };
     return quoteFederation(security, core, settings);
-  })()
-    .then((value) => {
-      federationCache.set(key, { value, expiresAt: Date.now() + 15_000 });
-      return value;
-    })
-    .catch((error) => {
-      federationCache.delete(key);
-      throw error;
-    });
-  federationCache.set(key, { promise, expiresAt: 0 });
-  return promise;
+  });
 }
 
 const CHART_RANGE_LIMITS = {
@@ -4642,6 +4492,26 @@ function chartAdjustment(value) {
 async function getChart(input, interval = "101", options = {}) {
   const security = toSecurity(input);
   if (!/^\d{6}$/.test(security.code)) throw new Error("请输入正确的6位股票代码");
+  return chartForSecurity(security, interval, options);
+}
+
+// Internal review-only identities. Ordinary chart/quote/analysis entry points
+// continue to accept only their existing stock, ETF and convertible-bond inputs.
+const REVIEW_INDEX_SECURITIES = new Map([
+  ["1.000985", "中证全指"], ["1.000001", "上证指数"],
+  ["0.399001", "深证成指"], ["0.399006", "创业板指"], ["1.000300", "沪深300"]
+].map(([secid, name]) => [secid, Object.freeze({
+  code: secid.slice(2), secid, thscode: `${secid.slice(2)}.${secid.startsWith("1.") ? "SH" : "SZ"}`,
+  name, assetType: "index"
+})]));
+
+async function getReviewIndexChart(secid, options = {}) {
+  const security = REVIEW_INDEX_SECURITIES.get(secid);
+  if (!security) throw new Error(`Unsupported review index: ${String(secid)}`);
+  return chartForSecurity(security, "101", { ...options, adjustment: 0 });
+}
+
+async function chartForSecurity(security, interval, options) {
   const frame = String(interval);
   const ranges = CHART_RANGE_LIMITS[frame];
   if (!ranges) throw new Error(`不支持的K线周期：${interval}`);
@@ -4769,7 +4639,7 @@ function strategySignalNumber(...values) {
 
 function strategyBoardBucket(code = "") {
   const value = String(code);
-  if (/^(300|301)/.test(value)) return "创业板";
+  if (/^(300|301|302)/.test(value)) return "创业板";
   if (/^(688|689)/.test(value)) return "科创板";
   if (/^(4|8|9)/.test(value)) return "北交所";
   if (/^(6|000|001|002|003)/.test(value)) return "沪深主板";
@@ -4778,7 +4648,7 @@ function strategyBoardBucket(code = "") {
 
 function strategyValidationBoard(code = "") {
   const value = String(code);
-  if (/^(300|301)/.test(value)) return "growth";
+  if (/^(300|301|302)/.test(value)) return "growth";
   if (/^(688|689)/.test(value)) return "star";
   if (/^(4|8|9)/.test(value)) return "beijing";
   return "main";
@@ -5631,6 +5501,9 @@ function enrichStrategySignalReport(report = {}, candidates = [], context = {}) 
   const strategyAudit = auditedStrategies.map((strategy) => ({
     id: strategy.id,
     name: strategy.name,
+    ...(strategy.version ? { version: strategy.version, sources: strategy.sources,
+      parameters: strategy.parameters, adaptationNote: strategy.adaptationNote,
+      componentNames: strategy.componentNames } : {}),
     detail: strategy.detail,
     type: strategy.type,
     components: strategy.components,
@@ -5797,6 +5670,7 @@ async function strategySignalMapConcurrent(items, concurrency, worker) {
     { length: Math.min(Math.max(1, concurrency), source.length) },
     async () => {
       while (cursor < source.length) {
+        serviceRuntime.checkpoint();
         const index = cursor;
         cursor += 1;
         try {
@@ -5805,6 +5679,7 @@ async function strategySignalMapConcurrent(items, concurrency, worker) {
             value: await worker(source[index], index)
           };
         } catch (error) {
+          serviceRuntime.checkpoint();
           results[index] = {
             ok: false,
             error: error instanceof Error ? error.message : String(error)
@@ -5814,6 +5689,7 @@ async function strategySignalMapConcurrent(items, concurrency, worker) {
     }
   );
   await Promise.all(runners);
+  serviceRuntime.checkpoint();
   return results;
 }
 
@@ -6137,57 +6013,22 @@ function strategySignalOptions(raw = {}) {
   };
 }
 
-function buildStrategySignalReportInWorker(
-  candidates,
-  historiesByCode,
-  benchmarkRows,
-  replay
-) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      path.join(__dirname, "strategy-signal-worker.cjs"),
-      {
-        workerData: {
-          candidates,
-          historiesByCode,
-          benchmarkRows,
-          replay
-        }
-      }
-    );
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      void worker.terminate();
-      reject(new Error("策略回放计算超时，已停止本轮任务以保证软件可用"));
-    }, STRATEGY_SIGNAL_WORKER_TIMEOUT_MS);
-    timer.unref?.();
+function buildHistoricalStrategyStatsInWorker(history, code, name, selectedIds, benchmarkHistory, options = {}, signal) {
+  return serviceRuntime.track(() => workerRunner.run(path.join(__dirname, "legacy-analysis-worker.cjs"), {
+    history, code, name, selectedIds, benchmarkHistory, options
+  }, { signal: serviceSignal(signal), timeoutMessage: "历史策略分析计算超时，已停止本轮任务以保证软件可用" }));
+}
 
-    const finish = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      worker.removeAllListeners();
-      void worker.terminate();
-      if (error) reject(error);
-      else resolve(value);
-    };
+function buildStrategySignalReportInWorker(candidates, historiesByCode, benchmarkRows, replay) {
+  return serviceRuntime.track(() => workerRunner.run(path.join(__dirname, "strategy-signal-worker.cjs"), {
+    candidates, historiesByCode, benchmarkRows, replay
+  }, { signal: serviceSignal(), timeoutMessage: "策略回放计算超时，已停止本轮任务以保证软件可用" }));
+}
 
-    worker.once("message", (message) => {
-      if (message?.ok) {
-        finish(null, message.value);
-        return;
-      }
-      finish(new Error(String(message?.error || "策略回放工作线程失败")));
-    });
-    worker.once("error", (error) => finish(error));
-    worker.once("exit", (code) => {
-      if (code !== 0) {
-        finish(new Error(`策略回放工作线程异常退出：${code}`));
-      }
-    });
-  });
+function buildSingleStockReplaysInWorker(strategyIds, security, history, benchmarkHistory, replayOptions) {
+  return serviceRuntime.track(() => workerRunner.run(path.join(__dirname, "portfolio-backtest-worker.cjs"), {
+    task: "single-stock-replay", strategyIds, security, history, benchmarkHistory, replayOptions
+  }, { signal: serviceSignal(), timeoutMessage: "个股回测计算超时，已停止本轮任务以保证软件可用" }));
 }
 
 async function loadStrategySignals(options, runtime = {}) {
@@ -6345,34 +6186,29 @@ async function loadStrategySignals(options, runtime = {}) {
   });
 }
 
-async function scanStrategySignals(rawOptions = {}) {
+function scanStrategySignals(rawOptions = {}, runtime = {}) {
   const options = strategySignalOptions(rawOptions);
   const cacheKey = JSON.stringify(options);
-  const cached = strategySignalCache.get(cacheKey);
-  // 即使用户反复点击刷新，也只允许同一套参数存在一个在途扫描。
-  if (cached?.promise) return cached.promise;
-  if (rawOptions?.refresh !== true) {
-    if (cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  }
-  const promise = loadStrategySignals(options, {
-    forceRefresh: rawOptions?.refresh === true
-  })
-    .then((value) => {
-      strategySignalCache.set(cacheKey, {
-        value,
-        expiresAt: Date.now() + 5 * 60 * 1000
-      });
+  const forceRefresh = rawOptions?.refresh === true;
+  const identity = JSON.stringify([cacheKey, forceRefresh]);
+  return serviceRuntime.run("scan", identity, runtime, async () => {
+    const cached = strategySignalCache.get(cacheKey);
+    if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+    const generation = {};
+    strategySignalLoads.set(cacheKey, generation);
+    try {
+      const value = await loadStrategySignals(options, { forceRefresh });
+      serviceRuntime.checkpoint();
+      // A newer load may already have published and removed its generation.
+      // Absence is not permission for an older producer to replace that result.
+      if (strategySignalLoads.get(cacheKey) === generation) {
+        strategySignalCache.set(cacheKey, { value, expiresAt: Date.now() + 5 * 60 * 1000 });
+      }
       return value;
-    })
-    .catch((error) => {
-      strategySignalCache.delete(cacheKey);
-      throw error;
-    });
-  if (strategySignalCache.size >= 12 && !strategySignalCache.has(cacheKey)) {
-    strategySignalCache.delete(strategySignalCache.keys().next().value);
-  }
-  strategySignalCache.set(cacheKey, { promise, expiresAt: 0 });
-  return promise;
+    } finally {
+      if (strategySignalLoads.get(cacheKey) === generation) strategySignalLoads.delete(cacheKey);
+    }
+  });
 }
 
 async function getLimitUpSectorBoard(options = {}) {
@@ -6579,6 +6415,13 @@ function getStrategyDefinitions() {
     id: String(definition.id || ""),
     name: String(definition.name || definition.id || ""),
     type: definition.type === "composite" ? "composite" : "base",
+    ...(definition.version ? {
+      version: definition.version,
+      sources: definition.sources,
+      parameters: definition.parameters,
+      adaptationNote: definition.adaptationNote,
+      componentNames: definition.componentNames
+    } : {}),
     detail: String(definition.detail || ""),
     conditions: Array.isArray(definition.conditions)
       ? definition.conditions.map(String)
@@ -6595,83 +6438,107 @@ async function loadBacktestHistory(
   security,
   settings = {},
   limit = 260,
-  loaders = {}
+  loaders = {},
+  requirements = {}
 ) {
+  serviceRuntime.checkpoint();
   const loadThs = loaders.ths || ((target, bars) =>
     thsHistoryCached(target, settings, bars));
   const loadEastmoney = loaders.eastmoney || ((target, bars) =>
     eastMoneyHistory(target, bars, 0));
   const loadPublic = loaders.public || ((target, bars) =>
     eastHistoryCached(target, bars, 0, 20 * 60 * 1000));
-  const thsSelected = settings?.provider === "ths";
-  const hasThsToken = Boolean(String(settings?.refreshToken || "").trim());
-  if (thsSelected && hasThsToken) {
+  const loadStandard = async () => {
+    serviceRuntime.checkpoint();
+    const thsSelected = settings?.provider === "ths";
+    const hasThsToken = Boolean(String(settings?.refreshToken || "").trim());
+    if (thsSelected && hasThsToken) {
+      try {
+        const rows = await serviceRuntime.track(() => loadThs(security, limit));
+        serviceRuntime.checkpoint();
+        if (!Array.isArray(rows) || !rows.length) {
+          throw new Error("历史行情为空");
+        }
+        return rows;
+      } catch (error) {
+        serviceRuntime.checkpoint();
+        if (settings?.fallbackEnabled === false) {
+          throw new Error(
+            `同花顺历史行情获取失败，且已关闭备用行情：${error?.message || error}`
+          );
+        }
+      }
+    }
     try {
-      const rows = await loadThs(security, limit);
+      const rows = await serviceRuntime.track(() => loadEastmoney(security, limit));
+      serviceRuntime.checkpoint();
       if (!Array.isArray(rows) || !rows.length) {
-        throw new Error("历史行情为空");
+        throw new Error("东方财富历史行情为空");
       }
       return rows;
-    } catch (error) {
+    } catch (eastmoneyError) {
+      serviceRuntime.checkpoint();
       if (settings?.fallbackEnabled === false) {
         throw new Error(
-          `同花顺历史行情获取失败，且已关闭备用行情：${error?.message || error}`
+          `东方财富历史行情获取失败，且已关闭后续备用行情：${eastmoneyError?.message || eastmoneyError}`
         );
       }
+      return serviceRuntime.track(() => loadPublic(security, limit));
     }
+  };
+  if (requirements.requireAmount !== true) return loadStandard();
+  const incomplete = message => Object.assign(new Error(`回测数据不足：${message}`), { code: "BACKTEST_DATA_INCOMPLETE" });
+  const requiredWindow = Math.max(1, Math.round(Number(requirements.windowBars) || 80));
+  const check = rows => {
+    if (!Array.isArray(rows) || rows.length < limit) throw incomplete(`请求窗口 ${limit} 根，实际仅 ${rows?.length || 0} 根，不能缩短窗口后当作完整回测`);
+    const fields = ["volume", "amount"].map(field => ({ field, missing: rows.filter(row => row[field] === null || row[field] === undefined || row[field] === "" || !Number.isFinite(Number(row[field])) || Number(row[field]) < 0).length })).filter(item => item.missing);
+    if (fields.length) throw incomplete(`${security.code} ${fields.map(item => `${item.field} 缺失/无效 ${item.missing}/${rows.length} 根`).join("；")}；所选量价组合不能将缺数解释为0信号`);
+    let positiveRun = 0, evaluableWindow = false;
+    for (const row of rows) {
+      positiveRun = Number(row.volume) > 0 && Number(row.amount) > 0 ? positiveRun + 1 : 0;
+      if (positiveRun >= requiredWindow && (!requirements.signalFrom || row.date >= requirements.signalFrom)) evaluableWindow = true;
+    }
+    if (!evaluableWindow) throw incomplete(`请求信号区间没有连续${requiredWindow}根正量额可评估窗口（包含停牌或零量额区间）；不能将不可评估解释为0信号`);
+    return rows;
+  };
+  let originalError;
+  try { return check(await loadStandard()); }
+  catch (error) {
+    serviceRuntime.checkpoint();
+    if (settings?.fallbackEnabled === false) throw error;
+    originalError = error;
   }
   try {
-    const rows = await loadEastmoney(security, limit);
-    if (!Array.isArray(rows) || !rows.length) {
-      throw new Error("东方财富历史行情为空");
-    }
+    // The scanner's raw path uses documented Sohu volume/amount units and
+    // independently cross-checks raw OHLC with Tencent. Never estimate C*V.
+    const loadCompleteRaw = loaders.completeRaw || ((target, bars) => {
+      if (bars > 1500) throw incomplete(`公开量额备用源最多1500根，请求${bars}根超出来源窗口`);
+      return require("./trend-screener-adapter.cjs").createTrendMarketData({ historyBars: bars })
+        .fetchHistory(target, "none", { signal: serviceSignal() });
+    });
+    const result = await serviceRuntime.track(() => trackServiceRequest(Promise.resolve(loadCompleteRaw(security, limit))));
+    serviceRuntime.checkpoint();
+    if (result?.adjustment !== "none") throw incomplete("备用日线没有明确不复权口径，不能替换原价回测");
+    check(result.rows);
+    const rows = validateHistoryRows(result.rows.slice(-limit), {source:result.source || "verified raw",minimumRows:limit});
+    check(rows);
+    Object.defineProperties(rows, {
+      dataSource:{value:result.source || "verified-raw",enumerable:false},
+      actualAdjustment:{value:0,enumerable:false},
+      provenance:{value:result.provenance || null,enumerable:false}
+    });
     return rows;
-  } catch (eastmoneyError) {
-    if (settings?.fallbackEnabled === false) {
-      throw new Error(
-        `东方财富历史行情获取失败，且已关闭后续备用行情：${eastmoneyError?.message || eastmoneyError}`
-      );
-    }
-    return loadPublic(security, limit);
+  } catch (error) {
+    serviceRuntime.checkpoint();
+    throw incomplete(`${originalError?.message || "原来源未满足量额要求"}；核验量额备用失败：${error?.message || error}`);
   }
 }
 
 function buildPortfolioBacktestInWorker(payload = {}) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      path.join(__dirname, "portfolio-backtest-worker.cjs"),
-      { workerData: payload }
-    );
-    let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      void worker.terminate();
-      reject(new Error("组合回测计算超时，已停止本轮任务以保证软件可正常使用"));
-    }, STRATEGY_SIGNAL_WORKER_TIMEOUT_MS);
-    timer.unref?.();
-
-    const finish = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      worker.removeAllListeners();
-      void worker.terminate();
-      if (error) reject(error);
-      else resolve(value);
-    };
-    worker.once("message", (message) => {
-      if (message?.ok) {
-        finish(null, message.value);
-        return;
-      }
-      finish(new Error(String(message?.error || "组合回测工作线程失败")));
-    });
-    worker.once("error", (error) => finish(error));
-    worker.once("exit", (code) => {
-      if (code !== 0) finish(new Error(`组合回测工作线程异常退出：${code}`));
-    });
-  });
+  return serviceRuntime.track(() => workerRunner.run(path.join(__dirname, "portfolio-backtest-worker.cjs"), payload, {
+    signal: serviceSignal(),
+    timeoutMessage: "组合回测计算超时，已停止本轮任务以保证软件可正常使用"
+  }));
 }
 
 function buildPortfolioSignalTimeline(replay = {}, portfolio = {}) {
@@ -6877,7 +6744,11 @@ function safeBacktestStrategyProfile(settings = {}, selectedStrategies = []) {
   return profile;
 }
 
-async function runPortfolioBacktest(input = {}, serviceSettings = {}, runtime = {}) {
+function runPortfolioBacktest(input = {}, serviceSettings = {}, runtime = {}) {
+  return serviceRuntime.run("portfolio", semanticKey([input, serviceSettings]), runtime, () => executePortfolioBacktest(input, serviceSettings, runtime));
+}
+
+async function executePortfolioBacktest(input = {}, serviceSettings = {}, runtime = {}) {
   const request = input && typeof input === "object" ? input : {};
   const rawSecurities = Array.isArray(request.securities)
     ? request.securities
@@ -7457,7 +7328,11 @@ function buildSingleStockTradeLedger(samples = [], options = {}) {
   };
 }
 
-async function runBacktest(input, serviceSettings = {}, options = {}) {
+function runBacktest(input, serviceSettings = {}, options = {}, runtime = {}) {
+  return serviceRuntime.run("single", semanticKey([input, serviceSettings, options]), runtime, () => executeBacktest(input, serviceSettings, options));
+}
+
+async function executeBacktest(input, serviceSettings = {}, options = {}) {
   const security = await resolveBacktestSecurity(input);
 
   const rawStartDate = String(options?.startDate || "").trim();
@@ -7504,6 +7379,9 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
     );
   }
   const usesVerifiedSignalStrategy = verifiedStrategyIds.length > 0;
+  const amountDependentStrategies = require("../config/strategy-signal-combinations.json").filter(item => verifiedStrategyIds.includes(item.id));
+  const requiresAmount = amountDependentStrategies.length > 0;
+  const requiredAmountWindow = requiresAmount ? Math.max(...amountDependentStrategies.map(item => item.parameters.marketCalendarLookback)) : 0;
 
   const safeLookbackBars = singleStockBacktestLookbackBars(
     options.lookbackBars,
@@ -7542,7 +7420,9 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
     loadBacktestHistory(
       security,
       serviceBacktestSettings,
-      safeLookbackBars
+      safeLookbackBars,
+      {},
+      { requireAmount: requiresAmount, windowBars: requiredAmountWindow, signalFrom: requestedStartDate }
     ),
     loadBacktestHistory(
       benchmarkSecurity,
@@ -7571,6 +7451,21 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
     history[Math.max(0, history.length - PORTFOLIO_BACKTEST_MAX_BARS)]?.date || ""
   ).slice(0, 10);
   const signalTo = String(history.at(-1)?.date || "").slice(0, 10);
+  let requiredCalendarCoverage = null;
+  if (requiresAmount) {
+    if (benchmarkHistory.length < safeLookbackBars) throw new Error(`回测数据不足：基准请求窗口${safeLookbackBars}根，实际仅${benchmarkHistory.length}根，不能把日历不足解释为0信号`);
+    const firstSignalIndex = history.findIndex(row => row.date >= signalFrom);
+    if (firstSignalIndex < 0) throw new Error("回测数据不足：请求信号区间没有个股日线");
+    const requiredStockRows = history.slice(Math.max(0, firstSignalIndex - requiredAmountWindow + 1));
+    const from = requiredStockRows[0].date, to = requiredStockRows.at(-1).date;
+    const requiredMarketRows = benchmarkHistory.filter(row => row.date >= from && row.date <= to);
+    const marketDates = new Set(requiredMarketRows.map(row => row.date));
+    const stockDates = new Set(requiredStockRows.map(row => row.date));
+    const missingBenchmark = requiredStockRows.filter(row => !marketDates.has(row.date));
+    const missingStock = requiredMarketRows.filter(row => !stockDates.has(row.date));
+    if (missingBenchmark.length || missingStock.length) throw new Error(`回测数据不足：信号与预热日历不齐，基准缺${missingBenchmark.length}日、个股缺${missingStock.length}日；首个缺口${missingBenchmark[0]?.date || missingStock[0]?.date}，不能把缺页解释为0信号`);
+    requiredCalendarCoverage = { from, to, stockDays:requiredStockRows.length, benchmarkDays:requiredMarketRows.length, matched:true };
+  }
   const backtestRange = {
     requestedFrom: requestedStartDate,
     signalFrom,
@@ -7634,7 +7529,7 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
       signalTo,
       customEntryPrice
     };
-    const replay = buildSelectedStrategyReplay(
+    const { replay, replaysById } = await buildSingleStockReplaysInWorker(
       verifiedStrategyIds,
       security,
       history,
@@ -7739,20 +7634,7 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
     );
     const strategyBreakdown = verifiedStrategyIds.map((id) => {
       const definition = strategyDefinitionById.get(id);
-      const singleReplay = verifiedStrategyIds.length === 1
-        ? replay
-        : buildSelectedStrategyReplay(
-          [id],
-          security,
-          history,
-          benchmarkHistory,
-          {
-            ...replayOptions,
-            strategyId: id,
-            strategyName: String(definition?.name || id),
-            minimumVotes: 1
-          }
-        );
+      const singleReplay = verifiedStrategyIds.length === 1 ? replay : replaysById[id];
       const singleLedger = buildSingleStockTradeLedger(
         singleReplay.samples || [],
         ledgerOptions
@@ -7791,6 +7673,15 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
       generatedAt: new Date().toISOString(),
       lookbackBars: safeLookbackBars,
       range: backtestRange,
+      dataCoverage: {
+        amountRequired: requiresAmount,
+        requiredPositiveAmountWindow: requiredAmountWindow,
+        requestedCalendarCoverage: requiredCalendarCoverage,
+        requestedHistoryBars: safeLookbackBars,
+        stock: { source: history.dataSource || "provider-history", bars: history.length, from: history[0]?.date || "", to: history.at(-1)?.date || "", amountPresentBars: history.filter(row => row.amount !== null && row.amount !== undefined && row.amount !== "" && Number.isFinite(Number(row.amount)) && Number(row.amount) >= 0).length, provenance: history.provenance || null },
+        benchmark: { source: benchmarkHistory.dataSource || "provider-history", bars: benchmarkHistory.length, from: benchmarkHistory[0]?.date || "", to: benchmarkHistory.at(-1)?.date || "", amountRequired: false },
+        note: "根数与所需量额字段覆盖；不等于官方交易日历、证券状态或历史限价完整验证。"
+      },
       entryPriceMode: customEntryPrice
         ? "custom_limit_price"
         : "next_market_open",
@@ -7837,7 +7728,7 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
     };
   }
 
-  const historicalStats = buildHistoricalStrategyStats(
+  const historicalStats = await buildHistoricalStrategyStatsInWorker(
     history,
     security.code,
     security.name,
@@ -7974,11 +7865,13 @@ async function runBacktest(input, serviceSettings = {}, options = {}) {
 }
 
 module.exports = {
+  cancelServiceJob, cancelServiceOwner, getServiceDiagnostics, buildHistoricalStrategyStatsInWorker,
   searchSecurities,
   analyzeSecurity,
   getQuoteSnapshot,
   getDataFederation,
   getChart,
+  getReviewIndexChart,
   discoverLimitUps,
   discoverRecentLimitUps,
   scanStrategySignals,
@@ -7987,6 +7880,10 @@ module.exports = {
   getConceptChain,
   analyzeSector,
   sectorStrength,
+  getSectorCatalog: sectorExplorer.getSectorCatalog,
+  getSectorDetail: sectorExplorer.getSectorDetail,
+  getSectorClassifications: sectorExplorer.getSectorClassifications,
+  cancelSectorRequest: sectorExplorer.cancelSectorRequest,
   currentLadderPools,
   getNewsFeed,
   resetNewsCache,
@@ -8028,6 +7925,8 @@ module.exports = {
   enrichStrategySignalReport,
   strategySignalOptions,
   buildStrategySignalReportInWorker,
+  buildSingleStockReplaysInWorker,
+  shutdownServiceResources,
   buildStrategyDataQuality,
   buildStrategySampleDiversity,
   selectIndependentValidationSample,

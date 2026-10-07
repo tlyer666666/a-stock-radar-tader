@@ -13,6 +13,8 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
+import { nullableNumber } from "./numericValue";
+import { isUsableSecurityCollection, uniqueSecurities } from "./securitySelection";
 
 type ComparePayload = {
   security: Security;
@@ -34,12 +36,6 @@ const COMPARE_SELECTION_KEY = "a-stock-radar:compare-selection";
 let compareSelectionCache: Security[] = [];
 let compareResultsCache: Record<string, CompareResult> = {};
 let compareSelectionInitialized = false;
-
-const nullableNumber = (value: unknown) => {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
 
 const number = (value: unknown, fallback = 0) => {
   const parsed = nullableNumber(value);
@@ -93,16 +89,6 @@ const periodReturn = (history: Array<Record<string, any>>, days: number) => {
   return base > 0 ? ((latest / base) - 1) * 100 : null;
 };
 
-const uniqueSecurities = (items: Security[]) => {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const code = String(item?.code || "");
-    if (!code || seen.has(code)) return false;
-    seen.add(code);
-    return true;
-  });
-};
-
 const restoredCompareSelection = () => {
   if (compareSelectionInitialized) return compareSelectionCache;
   try {
@@ -112,15 +98,18 @@ const restoredCompareSelection = () => {
     if (persistent === null && legacySession === null && recoverable === null) {
       return compareSelectionCache;
     }
-    const stored = persistent === null && legacySession
-      ? JSON.parse(legacySession)
-      : loadSafeLocalJson<unknown>(COMPARE_SELECTION_KEY, []);
+    let stored = loadSafeLocalJson<unknown>(COMPARE_SELECTION_KEY, null, isUsableSecurityCollection);
+    let migrateSession = false;
+    if (stored === null && legacySession !== null) {
+      try {
+        const legacy: unknown = JSON.parse(legacySession);
+        if (isUsableSecurityCollection(legacy)) { stored = legacy; migrateSession = true; }
+      } catch { /* An invalid legacy session cannot hide a valid persistent backup. */ }
+    }
     compareSelectionInitialized = true;
-    if (Array.isArray(stored)) {
-      compareSelectionCache = uniqueSecurities(stored).slice(0, 6);
-      if (persistent === null) {
-        saveSafeLocalJson(COMPARE_SELECTION_KEY, compareSelectionCache);
-      }
+    compareSelectionCache = uniqueSecurities(stored).slice(0, 6);
+    if (migrateSession && saveSafeLocalJson(COMPARE_SELECTION_KEY, compareSelectionCache, isUsableSecurityCollection)) {
+      sessionStorage.removeItem(COMPARE_SELECTION_KEY);
     }
   } catch {
     compareSelectionCache = [];
@@ -156,6 +145,8 @@ export default function MultiStockCompareView({
     useState<Record<string, CompareResult>>(() => compareResultsCache);
   const [query, setQuery] = useState("");
   const [remoteCandidates, setRemoteCandidates] = useState<Security[]>([]);
+  const [remoteQuery, setRemoteQuery] = useState("");
+  const [composing, setComposing] = useState(false);
   const [searching, setSearching] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const previousReloadToken = useRef(reloadToken);
@@ -174,13 +165,17 @@ export default function MultiStockCompareView({
   }, [candidateList, selected.length]);
 
   const signature = selected.map((item) => item.code).join(",");
+  const savedSelectionSignature = useRef(signature);
 
   useEffect(() => {
     compareSelectionInitialized = true;
     compareSelectionCache = selected;
+    if (savedSelectionSignature.current === signature) return;
     try {
-      saveSafeLocalJson(COMPARE_SELECTION_KEY, selected);
-      sessionStorage.removeItem(COMPARE_SELECTION_KEY);
+      if (saveSafeLocalJson(COMPARE_SELECTION_KEY, selected, isUsableSecurityCollection)) {
+        savedSelectionSignature.current = signature;
+        sessionStorage.removeItem(COMPARE_SELECTION_KEY);
+      }
     } catch {
       // Cross-restart persistence is a convenience; storage failures do not block analysis.
     }
@@ -193,12 +188,7 @@ export default function MultiStockCompareView({
   useEffect(() => {
     const requestId = ++analysisRequestId.current;
     if (!selected.length) {
-      setResults((current) => Object.fromEntries(
-        Object.entries(current).map(([code, result]) => [
-          code,
-          result.loading ? { ...result, loading: false } : result
-        ])
-      ));
+      setResults({});
       return;
     }
     const forceReload = previousReloadToken.current !== reloadToken;
@@ -207,12 +197,13 @@ export default function MultiStockCompareView({
       ? selected
       : selected.filter((security) => {
           const existing = results[security.code];
-          return !existing?.loading && !existing?.payload;
+          return !existing?.payload;
         });
     setResults((current) => {
       const targetCodes = new Set(targets.map((security) => security.code));
+      const selectedCodes = new Set(selected.map(security => security.code));
       const next = Object.fromEntries(
-        Object.entries(current).map(([code, result]) => [
+        Object.entries(current).filter(([code]) => selectedCodes.has(code)).map(([code, result]) => [
           code,
           result.loading && !targetCodes.has(code) ? { ...result, loading: false } : result
         ])
@@ -352,7 +343,7 @@ export default function MultiStockCompareView({
     const requestId = ++searchRequestId.current;
     window.clearTimeout(searchTimer.current);
     const normalized = query.trim();
-    if (!normalized) {
+    if (!normalized || composing) {
       setRemoteCandidates([]);
       setSearching(false);
       return;
@@ -362,6 +353,7 @@ export default function MultiStockCompareView({
       try {
         const rows = await window.stockApi.search(normalized);
         if (requestId === searchRequestId.current) {
+          setRemoteQuery(normalized);
           setRemoteCandidates(
             uniqueSecurities(
               (Array.isArray(rows) ? rows : []).filter(
@@ -380,9 +372,10 @@ export default function MultiStockCompareView({
       window.clearTimeout(searchTimer.current);
       if (requestId === searchRequestId.current) searchRequestId.current += 1;
     };
-  }, [query]);
+  }, [query, composing]);
 
   const filteredCandidates = useMemo(() => {
+    if (composing) return [];
     const normalized = query.trim().toLowerCase();
     if (!normalized) return candidateList.slice(0, 20);
     const local = candidateList.filter((item: any) =>
@@ -391,8 +384,8 @@ export default function MultiStockCompareView({
         .toLowerCase()
         .includes(normalized)
     );
-    return uniqueSecurities([...local, ...remoteCandidates]).slice(0, 30);
-  }, [candidateList, query, remoteCandidates]);
+    return uniqueSecurities([...local, ...(remoteQuery === query.trim() ? remoteCandidates : [])]).slice(0, 30);
+  }, [candidateList, query, remoteCandidates, remoteQuery, composing]);
 
   const addSecurity = (security: Security) => {
     if (selected.some((item) => item.code === security.code)) {
@@ -542,12 +535,21 @@ export default function MultiStockCompareView({
 
   return (
     <div className="multi-compare-view">
-      <div className="page-heading">
-        <div>
+      <header className="page-heading compare-workspace-toolbar">
+        <div className="compare-workspace-title">
           <span className="eyebrow">MULTI-STOCK MATRIX</span>
           <h1>多股同列</h1>
-          <p>最多同时复核 6 只股票；添加和删除会自动记住，下次启动继续显示。</p>
         </div>
+        <label className="compare-toolbar-search">
+          <Search size={16} />
+          <input aria-label="搜索对比股票" value={query}
+            onChange={(event) => { searchRequestId.current += 1; setRemoteCandidates([]); setSearching(false); setQuery(event.target.value); }}
+            onCompositionStart={() => { searchRequestId.current += 1; window.clearTimeout(searchTimer.current); setRemoteCandidates([]); setSearching(false); setComposing(true); }}
+            onCompositionEnd={() => setComposing(false)}
+            onKeyDown={(event) => { if (event.key === "Enter" && (composing || event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault(); }}
+            placeholder="输入名称/代码，或从候选池添加" />
+          {searching && <LoaderCircle className="spin" size={14} />}
+        </label>
         <div className="heading-actions">
           <button
             className="primary-btn"
@@ -558,7 +560,7 @@ export default function MultiStockCompareView({
             刷新全部分析
           </button>
         </div>
-      </div>
+      </header>
 
       <section className="panel compare-selector-panel">
         <div className="compare-selector-head">
@@ -567,15 +569,6 @@ export default function MultiStockCompareView({
             <span>对比标的</span>
             <em>{selected.length}/6</em>
           </div>
-          <label>
-            <Search size={16} />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="输入名称/代码，或从候选池添加"
-            />
-            {searching && <LoaderCircle className="spin" size={14} />}
-          </label>
         </div>
         <div className="compare-selected-chips">
           {selected.map((security) => (
@@ -607,6 +600,7 @@ export default function MultiStockCompareView({
       </section>
 
       {!!selected.length && (
+        <div className="compare-matrix-scroll" role="region" aria-label="多股指标对比" tabIndex={0}>
         <section className="panel compare-matrix" style={columnsStyle}>
           <div className="compare-header-row">
             <div className="compare-metric-label">指标</div>
@@ -667,12 +661,17 @@ export default function MultiStockCompareView({
             </div>
           ))}
         </section>
+        </div>
       )}
 
+      <details className="compare-workspace-method">
+        <summary>对比范围与数据口径</summary>
+        <p>最多同时复核 6 只股票；添加和删除会自动记住，下次启动继续显示。</p>
       <div className="compare-boundary-note">
         <Activity size={16} />
         同列结果来自各股票真实行情与独立策略分析；缺失历史样本显示为“--”，不会以 0 分代替。
       </div>
+      </details>
     </div>
   );
 }

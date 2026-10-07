@@ -1,0 +1,62 @@
+<!doctype html><html><body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App, * as appModule from '/src/App.tsx';
+import {initialSettings} from '/src/domain/settings.ts';
+import StrategySignalsView from '/src/StrategySignalsView.tsx';
+import MultiStockCompareView from '/src/MultiStockCompareView.tsx';
+import { createPreviewApi } from '/src/previewApi.ts';
+window.fixtureSecurities = [
+  { code: '600000', secid:'1.600000', name:'甲银行', assetType:'stock' },
+  { code: '000001', secid:'0.000001', name:'乙银行', assetType:'stock' }
+];
+window.calls=[]; window.pending={}; window.failSave=false;
+window.stockApi=createPreviewApi();
+window.stockApi.cancelServiceJob=async id=>{window.calls.push({kind:'cancelJob',requestId:id});return true;};
+window.stockApi.getWatchlist=async()=>window.fixtureSecurities.map(x=>({...x,favorite:true,autoAdded:false}));
+window.stockApi.getHoldings=()=>{
+  const entries=(mode==='holdings-six' ? [...window.fixtureSecurities,...Array.from({length:4},(_,i)=>({code:'60000'+(i+1),secid:'1.60000'+(i+1),name:'额外持仓'+i,assetType:'stock'}))] : window.fixtureSecurities).map(x=>({...x,shares:100,costPrice:10}));
+  return mode==='holdings-startup' ? new Promise(resolve=>window.finishHoldingsLoad=()=>resolve(entries)) : Promise.resolve(entries);
+};
+window.stockApi.getSettings=async()=>({theme:'light',quoteRefreshSeconds:5,newsVoiceEnabled:false});
+window.stockApi.saveWatchlist=async(items)=>{window.calls.push({kind:'saveWatchlist',items});throw Error('注入失败：磁盘只读');};
+window.stockApi.analyze=security=>{window.calls.push({kind:'analyze',code:security.code});return new Promise(resolve=>window.pending[security.code]=()=>resolve({security,quote:{latest:12.34},analysis:{},history:[]}));};
+window.stockApi.getQuoteSnapshot=async(security)=>{window.calls.push({kind:'quote',code:security.code,time:performance.now()});await new Promise(r=>setTimeout(r,6000));return {security,quote:{latest:12.34,preClose:12}};};
+const mode=new URLSearchParams(location.search).get('mode');
+let content=mode==='compare'?React.createElement(MultiStockCompareView,{candidates:window.fixtureSecurities,live:false,onOpen(){}}):React.createElement(App);
+if(mode==='portfolio') {
+  localStorage.setItem('a-stock-radar-portfolio-backtest-basket-v1',JSON.stringify([window.fixtureSecurities[0]]));
+  localStorage.setItem('a-stock-radar-portfolio-backtest-setup-v1',JSON.stringify({strategyIds:['offline_strategy'],minimumVotes:1}));
+  window.stockApi.getStrategyDefinitions=async()=>[{id:'offline_strategy',name:'离线验证策略'}];
+  window.stockApi.search=async query=>{window.calls.push({kind:'portfolioSearch',query});return [window.fixtureSecurities[1]];};
+  window.stockApi.runPortfolioBacktest=input=>new Promise((resolve,reject)=>{
+    window.calls.push({kind:'portfolioRun',requestId:input.requestId,codes:input.securities.map(x=>x.code)});
+    window.finishPortfolio=()=>resolve({metrics:{endingEquity:501234},universe:{},equityCurve:[],trades:[],validation:{reason:'后台组合回测已完成'}});
+    window.rejectPortfolio=()=>reject(Error('离线组合回测失败'));
+  });
+}
+if(mode==='signals-cancel') {
+  window.stockApi.getStrategyDefinitions=async()=>[{id:'offline',name:'离线策略'}];
+  window.scanResolves=[];
+  window.stockApi.scanStrategySignals=input=>new Promise(resolve=>{
+    window.calls.push({kind:'scanRun',requestId:input.requestId});
+    window.scanResolves.push(()=>resolve({strategies:[],warning:'取消后不得显示的过期结果'}));
+  });
+  content=React.createElement(StrategySignalsView,{onOpenBacktest(){}});
+}
+if(mode==='news-retry') {
+  window.stockApi.getNewsFeed=async()=>{const count=window.calls.filter(x=>x.kind==='news').length+1;window.calls.push({kind:'news',time:Date.now()});if(count<=(window.newsFailUntil ?? 2))throw Error('离线模拟断网');return {items:[{id:'ok',title:'恢复后的资讯',summary:'测试',source:'fixture',relatedStocks:[],relatedSectors:[]}],sourceStatus:[],updatedAt:new Date().toISOString(),refreshAfterSeconds:5};};
+  content=React.createElement(appModule.NewsView,{payload:null,watchlist:[],holdings:[],limitUps:[],settings:{newsRefreshSeconds:5},onContentTypeChange(){},onOpenStock(){}});
+}
+if(mode==='chart-slow') {
+  const rows=Array.from({length:30},(_,i)=>({date:'2026-09-'+String(i+1).padStart(2,'0'),open:10,close:10.2,high:10.5,low:9.8,volume:1000,amount:10200}));
+  window.chartPending=0;window.maxChartPending=0;
+  window.stockApi.getChart=async(security,frame)=>{window.calls.push({kind:'chart',frame,time:Date.now()});if(frame==='1'){window.chartPending++;window.maxChartPending=Math.max(window.maxChartPending,window.chartPending);await new Promise(r=>setTimeout(r,11000));window.chartPending--;}return {rows,source:frame==='1'?'分钟图新来源':'日线来源',adjustment:'前复权',visibleLimit:30};};
+  content=React.createElement(appModule['Audit'+'Chart'],{security:window.fixtureSecurities[0],dailyHistory:rows,trendLabel:'测试'});
+}
+if(mode==='settings-strict') {
+  window.stockApi.testProvider=async()=>({ok:true,message:'连接测试完成',latency:1});
+  content=React.createElement(React.StrictMode,null,React.createElement(appModule['Audit'+'Settings'],{value:initialSettings,onSave:async()=>{window.calls.push({kind:'settingsSave'});if(window.failSettingsSave)throw Error('隔离保存错误');}}));
+}
+const root=createRoot(document.getElementById('root'));window.unmountFixture=()=>root.unmount();root.render(content);
+</script></body></html>

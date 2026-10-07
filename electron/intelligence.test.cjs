@@ -17,6 +17,15 @@ const {
   isBroadcastWorthy
 } = require("./news-service.cjs");
 
+test("302 historical intelligence identifies ChiNext twenty-percent limit events", () => {
+  const rows = Array.from({ length: 80 }, (_, index) => ({ date: new Date(Date.UTC(2026, 5, index + 1)).toISOString().slice(0, 10), open: 10, high: 10.1, low: 9.9, close: 10, volume: 1000000, amount: 300000000 }));
+  const events = () => buildHistoricalStrategyStats(rows, "302132", "合成样本").totalEvents;
+  Object.assign(rows[79], { high: 11, close: 11 });
+  assert.equal(events(), 0);
+  Object.assign(rows[79], { high: 12, close: 12 });
+  assert.equal(events(), 1);
+});
+
 test("A-share announcement feed filters content type and portfolio scopes", () => {
   const rows = [
     {

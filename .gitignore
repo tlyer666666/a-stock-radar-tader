@@ -17,6 +17,7 @@ release-builder/
 backups/
 .workbuddy/
 deliverables/
+artifacts/
 
 # 密钥（纵深防御，即使误放也不会进仓库）
 .env
@@ -31,3 +32,6 @@ deliverables/
 Thumbs.db
 *.swp
 *.swo
+
+__pycache__/
+*.pyc

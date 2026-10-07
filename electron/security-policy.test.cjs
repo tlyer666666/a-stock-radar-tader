@@ -100,6 +100,17 @@ test("new secrets are never downgraded to plaintext when safeStorage is unavaila
   assert.equal(encryptSecretForStorage("", unavailable), "");
 });
 
+test("already protected or empty settings never initialize the OS keychain just to inspect migration", () => {
+  let checks = 0;
+  const protectedStorage = {isEncryptionAvailable(){checks++;throw Error("OS approval pending");}};
+  for (const input of [{}, {refreshToken:"",tushareToken:""},
+    {refreshToken:"safe:synthetic",tushareToken:"safe:other"}, {refreshToken:"plain:"}]) {
+    const result = migrateLegacyStoredSecrets(input,["refreshToken","tushareToken"],protectedStorage);
+    assert.equal(checks,0);
+    assert.equal(result.settings.refreshToken, input.refreshToken === "plain:" ? "" : input.refreshToken);
+  }
+});
+
 test("legacy plaintext secrets migrate atomically to safe values", () => {
   const storage = fakeSafeStorage();
   const input = {

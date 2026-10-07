@@ -1,63 +1,59 @@
 "use strict";
 
-const tokenCaches = new Map();
+const { BoundedCache } = require("./bounded-cache.cjs");
+const { createServiceRuntime } = require("./service-runtime.cjs");
+const tokenCaches = new BoundedCache({ maxEntries: 128, maxBytes: 512 * 1024 });
+const tokenRuntime = createServiceRuntime();
 
 function tokenExpiry(json, now = Date.now()) {
-  const raw = Number(
+  const value = (
     json?.data?.expires_in
       ?? json?.data?.expiresIn
       ?? json?.expires_in
       ?? json?.expiresIn
   );
-  const ttlMs = Number.isFinite(raw) && raw > 0
+  const raw = value === null || value === undefined || value === "" ? NaN : Number(value);
+  const ttlMs = Number.isFinite(raw) && raw >= 0
     ? raw * (raw > 10_000_000 ? 1 : 1000)
     : 6.5 * 24 * 60 * 60 * 1000;
-  return now + Math.max(60_000, ttlMs - 60_000);
+  // Refresh early, but never extend a short server lifetime into a one-minute
+  // cache entry. Explicit zero means immediately expired; absent TTL has fallback.
+  return now + Math.max(0, ttlMs - Math.min(60_000, ttlMs * 0.1));
 }
 
 async function getThsAccessToken(refreshToken, fetchJson, options = {}) {
   const normalizedToken = String(refreshToken || "");
   if (!normalizedToken) throw new Error(options.missingMessage || "请先填写同花顺 refresh token");
+  tokenRuntime.checkpoint();
   const cacheKey = String(options.cacheKey || "default");
   const cached = tokenCaches.get(cacheKey);
-  if (
-    cached?.refreshToken === normalizedToken &&
-    cached.accessToken &&
-    cached.expiresAt > Date.now()
-  ) {
-    return cached.accessToken;
-  }
-  if (cached?.refreshToken === normalizedToken && cached.promise) {
-    return cached.promise;
-  }
-  const promise = (async () => {
-    const json = await fetchJson(`${options.baseUrl}/get_access_token`, {
+  const credential = cached?.value?.refreshToken ?? cached?.refreshToken;
+  if (credential && credential !== normalizedToken) tokenCaches.delete(cacheKey);
+  const subscription = tokenRuntime.cached(tokenCaches, cacheKey,
+    value => Math.max(0, value.expiresAt - Date.now()), async () => {
+    const json = await tokenRuntime.track(() => fetchJson(`${options.baseUrl}/get_access_token`, {
+      signal: tokenRuntime.signal(),
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         refresh_token: normalizedToken
       }
-    });
+    }));
+    tokenRuntime.checkpoint();
     const accessToken = String(json?.data?.access_token || "");
     if (!accessToken) throw new Error(json?.message || options.failureMessage || "同花顺 access token 获取失败");
-    tokenCaches.set(cacheKey, {
-      refreshToken: normalizedToken,
-      accessToken,
-      expiresAt: tokenExpiry(json)
-    });
-    return accessToken;
-  })().catch((error) => {
-    if (tokenCaches.get(cacheKey)?.promise === promise) tokenCaches.delete(cacheKey);
-    throw error;
+    return { refreshToken: normalizedToken, accessToken, expiresAt: tokenExpiry(json) };
   });
-  tokenCaches.set(cacheKey, { refreshToken: normalizedToken, promise });
-  return promise;
+  // Pending metadata identifies the credential before any token value exists.
+  const pending = tokenCaches.get(cacheKey);
+  if (pending?.promise) pending.refreshToken = normalizedToken;
+  return (await subscription).accessToken;
 }
 
 function invalidateThsAccessToken(refreshToken, cacheKey = "default", rejectedAccessToken = "") {
   const cached = tokenCaches.get(String(cacheKey));
-  const refreshTokenMatches = !refreshToken || cached?.refreshToken === String(refreshToken);
-  const accessTokenMatches = !rejectedAccessToken || cached?.accessToken === String(rejectedAccessToken);
+  const refreshTokenMatches = !refreshToken || (cached?.value?.refreshToken ?? cached?.refreshToken) === String(refreshToken);
+  const accessTokenMatches = !rejectedAccessToken || cached?.value?.accessToken === String(rejectedAccessToken);
   if (refreshTokenMatches && accessTokenMatches) {
     tokenCaches.delete(String(cacheKey));
   }
@@ -82,14 +78,24 @@ async function withThsAccessToken(refreshToken, fetchJson, request, options = {}
   const cacheKey = String(options.cacheKey || "default");
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const accessToken = await getThsAccessToken(refreshToken, fetchJson, options);
+    tokenRuntime.checkpoint();
     try {
-      return await request(accessToken);
+      const value = await request(accessToken);
+      tokenRuntime.checkpoint();
+      return value;
     } catch (error) {
+      tokenRuntime.checkpoint();
       if (attempt > 0 || !isThsAuthenticationError(error)) throw error;
       invalidateThsAccessToken(refreshToken, cacheKey, accessToken);
     }
   }
   throw new Error(options.failureMessage || "同花顺授权失败");
+}
+
+function shutdownThsTokenManager() {
+  const stopping = tokenRuntime.shutdown();
+  tokenCaches.clear();
+  return stopping;
 }
 
 module.exports = {
@@ -98,5 +104,6 @@ module.exports = {
   isThsAuthenticationError,
   thsProviderError,
   withThsAccessToken,
+  shutdownThsTokenManager,
   tokenExpiry
 };

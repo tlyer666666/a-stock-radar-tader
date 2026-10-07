@@ -2,6 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { injectCspConnectSources } from "./src/contentSecurityPolicy";
 import packageJson from "./package.json";
+import { createBuildProvenancePlugin } from "./qa/build-provenance.cjs";
 
 export default defineConfig(({ command }) => ({
   define: {
@@ -9,6 +10,7 @@ export default defineConfig(({ command }) => ({
   },
   plugins: [
     react(),
+    createBuildProvenancePlugin({ root: __dirname, kind: "web" }),
     {
       name: "environment-csp",
       transformIndexHtml(html) {

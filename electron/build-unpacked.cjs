@@ -163,6 +163,8 @@ function buildUnpacked(options = {}) {
         requirePath(source, name, fsImpl);
         copyTree(source, path.join(appRoot, name), fsImpl);
       }
+      const configRoot = path.join(projectRoot, "config");
+      if (fsImpl.existsSync(configRoot)) copyTree(configRoot, path.join(appRoot, "config"), fsImpl);
       fsImpl.copyFileSync(packagePath, path.join(appRoot, "package.json"));
 
       for (const name of fsImpl.readdirSync(path.join(appRoot, "electron"))) {

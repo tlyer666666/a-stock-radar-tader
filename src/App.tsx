@@ -1,4 +1,10 @@
-﻿import {
+import { createServiceJobScope } from "./serviceJobClient";
+import ConsecutiveBoardLadder from "./ConsecutiveBoardLadder";
+import useStockMonitors from "./useStockMonitors";
+import StockMonitorEditor from "./StockMonitorEditor";
+import { summarizeStockMonitor } from "./stockMonitorRules";
+import { quickStrategyPresets as strategyPresets } from "./quickStrategyPresets";
+import {
   Activity,
   BarChart3,
   Bell,
@@ -11,7 +17,6 @@
   CheckCircle2,
   CircleAlert,
   CircleDot,
-  Clock3,
   Database,
   ExternalLink,
   FileText,
@@ -29,7 +34,6 @@
   Radar,
   RefreshCw,
   Search,
-  Settings as SettingsIcon,
   ShieldCheck,
   ShieldAlert,
   SlidersHorizontal,
@@ -48,9 +52,15 @@
   Zap
 } from "lucide-react";
 import { FormEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import WorkspaceNavigation from "./WorkspaceNavigation";
+import { createLatestSettingsWriter } from "./latestSettingsWriter";
+import { createCollectionWriter } from "./collectionWriter";
 import type { StrategyBacktestRequest } from "./StrategySignalsView";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
+import { isBacktestHistoryRow, isBacktestHistoryCollection, isExecutionLogCollection, isPaperState } from "./researchStorage";
 import { shanghaiDateTag, shiftShanghaiDate } from "./dateUtils";
+import { advancePaperHoldingBars } from "./paperHoldingBars";
+import "./trend-shell.css";
 import {
   buildSettingsByRiskProfile,
   clampNumber,
@@ -61,14 +71,15 @@ import {
   riskProfilePresets,
   safeNumber,
   sameStrategySet,
-  strategyOptions,
-  strategyPresets
+  strategyOptions
 } from "./domain/settings";
 
 const MultiStockCompareView = lazy(() => import("./MultiStockCompareView"));
 const PortfolioBacktestView = lazy(() => import("./PortfolioBacktestView"));
 const ProfessionalReview = lazy(() => import("./ProfessionalReview"));
 const StrategySignalsView = lazy(() => import("./StrategySignalsView"));
+const TrendScreenerView = lazy(() => import("./TrendScreenerView"));
+const SectorExplorerPanel = lazy(() => import("./SectorExplorerPanel"));
 
 type View =
   | "dashboard"
@@ -82,7 +93,17 @@ type View =
   | "backtest"
   | "review"
   | "signals"
+  | "trend-screener"
   | "compare";
+type InformationTab = "all" | "flash" | "announcement";
+const informationTabs: { id: InformationTab; label: string }[] = [
+  { id: "all", label: "全部" },
+  { id: "flash", label: "市场资讯" },
+  { id: "announcement", label: "公司公告" }
+];
+export function resolveInformationCenterRoute(view: "news" | "announcements", informationTab: InformationTab = "all") {
+  return { view: "news" as const, informationTab: view === "announcements" ? "announcement" as const : informationTab };
+}
 type BacktestBenchmark = "all" | "szzs" | "hs300";
 type BacktestDraft = {
   securityCode: string;
@@ -118,6 +139,7 @@ type AnalysisOrigin = {
   label: string;
   node?: string;
   dashboardMode?: "pool" | "analysis";
+  informationTab?: InformationTab;
 };
 type LimitPoolMeta = {
   dataDate: string;
@@ -151,6 +173,7 @@ type PaperPosition = {
   stopPrice: number;
   takePrice: number;
   holdingBars: number;
+  lastHoldingBarDate?: string;
   entryFee: number;
   feeRatePercent: number;
   openedAt: string;
@@ -365,7 +388,7 @@ const normalizeBacktestStrategyContext = (input: any): StrategyBacktestRequest |
     ...(securities.length ? { securities } : {}),
     ...(input.universeSource === "strategy_current_matches"
       ? { universeSource: "strategy_current_matches" as const }
-      : {}),
+      : input.universeSource === "manual" ? { universeSource: "manual" as const } : {}),
     ...(Number.isFinite(Number(input.universeTotalCount))
       ? { universeTotalCount: Math.max(securities.length, Math.round(Number(input.universeTotalCount))) }
       : {}),
@@ -567,7 +590,7 @@ const normalizeBacktestStrategyProfile = (
 };
 
 const normalizeBacktestHistoryEntry = (input: any, fallbackSettings: Settings): BacktestHistoryRecord | null => {
-  if (!input || typeof input !== "object") return null;
+  if (!isBacktestHistoryRow(input)) return null;
   const rawDraft = normalizeBacktestDraft(input.draft || input.input);
   const rawResult = input.rawResult || input.result || input;
   const rawMetrics =
@@ -639,9 +662,9 @@ const normalizeExecutionDecisionLogEntry = (input: any): ExecutionDecisionLog | 
   };
 };
 
-const loadExecutionDecisionLog = (): ExecutionDecisionLog[] => {
+export const loadExecutionDecisionLog = (): ExecutionDecisionLog[] => {
   try {
-    const parsed = loadSafeLocalJson<unknown>(EXECUTION_DECISION_LOG_KEY, []);
+    const parsed = loadSafeLocalJson<unknown>(EXECUTION_DECISION_LOG_KEY, [], isExecutionLogCollection);
     return Array.isArray(parsed)
       ? parsed.map(normalizeExecutionDecisionLogEntry).filter((item): item is ExecutionDecisionLog => Boolean(item))
       : [];
@@ -672,9 +695,9 @@ const buildExecutionDecisionLogEntry = (input: {
   reasons: Array.isArray(input.reasons) ? input.reasons.filter((item) => typeof item === "string" && item.trim()) : []
 });
 
-const loadBacktestHistory = (fallbackSettings: Settings) => {
+export const loadBacktestHistory = (fallbackSettings: Settings) => {
   try {
-    const parsed = loadSafeLocalJson<unknown>(BACKTEST_HISTORY_KEY, []);
+    const parsed = loadSafeLocalJson<unknown>(BACKTEST_HISTORY_KEY, [], isBacktestHistoryCollection);
     return normalizeBacktestHistory(parsed, fallbackSettings);
   } catch {
     return [];
@@ -763,6 +786,7 @@ const normalizePaperState = (input: unknown): PaperSimulationState => {
             stopPrice: clampNumber(item?.stopPrice, 0.01, 1e9, 0.01),
             takePrice: clampNumber(item?.takePrice, 0.01, 1e9, 0.01),
             holdingBars: clampNumber(item?.holdingBars, 0, 500, 0),
+            ...(typeof item?.lastHoldingBarDate === "string" ? { lastHoldingBarDate: item.lastHoldingBarDate } : {}),
             entryFee: clampNumber(item?.entryFee, 0, 1e9, 0),
             feeRatePercent: clampNumber(item?.feeRatePercent, 0, 5, 0.09),
             sectorName: String(item?.sectorName || ""),
@@ -798,6 +822,7 @@ const normalizePaperState = (input: unknown): PaperSimulationState => {
             stopPrice: clampNumber(item?.stopPrice, 0.01, 1e9, 0.01),
             takePrice: clampNumber(item?.takePrice, 0.01, 1e9, 0.01),
             holdingBars: clampNumber(item?.holdingBars, 0, 500, 0),
+            ...(typeof item?.lastHoldingBarDate === "string" ? { lastHoldingBarDate: item.lastHoldingBarDate } : {}),
             entryFee: clampNumber(item?.entryFee, 0, 1e9, 0),
             feeRatePercent: clampNumber(item?.feeRatePercent, 0, 5, 0.09),
             sectorName: String(item?.sectorName || ""),
@@ -838,9 +863,9 @@ const normalizePaperState = (input: unknown): PaperSimulationState => {
   };
 };
 
-const loadPaperState = (): PaperSimulationState => {
+export const loadPaperState = (): PaperSimulationState => {
   try {
-    const parsed = loadSafeLocalJson<unknown>(PAPER_SIM_STATE_KEY, emptyPaperState());
+    const parsed = loadSafeLocalJson<unknown>(PAPER_SIM_STATE_KEY, emptyPaperState(), isPaperState);
     const state = normalizePaperState(parsed);
     const today = todayTag();
     if (state.lastTradeDate !== today) {
@@ -1738,7 +1763,6 @@ const evaluatePaperExecutionReadiness = (
 const closePaperAllSimulationByCode = (
   state: PaperSimulationState,
   reason: PaperClosedPosition["closeReason"] = "KILL_SWITCH",
-  fallbackPrice: number | undefined,
   settings: Settings
 ) => {
   const normalized = resetPaperStateForNewDay(normalizePaperState(state));
@@ -1756,7 +1780,7 @@ const closePaperAllSimulationByCode = (
   const closedPositions: PaperClosedPosition[] = [...normalized.closedPositions];
 
   for (const position of normalized.openPositions) {
-    const closePrice = clampNumber(fallbackPrice, 0.01, Number.MAX_SAFE_INTEGER, position.latestPrice);
+    const closePrice = position.latestPrice;
     const settle = settlePaperPosition(position, closePrice, reason, now, settings);
     cash += settle.cashDelta;
     dailyRealizedPnl += settle.record.realizedPnl;
@@ -1876,7 +1900,7 @@ const openPaperPositionFromSignal = (
     ? clampNumber(1 - (preOpenKill.lossPressureRatio - 0.75) * 2, 0.25, 1, 1)
     : 1;
   if (preOpenKill.hardTriggered) {
-    const forcedClose = closePaperAllSimulationByCode(normalized, "KILL_SWITCH", undefined, safe);
+    const forcedClose = closePaperAllSimulationByCode(normalized, "KILL_SWITCH", safe);
     if (forcedClose.changed) {
       return {
         ...forcedClose,
@@ -2050,6 +2074,7 @@ const openPaperPositionFromSignal = (
     stopPrice: finalStopLossPrice,
     takePrice: finalTakeProfitPrice,
     holdingBars: 0,
+    lastHoldingBarDate: shanghaiDateTag(new Date(nowIso)),
     entryFee: finalEntryFee,
     feeRatePercent: commissionRate,
     openedAt: nowIso,
@@ -2138,7 +2163,10 @@ const advancePaperSimulationByQuote = (
   if (!payload || !normalized.openPositions.length) return { state: normalized, changed: false, message: "" };
   const code = String(payload.security?.code || "");
   const safe = normalizeSettings(settings);
-  const latest = clampNumber(payload.quote?.latest, 0.01, Number.MAX_SAFE_INTEGER, 0);
+  const rawLatest = payload.quote?.latest;
+  const latest = (typeof rawLatest === "number" || (typeof rawLatest === "string" && rawLatest.trim() !== ""))
+    ? Number(rawLatest) : NaN;
+  if (!Number.isFinite(latest) || latest <= 0) return { state: normalized, changed: false, message: "" };
   const maxHoldingBars = Math.max(3, Math.round(safe.maxHoldingBars || 30));
   const trailingStopPercent = clampNumber(safe.trailingStopPercent ?? 0, 0, 25, 0);
   const now = new Date().toISOString();
@@ -2153,19 +2181,20 @@ const advancePaperSimulationByQuote = (
       openPositions.push(position);
       continue;
     }
-    const holdingBars = position.holdingBars + 1;
+    const barProgress = advancePaperHoldingBars(position, payload.history);
+    const holdingBars = barProgress.holdingBars;
     const highWaterMark = Math.max(position.highWaterMark, latest);
     const trailingStopPrice = trailingStopPercent > 0
       ? highWaterMark * (1 - trailingStopPercent / 100)
-      : Number.MAX_SAFE_INTEGER;
+      : 0;
     const withPrice: PaperPosition = {
       ...position,
       latestPrice: latest,
       highWaterMark,
-      holdingBars
+      ...barProgress
     };
     const stopHit = latest <= withPrice.stopPrice;
-    const trailingStopHit = latest <= trailingStopPrice;
+    const trailingStopHit = trailingStopPercent > 0 && latest <= trailingStopPrice;
     const takeHit = latest >= withPrice.takePrice;
     const timeout = holdingBars >= maxHoldingBars;
     if (stopHit || trailingStopHit || takeHit || timeout) {
@@ -2183,6 +2212,8 @@ const advancePaperSimulationByQuote = (
       changed = true;
     } else {
       openPositions.push(withPrice);
+      changed ||= latest !== position.latestPrice || highWaterMark !== position.highWaterMark
+        || holdingBars !== position.holdingBars || barProgress.lastHoldingBarDate !== position.lastHoldingBarDate;
     }
   }
 
@@ -2196,7 +2227,7 @@ const advancePaperSimulationByQuote = (
 
   const killSwitch = evaluatePaperKillSwitch(nextState, settings);
   if (killSwitch.hardTriggered && nextState.openPositions.length) {
-    const killAction = closePaperAllSimulationByCode(nextState, "KILL_SWITCH", latest, safe);
+    const killAction = closePaperAllSimulationByCode(nextState, "KILL_SWITCH", safe);
     if (killAction.changed) {
       return {
         ...killAction,
@@ -2212,11 +2243,10 @@ const advancePaperSimulationByQuote = (
     };
   }
 
-  if (!changed && !killSwitch.hardTriggered) return { state: normalized, changed: false, message: "" };
   return {
     state: nextState,
-    changed: changed,
-    message: "按行情触发了持仓闭环处理"
+    changed,
+    message: closedPositions.length > normalized.closedPositions.length ? "按行情触发了持仓闭环处理" : ""
   };
 };
 
@@ -2637,14 +2667,21 @@ function WindowTitleBar() {
 }
 
 function App() {
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>("trend-screener");
+  const [informationTab, setInformationTab] = useState<InformationTab>("all");
+  const legacyBootstrapped = useRef(false);
   const [dashboardMode, setDashboardMode] = useState<"pool" | "analysis">("pool");
   const [watchlistNode, setWatchlistNode] = useState("all");
   const [analysisOrigin, setAnalysisOrigin] = useState<AnalysisOrigin | null>(null);
   const [backtestReturnMode, setBacktestReturnMode] = useState<"pool" | "analysis">("pool");
   const [backtestCenterMode, setBacktestCenterMode] = useState<"portfolio" | "single">("single");
+  const [portfolioMounted, setPortfolioMounted] = useState(false);
+  const portfolioActive = view === "backtest" && backtestCenterMode === "portfolio";
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Security[]>([]);
+  const [searchComposing, setSearchComposing] = useState(false);
+  const searchComposingRef = useRef(false);
+  const searchEditVersion = useRef(0);
   const [payload, setPayload] = useState<AnalysisPayload | null>(null);
   const [analysisTarget, setAnalysisTarget] = useState<Security | string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -2655,6 +2692,7 @@ function App() {
   const [holdings, setHoldings] = useState<HoldingItem[]>([]);
   const [settings, setSettings] = useState<Settings>(initialSettings);
   const [live, setLive] = useState(true);
+  const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   const [limitUps, setLimitUps] = useState<any[]>([]);
   const [limitPoolMeta, setLimitPoolMeta] = useState<LimitPoolMeta>({
     dataDate: "",
@@ -2685,37 +2723,107 @@ function App() {
   const [backtestError, setBacktestError] = useState("");
   const [backtestResult, setBacktestResult] = useState<any>(null);
   const [backtestHistory, setBacktestHistory] = useState<BacktestHistoryRecord[]>(
-    loadBacktestHistory(initialSettings)
+    () => loadBacktestHistory(initialSettings)
   );
   const [backtestProfileComparisons, setBacktestProfileComparisons] = useState<BacktestProfileComparisonReport | null>(null);
   const [backtestEntryContext, setBacktestEntryContext] = useState<BacktestEntryContext | null>(null);
+  const [sectorLegacyOpen, setSectorLegacyOpen] = useState(false);
   const [sectorBoard, setSectorBoard] = useState<any[]>([]);
   const [sectorBoardLoading, setSectorBoardLoading] = useState(false);
   const [sectorBoardLoaded, setSectorBoardLoaded] = useState(false);
   const [sectorBoardError, setSectorBoardError] = useState("");
   const [strategyMenuOpen, setStrategyMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!strategyMenuOpen) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest(".strategy-quick")) setStrategyMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setStrategyMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [strategyMenuOpen]);
+
   const [reviewMounted, setReviewMounted] = useState(false);
   const [version, setVersion] = useState("0.1.0");
   const [paperState, setPaperState] = useState<PaperSimulationState>(loadPaperState);
+  const [paperActionSaveError, setPaperActionSaveError] = useState(false);
+  const [paperSnapshotSaveError, setPaperSnapshotSaveError] = useState(false);
+  const [paperSaveRetry, setPaperSaveRetry] = useState(0);
   const [executionDecisionLog, setExecutionDecisionLog] = useState<ExecutionDecisionLog[]>(loadExecutionDecisionLog);
+  const savedResearch = useRef<{ paper: string; log: string; history: string } | null>(null);
+  const researchSignatures = savedResearch.current ??= { paper: JSON.stringify(normalizePaperState(paperState)), log: JSON.stringify(executionDecisionLog), history: JSON.stringify(backtestHistory) };
   const searchTimer = useRef<number>();
   const searchRequestId = useRef(0);
   const analysisRequestId = useRef(0);
+  const backtestJobs = useRef(createServiceJobScope());
+  const comparisonJobs = useRef(createServiceJobScope());
+  const backtestRequestId = useRef(0);
+  const comparisonRequestId = useRef(0);
   const limitPoolRequestId = useRef(0);
   const limitPoolSignatureRef = useRef("");
   const limitPoolManualRefresh = useRef(false);
   const sectorBoardRequestId = useRef(0);
   const sectorBoardBusy = useRef(false);
   const toastTimer = useRef<number>();
+  const watchlistRef = useRef<WatchItem[]>([]);
+  const holdingsRef = useRef<HoldingItem[]>([]);
+  const watchlistLoaded = useRef(false);
+  const holdingsLoaded = useRef(false);
+  const watchlistWriter = useRef<ReturnType<typeof createCollectionWriter<WatchItem>> | null>(null);
+  const holdingsWriter = useRef<ReturnType<typeof createCollectionWriter<HoldingItem>> | null>(null);
+  if (!watchlistWriter.current) watchlistWriter.current = createCollectionWriter<WatchItem>({
+    read: () => watchlistRef.current,
+    persist: next => window.stockApi.saveWatchlist(next),
+    accept: saved => { watchlistRef.current = saved; setWatchlist(saved); }
+  });
+  if (!holdingsWriter.current) holdingsWriter.current = createCollectionWriter<HoldingItem>({
+    read: () => holdingsRef.current,
+    persist: next => window.stockApi.saveHoldings(next),
+    accept: saved => { holdingsRef.current = saved; setHoldings(saved); }
+  });
   const voiceSeenIds = useRef<Set<string>>(new Set());
   const voiceFeedSeeded = useRef(false);
   const settingsRef = useRef<Settings>(normalizeSettings(initialSettings));
-  const settingsChangedDuringStartupRef = useRef(false);
+  const settingsLoaded = useRef(false);
+  const [settingsLoadState, setSettingsLoadState] = useState<"loading" | "ready" | "failed">("loading");
+  const settingsWriterRef = useRef<ReturnType<typeof createLatestSettingsWriter<Settings>> | null>(null);
+  if (!settingsWriterRef.current) settingsWriterRef.current = createLatestSettingsWriter<Settings>({
+    read: () => settingsRef.current,
+    normalize: normalizeSettings,
+    persist: next => window.stockApi.saveSettings(next),
+    accept: saved => { settingsRef.current = saved; setSettings(saved); }
+  });
+  const persistSettings = (patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
+    if (!settingsLoaded.current) return Promise.reject(new Error("本地设置尚未成功读取，请重新加载后再保存，原配置未更改。"));
+    return settingsWriterRef.current!(patch);
+  };
+
 
   const showToast = (message: string) => {
     window.clearTimeout(toastTimer.current);
     setToast(message);
     toastTimer.current = window.setTimeout(() => setToast(""), 2600);
+  };
+
+  const commitPaperAction = (next: PaperSimulationState) => {
+    const normalized = normalizePaperState(next);
+    if (!saveSafeLocalJson(PAPER_SIM_STATE_KEY, normalized, isPaperState)) {
+      setPaperActionSaveError(true);
+      showToast("纸面账户保存失败，本次操作未生效");
+      return false;
+    }
+    // Commit the signature before rendering, so the effect never repeats this write.
+    researchSignatures.paper = JSON.stringify(normalized);
+    setPaperActionSaveError(false);
+    setPaperSnapshotSaveError(false);
+    setPaperState(normalized);
+    return true;
   };
 
   useEffect(() => () => window.clearTimeout(toastTimer.current), []);
@@ -2784,26 +2892,40 @@ function App() {
   }, [view]);
 
   useEffect(() => {
-    if (!saveSafeLocalJson(PAPER_SIM_STATE_KEY, normalizePaperState(paperState))) {
-      // Persisting paper simulation state is optional.
-    }
-  }, [paperState]);
+    if (portfolioActive) setPortfolioMounted(true);
+  }, [portfolioActive]);
 
   useEffect(() => {
-    if (!saveSafeLocalJson(
+    const next = normalizePaperState(paperState);
+    const signature = JSON.stringify(next);
+    if (signature === researchSignatures.paper) return;
+    if (saveSafeLocalJson(PAPER_SIM_STATE_KEY, next, isPaperState)) {
+      researchSignatures.paper = signature;
+      setPaperSnapshotSaveError(false);
+    } else {
+      setPaperSnapshotSaveError(true);
+    }
+  }, [paperState, paperSaveRetry]);
+
+  useEffect(() => {
+    const signature = JSON.stringify(executionDecisionLog);
+    if (signature === researchSignatures.log) return;
+    if (saveSafeLocalJson(
       EXECUTION_DECISION_LOG_KEY,
-      executionDecisionLog.slice(0, EXECUTION_DECISION_LOG_LIMIT)
+      executionDecisionLog.slice(0, EXECUTION_DECISION_LOG_LIMIT), isExecutionLogCollection
     )) {
-      // Persisting execution decision log is optional.
+      researchSignatures.log = signature;
     }
   }, [executionDecisionLog]);
 
   useEffect(() => {
-    if (!saveSafeLocalJson(
+    const signature = JSON.stringify(backtestHistory);
+    if (signature === researchSignatures.history) return;
+    if (saveSafeLocalJson(
       BACKTEST_HISTORY_KEY,
-      backtestHistory.slice(0, BACKTEST_HISTORY_LIMIT)
+      backtestHistory.slice(0, BACKTEST_HISTORY_LIMIT), isBacktestHistoryCollection
     )) {
-      // Persisting backtest history is optional.
+      researchSignatures.history = signature;
     }
   }, [backtestHistory]);
 
@@ -3258,15 +3380,8 @@ const buildBacktestExecutionPlan = (
 };
 
   const setThemeMode = async (theme: Settings["theme"]) => {
-    const next = normalizeSettings({ ...settings, theme });
-    settingsChangedDuringStartupRef.current = true;
-    setSettings(next);
-    try {
-      await window.stockApi.setTheme(theme);
-      setSettings(normalizeSettings(await window.stockApi.saveSettings(next)));
-    } catch {
-      showToast("主题保存失败");
-    }
+    try { await persistSettings({ theme }); }
+    catch { showToast("主题保存失败"); }
   };
 
   const loadSecurity = useCallback(async (
@@ -3275,6 +3390,7 @@ const buildBacktestExecutionPlan = (
     forceRefresh = false
   ) => {
     const requestId = ++analysisRequestId.current;
+    const submittedSearchVersion = searchEditVersion.current;
     if (!silent) {
       setAnalysisTarget(security);
       setPayload(null);
@@ -3292,7 +3408,7 @@ const buildBacktestExecutionPlan = (
         const updated = advancePaperSimulationByQuote(current, nextPayload, settingsRef.current);
         return updated.state;
       });
-      if (!silent) setQuery("");
+      if (!silent && searchEditVersion.current === submittedSearchVersion) setQuery("");
       if (next.warning) showToast(next.warning);
     } catch (e) {
       if (requestId !== analysisRequestId.current) return;
@@ -3303,7 +3419,23 @@ const buildBacktestExecutionPlan = (
     }
   }, []);
 
-  const runBacktestWithSettings = async (draft: BacktestDraft, profileSettings: Settings) => {
+  const invalidateBacktests = () => {
+    void backtestJobs.current.cancelAll();
+    void comparisonJobs.current.cancelAll();
+    backtestRequestId.current += 1;
+    comparisonRequestId.current += 1;
+    setBacktestLoading(false);
+    setBacktestProfileComparisons(current => current?.items.some(item => item.loading) ? null : current);
+  };
+
+  useEffect(() => () => {
+    void backtestJobs.current.cancelAll();
+    void comparisonJobs.current.cancelAll();
+    backtestRequestId.current += 1;
+    comparisonRequestId.current += 1;
+  }, []);
+
+  const runBacktestWithSettings = async (draft: BacktestDraft, profileSettings: Settings, jobs = backtestJobs.current) => {
     const safeSettings = normalizeSettings(profileSettings);
     const normalizedDraft = normalizeBacktestDraft(draft);
     const selectedStrategies = normalizedDraft.strategyContext?.strategyIds?.length
@@ -3312,7 +3444,8 @@ const buildBacktestExecutionPlan = (
     const backtestSecurity = normalizedDraft.security?.code === normalizedDraft.securityCode
       ? normalizedDraft.security
       : normalizedDraft.securityCode;
-    return await window.stockApi.runBacktest(backtestSecurity, {
+    return await jobs.run(requestId => window.stockApi.runBacktest(backtestSecurity, {
+      requestId,
       startDate: normalizedDraft.startDate,
       customEntryPrice: normalizedDraft.customEntryPrice,
       lookbackBars: clampNumber(
@@ -3341,7 +3474,7 @@ const buildBacktestExecutionPlan = (
         commissionBps: clampNumber(normalizedDraft.commissionBps, 0, 60, safeSettings.commissionBps),
         slippageBps: clampNumber(normalizedDraft.slippageBps, 0, 40, safeSettings.slippageBps)
       }
-    });
+    }));
   };
 
   const runBacktest = async (draft: BacktestDraft) => {
@@ -3350,6 +3483,10 @@ const buildBacktestExecutionPlan = (
       setBacktestError("请先选择股票名称或输入6位A股代码");
       return;
     }
+    void backtestJobs.current.cancelAll();
+    void comparisonJobs.current.cancelAll();
+    const requestId = ++backtestRequestId.current;
+    comparisonRequestId.current += 1;
     setBacktestLoading(true);
     setBacktestError("");
     setBacktestResult(null);
@@ -3357,15 +3494,16 @@ const buildBacktestExecutionPlan = (
     try {
       const safeSettings = normalizeSettings(settings);
       const result = await runBacktestWithSettings(draft, safeSettings);
+      if (requestId !== backtestRequestId.current) return;
       setBacktestResult(result);
       const record = buildBacktestHistoryRecord(draft, result, settings);
       setBacktestHistory((current) =>
         [record, ...current.filter((item) => item.id !== record.id)].slice(0, BACKTEST_HISTORY_LIMIT)
       );
     } catch (reason) {
-      setBacktestError(reason instanceof Error ? reason.message : String(reason));
+      if (requestId === backtestRequestId.current) setBacktestError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      setBacktestLoading(false);
+      if (requestId === backtestRequestId.current) setBacktestLoading(false);
     }
   };
 
@@ -3375,6 +3513,8 @@ const buildBacktestExecutionPlan = (
       setBacktestError("请先选择股票名称或输入6位A股代码，再运行风险档位对比");
       return;
     }
+    void comparisonJobs.current.cancelAll();
+    const requestId = ++comparisonRequestId.current;
     const normalizedDraft = normalizeBacktestDraft(draft);
     const seed = {
       sourceCode: code,
@@ -3393,7 +3533,8 @@ const buildBacktestExecutionPlan = (
       let nextItem: BacktestProfileComparisonReport["items"][number];
       try {
         const profileSettings = buildSettingsByRiskProfile(baseSettings, preset.id);
-        const result = await runBacktestWithSettings(normalizedDraft, profileSettings);
+        const result = await runBacktestWithSettings(normalizedDraft, profileSettings, comparisonJobs.current);
+        if (requestId !== comparisonRequestId.current) return;
         const record = buildBacktestHistoryRecord(normalizedDraft, result, profileSettings);
         nextItem = {
           profile: preset.id,
@@ -3402,6 +3543,7 @@ const buildBacktestExecutionPlan = (
           record
         };
       } catch (error) {
+        if (requestId !== comparisonRequestId.current) return;
         nextItem = {
           profile: preset.id,
           loading: false,
@@ -3418,6 +3560,7 @@ const buildBacktestExecutionPlan = (
         };
       });
     }
+    if (requestId !== comparisonRequestId.current) return;
     setBacktestProfileComparisons({
       sourceCode: seed.sourceCode,
       comparedAt: seed.comparedAt,
@@ -3610,13 +3753,10 @@ const buildBacktestExecutionPlan = (
       maxConsecutiveLossesForStop: Math.round(clampNumber(profile.maxConsecutiveLossesForStop, 2, 12, settings.maxConsecutiveLossesForStop ?? 4)),
       timeDecayPerBarPercent: clampNumber(profile.timeDecayPerBarPercent, 0, 1, settings.timeDecayPerBarPercent ?? 0.11)
     });
-    settingsChangedDuringStartupRef.current = true;
-    setSettings(next);
-    void window.stockApi.saveSettings(next).then((saved) => {
-      setSettings(normalizeSettings(saved));
+    void persistSettings(next).then(() => {
       showToast("已将回测参数同步到执行设置（已保存）");
     }).catch(() => {
-      showToast("已将回测参数同步到执行设置（未写入存储）");
+      showToast("回测参数保存失败，仍使用上次成功保存的执行设置");
     });
   };
 
@@ -3748,6 +3888,7 @@ const buildBacktestExecutionPlan = (
   };
 
   const loadBacktestRecord = (record: BacktestHistoryRecord) => {
+    invalidateBacktests();
     const restoredDraft = normalizeBacktestDraft(record.draft);
     const restoredStrategyContext = normalizeBacktestStrategyContext(
       restoredDraft.strategyContext || record.rawResult?.strategyContext
@@ -3784,8 +3925,10 @@ const buildBacktestExecutionPlan = (
     }
     if (sourceView === "favorites") return { view: "favorites", label: "返回自选板块" };
     if (sourceView === "sectors") return { view: "sectors", label: "返回板块强度" };
-    if (sourceView === "news") return { view: "news", label: "返回资讯雷达" };
-    if (sourceView === "announcements") return { view: "announcements", label: "返回A股公告" };
+    if (sourceView === "news" || sourceView === "announcements") {
+      const route = resolveInformationCenterRoute(sourceView, informationTab);
+      return { ...route, label: `返回资讯中心 · ${informationTabs.find(tab => tab.id === route.informationTab)?.label}` };
+    }
     if (sourceView === "signals") return { view: "signals", label: "返回策略信号" };
     if (sourceView === "compare") return { view: "compare", label: "返回多股同列" };
     if (sourceView === "review") return { view: "review", label: "返回专业复盘" };
@@ -3809,8 +3952,7 @@ const buildBacktestExecutionPlan = (
     if (sourceView === "compare") return "多股同列";
     if (sourceView === "review") return "专业复盘";
     if (sourceView === "sectors") return "板块强度";
-    if (sourceView === "news") return "资讯雷达";
-    if (sourceView === "announcements") return "A股公告";
+    if (sourceView === "news" || sourceView === "announcements") return "资讯中心";
     if (sourceView === "dashboard" && dashboardMode === "analysis") return "个股复盘";
     if (sourceView === "backtest") return "回测中心";
     return "回测中心手工选择";
@@ -3820,6 +3962,7 @@ const buildBacktestExecutionPlan = (
     security?: Security | string | null,
     strategyRequest?: StrategyBacktestRequest | null
   ) => {
+    invalidateBacktests();
     const safeSettings = normalizeSettings(settings);
     setBacktestCenterMode("single");
     const strategyContext = normalizeBacktestStrategyContext(strategyRequest);
@@ -3885,7 +4028,11 @@ const buildBacktestExecutionPlan = (
 
   const navigateTo = (next: View) => {
     if (next === "sectors" && view !== "sectors") setSectorBoardError("");
-    setView(next);
+    if (next === "news" || next === "announcements") {
+      const route = resolveInformationCenterRoute(next, informationTab);
+      setInformationTab(route.informationTab);
+      setView(route.view);
+    } else setView(next);
     setAnalysisOrigin(null);
     if (next === "dashboard") setDashboardMode("pool");
   };
@@ -3893,7 +4040,11 @@ const buildBacktestExecutionPlan = (
   const returnFromAnalysis = () => {
     if (analysisOrigin) {
       if (analysisOrigin.node) setWatchlistNode(analysisOrigin.node);
-      setView(analysisOrigin.view);
+      if (analysisOrigin.view === "news" || analysisOrigin.view === "announcements") {
+        const route = resolveInformationCenterRoute(analysisOrigin.view, analysisOrigin.informationTab);
+        setInformationTab(route.informationTab);
+        setView(route.view);
+      } else setView(analysisOrigin.view);
       if (analysisOrigin.view === "dashboard") {
         setDashboardMode(analysisOrigin.dashboardMode || backtestReturnMode);
       }
@@ -3905,20 +4056,12 @@ const buildBacktestExecutionPlan = (
   };
 
   const toggleNewsVoice = async () => {
-    const next = {
-      ...settings,
-      newsVoiceEnabled: settings.newsVoiceEnabled === false
-    };
-    const safeNext = normalizeSettings(next);
-    settingsChangedDuringStartupRef.current = true;
-    setSettings(safeNext);
-    if (!safeNext.newsVoiceEnabled) window.speechSynthesis?.cancel();
+    const enabled = settingsRef.current.newsVoiceEnabled === false;
+    if (!enabled) window.speechSynthesis?.cancel();
     try {
-      setSettings(normalizeSettings(await window.stockApi.saveSettings(safeNext)));
-      showToast(safeNext.newsVoiceEnabled ? "重大资讯自动播报已开启" : "重大资讯自动播报已关闭");
-    } catch {
-      showToast("语音播报设置保存失败");
-    }
+      await persistSettings({ newsVoiceEnabled: enabled });
+      showToast(enabled ? "重大资讯自动播报已开启" : "重大资讯自动播报已关闭");
+    } catch { showToast("语音播报设置保存失败"); }
   };
 
 const executePaperTrade = () => {
@@ -3960,9 +4103,7 @@ const executePaperTrade = () => {
       }
     }
     const action = openPaperPositionFromSignal(paperState, payload, settingsRef.current);
-    if (action.changed) {
-      setPaperState(action.state);
-    }
+    if (action.changed && !commitPaperAction(action.state)) return;
   appendExecutionDecisionLog({
     source: "PAPER_TRADE",
     result: action.changed ? "APPROVED" : "BLOCKED",
@@ -3990,9 +4131,7 @@ const executePaperTrade = () => {
       code,
       position.latestPrice
     );
-    if (action.changed) {
-      setPaperState(action.state);
-    }
+    if (action.changed && !commitPaperAction(action.state)) return;
     showToast(action.message);
   };
 
@@ -4003,9 +4142,7 @@ const executePaperTrade = () => {
       return;
     }
     const action = closePaperSimulationByCode(paperState, payload, settingsRef.current, reason, code);
-    if (action.changed) {
-      setPaperState(action.state);
-    }
+    if (action.changed && !commitPaperAction(action.state)) return;
     showToast(action.message);
   };
 
@@ -4202,102 +4339,84 @@ const executePaperTrade = () => {
   }, [live, settings.newsRefreshSeconds, settings.newsVoiceEnabled]);
 
   const applyStrategyPreset = async (preset: typeof strategyPresets[number]) => {
-    const next = normalizeSettings({ ...settings, selectedStrategies: preset.strategies });
     setStrategyMenuOpen(false);
-    settingsChangedDuringStartupRef.current = true;
-    setSettings(next);
     try {
-      const saved = await window.stockApi.saveSettings(next);
-      setSettings(normalizeSettings(saved));
+      await persistSettings({ selectedStrategies: preset.strategies });
       if (payload?.security) await loadSecurity(payload.security, true);
       showToast(`已切换：${preset.name}`);
-    } catch {
-      showToast("策略组合保存失败");
-    }
+    } catch { showToast("策略组合保存失败"); }
   };
 
   useEffect(() => {
     let active = true;
-    const startupPoolRequestId = ++limitPoolRequestId.current;
-    Promise.allSettled([
-      window.stockApi.getWatchlist(),
-      window.stockApi.getHoldings(),
-      window.stockApi.getSettings(),
-      window.stockApi.getVersion(),
-      window.stockApi.getLimitUpPoolSnapshot(),
-      window.stockApi.discoverRecentLimitUps(11)
-    ]).then((results) => {
-      if (!active) return;
-      const [watchlistResult, holdingsResult, settingsResult, versionResult, poolResult, recentResult] = results;
-      const savedWatchlist = watchlistResult.status === "fulfilled" && Array.isArray(watchlistResult.value)
-        ? watchlistResult.value
-        : [];
-      const savedHoldings = holdingsResult.status === "fulfilled" && Array.isArray(holdingsResult.value)
-        ? holdingsResult.value
-        : [];
-      const savedSettings = settingsResult.status === "fulfilled"
-        ? settingsResult.value
-        : initialSettings;
-      const appVersion = versionResult.status === "fulfilled" && typeof versionResult.value === "string"
-        ? versionResult.value
-        : version;
-      const poolSnapshot = poolResult.status === "fulfilled" && poolResult.value && typeof poolResult.value === "object"
-        ? poolResult.value
-        : { rows: [], meta: {} };
-      const discovered = Array.isArray((poolSnapshot as any).rows)
-        ? (poolSnapshot as any).rows
-        : [];
-      const recentLimitUps = recentResult.status === "fulfilled" && Array.isArray(recentResult.value)
-        ? recentResult.value
-        : [];
-      const completeWatchlist = mergeObservationPool(savedWatchlist, recentLimitUps);
-      setWatchlist(completeWatchlist);
-      if (watchlistResult.status === "fulfilled") {
-        void window.stockApi.saveWatchlist(completeWatchlist).catch(() => {
-          showToast("观察池自动整理未保存，原数据保持不变");
-        });
+    let reportedFailure = false;
+    const failed = () => {
+      if (active && !reportedFailure) {
+        reportedFailure = true;
+        showToast("部分本地设置未加载，可继续使用趋势工作台");
       }
-      setHoldings(savedHoldings);
-      if (!settingsChangedDuringStartupRef.current) {
-        setSettings(normalizeSettings(savedSettings));
-      }
-      setVersion(appVersion);
-      const localFailures = [watchlistResult, holdingsResult, settingsResult, versionResult]
-        .filter((result) => result.status === "rejected").length;
-      if (localFailures) showToast(`启动时有 ${localFailures} 项本地数据暂未加载，其余功能可继续使用`);
-      const activePool = discovered.length
-        ? discovered
-        : recentLimitUps.filter((item: WatchItem) => item.tradingDaysSince === 0);
-      const appliedPool = commitLimitUpPool({
-        rows: activePool,
-        meta: {
-          ...((poolSnapshot as any).meta || {}),
-          dataDate: activePool[0]?.limitDate || (poolSnapshot as any).meta?.dataDate || ""
-        }
-      }, startupPoolRequestId, "startup");
-      if (appliedPool && activePool[0]) {
-        loadSecurity(activePool[0]);
-      } else if (appliedPool && recentLimitUps[0]) {
-        loadSecurity(recentLimitUps[0]);
-      } else if (appliedPool) {
-        setError(
-          poolResult.status === "rejected" && recentResult.status === "rejected"
-            ? "涨停行情暂时不可用，请稍后点击刷新"
-            : "最近交易日没有符合条件的涨停股票"
-        );
-      }
-    }).catch((reason) => {
-      if (active) setError(reason instanceof Error ? reason.message : String(reason));
-    });
-    return () => {
-      active = false;
     };
-  }, [commitLimitUpPool, loadSecurity]);
+    // Independent reads publish independently; a slow collection must not hide
+    // another successful read. The promise boundary also contains sync bridges.
+    Promise.resolve().then(() => window.stockApi.getWatchlist()).then(value => {
+      if (!active) return;
+      if (!Array.isArray(value)) { failed(); return; }
+      watchlistLoaded.current = true; watchlistRef.current = value; setWatchlist(value);
+    }).catch(failed);
+    Promise.resolve().then(() => window.stockApi.getHoldings()).then(value => {
+      if (!active) return;
+      if (!Array.isArray(value)) { failed(); return; }
+      holdingsLoaded.current = true; holdingsRef.current = value; setHoldings(value);
+    }).catch(failed);
+    Promise.resolve().then(() => window.stockApi.getVersion()).then(value => {
+      if (active) setVersion(value);
+    }).catch(failed);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    window.stockApi.getSettings().then(value => {
+      if (!active) return;
+      const loaded = normalizeSettings(value);
+      settingsRef.current = loaded;
+      settingsLoaded.current = true;
+      setSettings(loaded);
+      setSettingsLoadState("ready");
+    }).catch(() => {
+      if (active) setSettingsLoadState("failed");
+    });
+    return () => { active = false; };
+  }, []);
+
+  // Load the original market tools only when opened, keeping their network work
+  // and five-day strategy controls out of the dedicated trend workflow.
+  useEffect(() => {
+    if (view === "trend-screener" || legacyBootstrapped.current) return;
+    legacyBootstrapped.current = true;
+    const requestId = ++limitPoolRequestId.current;
+    Promise.allSettled([
+      window.stockApi.getLimitUpPoolSnapshot(), window.stockApi.discoverRecentLimitUps(11)
+    ]).then(([poolResult, recentResult]) => {
+      const recent = recentResult.status === "fulfilled" && Array.isArray(recentResult.value) ? recentResult.value : [];
+      const snapshot = poolResult.status === "fulfilled" ? poolResult.value : { rows: recent.filter((item: WatchItem) => item.tradingDaysSince === 0), meta: {} };
+      try {
+        commitLimitUpPool(snapshot, requestId, "startup");
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : "涨停行情响应异常，请稍后刷新";
+        setError(message);
+        showToast(message);
+      }
+      if (recent.length) { const next = mergeObservationPool(watchlistRef.current, recent); watchlistRef.current = next; setWatchlist(next); }
+      if (poolResult.status === "rejected" && recentResult.status === "rejected") setError("涨停行情暂时不可用，请稍后点击刷新");
+    });
+  }, [view, commitLimitUpPool]);
 
   useEffect(() => {
     const requestId = ++searchRequestId.current;
     window.clearTimeout(searchTimer.current);
-    if (!query.trim()) {
+    setSuggestions([]);
+    if (!query.trim() || searchComposing) {
       setSuggestions([]);
       setSearching(false);
       return;
@@ -4318,7 +4437,7 @@ const executePaperTrade = () => {
       window.clearTimeout(searchTimer.current);
       if (requestId === searchRequestId.current) searchRequestId.current += 1;
     };
-  }, [query]);
+  }, [query, searchComposing]);
 
   useEffect(() => {
     if (!live || !payload || view !== "dashboard" || dashboardMode !== "analysis") return;
@@ -4407,7 +4526,7 @@ const executePaperTrade = () => {
   }, [live, payload?.security.code, settings.refreshSeconds, loadSecurity, view, dashboardMode]);
 
   useEffect(() => {
-    if (!live) return;
+    if (!live || view === "trend-screener") return;
     let active = true;
     let busy = false;
     const refreshPool = async () => {
@@ -4428,10 +4547,10 @@ const executePaperTrade = () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [commitLimitUpPool, live]);
+  }, [commitLimitUpPool, live, view]);
 
   useEffect(() => {
-    if (!live) return;
+    if (!live || view === "trend-screener") return;
     let active = true;
     let busy = false;
     const refreshObservationPool = async () => {
@@ -4440,11 +4559,7 @@ const executePaperTrade = () => {
       try {
         const recent = await window.stockApi.discoverRecentLimitUps(11);
         if (!active) return;
-        setWatchlist((current) => {
-          const next = mergeObservationPool(current, recent);
-          window.stockApi.saveWatchlist(next).catch(() => {});
-          return next;
-        });
+        if (watchlistLoaded.current) await watchlistWriter.current!(current => mergeObservationPool(current, recent));
       } catch {
         // Keep the last complete ten-day pool until the data source recovers.
       } finally {
@@ -4456,7 +4571,7 @@ const executePaperTrade = () => {
       active = false;
       window.clearInterval(timer);
     };
-  }, [live]);
+  }, [live, view]);
 
   const loadSectorBoard = useCallback(async (forceRefresh = false) => {
     if (sectorBoardBusy.current) return false;
@@ -4485,10 +4600,10 @@ const executePaperTrade = () => {
   }, []);
 
   useEffect(() => {
-    if (view === "sectors" && !sectorBoardLoaded && !sectorBoardLoading && !sectorBoardError) {
+    if (view === "sectors" && sectorLegacyOpen && !sectorBoardLoaded && !sectorBoardLoading && !sectorBoardError) {
       loadSectorBoard(false);
     }
-  }, [view, sectorBoardLoaded, sectorBoardLoading, sectorBoardError, loadSectorBoard]);
+  }, [view, sectorLegacyOpen, sectorBoardLoaded, sectorBoardLoading, sectorBoardError, loadSectorBoard]);
 
   const observationItems = useMemo(
     () => watchlist.filter((item) =>
@@ -4502,6 +4617,12 @@ const executePaperTrade = () => {
     () => watchlist.filter((item) => item.favorite || !item.autoAdded),
     [watchlist]
   );
+  const stockMonitors = useStockMonitors({
+    items: favoriteItems,
+    live,
+    refreshSeconds: Number(settings.quoteRefreshSeconds) || 5,
+    onAlert: alert => showToast(`${alert.name}（${alert.code}）：${alert.detail}`)
+  });
   const compareCandidates = useMemo(() => {
     const merged = new Map<string, Security>();
     const add = (item: any) => {
@@ -4532,53 +4653,59 @@ const executePaperTrade = () => {
 
   const toggleFavorite = async (security = payload?.security) => {
     if (!security) return;
-    const existing = watchlist.find((item) => item.code === security.code);
-    const currentlyFavorite = Boolean(existing && (existing.favorite || !existing.autoAdded));
-    const next: WatchItem[] = currentlyFavorite
-      ? existing?.autoAdded
-        ? watchlist.map((item) =>
-            item.code === security.code
-              ? (() => {
-                  const updated = { ...item, favorite: false };
-                  delete updated.favoriteAddedAt;
-                  return updated;
-                })()
-              : item
-          )
-        : watchlist.filter((item) => item.code !== security.code)
-      : existing
-        ? watchlist.map((item) =>
-            item.code === security.code
-              ? { ...item, favorite: true, favoriteAddedAt: new Date().toISOString() }
-              : item
-          )
-        : [
-            ...watchlist,
-            {
-              ...security,
-              createdAt: new Date().toISOString(),
-              favoriteAddedAt: new Date().toISOString(),
-              favorite: true,
-              autoAdded: false,
-              note: ""
-            }
-          ];
-    setWatchlist(next);
-    await window.stockApi.saveWatchlist(next);
-    showToast(currentlyFavorite ? "已移出自选板块" : "已加入自选板块");
+    if (!watchlistLoaded.current) { showToast("自选列表尚未加载，请稍后重试"); return; }
+    const displayed = watchlist.find(item => item.code === security.code);
+    const currentlyFavorite = Boolean(displayed && (displayed.favorite || !displayed.autoAdded));
+    try {
+      await watchlistWriter.current!(current => {
+        const existing = current.find((item) => item.code === security.code);
+        const next: WatchItem[] = currentlyFavorite
+          ? existing?.autoAdded
+            ? current.map((item) =>
+                item.code === security.code
+                  ? (() => {
+                      const updated = { ...item, favorite: false };
+                      delete updated.favoriteAddedAt;
+                      return updated;
+                    })()
+                  : item
+              )
+            : current.filter((item) => item.code !== security.code)
+          : existing
+            ? current.map((item) =>
+                item.code === security.code
+                  ? { ...item, favorite: true, favoriteAddedAt: new Date().toISOString() }
+                  : item
+              )
+            : [
+                ...current,
+                {
+                  ...security,
+                  createdAt: new Date().toISOString(),
+                  favoriteAddedAt: new Date().toISOString(),
+                  favorite: true,
+                  autoAdded: false,
+                  note: ""
+                }
+              ];
+        return next;
+      });
+      showToast(currentlyFavorite ? "已移出自选板块" : "已加入自选板块");
+    } catch { showToast("自选保存失败，已保留原有列表"); }
   };
 
   const removeObservation = async (security: WatchItem) => {
-    const next = watchlist.filter((item) => item.code !== security.code);
-    setWatchlist(next);
-    await window.stockApi.saveWatchlist(next);
-    showToast("已从当前观察列表移除");
+    if (!watchlistLoaded.current) { showToast("观察列表尚未加载，请稍后重试"); return; }
+    try {
+      await watchlistWriter.current!(current => current.filter(item => item.code !== security.code));
+      showToast("已从当前观察列表移除");
+    } catch { showToast("观察列表保存失败，已保留原有列表"); }
   };
 
-  const saveHoldings = async (next: HoldingItem[]) => {
+  const saveHoldings = async (update: (items: HoldingItem[]) => HoldingItem[]) => {
+    if (!holdingsLoaded.current) { showToast("持仓列表尚未加载，请稍后重试"); return false; }
     try {
-      const saved = await window.stockApi.saveHoldings(next);
-      setHoldings(saved);
+      await holdingsWriter.current!(update);
       return true;
     } catch {
       showToast("持仓保存失败，未覆盖原有数据");
@@ -4588,6 +4715,7 @@ const executePaperTrade = () => {
 
   const handleSearch = (event: FormEvent) => {
     event.preventDefault();
+    if (searchComposingRef.current) return;
     if (suggestions[0]) openAnalysis(suggestions[0]);
     else if (/^\d{6}$/.test(query.trim())) openAnalysis(query.trim());
   };
@@ -4621,13 +4749,13 @@ const executePaperTrade = () => {
   };
 
   const navItems = [
+    { id: "trend-screener" as View, label: "涨停趋势", icon: TrendingUp },
     { id: "dashboard" as View, label: "涨停监控", icon: LayoutDashboard },
     { id: "favorites" as View, label: "自选板块", icon: Star },
     { id: "holdings" as View, label: "持仓股", icon: WalletCards },
     { id: "watchlist" as View, label: "观察池", icon: Bookmark },
     { id: "sectors" as View, label: "板块强度", icon: Layers3 },
-    { id: "news" as View, label: "资讯雷达", icon: Newspaper },
-    { id: "announcements" as View, label: "A股公告", icon: FileText },
+    { id: "news" as View, label: "资讯中心", icon: Newspaper },
     { id: "signals" as View, label: "策略信号", icon: Sparkles },
     { id: "compare" as View, label: "多股同列", icon: BarChart3 },
     { id: "review" as View, label: "专业复盘", icon: BookOpenCheck },
@@ -4655,68 +4783,35 @@ const executePaperTrade = () => {
     : `主线 ${requestedProviderLabel} · 涨停池 ${limitUps.length} 只`;
 
   return (
-    <div className="app-shell">
+    <div className="app-shell terminal-shell" data-workspace={view} data-nav-collapsed={navigationCollapsed}>
       <WindowTitleBar />
-      <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark"><Radar size={23} /></div>
-          <div>
-          <strong>A股雷达</strong>
-          <span>LIMIT-UP RADAR</span>
-          </div>
-        </div>
-
-        <nav>
-          <p className="nav-caption">工作台</p>
-          {navItems.map((item) => (
-            <button
-              key={item.id}
-              className={`nav-item ${view === item.id ? "active" : ""}`}
-              onClick={() => item.id === "backtest" ? openBacktest() : navigateTo(item.id)}
-              aria-current={view === item.id ? "page" : undefined}
-              data-professional-review-nav={item.id === "review" ? true : undefined}
-              data-announcements-nav={item.id === "announcements" ? true : undefined}
-              data-backtest-nav={item.id === "backtest" ? true : undefined}
-            >
-              <item.icon size={18} />
-              <span>{item.label}</span>
-              {item.id === "favorites" && <em>{favoriteItems.length}</em>}
-              {item.id === "holdings" && <em>{holdings.length}</em>}
-              {item.id === "watchlist" && <em>{observationItems.length}</em>}
-              {item.id === "review" && <em>PRO</em>}
-            </button>
-          ))}
-          <p className="nav-caption nav-caption-spaced">系统</p>
-          <button
-            className={`nav-item ${view === "settings" ? "active" : ""}`}
-            onClick={() => navigateTo("settings")}
-            aria-current={view === "settings" ? "page" : undefined}
-          >
-            <SettingsIcon size={18} />
-            <span>数据源设置</span>
-          </button>
-        </nav>
-
-        <div className="sidebar-status">
-          <div className="status-row">
-            <span className={`live-dot ${!live ? "paused" : marketDegraded ? "degraded" : ""}`} />
-            <div><strong>{marketStatus}</strong><small>{marketStatusDetail}</small></div>
-          </div>
-          <div className="quota-text"><span>请求主源 {requestedProviderLabel}</span><b>实际 {actualProviderLabel}</b></div>
-        </div>
-        <div className="version">v{version} · 仅供研究，不构成投资建议</div>
-      </aside>
+      <WorkspaceNavigation items={navItems} active={view}
+        counts={{ favorites: favoriteItems.length, holdings: holdings.length, watchlist: observationItems.length }}
+        collapsed={navigationCollapsed} onCollapse={() => setNavigationCollapsed(value => !value)}
+        onNavigate={id => id === "backtest" ? openBacktest() : navigateTo(id as View)} />
 
       <main className="main">
         <header className="topbar">
+          <div className="workspace-location">{navItems.find(item => item.id === view)?.label || (view === "settings" ? "数据源设置" : "工作台")}</div>
           <form className="search-box" onSubmit={handleSearch}>
             <Search size={18} />
             <input
               id="global-security-search"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onCompositionStart={() => {
+                searchComposingRef.current = true; setSearchComposing(true);
+                searchEditVersion.current += 1; searchRequestId.current += 1;
+                window.clearTimeout(searchTimer.current); setSuggestions([]); setSearching(false);
+              }}
+              onCompositionEnd={() => { searchComposingRef.current = false; setSearchComposing(false); }}
+              onChange={(e) => { searchEditVersion.current += 1; searchRequestId.current += 1; setSuggestions([]); setQuery(e.target.value); }}
               onKeyDown={(event) => {
+                if (searchComposingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) {
+                  if (event.key === "Enter") event.preventDefault();
+                  return;
+                }
                 if (event.key === "Escape") {
+                  searchEditVersion.current += 1;
                   setQuery("");
                   setSuggestions([]);
                 } else if (event.key === "ArrowDown" && suggestions.length > 0) {
@@ -4732,7 +4827,7 @@ const executePaperTrade = () => {
             />
             {searching && <LoaderCircle size={16} className="spin" />}
             {query && !searching && (
-              <button type="button" onClick={() => setQuery("")} aria-label="清空证券搜索"><X size={15} /></button>
+              <button type="button" onClick={() => { searchEditVersion.current += 1; setQuery(""); }} aria-label="清空证券搜索"><X size={15} /></button>
             )}
             {suggestions.length > 0 && (
               <div className="suggestions" id="global-security-suggestions" role="listbox">
@@ -4767,7 +4862,7 @@ const executePaperTrade = () => {
             )}
           </form>
           <div className="top-actions">
-            <div className={`strategy-quick ${strategyMenuOpen ? "open" : ""}`}>
+            {view !== "trend-screener" && <div className={`strategy-quick ${strategyMenuOpen ? "open" : ""}`}>
               <button
                 type="button"
                 className="strategy-quick-trigger"
@@ -4780,7 +4875,7 @@ const executePaperTrade = () => {
               </button>
               {strategyMenuOpen && (
                 <div className="strategy-quick-menu">
-                  <strong>快捷策略组合</strong>
+                  <strong>快捷策略组合 · {strategyPresets.length} 套</strong>
                   {strategyPresets.map((preset) => (
                     <button
                       type="button"
@@ -4799,6 +4894,8 @@ const executePaperTrade = () => {
                 </div>
               )}
             </div>
+            }
+            {view === "trend-screener" && <span className="trend-header-rule">回踩转强 / 整理突破</span>}
             <div className="theme-switch" aria-label="界面主题">
               {themeOptions.map((item) => (
                 <button
@@ -4807,13 +4904,15 @@ const executePaperTrade = () => {
                   className={(settings.theme || "system") === item.id ? "active" : ""}
                   onClick={() => setThemeMode(item.id)}
                   title={item.label}
+                  aria-label={item.label}
+                  aria-pressed={(settings.theme || "system") === item.id}
                 >
                   <item.icon size={15} />
                   <span>{item.label}</span>
                 </button>
               ))}
             </div>
-            <button className={`live-toggle ${live ? "on" : ""}`} onClick={() => setLive(!live)} aria-pressed={live}>
+            {view !== "trend-screener" && <><button className={`live-toggle ${live ? "on" : ""}`} onClick={() => setLive(!live)} aria-pressed={live}>
               <span />
               {live ? "实时刷新" : "已暂停"}
             </button>
@@ -4827,9 +4926,16 @@ const executePaperTrade = () => {
             >
               {settings.newsVoiceEnabled === false ? <VolumeX size={18} /> : <Volume2 size={18} />}
             </button>
-            <button className="icon-button" onClick={() => navigateTo("news")} title="打开资讯雷达"><Bell size={18} /><i /></button>
+            <button className="icon-button" onClick={() => navigateTo("news")} title="打开资讯中心"><Bell size={18} /><i /></button></>}
           </div>
         </header>
+        {(paperActionSaveError || paperSnapshotSaveError) && (
+          <div className="paper-save-error" role="alert">
+            {paperActionSaveError && <p>纸面账户保存失败，本次操作未生效。请检查存储空间后重新操作。</p>}
+            {paperSnapshotSaveError && <p>纸面账户存在未保存的行情更新，请保存后再关闭软件。</p>}
+            {paperSnapshotSaveError && <button className="secondary-btn" onClick={() => setPaperSaveRetry(value => value + 1)}>重试保存纸面账户</button>}
+          </div>
+        )}
 
         <div className={`page ${view === "review" ? "review-page-host" : ""}`}>
           {view === "dashboard" && (
@@ -4867,6 +4973,8 @@ const executePaperTrade = () => {
           {view === "favorites" && (
             <FavoritesView
               items={favoriteItems}
+              monitors={stockMonitors}
+              live={live}
               onOpen={(item: WatchItem) => openAnalysis(item, { view: "favorites", label: "返回自选板块" })}
               onRemove={toggleFavorite}
             />
@@ -4896,34 +5004,24 @@ const executePaperTrade = () => {
               onRemove={removeObservation}
             />
           )}
-          {view === "sectors" && (
-            <SectorView
-              rows={sectorBoard}
-              loading={sectorBoardLoading}
-              loadError={sectorBoardError}
-              onRefresh={() => loadSectorBoard(true)}
-              onOpenStock={(stock: Security) => openAnalysis(stock, { view: "sectors", label: "返回板块强度" })}
-            />
-          )}
-          {view === "news" && (
+          {view === "sectors" && <>
+            <Suspense fallback={<LoadingState />}><SectorExplorerPanel onOpenStock={(stock: Security) => openAnalysis(stock, { view: "sectors", label: "返回板块强度" })} /></Suspense>
+            <details className="sector-legacy-details" open={sectorLegacyOpen} onToggle={event => setSectorLegacyOpen(event.currentTarget.open)}>
+              <summary>涨停池板块复核与原有分析</summary>
+              {sectorLegacyOpen && <SectorView rows={sectorBoard} loading={sectorBoardLoading} loadError={sectorBoardError}
+                onRefresh={() => loadSectorBoard(true)} onOpenStock={(stock: Security) => openAnalysis(stock, { view: "sectors", label: "返回板块强度" })} />}
+            </details>
+          </>}
+          {(view === "news" || view === "announcements") && (
             <NewsView
               payload={payload}
               watchlist={observationItems}
               holdings={holdings}
               limitUps={limitUps}
               settings={settings}
-              onOpenStock={(stock: Security) => openAnalysis(stock, { view: "news", label: "返回资讯雷达" })}
-            />
-          )}
-          {view === "announcements" && (
-            <NewsView
-              payload={payload}
-              watchlist={observationItems}
-              holdings={holdings}
-              limitUps={limitUps}
-              settings={settings}
-              announcementOnly
-              onOpenStock={(stock: Security) => openAnalysis(stock, { view: "announcements", label: "返回A股公告" })}
+              contentType={resolveInformationCenterRoute(view, informationTab).informationTab}
+              onContentTypeChange={(tab) => { setInformationTab(tab); setView("news"); }}
+              onOpenStock={(stock: Security) => openAnalysis(stock, originForView(view))}
             />
           )}
           {view === "signals" && (
@@ -4936,6 +5034,13 @@ const executePaperTrade = () => {
                   openBacktest(request.security || null, request)
                 }
               />
+            </Suspense>
+          )}
+          {view === "trend-screener" && (
+            <Suspense fallback={<LoadingState />}>
+              <TrendScreenerView onOpen={(stock: Security) =>
+                openAnalysis(stock, { view: "trend-screener", label: "返回涨停趋势" })
+              } />
             </Suspense>
           )}
           {view === "compare" && (
@@ -4956,11 +5061,11 @@ const executePaperTrade = () => {
               </Suspense>
             </div>
           )}
-          {view === "backtest" && (
-            <>
-              <div hidden={backtestCenterMode !== "portfolio"}>
+          {(portfolioActive || portfolioMounted) && (
+              <div hidden={!portfolioActive}>
                 <Suspense fallback={<LoadingState />}>
                   <PortfolioBacktestView
+                    active={portfolioActive}
                     initialStrategyContext={backtestDraft.strategyContext || null}
                     initialSecurities={
                       backtestDraft.strategyContext?.securities?.length
@@ -4978,6 +5083,8 @@ const executePaperTrade = () => {
                   />
                 </Suspense>
               </div>
+          )}
+          {view === "backtest" && (
               <div hidden={backtestCenterMode !== "single"}>
                 <BacktestView
                   draft={backtestDraft}
@@ -4986,7 +5093,8 @@ const executePaperTrade = () => {
                   result={backtestResult}
                   history={backtestHistory}
                   profileComparisons={backtestProfileComparisons}
-                  onDraftChange={setBacktestDraft}
+                  onDraftChange={next => { invalidateBacktests(); setBacktestDraft(next); }}
+                  onInvalidateRun={invalidateBacktests}
                   onRun={runBacktest}
                   onRunProfileComparisons={runBacktestProfileComparisons}
                   onApplyProfileComparison={(record) =>
@@ -5021,22 +5129,30 @@ const executePaperTrade = () => {
                   onOpenPortfolio={() => setBacktestCenterMode("portfolio")}
                 />
               </div>
-            </>
           )}
           {view === "settings" && (
             <SettingsView
               value={settings}
+              loadState={settingsLoadState}
               onSave={async (next) => {
-                const safe = normalizeSettings(next);
-                settingsChangedDuringStartupRef.current = true;
-                const saved = await window.stockApi.saveSettings(safe);
-                setSettings(normalizeSettings(saved));
+                const saved = await persistSettings(next);
                 if (payload?.security) await loadSecurity(payload.security, true);
                 showToast("设置已保存");
+                return saved;
               }}
             />
           )}
         </div>
+        <footer className="terminal-statusbar">
+        {view !== "trend-screener" && <div className="sidebar-status">
+          <div className="status-row">
+            <span className={`live-dot ${!live ? "paused" : marketDegraded ? "degraded" : ""}`} />
+            <div><strong>{marketStatus}</strong><small>{marketStatusDetail}</small></div>
+          </div>
+          <div className="quota-text"><span>请求主源 {requestedProviderLabel}</span><b>实际 {actualProviderLabel}</b></div>
+        </div>}
+        <div className="version">趋势定制版 v{version} · 仅供研究，不构成投资建议</div>
+        </footer>
       </main>
       {toast && <div className="toast" role="status" aria-live="polite"><ShieldCheck size={17} />{toast}</div>}
     </div>
@@ -5046,10 +5162,9 @@ const executePaperTrade = () => {
 function PageHeading({ eyebrow, title, description, actions }: any) {
   return (
     <div className="page-heading">
-      <div>
-        <span className="eyebrow">{eyebrow}</span>
+      <div className="page-heading-identity">
         <h1>{title}</h1>
-        {description && <p>{description}</p>}
+        {(description || eyebrow) && <details className="page-heading-help"><summary>说明</summary><div>{eyebrow && <span>{eyebrow}</span>}{description && <p>{description}</p>}</div></details>}
       </div>
       {actions && <div className="heading-actions">{actions}</div>}
     </div>
@@ -5410,7 +5525,7 @@ function Dashboard({
   const hasMoreExecutionDecisionLog = Array.isArray(executionDecisionLog) && executionDecisionLog.length > 5;
 
   return (
-    <>
+    <div className="terminal-analysis-layout">
       <PageHeading
         eyebrow={assetLabel
           ? `${assetLabel} · 实时行情`
@@ -5938,7 +6053,7 @@ function Dashboard({
         </div>
       )}
 
-    </>
+    </div>
   );
 }
 
@@ -6146,6 +6261,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState("");
   const chartRequest = useRef(0);
+  const chartPending = useRef<number | null>(null);
   const [indicators, setIndicators] = useState<string[]>(["MA", "VOL"]);
   const indicatorOptions = [
     { id: "MA", label: "MA均线" },
@@ -6189,7 +6305,9 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   };
 
   const loadChart = useCallback(async (silent = false) => {
+    if (chartPending.current !== null) return;
     const requestId = ++chartRequest.current;
+    chartPending.current = requestId;
     if (!silent) setChartLoading(true);
     setChartError("");
     try {
@@ -6209,19 +6327,16 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
       setChartData([]);
       setChartError(reason instanceof Error ? reason.message : String(reason));
     } finally {
+      if (chartPending.current === requestId) chartPending.current = null;
       if (requestId === chartRequest.current) setChartLoading(false);
     }
   }, [security.code, frame, range, adjustment]);
 
   useEffect(() => {
-    let active = true;
-    const run = async () => {
-      if (!active) return;
-      await loadChart(false);
-    };
-    run();
+    void loadChart(false);
     return () => {
-      active = false;
+      chartRequest.current += 1;
+      chartPending.current = null;
     };
   }, [loadChart]);
 
@@ -6659,7 +6774,7 @@ function IndicatorChart({
   if (data.length < 2) return null;
   const width = 760;
   const height = 105;
-  const pad = 12;
+  const pad = 22;
   const slot = (width - pad * 2) / data.length;
   const x = (index: number) => pad + slot * index + slot / 2;
   let series: Array<{ name: string; values: number[]; className: string }> = [];
@@ -6795,6 +6910,7 @@ function BacktestView({
   history,
   profileComparisons,
   onDraftChange,
+  onInvalidateRun,
   onRun,
   onRunProfileComparisons,
   onApplyProfileComparison,
@@ -6822,6 +6938,7 @@ function BacktestView({
   history: BacktestHistoryRecord[];
   profileComparisons: BacktestProfileComparisonReport | null;
   onDraftChange: (updater: (current: BacktestDraft) => BacktestDraft) => void;
+  onInvalidateRun: () => void;
   onRun: (next: BacktestDraft) => void;
   onRunProfileComparisons: (next: BacktestDraft) => void;
   onApplyProfileComparison: (record: BacktestHistoryRecord) => void;
@@ -6960,6 +7077,9 @@ function BacktestView({
   const [securitySuggestionOpen, setSecuritySuggestionOpen] = useState(false);
   const [securityInputError, setSecurityInputError] = useState("");
   const [resolvingSecurity, setResolvingSecurity] = useState(false);
+  const securityResolutionId = useRef(0);
+  useEffect(() => () => { securityResolutionId.current += 1; }, []);
+  useEffect(() => { securityResolutionId.current += 1; setResolvingSecurity(false); }, [draft]);
   const [verifiedStrategies, setVerifiedStrategies] = useState<any[]>([]);
   const [strategyDefinitionError, setStrategyDefinitionError] = useState("");
 
@@ -7003,6 +7123,8 @@ function BacktestView({
   }, []);
 
   useEffect(() => {
+    securityResolutionId.current += 1;
+    setResolvingSecurity(false);
     const nextSecurity = resultSecurity || contextSecurity;
     setSelectedSecurity(nextSecurity || null);
     setSecurityInput(formatSecurityInput(nextSecurity, draft.securityCode));
@@ -7051,6 +7173,8 @@ function BacktestView({
   }, [securityInput, selectedSecurity?.code, selectedSecurity?.name]);
 
   const chooseSecurity = (security: Security, sourceLabel = "回测中心搜索") => {
+    securityResolutionId.current += 1;
+    setResolvingSecurity(false);
     const normalized: Security = {
       ...security,
       code: String(security.code || ""),
@@ -7071,7 +7195,7 @@ function BacktestView({
     return normalized;
   };
 
-  const resolveSecurityInput = async () => {
+  const resolveSecurityInput = async (intent: number) => {
     const keyword = securityInput.trim();
     if (!keyword) {
       setSecurityInputError("请输入股票名称或6位代码");
@@ -7091,12 +7215,13 @@ function BacktestView({
     } catch {
       candidates = [];
     }
+    if (intent !== securityResolutionId.current) return null;
     const exact = candidates.find((item) => item.code === embeddedCode) ||
       candidates.find((item) => item.name === keyword) ||
       (candidates.length === 1 ? candidates[0] : null);
-    if (exact) return chooseSecurity(exact);
+    if (exact) return exact;
     if (embeddedCode) {
-      return chooseSecurity({ code: embeddedCode, name: embeddedCode, secid: "" }, "回测中心代码输入");
+      return { code: embeddedCode, name: embeddedCode, secid: "" };
     }
     setSecuritySuggestions(candidates.slice(0, 8));
     setSecuritySuggestionOpen(Boolean(candidates.length));
@@ -7110,10 +7235,11 @@ function BacktestView({
 
   const runWithResolvedSecurity = async (runner: (next: BacktestDraft) => void) => {
     if (resolvingSecurity || loading || comparisonRunning) return;
+    const intent = ++securityResolutionId.current;
     setResolvingSecurity(true);
     try {
-      const security = await resolveSecurityInput();
-      if (!security) return;
+      const security = await resolveSecurityInput(intent);
+      if (!security || intent !== securityResolutionId.current) return;
       let strategyContext = draft.strategyContext;
       if (!strategyContext) {
         const definition = verifiedStrategies[0];
@@ -7131,6 +7257,7 @@ function BacktestView({
           minimumVotes: 1
         };
       }
+      chooseSecurity(security);
       const next = {
         ...draft,
         securityCode: security.code,
@@ -7140,7 +7267,7 @@ function BacktestView({
       onDraftChange(() => next);
       runner(next);
     } finally {
-      setResolvingSecurity(false);
+      if (intent === securityResolutionId.current) setResolvingSecurity(false);
     }
   };
 
@@ -7244,6 +7371,7 @@ function BacktestView({
               {loading || resolvingSecurity ? <LoaderCircle className="spin" size={17} /> : <LineChart size={17} />}
               {resolvingSecurity ? "确认股票" : "从所选日期开始回测"}
             </button>
+            {loading && <button className="secondary-btn" onClick={onInvalidateRun}>取消回测</button>}
             <button className="secondary-btn" disabled={!canExport} onClick={() => onExportCurrent("csv")}>
               <Download size={17} />
               导出CSV
@@ -7276,7 +7404,7 @@ function BacktestView({
           </>
         }
       />
-      <section className="panel backtest-context-panel">
+      <details className="backtest-context-disclosure"><summary>本次回放上下文与口径</summary><section className="panel backtest-context-panel">
         <div className="backtest-context-head">
           <div>
             <Target size={18} />
@@ -7327,7 +7455,7 @@ function BacktestView({
             ? `当前回放严格复用策略信号引擎 robust-v2 的 ${effectiveStrategyIds.length} 套已选规则；同日达到至少 ${draft.strategyContext?.minimumVotes || 1} 票才形成组合信号。默认次日开盘入场；填写自定义买入价后，仅在次日价格区间触达时成交。固定持有五日并扣除佣金/滑点，不会污染全局设置。`
             : "当前回放使用设置页保存的执行因子组合与成本参数：普通因子按组合门槛判定，风险否决必须通过。若要比较不同策略谁更优，应使用策略信号页的全市场样本外验证，而不是用单只股票结果代替。"}
         </p>
-      </section>
+      </section></details>
       <div className="backtest-layout">
         <section className="panel backtest-setup-panel">
           <PanelTitle title="回测条件" subtitle="多选策略后设置共振门槛，再选择股票、日期和买入方式" icon={LineChart} />
@@ -7397,6 +7525,9 @@ function BacktestView({
                   value={securityInput}
                   onFocus={() => setSecuritySuggestionOpen(Boolean(securitySuggestions.length))}
                   onChange={(event) => {
+                    securityResolutionId.current += 1;
+                    setResolvingSecurity(false);
+                    onInvalidateRun();
                     setSecurityInput(event.target.value);
                     setSelectedSecurity(null);
                     setSecurityInputError("");
@@ -7866,6 +7997,7 @@ function BacktestView({
                   <strong>固定标的与成本，仅切换风险档位</strong>
                   <small>通过准入且净边际更高的结果优先；不会改变上方单股回测的策略选择。</small>
                 </div>
+              {(comparisonRunning || loading) && <button className="secondary-btn" onClick={onInvalidateRun}>取消任务</button>}
               <button
                 className="secondary-btn"
                 disabled={comparisonRunning || loading || resolvingSecurity}
@@ -8031,68 +8163,50 @@ function BacktestView({
   );
 }
 
-function FavoritesView({
+export function FavoritesView({
   items,
+  monitors,
+  live,
   onOpen,
   onRemove
 }: {
   items: WatchItem[];
+  monitors: ReturnType<typeof useStockMonitors>;
+  live: boolean;
   onOpen: (item: WatchItem) => void;
   onRemove: (item: WatchItem) => void;
 }) {
+  const [editingCode, setEditingCode] = useState<string | null>(null);
+  const configuredCount = items.filter(item => monitors.configs[item.code]).length;
+  const enabledCount = items.filter(item => monitors.configs[item.code]?.enabled).length;
+  const statusLabels: Record<string, string> = { waiting: "等待行情", stale: "报价待更新", unavailable: "行情待恢复", baseline: "监控中", watching: "监控中", matched: "条件满足", triggered: "已提醒", cooldown: "冷却中", disabled: "已暂停" };
   return (
-    <>
-      <PageHeading
-        eyebrow="PERSONAL MONITOR BOARD"
-        title="自选板块"
-        description="在涨停池或个股分析中点击“监控/加入自选”，股票会集中保存在这里。"
-      />
-      <section className="panel favorites-panel">
-        <PanelTitle
-          title="我的监控"
-          subtitle="自选数据保存在本机；点击任意股票进入独立分析"
-          icon={Star}
-          badge={`${items.length} 只`}
-        />
-        {items.length ? (
-          <div className="favorites-grid">
-            {items.map((item: WatchItem) => (
-              <button className="favorite-card" key={item.code} onClick={() => onOpen(item)}>
-                <span className="favorite-market">{item.thscode?.split(".")[1] || "A"}</span>
-                <strong>{item.name}</strong>
-                <small>{item.code}</small>
-                <div>
-                  <span>{item.observationNode || "自选监控"}</span>
-                  {item.limitDate && <em>涨停 {item.limitDate}</em>}
-                </div>
-                <i>
-                  <Clock3 size={13} />
-                  {new Date(item.favoriteAddedAt || item.createdAt || Date.now()).toLocaleDateString("zh-CN")}
-                </i>
-                <span
-                  className="favorite-remove"
-                  role="button"
-                  tabIndex={0}
-                  title="移出自选"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRemove(item);
-                  }}
-                >
-                  <X size={15} />
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="favorites-empty">
-            <Star size={32} />
-            <b>自选板块还是空的</b>
-            <span>到涨停池点击“监控”，或在个股分析中点击“加入自选”。</span>
-          </div>
-        )}
+    <div className="personal-workspace">
+      <PageHeading eyebrow="PERSONAL MONITOR BOARD" title="自选板块" description="为每只自选股设置独立条件，应用开启且实时刷新时持续监测。" />
+      <section className="panel personal-monitor-panel">
+        <header className="personal-monitor-heading"><div><Star size={18} /><h3>我的监控</h3><span>{items.length} 只自选</span></div><div><span>{configuredCount} 只已配置</span><b>{live ? `${enabledCount} 只监控中` : "实时监控已暂停"}</b>{monitors.refreshing && <LoaderCircle size={15} className="spin" />}</div></header>
+        {monitors.storageError && <p className="monitor-storage-error" role="alert">{monitors.storageError}</p>}
+        {items.length ? <div className="personal-monitor-list"><div className="personal-monitor-columns" aria-hidden="true"><span>股票</span><span>最新行情 / 状态</span><span>监控条件</span><span>最近状态</span><span>操作</span></div><div className="personal-monitor-grid">{items.map(item => {
+          const config = monitors.configs[item.code];
+          const evaluation = monitors.runtimes[item.code];
+          const snapshot = monitors.latestQuotes[item.code];
+          const latest = snapshot?.quote?.latest;
+          const change = snapshot?.quote?.changePct;
+          const missingFields = Array.isArray(snapshot?.quote?.missingFields) ? snapshot.quote.missingFields : [];
+          const status = !config ? "未配置" : !config.enabled || !live ? "已暂停" : statusLabels[evaluation?.status || "waiting"];
+          const statusDetail = !config ? "添加价格、涨跌幅、换手率或成交额条件" : !config.enabled || !live ? "恢复后从新行情开始监控" : evaluation?.detail || "等待获取有效行情";
+          return <article key={item.code} className={`personal-monitor-card ${editingCode === item.code ? "is-editing" : ""}`}>
+            <header><button className="monitor-stock-name" onClick={() => onOpen(item)}><strong>{item.name}</strong><span>{item.code} · {item.thscode?.split(".")[1] || "A"}</span></button><button className="monitor-remove-stock" title="移出自选" aria-label={`移出自选${item.name}`} onClick={() => onRemove(item)}><X size={16} /></button></header>
+            <div className="monitor-card-quote"><strong>{typeof latest === "number" && Number.isFinite(latest) && latest > 0 ? fmt(latest) : "—"}</strong>{!missingFields.includes("changePct") && typeof change === "number" && Number.isFinite(change) && <span className={change >= 0 ? "up" : "down"}>{change >= 0 ? "+" : ""}{fmt(change)}%</span>}<span className={`monitor-status ${config?.enabled && live ? "is-on" : ""}`}>{status}</span></div>
+            <p className="monitor-rule-summary">{config ? summarizeStockMonitor(config) : "尚未设置监控条件"}</p>
+            <div className="monitor-card-detail"><span>{statusDetail}</span>{snapshot?.updatedAt && <time>最近获取 {new Date(snapshot.updatedAt).toLocaleTimeString("zh-CN", { hour12: false })}</time>}</div>
+            <footer><button className="monitor-configure" onClick={() => setEditingCode(editingCode === item.code ? null : item.code)}><SlidersHorizontal size={14} />{config ? "编辑条件" : "设置条件"}</button>{config && <button onClick={() => { if (monitors.save(item.code, { ...config, enabled: !config.enabled })) setEditingCode(null); }}>{config.enabled ? "暂停监控" : "启用监控"}</button>}<button onClick={() => onOpen(item)}>个股分析<ChevronRight size={14} /></button></footer>
+            {editingCode === item.code && <StockMonitorEditor stock={item} config={config} onCancel={() => setEditingCode(null)} onSave={next => { const ok = monitors.save(item.code, next); if (ok) setEditingCode(null); return ok; }} />}
+          </article>;
+        })}</div></div> : <div className="favorites-empty"><Star size={32} /><b>自选板块还是空的</b><span>到涨停池点击“监控”，或在个股分析中点击“加入自选”。</span></div>}
       </section>
-    </>
+      {monitors.alerts.length > 0 && <section className="panel monitor-alert-panel"><header><Bell size={17} /><h3>最近提醒</h3><span>保留最近 20 条</span></header><div>{monitors.alerts.map(alert => <article key={alert.id}><div><b>{alert.name}</b><span>{alert.code}</span><time>{new Date(alert.triggeredAt).toLocaleString("zh-CN", { hour12: false })}</time></div><p>{alert.detail}</p></article>)}</div></section>}
+    </div>
   );
 }
 
@@ -8106,7 +8220,7 @@ function HoldingsView({
   items: HoldingItem[];
   settings: Settings;
   live: boolean;
-  onSave: (items: HoldingItem[]) => Promise<boolean>;
+  onSave: (update: (items: HoldingItem[]) => HoldingItem[]) => Promise<boolean>;
   onOpen: (item: HoldingItem) => void;
 }) {
   const [code, setCode] = useState("");
@@ -8117,9 +8231,12 @@ function HoldingsView({
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
+  const holdingEditRevision = useRef(0);
   const quoteRefreshRequestId = useRef(0);
+  const quoteRefreshPending = useRef<number | null>(null);
 
   const refreshQuotes = useCallback(async () => {
+    if (quoteRefreshPending.current !== null) return;
     const requestId = ++quoteRefreshRequestId.current;
     if (!items.length) {
       if (requestId === quoteRefreshRequestId.current) {
@@ -8128,12 +8245,13 @@ function HoldingsView({
       }
       return;
     }
+    quoteRefreshPending.current = requestId;
     setRefreshing(true);
     const pending = [...items];
     const results: Array<readonly [string, any]> = [];
     const workerCount = Math.min(4, pending.length);
     await Promise.all(Array.from({ length: workerCount }, async () => {
-      while (pending.length) {
+      while (pending.length && requestId === quoteRefreshRequestId.current) {
         const item = pending.shift();
         if (!item) return;
         try {
@@ -8144,6 +8262,7 @@ function HoldingsView({
         }
       }
     }));
+    if (quoteRefreshPending.current === requestId) quoteRefreshPending.current = null;
     if (requestId !== quoteRefreshRequestId.current) return;
     setQuotes((current) => {
       const next = { ...current };
@@ -8157,12 +8276,15 @@ function HoldingsView({
 
   useEffect(() => {
     void refreshQuotes();
-    if (!live || !items.length) return;
-    const timer = window.setInterval(
+    const timer = live && items.length ? window.setInterval(
       () => void refreshQuotes(),
       Math.max(5, Number(settings.quoteRefreshSeconds) || 5) * 1000
-    );
-    return () => window.clearInterval(timer);
+    ) : undefined;
+    return () => {
+      window.clearInterval(timer);
+      quoteRefreshRequestId.current += 1;
+      quoteRefreshPending.current = null;
+    };
   }, [items.length, live, settings.quoteRefreshSeconds, refreshQuotes]);
 
   const rows = useMemo(() => items.map((item) => {
@@ -8201,6 +8323,7 @@ function HoldingsView({
   const signedMoney = (value: number) => `${value >= 0 ? "+" : ""}${fmtMoney(value)}`;
   const signedPercent = (value: number) => `${value >= 0 ? "+" : ""}${fmt(value)}%`;
   const editHolding = (item: HoldingItem) => {
+    holdingEditRevision.current += 1;
     setCode(item.code);
     setShares(String(item.shares));
     setCostPrice(String(item.costPrice));
@@ -8224,13 +8347,15 @@ function HoldingsView({
       setFormError("成本价必须大于 0");
       return;
     }
+    if (submitting) return;
+    const submittedRevision = holdingEditRevision.current;
+    const existing = items.find(item => item.code === normalizedCode);
     setSubmitting(true);
     setFormError("");
     try {
       const choices = await window.stockApi.search(normalizedCode);
       const security = choices.find((item) => item.code === normalizedCode);
       if (!security) throw new Error("未找到该证券，请确认代码后重试");
-      const existing = items.find((item) => item.code === normalizedCode);
       const timestamp = new Date().toISOString();
       const nextItem: HoldingItem = {
         ...security,
@@ -8240,9 +8365,10 @@ function HoldingsView({
         createdAt: existing?.createdAt || timestamp,
         updatedAt: timestamp
       };
-      const next = [...items.filter((item) => item.code !== normalizedCode), nextItem]
-        .sort((left, right) => left.code.localeCompare(right.code));
-      if (!await onSave(next)) return;
+      if (!await onSave(current => [...current.filter(item => item.code !== normalizedCode), {
+        ...nextItem, createdAt: current.find(item => item.code === normalizedCode)?.createdAt || nextItem.createdAt
+      }].sort((left, right) => left.code.localeCompare(right.code)))) return;
+      if (holdingEditRevision.current !== submittedRevision) return;
       setCode("");
       setShares("");
       setCostPrice("");
@@ -8254,11 +8380,11 @@ function HoldingsView({
     }
   };
   const removeHolding = async (item: HoldingItem) => {
-    await onSave(items.filter((entry) => entry.code !== item.code));
+    await onSave(current => current.filter(entry => entry.code !== item.code));
   };
 
   return (
-    <>
+    <div className="holdings-workspace">
       <PageHeading
         eyebrow="PERSONAL HOLDINGS BOARD"
         title="持仓股"
@@ -8274,13 +8400,14 @@ function HoldingsView({
           <Fact label="按昨收估算今日盈亏" value={summary.dayPricedCount ? signedMoney(summary.dayProfit) : "--"} />
         </div>
       </section>
+      <div className="holdings-workspace-grid">
       <section className="panel holdings-entry-panel">
         <PanelTitle title="录入或更新持仓" subtitle="同一代码再次保存会更新数量、成本价和备注。" icon={BookmarkCheck} />
         <form className="holdings-entry-form" onSubmit={saveHolding}>
-          <input aria-label="证券代码" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="证券代码，如 600519" inputMode="numeric" />
-          <input aria-label="持仓数量" value={shares} onChange={(event) => setShares(event.target.value.replace(/\D/g, ""))} placeholder="持仓数量（股）" inputMode="numeric" />
-          <input aria-label="成本价" value={costPrice} onChange={(event) => setCostPrice(event.target.value)} placeholder="成本价" inputMode="decimal" />
-          <input aria-label="持仓备注" value={note} onChange={(event) => setNote(event.target.value)} placeholder="备注（可选）" maxLength={160} />
+          <input aria-label="证券代码" value={code} onChange={(event) => { holdingEditRevision.current += 1; setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); }} placeholder="证券代码，如 600519" inputMode="numeric" />
+          <input aria-label="持仓数量" value={shares} onChange={(event) => { holdingEditRevision.current += 1; setShares(event.target.value.replace(/\D/g, "")); }} placeholder="持仓数量（股）" inputMode="numeric" />
+          <input aria-label="成本价" value={costPrice} onChange={(event) => { holdingEditRevision.current += 1; setCostPrice(event.target.value); }} placeholder="成本价" inputMode="decimal" />
+          <input aria-label="持仓备注" value={note} onChange={(event) => { holdingEditRevision.current += 1; setNote(event.target.value); }} placeholder="备注（可选）" maxLength={160} />
           <button className="primary-btn" type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={16} /> : <BookmarkCheck size={16} />}保存持仓</button>
         </form>
         {formError && <div className="holdings-form-error">{formError}</div>}
@@ -8305,153 +8432,78 @@ function HoldingsView({
           <div className="favorites-empty holdings-empty"><WalletCards size={32} /><b>还没有录入持仓</b><span>输入证券代码、数量和成本价后保存；数据只留在本机。</span></div>
         )}
       </section>
-    </>
+      </div>
+    </div>
   );
 }
 
-function WatchlistView({
+export function WatchlistView({
   items,
   limitUps = [],
   activeNode,
   onNodeChange,
   onOpen,
   onRemove
-}: any) {
-  const dayTabs = Array.from({ length: 10 }, (_, index) => {
-    const day = index + 1;
-    return { id: `T+${day}`, label: `第${day}个 T+${day}` };
-  });
-  const tabs = [{ id: "all", label: "全部十日" }, ...dayTabs];
-  const [boardSort, setBoardSort] = useState<{
-    key: "height" | "openBoard" | "turnover";
-    direction: "asc" | "desc";
-  }>({ key: "height", direction: "desc" });
-  const toggleBoardSort = (key: "openBoard" | "turnover") => {
-    setBoardSort((current) => ({
-      key,
-      direction: current.key === key && current.direction === "desc" ? "asc" : "desc"
-    }));
-  };
-  const boardSortMark = (key: "openBoard" | "turnover") =>
-    boardSort.key === key ? (boardSort.direction === "desc" ? "↓" : "↑") : "↕";
-  const nodeFor = (item: WatchItem) =>
-    item.observationNode || (
-      Number(item.tradingDaysSince) >= 1 && Number(item.tradingDaysSince) <= 10
-        ? `T+${item.tradingDaysSince}`
-        : "手动"
-    );
-  const counts = Object.fromEntries(
-    tabs.map((tab) => [
-      tab.id,
-      tab.id === "all"
-        ? items.length
-        : items.filter((item: WatchItem) => nodeFor(item) === tab.id).length
-    ])
+}: {
+  items: WatchItem[];
+  limitUps?: any[];
+  activeNode: string;
+  onNodeChange: (node: string) => void;
+  onOpen: (item: any) => void;
+  onRemove: (item: WatchItem) => void;
+}) {
+  const [filter, setFilter] = useState("");
+  const [page, setPage] = useState(0);
+  const pageSize = 20;
+  const tabs = [{ id: "all", label: "全部十日" }, ...Array.from({ length: 10 }, (_, index) => ({ id: `T+${index + 1}`, label: `T+${index + 1}` }))];
+  const nodeFor = (item: WatchItem) => item.observationNode || (
+    Number(item.tradingDaysSince) >= 1 && Number(item.tradingDaysSince) <= 10
+      ? `T+${item.tradingDaysSince}` : "手动"
   );
-  const visibleItems = items.filter((item: WatchItem) =>
-    activeNode === "all" ? true : nodeFor(item) === activeNode
-  );
-  const consecutiveBoards = [...limitUps]
-    .filter((item: any) => Number(item.consecutiveBoards) >= 2)
-    .sort((left: any, right: any) => {
-      const direction = boardSort.direction === "asc" ? 1 : -1;
-      const valueFor = (item: any) =>
-        boardSort.key === "openBoard"
-          ? Number(item.openBoardCount || 0)
-          : boardSort.key === "turnover"
-            ? Number(item.turnover || 0)
-            : Number(item.consecutiveBoards || 0);
-      const primary = (valueFor(left) - valueFor(right)) * direction;
-      return primary ||
-        Number(right.consecutiveBoards) - Number(left.consecutiveBoards) ||
-        Number(left.firstSealRaw || Number.MAX_SAFE_INTEGER) - Number(right.firstSealRaw || Number.MAX_SAFE_INTEGER);
-    });
+  const counts = Object.fromEntries(tabs.map(tab => [tab.id, tab.id === "all" ? items.length : items.filter(item => nodeFor(item) === tab.id).length]));
+  const visibleItems = items.filter(item => (activeNode === "all" || nodeFor(item) === activeNode) &&
+    (!filter.trim() || `${item.name} ${item.code}`.toLowerCase().includes(filter.trim().toLowerCase())));
+  const pageCount = Math.max(1, Math.ceil(visibleItems.length / pageSize));
+  const currentPage = Math.min(page, pageCount - 1);
+  const pageItems = visibleItems.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  useEffect(() => setPage(0), [activeNode, filter]);
   return (
-    <>
-      <PageHeading eyebrow="10-DAY LIMIT-UP WATCHLIST" title="涨停后十日观察池" description={`共 ${items.length} 只，按 T+1 至 T+10 的实际交易日完整细分。`} />
-
-      <section className="panel consecutive-board-panel">
-        <PanelTitle
-          title="当日连板梯队"
-          subtitle="从当日完整涨停池提取；点击开板次数或换手率可切换升降序"
-          icon={TrendingUp}
-          badge={`${consecutiveBoards.length} 只`}
-        />
-        {consecutiveBoards.length ? (
-          <div className="consecutive-board-table">
-            <div className="board-row board-head">
-              <span>股票</span>
-              <span>连板高度</span>
-              <span>所属板块</span>
-              <span>首次封板</span>
-              <span>
-                <button
-                  type="button"
-                  className={boardSort.key === "openBoard" ? "board-sort-btn active" : "board-sort-btn"}
-                  onClick={() => toggleBoardSort("openBoard")}
-                  title="按开板次数升降序"
-                >
-                  开板次数 <b>{boardSortMark("openBoard")}</b>
-                </button>
-              </span>
-              <span>
-                <button
-                  type="button"
-                  className={boardSort.key === "turnover" ? "board-sort-btn active" : "board-sort-btn"}
-                  onClick={() => toggleBoardSort("turnover")}
-                  title="按换手率升降序"
-                >
-                  换手率 <b>{boardSortMark("turnover")}</b>
-                </button>
-              </span>
-            </div>
-            {consecutiveBoards.map((item: any) => (
-              <button className="board-row" key={item.code} onClick={() => onOpen(item)}>
-                <span><b>{item.name}</b><small>{item.code}</small></span>
-                <span><em>{item.consecutiveBoards} 连板</em><small>{item.consecutiveBoards >= 4 ? "高标" : item.consecutiveBoards === 3 ? "中高标" : "晋级股"}</small></span>
-                <span>{item.industry || "未分类"}</span>
-                <span>{item.firstSealTime || "--"}</span>
-                <span>{item.openBoardCount ?? 0} 次</span>
-                <span>{fmt(Number(item.turnover || 0))}%</span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <EmptyInline text="当前交易日暂无二连板及以上股票" />
-        )}
-      </section>
-
-      <div className="watch-node-tabs">
-        {tabs.map((tab) => (
-          <button key={tab.id} className={activeNode === tab.id ? "active" : ""} onClick={() => onNodeChange(tab.id)}>
+    <div className="ten-day-workspace">
+      <header className="watch-toolbar">
+        <div><h1>十日观察池</h1><span>{items.length} 只</span></div>
+        <label className="watch-filter"><Search size={15} /><input aria-label="筛选观察池股票名称或代码" placeholder="名称 / 代码" value={filter} onChange={event => setFilter(event.target.value)} />{filter && <button aria-label="清空观察池筛选" onClick={() => setFilter("")}><X size={14} /></button>}</label>
+      </header>
+      <div className="watch-node-tabs" role="group" aria-label="观察交易日">
+        {tabs.map(tab => (
+          <button key={tab.id} className={activeNode === tab.id ? "active" : ""} aria-pressed={activeNode === tab.id} onClick={() => onNodeChange(tab.id)}>
             <span>{tab.label}</span><b>{counts[tab.id]}</b>
           </button>
         ))}
       </div>
-      <div className="panel">
-        {visibleItems.length ? (
-          <div className="watch-grid">
-            {visibleItems.map((item: WatchItem) => (
-              <div className="watch-card" role="button" tabIndex={0} key={item.code} onClick={() => onOpen(item)} onKeyDown={(event) => event.key === "Enter" && onOpen(item)}>
-                <div className="watch-card-top"><span>{item.thscode?.split(".")[1] || "A"}</span><button onClick={(e) => { e.stopPropagation(); onRemove(item); }}><X size={15} /></button></div>
-                <strong>{item.name}</strong><small>{item.code}</small>
-                <div>
-                  <Clock3 size={14} />
-                  {item.limitDate ? `${item.limitDate} 涨停` : `加入于 ${new Date(item.createdAt).toLocaleDateString("zh-CN")}`}
-                </div>
-                <span className="node-badge">{item.tradingDaysSince === 0 ? "涨停当日" : `涨停后第 ${item.tradingDaysSince ?? "--"} 个交易日`}</span>
-                {item.consecutiveBoards && item.consecutiveBoards > 1 && (
-                  <span className="board-badge">{item.consecutiveBoards} 连板</span>
-                )}
-                <em>打开分析 <ChevronRight size={15} /></em>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="empty-state"><Bookmark size={32} /><h3>该观察节点暂无股票</h3><p>切换 T+1 至 T+10 查看其他交易日节点。</p></div>
-        )}
+      <div className="watch-workspace-columns">
+        <section className="panel watch-stock-panel" aria-label="十日观察股票">
+          {visibleItems.length ? <>
+            <div className="watch-table-scroll">
+              <table className="watch-stock-table">
+                <colgroup><col className="watch-col-index" /><col className="watch-col-name" /><col className="watch-col-code" /><col className="watch-col-node" /><col className="watch-col-date" /><col className="watch-col-boards" /><col className="watch-col-actions" /></colgroup>
+                <thead><tr><th scope="col">序号</th><th scope="col">股票</th><th scope="col">代码</th><th scope="col">观察日</th><th scope="col">涨停日期</th><th scope="col">连板</th><th scope="col">操作</th></tr></thead>
+                <tbody>{pageItems.map((item, index) => <tr key={item.code}>
+                  <td className="watch-row-number">{currentPage * pageSize + index + 1}</td>
+                  <td><button className="watch-stock-open" aria-label={`${item.name} ${item.code}`} onClick={() => onOpen(item)}><strong>{item.name}</strong></button></td>
+                  <td className="watch-security-code">{item.code}<small>{item.thscode?.split(".")[1] || "A"}</small></td>
+                  <td><span className="watch-day-badge">{nodeFor(item)}</span></td>
+                  <td>{item.limitDate || (item.createdAt ? new Date(item.createdAt).toLocaleDateString("zh-CN") : "—")}</td>
+                  <td>{Number(item.consecutiveBoards) > 1 ? <b className="watch-board-count">{item.consecutiveBoards} 板</b> : "—"}</td>
+                  <td><div className="watch-row-actions"><button onClick={() => onOpen(item)} aria-label={`分析${item.name}`}>分析</button><button onClick={() => onRemove(item)} title="移出观察池" aria-label={`移出观察池${item.name}`}><X size={14} /></button></div></td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+            <footer className="watch-pagination"><span>{currentPage * pageSize + 1}–{Math.min((currentPage + 1) * pageSize, visibleItems.length)} / {visibleItems.length} 只</span><div><button disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)} aria-label="观察池上一页"><ChevronLeft size={16} /></button><span>{currentPage + 1} / {pageCount}</span><button disabled={currentPage + 1 >= pageCount} onClick={() => setPage(currentPage + 1)} aria-label="观察池下一页"><ChevronRight size={16} /></button></div></footer>
+          </> : <div className="empty-state"><Bookmark size={32} /><h3>{filter.trim() ? "没有匹配的股票" : "该观察节点暂无股票"}</h3><p>{filter.trim() ? "修改名称或代码，或清空筛选。" : "切换 T+1 至 T+10 查看其他交易日节点。"}</p></div>}
+        </section>
+        <aside className="watch-ladder-sidebar"><ConsecutiveBoardLadder rows={limitUps} onOpen={onOpen} /></aside>
       </div>
-    </>
+    </div>
   );
 }
 
@@ -9022,13 +9074,14 @@ function SectorView({ rows, loading, loadError, onRefresh, onOpenStock }: {
   );
 }
 
-function NewsView({
+export function NewsView({
   payload,
   watchlist,
   holdings,
   limitUps,
   settings,
-  announcementOnly = false,
+  contentType = "all",
+  onContentTypeChange,
   onOpenStock
 }: {
   payload: AnalysisPayload | null;
@@ -9036,9 +9089,11 @@ function NewsView({
   holdings: HoldingItem[];
   limitUps: any[];
   settings: Settings;
-  announcementOnly?: boolean;
+  contentType?: InformationTab;
+  onContentTypeChange: (type: InformationTab) => void;
   onOpenStock: (stock: Security) => void;
 }) {
+  const announcementOnly = contentType === "announcement";
   const scopes = [
     { id: "all", label: "全市场" },
     { id: "limitUp", label: `涨停池 ${limitUps.length}` },
@@ -9057,6 +9112,7 @@ function NewsView({
   const [error, setError] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const feedRequestId = useRef(0);
+  const [refreshCycle, setRefreshCycle] = useState({ requestId: 0, failures: 0 });
 
   useEffect(() => () => {
     feedRequestId.current += 1;
@@ -9068,13 +9124,14 @@ function NewsView({
     limitUps,
     watchlist,
     holdings,
-    contentType: announcementOnly ? "announcement" : "all",
+    contentType,
     currentStock: payload?.security || null,
     currentSector: payload?.sector?.name || payload?.quote?.industry || ""
-  }), [scope, limitUps, watchlist, holdings, announcementOnly, payload?.security?.code, payload?.sector?.name, payload?.quote?.industry]);
+  }), [scope, limitUps, watchlist, holdings, contentType, payload?.security?.code, payload?.sector?.name, payload?.quote?.industry]);
 
   const loadFeed = useCallback(async (force = false) => {
     const requestId = ++feedRequestId.current;
+    let failed = false;
     setLoading(true);
     setError("");
     try {
@@ -9083,28 +9140,35 @@ function NewsView({
         : await window.stockApi.getNewsFeed(feedInput);
       if (requestId === feedRequestId.current) setFeed(next);
     } catch (reason) {
+      failed = true;
       if (requestId === feedRequestId.current) {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
     } finally {
-      if (requestId === feedRequestId.current) setLoading(false);
+      if (requestId === feedRequestId.current) {
+        setLoading(false);
+        setRefreshCycle(current => ({ requestId, failures: failed ? Math.min(5, current.failures + 1) : 0 }));
+      }
     }
   }, [feedInput]);
 
   useEffect(() => {
+    setFeed({ items: [], sourceStatus: [] });
     loadFeed(false);
+    return () => { feedRequestId.current += 1; };
   }, [loadFeed]);
 
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!autoRefresh || loading) return;
     const baseSeconds = Math.max(
       5,
       Number(feed.refreshAfterSeconds || settings.newsRefreshSeconds || 6)
     );
-    const intervalSeconds = document.hidden ? Math.max(30, baseSeconds) : baseSeconds;
+    const retrySeconds = Math.min(60, baseSeconds * 2 ** Math.max(0, refreshCycle.failures - 1));
+    const intervalSeconds = document.hidden ? Math.max(30, retrySeconds) : retrySeconds;
     const timer = window.setTimeout(() => loadFeed(false), intervalSeconds * 1000);
     return () => window.clearTimeout(timer);
-  }, [autoRefresh, settings.newsRefreshSeconds, feed.refreshAfterSeconds, feed.updatedAt, loadFeed]);
+  }, [autoRefresh, loading, refreshCycle, settings.newsRefreshSeconds, feed.refreshAfterSeconds, feed.updatedAt, loadFeed]);
 
   const visibleItems = (feed.items || []).filter((item: any) => {
     const text = [
@@ -9119,15 +9183,17 @@ function NewsView({
       (importance === "major" && Number(item.importanceScore || 0) >= 75) ||
       (importance === "risk" && (Number(item.riskSeverity || 0) >= 1 || item.direction === "negative")) ||
       (importance === "corrected" && item.status === "corrected");
-    return (!announcementOnly || item.type === "announcement") &&
+    return (contentType === "all" || item.type === contentType) &&
       (!query.trim() || text.includes(query.trim().toLowerCase())) &&
       (direction === "all" || item.direction === direction) &&
-      (eventType === "all" || item.eventType === eventType) &&
-      matchesImportance;
+      (!announcementOnly || eventType === "all" || item.eventType === eventType) &&
+      (!announcementOnly || matchesImportance);
   });
   const sourceStatus = announcementOnly
     ? (feed.sourceStatus || []).filter((source: any) => ["announcement", "ths"].includes(source.id))
-    : (feed.sourceStatus || []);
+    : contentType === "flash"
+      ? (feed.sourceStatus || []).filter((source: any) => !["announcement", "ths"].includes(source.id))
+      : (feed.sourceStatus || []);
   const levelACount = visibleItems.filter((item: any) => item.sourceLevel === "A").length;
   const freshCount = visibleItems.filter((item: any) => item.ageMinutes <= 30).length;
   const riskCount = visibleItems.filter((item: any) => item.riskSeverity >= 2).length;
@@ -9143,13 +9209,15 @@ function NewsView({
         minutes < 1440 ? `${Math.floor(minutes / 60)}小时前` : `${Math.floor(minutes / 1440)}天前`;
 
   return (
-    <>
+    <div className="information-workspace">
       <PageHeading
-        eyebrow={announcementOnly ? "A-SHARE DISCLOSURE CENTER" : "REAL-TIME INFORMATION RADAR"}
-        title={announcementOnly ? "A股公告" : "资讯雷达"}
+        eyebrow="INFORMATION CENTER"
+        title="资讯中心"
         description={announcementOnly
           ? "集中查看沪深北A股公司公告，按持仓、自选、事件类型、重要性与风险快速筛选。"
-          : "准实时聚合 7×24 快讯与公司公告；可信度、方向和影响强度分别计算。"}
+          : contentType === "flash"
+            ? "查看 7×24 市场快讯，按股票、板块与关键词筛选；可信度、方向和影响强度分别呈现。"
+            : "准实时聚合 7×24 快讯与公司公告；可信度、方向和影响强度分别计算。"}
         actions={
           <>
             <button className={`secondary-btn news-live-switch ${autoRefresh ? "active" : ""}`} onClick={() => setAutoRefresh((value) => !value)}>
@@ -9162,33 +9230,23 @@ function NewsView({
         }
       />
 
-      <div
-        className="news-mode-banner"
-        data-announcement-module={announcementOnly ? true : undefined}
-        data-content-type={announcementOnly ? "announcement" : "all"}
-      >
-        <Wifi size={17} />
-        <b>{feed.mode || "准实时"}</b>
-        <span>最后更新 {feed.updatedAt ? new Date(feed.updatedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "--"}</span>
-        <small>{announcementOnly ? "公司公告15秒复核；同花顺增强源30秒复核" : (feed.collectionPolicy || "快讯10秒轮询；公告低频复核")}。源平台发布时间延迟另计，“待行情确认”不会被伪装成已确认。</small>
-      </div>
-
-      <div className="news-source-strip">
-        {sourceStatus.map((source: any) => (
-          <div className={source.ok === false ? "failed" : source.ok === null ? "idle" : "online"} key={source.id}>
-            <span /><b>{source.name}</b><em>{source.level}级</em><small>{source.message}{source.pollSeconds ? ` · ${source.pollSeconds}秒轮询` : ""}</small>
-          </div>
+      <div className="news-scope-tabs information-type-tabs" role="tablist" aria-label="资讯类型">
+        {informationTabs.map(tab => (
+          <button key={tab.id} type="button" role="tab" aria-selected={contentType === tab.id}
+            className={contentType === tab.id ? "active" : ""}
+            onClick={() => {
+              if (tab.id === contentType) return;
+              feedRequestId.current += 1;
+              setFeed({ items: [], sourceStatus: [] });
+              setError("");
+              setLoading(true);
+              onContentTypeChange(tab.id);
+            }}>{tab.label}</button>
         ))}
       </div>
 
-      <div className="news-overview-grid">
-        <div className="panel">{announcementOnly ? <FileText size={19} /> : <Newspaper size={19} />}<span>当前范围</span><b>{visibleItems.length}</b><small>{announcementOnly ? "去重后的公司公告" : "去重后的资讯事件"}</small></div>
-        <div className="panel"><ShieldCheck size={19} /><span>A级原始源</span><b>{levelACount}</b><small>官方披露或官方接口</small></div>
-        <div className="panel"><Zap size={19} /><span>30分钟内</span><b>{freshCount}</b><small>按原始发布时间</small></div>
-        <div className={`panel ${riskCount ? "risk" : ""}`}><ShieldAlert size={19} /><span>重要风险</span><b>{riskCount}</b><small>风险等级高</small></div>
-      </div>
 
-      <div className="panel news-control-panel">
+      <div className="information-layout"><aside className="information-filter-rail">      <div className="panel news-control-panel">
         <div className="news-scope-tabs">
           {scopes.map((item) => (
             <button
@@ -9230,12 +9288,56 @@ function NewsView({
         </div>
       </div>
 
+
+        <details className="information-disclosure"><summary>来源状态</summary>      <div
+        className="news-mode-banner"
+        data-announcement-module={announcementOnly ? true : undefined}
+        data-content-type={contentType}
+      >
+        <Wifi size={17} />
+        <b>{feed.mode || "准实时"}</b>
+        <span>最后更新 {feed.updatedAt ? new Date(feed.updatedAt).toLocaleTimeString("zh-CN", { hour12: false }) : "--"}</span>
+        <small>{announcementOnly ? "公司公告15秒复核；同花顺增强源30秒复核" : (feed.collectionPolicy || "快讯10秒轮询；公告低频复核")}。源平台发布时间延迟另计，“待行情确认”不会被伪装成已确认。</small>
+      </div>
+
+      <div className="news-source-strip">
+        {sourceStatus.map((source: any) => (
+          <div className={source.ok === false ? "failed" : source.ok === null ? "idle" : "online"} key={source.id}>
+            <span /><b>{source.name}</b><em>{source.level}级</em><small>{source.message}{source.pollSeconds ? ` · ${source.pollSeconds}秒轮询` : ""}</small>
+          </div>
+        ))}
+      </div>
+
+</details>
+        <details className="information-disclosure"><summary>{announcementOnly ? "公告判定规则" : "信息判定规则"}</summary>        <aside className="panel news-method-panel">
+          <PanelTitle title={announcementOnly ? "公告判定规则" : "信息判定规则"} subtitle="不把“重要利空”误判为低价值" icon={Gauge} />
+          {announcementOnly ? <>
+            <div><b>官方原文优先</b><p>A级表示链接可核验至交易所或巨潮等官方披露平台；聚合页面明确标记为B级。</p></div>
+            <div><b>公告分类</b><p>业绩、股东行为、并购重组、监管风险和经营订单按标题关键词分类。</p></div>
+            <div><b>重大与风险分开</b><p>重要性衡量潜在影响，风险等级衡量负面强度；重大利空不会被隐藏。</p></div>
+            <div><b>更正与修订</b><p>标题包含“更正”或“修订”的公告可单独筛选，避免沿用旧版本结论。</p></div>
+            <div><b>行情确认</b><p>公告事实与市场反应分开呈现，初始保持“待行情确认”。</p></div>
+          </> : <>
+            <div><b>A级来源</b><p>公司公告和官方披露，用于确认事实。</p></div>
+            <div><b>B级来源</b><p>7×24市场快讯，用于快速发现，仍需公告或行情验证。</p></div>
+            <div><b>方向与重要性分开</b><p>重大利空会显示“高重要性、高风险”，不会因为方向为负而被隐藏。</p></div>
+            <div><b>旧闻与重复</b><p>按原始发布时间判断新鲜度；标题相同且时间接近的转载会合并。</p></div>
+            <div><b>市场确认</b><p>只有后续量价与板块扩散满足条件才会改为“已确认”，初始一律待确认。</p></div>
+          </>}
+        </aside></details>
+      </aside><div className="information-feed">      <div className="news-overview-grid">
+        <div className="panel">{announcementOnly ? <FileText size={19} /> : <Newspaper size={19} />}<span>当前范围</span><b>{visibleItems.length}</b><small>{announcementOnly ? "去重后的公司公告" : "去重后的资讯事件"}</small></div>
+        <div className="panel"><ShieldCheck size={19} /><span>A级原始源</span><b>{levelACount}</b><small>官方披露或官方接口</small></div>
+        <div className="panel"><Zap size={19} /><span>30分钟内</span><b>{freshCount}</b><small>按原始发布时间</small></div>
+        <div className={`panel ${riskCount ? "risk" : ""}`}><ShieldAlert size={19} /><span>重要风险</span><b>{riskCount}</b><small>风险等级高</small></div>
+      </div>
+
       {error && <div className="warning-banner"><CircleAlert size={17} />{error}</div>}
 
-      <div className="news-radar-layout">
+
         <div className="panel realtime-news-list">
           <PanelTitle
-            title={announcementOnly ? `A股公告 · ${scopes.find((item) => item.id === scope)?.label || "全市场"}` : (scopes.find((item) => item.id === scope)?.label || "资讯")}
+            title={`${informationTabs.find(tab => tab.id === contentType)?.label} · ${scopes.find((item) => item.id === scope)?.label || "全市场"}`}
             subtitle={announcementOnly ? "按披露时间倒序；同一公告的聚合转载自动合并" : "按原始发布时间倒序；重复转载自动合并"}
             icon={announcementOnly ? FileText : Activity}
             badge={`${visibleItems.length} 条`}
@@ -9285,38 +9387,38 @@ function NewsView({
           )}
         </div>
 
-        <aside className="panel news-method-panel">
-          <PanelTitle title={announcementOnly ? "公告判定规则" : "信息判定规则"} subtitle="不把“重要利空”误判为低价值" icon={Gauge} />
-          {announcementOnly ? <>
-            <div><b>官方原文优先</b><p>A级表示链接可核验至交易所或巨潮等官方披露平台；聚合页面明确标记为B级。</p></div>
-            <div><b>公告分类</b><p>业绩、股东行为、并购重组、监管风险和经营订单按标题关键词分类。</p></div>
-            <div><b>重大与风险分开</b><p>重要性衡量潜在影响，风险等级衡量负面强度；重大利空不会被隐藏。</p></div>
-            <div><b>更正与修订</b><p>标题包含“更正”或“修订”的公告可单独筛选，避免沿用旧版本结论。</p></div>
-            <div><b>行情确认</b><p>公告事实与市场反应分开呈现，初始保持“待行情确认”。</p></div>
-          </> : <>
-            <div><b>A级来源</b><p>公司公告和官方披露，用于确认事实。</p></div>
-            <div><b>B级来源</b><p>7×24市场快讯，用于快速发现，仍需公告或行情验证。</p></div>
-            <div><b>方向与重要性分开</b><p>重大利空会显示“高重要性、高风险”，不会因为方向为负而被隐藏。</p></div>
-            <div><b>旧闻与重复</b><p>按原始发布时间判断新鲜度；标题相同且时间接近的转载会合并。</p></div>
-            <div><b>市场确认</b><p>只有后续量价与板块扩散满足条件才会改为“已确认”，初始一律待确认。</p></div>
-          </>}
-        </aside>
-      </div>
-    </>
+
+      </div></div>
+    </div>
   );
 }
 
-function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Settings) => Promise<void> }) {
+function SettingsView({ value, loadState, onSave }: { value: Settings; loadState: "loading" | "ready" | "failed"; onSave: (next: Partial<Settings>) => Promise<Settings> }) {
   const [draft, setDraft] = useState<Settings>({ ...value, provider: "ths" });
+  const [category, setCategory] = useState("sources");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<any>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const settingsMounted = useRef(true);
-  useEffect(() => () => {
-    settingsMounted.current = false;
+  useEffect(() => {
+    settingsMounted.current = true;
+    return () => { settingsMounted.current = false; };
   }, []);
-  useEffect(() => setDraft({ ...value, provider: "ths" }), [value]);
+  const previousSettings = useRef(value);
+  useEffect(() => {
+    const previous = previousSettings.current;
+    previousSettings.current = value;
+    setDraft(current => {
+      const next = { ...current };
+      for (const key of Object.keys(value) as Array<keyof Settings>) {
+        if (JSON.stringify(current[key]) === JSON.stringify(previous[key])) {
+          Object.assign(next, { [key]: value[key] });
+        }
+      }
+      return next;
+    });
+  }, [value]);
   const test = async () => {
     setTesting(true);
     setTestResult(null);
@@ -9358,7 +9460,7 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
   };
   const activeRiskProfile = riskProfilePresets.find((item) => item.id === draft.riskProfile) || riskProfilePresets[0]!;
   const saveDraft = async () => {
-    if (saving) return;
+    if (saving || loadState !== "ready") return;
     const normalizedDraft: Settings = {
       ...draft,
     provider: "ths",
@@ -9403,20 +9505,35 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
     setSaving(true);
     setSaveError("");
     try {
-      await onSave(normalizedDraft);
+      // Omit untouched fields so earlier queued changes remain intact. Explicit
+      // clears (including empty tokens) are still represented by the patch.
+      const patch: Partial<Settings> = {};
+      for (const key of Object.keys(draft) as Array<keyof Settings>) {
+        if (JSON.stringify(draft[key]) !== JSON.stringify(value[key])) Object.assign(patch, { [key]: normalizedDraft[key] });
+      }
+      const saved = await onSave(patch);
+      if (settingsMounted.current) setDraft(current => {
+        const next = { ...current };
+        for (const key of Object.keys(saved) as Array<keyof Settings>) {
+          if (JSON.stringify(current[key]) === JSON.stringify(draft[key])) Object.assign(next, { [key]: saved[key] });
+        }
+        return next;
+      });
     } catch (error) {
       if (settingsMounted.current) {
-        setSaveError(error instanceof Error ? error.message : "设置保存失败，请稍后重试");
+        setSaveError(`${error instanceof Error ? error.message : "设置保存失败"}；当前运行仍使用上次成功保存的设置，草稿已保留，可重试。`);
       }
     } finally {
       if (settingsMounted.current) setSaving(false);
     }
   };
   return (
-    <>
+    <div className="settings-workspace">
       <PageHeading eyebrow="THREE-LINE MARKET DATA" title="数据源设置" description="同花顺为主源；东方财富与腾讯并行校验和故障接力。Refresh Token 只加密保存在本机。" />
+      {loadState !== "ready" && <div role="alert" className="test-result fail">{loadState === "loading" ? "正在读取本地设置，完成前暂不可保存。" : "本地设置读取失败，已禁止保存以保护原配置。请重新加载软件后重试。"}</div>}
+      <nav className="settings-category-tabs" aria-label="设置分类">{[{ id: "sources", label: "行情连接" }, { id: "monitoring", label: "监控与提醒" }, { id: "execution", label: "执行参数" }, { id: "strategies", label: "策略组合" }].map(item => <button type="button" key={item.id} aria-pressed={category === item.id} aria-controls={`settings-${item.id}`} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav>
       <div className="settings-grid">
-        <div className="panel settings-card">
+        <div className="panel settings-card" id="settings-sources" hidden={category !== "sources"}>
           <PanelTitle title="行情主数据源" subtitle="默认同花顺主源，三线并存" icon={Database} />
           <div className="provider-options">
             <label className="selected">
@@ -9472,13 +9589,13 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
           </label>
           <div className="settings-actions">
             <button className="secondary-btn" onClick={test}>{testing ? <LoaderCircle className="spin" size={17} /> : <Wifi size={17} />}测试连接</button>
-            <button className="primary-btn" onClick={() => void saveDraft()} disabled={saving}>{saving ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}{saving ? "正在保存" : "保存设置"}</button>
+            <button className="primary-btn" onClick={() => void saveDraft()} disabled={saving || loadState !== "ready"}>{saving ? <LoaderCircle className="spin" size={17} /> : <ShieldCheck size={17} />}{saving ? "正在保存" : "保存设置"}</button>
           </div>
           {saveError && <div className="test-result fail" role="alert"><span />{saveError}</div>}
           {testResult && <div className={`test-result ${testResult.ok ? "ok" : "fail"}`}><span />{testResult.message}<small>{testResult.latency} ms</small></div>}
         </div>
 
-        <div className="panel settings-card">
+        <div className="panel settings-card" id="settings-monitoring" hidden={category !== "monitoring"}>
           <PanelTitle title="监控策略" subtitle="额度与提醒" icon={Gauge} />
           <label className="field">
             <span>当前个股报价 <b>{draft.quoteRefreshSeconds} 秒</b></span>
@@ -9514,9 +9631,11 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
             <CircleAlert size={18} />
             <p><b>免费模式边界</b>不抓客户端隐藏接口，不提供 Level-2、逐笔委托或自动交易。所有信号用于研究与监控。</p>
           </div>
+          <div className="settings-actions"><button className="primary-btn" onClick={() => void saveDraft()} disabled={saving || loadState !== "ready"}><ShieldCheck size={17} />{saving ? "正在保存" : "保存设置"}</button></div>
+          {saveError && <div className="test-result fail" role="alert"><span />{saveError}</div>}
         </div>
 
-        <div className="panel settings-card">
+        <div className="panel settings-card" id="settings-execution" hidden={category !== "execution"}>
           <PanelTitle title="交易执行参数" subtitle="定义仓位、成本与风控边界后才进入实盘执行评估" icon={Target} />
           <div className="provider-options">
             {riskProfilePresets.map((profile) => {
@@ -9682,12 +9801,12 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
             <i />
           </label>
           <div className="settings-actions">
-            <button className="secondary-btn" onClick={() => void saveDraft()} disabled={saving}><ShieldCheck size={17} />{saving ? "正在保存" : "保存执行参数"}</button>
+            <button className="secondary-btn" onClick={() => void saveDraft()} disabled={saving || loadState !== "ready"}><ShieldCheck size={17} />{saving ? "正在保存" : "保存执行参数"}</button>
           </div>
           {saveError && <div className="test-result fail" role="alert"><span />{saveError}</div>}
         </div>
 
-        <div className="panel settings-card strategy-config-card">
+        <div className="panel settings-card strategy-config-card" id="settings-strategies" hidden={category !== "strategies"}>
           <PanelTitle title="自主策略组合" subtitle="勾选后会参与个股匹配和预警判定，可自由组合" icon={SlidersHorizontal} badge={`${draft.selectedStrategies?.length || 0} 项已启用`} />
           <div className="strategy-option-grid">
             {strategyOptions.map((item) => {
@@ -9701,19 +9820,19 @@ function SettingsView({ value, onSave }: { value: Settings; onSave: (next: Setti
             })}
           </div>
           <div className="strategy-presets">
-            <span>快捷组合</span>
+            <span>快捷组合 · {strategyPresets.length} 套</span>
             {strategyPresets.map((preset) => (
-              <button key={preset.id} onClick={() => setDraft({ ...draft, selectedStrategies: preset.strategies })}>{preset.name}</button>
+              <button key={preset.id} aria-pressed={sameStrategySet(draft.selectedStrategies || [], preset.strategies)} onClick={() => setDraft({ ...draft, selectedStrategies: preset.strategies })}><b>{preset.name}</b><small>{preset.detail}</small></button>
             ))}
             <button onClick={() => setDraft({ ...draft, selectedStrategies: strategyOptions.map((item) => item.id) })}>全部条件</button>
           </div>
           <div className="settings-actions">
-            <button className="primary-btn" onClick={() => void saveDraft()} disabled={saving}><ShieldCheck size={17} />{saving ? "正在保存" : "保存策略组合"}</button>
+            <button className="primary-btn" onClick={() => void saveDraft()} disabled={saving || loadState !== "ready"}><ShieldCheck size={17} />{saving ? "正在保存" : "保存策略组合"}</button>
           </div>
           {saveError && <div className="test-result fail" role="alert"><span />{saveError}</div>}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 

@@ -1,7 +1,5 @@
-@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;600;700&display=swap");
-
 :root {
-  font-family: "DM Sans", "Noto Sans SC", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   color: #edf1f8;
   background: #070b14;
   color-scheme: dark;
@@ -51,7 +49,7 @@ nav { flex: 1; }
 .quota-text b { color: #8ca399; font-weight: 500; }
 .version { font-size: 8px; color: #40554d; padding: 14px 4px 0; text-align: center; }
 .main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-.topbar { height: 66px; border-bottom: 1px solid var(--line); padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: rgba(7,11,20,.86); backdrop-filter: blur(18px); z-index: 20; }
+.topbar { height: 66px; border-bottom: 1px solid var(--line); padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: rgba(7,11,20,.86); backdrop-filter: none; z-index: 20; }
 .search-box { width: min(460px, 25vw); height: 37px; background: rgba(255,255,255,.035); border: 1px solid var(--line); border-radius: 9px; display: flex; align-items: center; gap: 10px; padding: 0 12px; position: relative; }
 .search-box:focus-within { border-color: rgba(226,75,95,.42); box-shadow: 0 0 0 3px rgba(226,75,95,.06); }
 .search-box > svg { color: #60776e; }
@@ -487,6 +485,9 @@ nav { flex: 1; }
 .test-result.ok > span { background: var(--green); }
 .test-result.fail > span { background: var(--red); }
 .test-result small { color: var(--muted); margin-left: auto; }
+.paper-save-error { flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 12px 22px 0; padding: 10px 12px; border: 1px solid var(--red); border-radius: 6px; color: var(--red); background: var(--panel); font-size: 13px; line-height: 1.5; }
+.paper-save-error p { flex: 1 1 300px; min-width: 0; margin: 0; }
+.paper-save-error button { flex: 0 0 auto; margin-left: auto; }
 .api-note { margin-top: 22px; padding: 13px; display: flex; gap: 9px; border-radius: 8px; color: #b39359; background: rgba(228,191,109,.06); border: 1px solid rgba(228,191,109,.12); }
 .api-note p { margin: 0; font-size: 8px; line-height: 1.7; }
 .api-note b { display: block; color: var(--yellow); }
@@ -642,7 +643,7 @@ body { font-size: 14px; }
 
 /* Readability pass: no monitoring text is intentionally smaller than 12px. */
 :root {
-  font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   font-size: 16px;
 }
 body { font-size: 16px; line-height: 1.5; text-rendering: optimizeLegibility; }
@@ -731,17 +732,9 @@ small { font-size: 12px; }
 .indicator-bar.up { fill: rgba(255,83,101,.72); }
 .indicator-bar.down { fill: rgba(57,185,128,.72); }
 
-/* T+3 / T+5 / T+7 / T+9 watchlist classification. */
-.watch-node-tabs { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: 9px; margin-bottom: 13px; }
-.watch-node-tabs button { min-height: 58px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.025); color: #9aa6bd; cursor: pointer; display: flex; align-items: center; justify-content: space-between; padding: 0 13px; }
-.watch-node-tabs button span { font-size: 14px; }
-.watch-node-tabs button b { min-width: 27px; height: 27px; display: grid; place-items: center; border-radius: 14px; background: #1b2437; font-size: 13px; }
-.watch-node-tabs button.active { color: #fff; border-color: rgba(226,75,95,.52); background: linear-gradient(135deg, rgba(226,75,95,.2), rgba(226,75,95,.06)); }
-.watch-node-tabs button.active b { background: var(--red); }
 .watch-card { min-height: 205px; }
 .node-badge { width: max-content; margin-top: 10px; padding: 4px 8px; border-radius: 10px; color: #f1c86f; background: rgba(215,170,85,.1); font-size: 12px; }
 .board-badge { font-size: 12px; }
-.consecutive-board-panel { margin-bottom: 13px; overflow: hidden; }
 .consecutive-board-table { padding: 0 17px 15px; }
 .board-row {
   width: 100%;
@@ -858,7 +851,6 @@ button.board-row:hover { background: rgba(226,75,95,.045); }
 .sector-analysis-grid .sector-history { padding: 18px; }
 
 @media (max-width: 1260px) {
-  .watch-node-tabs { grid-template-columns: repeat(3, 1fr); }
   .strategy-result-grid, .strategy-option-grid { grid-template-columns: repeat(2, 1fr); }
   .market-summary-grid { grid-template-columns: repeat(2, 1fr); }
 }
@@ -1069,14 +1061,12 @@ button.board-row:hover { background: rgba(226,75,95,.045); }
 [data-theme="light"] .field > input[type="password"] { background: #ffffff; }
 [data-theme="light"] .switch-row i,
 [data-theme="light"] .strategy-result.missed > span,
-[data-theme="light"] .strategy-option-grid button > span,
-[data-theme="light"] .watch-node-tabs button b { background: #e6eaf1; }
+[data-theme="light"] .strategy-option-grid button > span { background: #e6eaf1; }
 [data-theme="light"] .discover-table .th,
 [data-theme="light"] .member-head,
 [data-theme="light"] .member-head:hover { background: #f1f4f9; }
 [data-theme="light"] .timeframe-tabs,
 [data-theme="light"] .indicator-selector button,
-[data-theme="light"] .watch-node-tabs button,
 [data-theme="light"] .strategy-result,
 [data-theme="light"] .strategy-option-grid button,
 [data-theme="light"] .strategy-presets button,
@@ -1091,10 +1081,8 @@ button.board-row:hover { background: rgba(226,75,95,.045); }
 [data-theme="light"] .sector-quick-search button:hover { color: #263148; }
 [data-theme="light"] .timeframe-tabs button.active,
 [data-theme="light"] .indicator-selector button.active,
-[data-theme="light"] .watch-node-tabs button.active,
 [data-theme="light"] .member-toolbar button.active { color: #fff; }
 [data-theme="light"] .indicator-selector button,
-[data-theme="light"] .watch-node-tabs button,
 [data-theme="light"] .strategy-option-grid button,
 [data-theme="light"] .strategy-presets button,
 [data-theme="light"] .sector-quick-search button,

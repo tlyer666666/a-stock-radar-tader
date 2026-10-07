@@ -1,5 +1,7 @@
 "use strict";
 
+const signalCombinations = require("./strategy-signal-combinations.cjs");
+
 const DEFAULT_OPTIONS = Object.freeze({
   horizonDays: 5,
   cooldownDays: 5,
@@ -116,15 +118,24 @@ function normalizeHistory(input) {
       close,
       volume: numberOrNull(raw?.volume, raw?.vol),
       amount: numberOrNull(raw?.amount),
-      turnover: numberOrNull(raw?.turnover, raw?.turnoverRate)
+      turnover: numberOrNull(raw?.turnover, raw?.turnoverRate),
+      ...(Object.hasOwn(raw, "upperLimit") ? { upperLimit: raw.upperLimit } : {}),
+      ...(Object.hasOwn(raw, "noPriceLimit") ? { noPriceLimit: raw.noPriceLimit } : {}),
+      ...(Object.hasOwn(raw, "isST") ? { isST: raw.isST } : {})
     });
   }
   return [...byDate.values()].sort((left, right) => left.date.localeCompare(right.date));
 }
 
-function priceLimitRate(code, name = "") {
+function priceLimitRate(code, name = "", date = "") {
   if (/ST|\*ST/i.test(String(name))) return 0.05;
-  if (/^(300|301|688|689)/.test(String(code))) return 0.2;
+  if (/^(300|301|302)/.test(String(code))) {
+    const day = normalizeDate(date);
+    const validDay = /^\d{4}-\d{2}-\d{2}$/.test(day) && Number.isFinite(Date.parse(`${day}T00:00:00Z`)) &&
+      new Date(`${day}T00:00:00Z`).toISOString().slice(0, 10) === day;
+    return validDay && day < "2020-08-24" ? 0.1 : 0.2;
+  }
+  if (/^(688|689)/.test(String(code))) return 0.2;
   if (/^(8|4|9)/.test(String(code))) return 0.3;
   return 0.1;
 }
@@ -138,7 +149,7 @@ function isLimitUpAt(history, index, code, name) {
   const previousClose = Number(history[index - 1]?.close);
   const current = history[index];
   if (!previousClose || !current) return false;
-  const target = roundPrice(previousClose * (1 + priceLimitRate(code, name)));
+  const target = roundPrice(previousClose * (1 + priceLimitRate(code, name, current.date)));
   return Number(current.close) >= target - 0.011 && Number(current.high) >= target - 0.011;
 }
 
@@ -183,7 +194,8 @@ function featureSnapshot(
   index,
   code,
   name,
-  limitIndicesThroughCurrent = null
+  limitIndicesThroughCurrent = null,
+  combinationTimeline = null
 ) {
   const current = history[index];
   if (!current || index < 1) return null;
@@ -477,7 +489,7 @@ function featureSnapshot(
     eventVolumeRatio >= 1.1 &&
     eventVolumeRatio <= 4;
 
-  return {
+  const result = {
     date: current.date,
     latest: Number(current.close),
     isCurrentLimit,
@@ -532,6 +544,8 @@ function featureSnapshot(
       (volumeRatio === null || volumeRatio <= 3) &&
       !(closePosition < 0.25 && volumeRatio !== null && volumeRatio > 1.5)
   };
+  const prepared = combinationTimeline || signalCombinations.prepareCombinationTimeline(history, code, name);
+  return signalCombinations.attachCombinationEvidence(result, prepared[index]);
 }
 
 /**
@@ -539,8 +553,9 @@ function featureSnapshot(
  * visible limit-up index list grows with the day, so a snapshot can never see
  * a future limit-up event while the full history is being prepared up front.
  */
-function buildFeatureTimeline(history, code, name) {
+function buildFeatureTimeline(history, code, name, benchmark = []) {
   const timeline = new Array(history.length).fill(null);
+  const combinationTimeline = signalCombinations.prepareCombinationTimeline(history, code, name, benchmark);
   const allLimitIndices = detectLimitIndices(history, code, name);
   const visibleLimitIndices = [];
   let limitCursor = 0;
@@ -557,7 +572,8 @@ function buildFeatureTimeline(history, code, name) {
       index,
       code,
       name,
-      visibleLimitIndices
+      visibleLimitIndices,
+      combinationTimeline
     );
   }
   return timeline;
@@ -624,7 +640,7 @@ function enhanceCurrentFeature(baseFeature, candidate, code, name) {
     candidate?.quote?.changePercent
   );
   const tradingDaysSince = numberOrNull(candidate?.tradingDaysSince);
-  const limitRate = priceLimitRate(code, name) * 100;
+  const limitRate = priceLimitRate(code, name, baseFeature?.date || candidate?.limitDate || candidate?.date) * 100;
   const poolSaysCurrentLimit =
     candidate?.isLimitUp === true ||
     candidate?.limitUp === true ||
@@ -1079,7 +1095,8 @@ const STRATEGY_DEFINITIONS = Object.freeze([
         ].filter(Boolean).join("、")
       }`
     ]
-  }
+  },
+  ...signalCombinations.definitions
 ]);
 
 const STRATEGY_DEFINITION_BY_ID = new Map(
@@ -1217,6 +1234,7 @@ function benchmarkCoverageForSummary(summary, label) {
 }
 
 function matchedStrategyIdsForReplay(definition, feature) {
+  if (definition.componentEvidence) return definition.componentEvidence(feature).filter(item => item.passed).map(item => item.id);
   const componentIds = Array.isArray(definition?.components) && definition.components.length
     ? definition.components
     : [definition?.id];
@@ -1268,7 +1286,7 @@ function replayStrategy(
     : new Map();
   const featureTimeline = Array.isArray(executionPolicy.featureTimeline)
     ? executionPolicy.featureTimeline
-    : null;
+    : buildFeatureTimeline(history, code, name, [...benchmarkByDate.values()]);
   let lastSignalIndex = -Infinity;
   const startIndex = Math.max(20, 1);
   for (let index = startIndex; index < history.length; index += 1) {
@@ -1334,7 +1352,7 @@ function replayStrategy(
     }
     let entryPrice = Number(entry.open);
     const nextLimitTarget = roundPrice(
-      Number(signal.close) * (1 + priceLimitRate(code, name))
+      Number(signal.close) * (1 + priceLimitRate(code, name, entry.date))
     );
     const nextDayOnePriceLimit =
       Number(entry.low) >= nextLimitTarget - 0.011 &&
@@ -2465,7 +2483,7 @@ function stockSignal(definition, candidate, identity, feature, historyLength) {
     definition.type === "composite" && Array.isArray(definition.components)
       ? definition.components
       : [definition.id];
-  const componentEvidence = evidenceIds.map((id) => {
+  const componentEvidence = definition.componentEvidence ? definition.componentEvidence(feature) : evidenceIds.map((id) => {
     const component = STRATEGY_DEFINITION_BY_ID.get(id);
     return {
       id,
@@ -2491,6 +2509,11 @@ function stockSignal(definition, candidate, identity, feature, historyLength) {
       .filter((item) => item.passed)
       .map((item) => item.id),
     componentEvidence,
+    ...(definition.version ? { strategyVersion: definition.version, signalEvidence: {
+      limit: feature.signalCombinations.limit, indicators: feature.signalCombinations.indicators,
+      calendarComplete: feature.signalCombinations.calendarComplete,
+      basis: "原始日线+板块常规限价；缺公司行为和官方历史状态完整性证明，收益为诊断"
+    } } : {}),
     riskVetoStatus:
       feature?.riskVeto === false
         ? "failed"
@@ -2707,12 +2730,12 @@ function buildStrategySignalReport(
   const latestFeatureByCode = new Map();
 
   // Stock-first execution keeps only one feature timeline in memory at a time.
-  // Every one of the eighteen definitions then consumes the exact same precomputed
+  // Every definition then consumes the exact same precomputed
   // daily evidence instead of independently rescanning the same OHLCV history.
   for (const [code, history] of replayHistories.entries()) {
     const candidateRecord = candidateByCode.get(code);
     const name = candidateRecord?.identity?.name || code;
-    const featureTimeline = buildFeatureTimeline(history, code, name);
+    const featureTimeline = buildFeatureTimeline(history, code, name, benchmark);
     latestFeatureByCode.set(code, featureTimeline.at(-1) || null);
     for (const definition of STRATEGY_DEFINITIONS) {
       const replay = replayStrategy(
@@ -2758,6 +2781,7 @@ function buildStrategySignalReport(
     };
     const stocks = [];
     for (const { candidate, identity } of candidateByCode.values()) {
+      if (definition.version && [candidate?.isST, candidate?.st, candidate?.security?.isST, candidate?.quote?.isST].some(value => value === true)) continue;
       if (/ST|\*ST/i.test(identity.name)) continue;
       if (requestedCurrentCodes && !requestedCurrentCodes.has(identity.code)) continue;
       const history =
@@ -2789,6 +2813,9 @@ function buildStrategySignalReport(
       id: definition.id,
       type: definition.type || "base",
       name: definition.name,
+      ...(definition.version ? { version: definition.version, parameters: { ...definition.parameters },
+        sources: definition.sources.map(item => ({ ...item })), adaptationNote: definition.adaptationNote,
+        componentNames: [...definition.componentNames] } : {}),
       detail: definition.detail,
       conditions: [...definition.conditions],
       risk: definition.risk,
@@ -2951,11 +2978,13 @@ function buildSelectedStrategyReplay(
     id: definition.id,
     type: definition.type || "base",
     name: definition.name,
+    ...(definition.version ? { version: definition.version, parameters: { ...definition.parameters },
+      sources: definition.sources.map(item => ({ ...item })), adaptationNote: definition.adaptationNote } : {}),
     detail: definition.detail,
     components: Array.isArray(definition.components)
       ? [...definition.components]
       : definitions.map((item) => item.id),
-    componentNames: definitions.map((item) => item.name),
+    componentNames: definition.componentNames ? [...definition.componentNames] : definitions.map((item) => item.name),
     voteRule: definition.voteRule || "单策略逐日命中",
     validation: {
       ...validation,
@@ -3147,6 +3176,8 @@ function buildSelectedStrategyPortfolioReplay(
     id: portfolioIdentity.id,
     type: "multi_stock_portfolio",
     name: `${portfolioIdentity.name} · 多股票统一组合`,
+    ...(portfolioIdentity.version ? { version: portfolioIdentity.version, parameters: { ...portfolioIdentity.parameters },
+      sources: portfolioIdentity.sources.map(item => ({ ...item })), adaptationNote: portfolioIdentity.adaptationNote } : {}),
     detail: portfolioIdentity.detail,
     components: [...portfolioIdentity.components],
     componentNames: [...portfolioIdentity.componentNames],

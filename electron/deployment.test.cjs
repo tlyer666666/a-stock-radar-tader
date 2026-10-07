@@ -70,6 +70,7 @@ function createBuildInputs(projectRoot, version = "0.9.13") {
   write(path.join(projectRoot, "electron", "preload.cjs"), "// current preload");
   write(path.join(projectRoot, "electron", "runtime-helper.cjs"), "// helper");
   write(path.join(projectRoot, "assets", "icon.png"), "png");
+  write(path.join(projectRoot, "config", "trend-strategy-library.json"), JSON.stringify([{ id: "macd-zero-cross-v1" }]));
   const electronDist = path.join(projectRoot, "fake-electron-dist");
   write(path.join(electronDist, "electron.exe"), "runtime-entry");
   write(path.join(electronDist, "resources", "helper.exe"), "runtime-helper");
@@ -410,6 +411,7 @@ test("a successful staged build has a complete self-verifying manifest", () => {
       token: "successful-build"
     });
     assert.equal(result.appVersion, "0.9.13");
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(result.outputRoot, "resources", "app", "config", "trend-strategy-library.json"), "utf8")), [{ id: "macd-zero-cross-v1" }]);
     assert.equal(fs.existsSync(path.join(result.outputRoot, BUILD_MANIFEST)), true);
     assert.equal(
       fs.existsSync(path.join(result.outputRoot, "resources", "default_app.asar")),
