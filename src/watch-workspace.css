@@ -1,0 +1,103 @@
+/* Dense observation desk. Its height follows the existing main flex region. */
+html .terminal-shell[data-workspace="watchlist"] .main > .page { display:flex; padding:12px 18px 14px; overflow:hidden; }
+.ten-day-workspace { --watch-line:color-mix(in srgb,var(--terminal-text) 15%,var(--terminal-panel)); --watch-soft:color-mix(in srgb,var(--terminal-text) 3%,var(--terminal-panel)); display:flex; flex-direction:column; flex:1; min-width:0; min-height:0; }
+.watch-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:36px; margin-bottom:9px; flex-shrink:0; }
+.watch-toolbar > div { display:flex; align-items:baseline; gap:12px; }
+.watch-toolbar h1 { margin:0; font-size:18px; font-weight:600; letter-spacing:0; color:var(--terminal-text); }
+.watch-toolbar > div > span { font-size:13px; color:var(--terminal-muted); font-variant-numeric:tabular-nums; }
+.watch-filter { display:flex; gap:7px; align-items:center; border:1px solid var(--watch-line); background:var(--terminal-panel); border-radius:3px; padding:0 8px; width:188px; color:var(--terminal-muted); }
+.watch-filter input { border:0; outline:0; min-width:0; width:100%; padding:6px 0; background:none; color:var(--terminal-text); font:inherit; font-size:13px; }
+.watch-filter:focus-within { outline:1px solid var(--terminal-accent); }
+.watch-filter button { display:grid; place-items:center; padding:0; background:none; color:inherit; border:0; cursor:pointer; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs { display:flex; flex-shrink:0; align-items:stretch; gap:0; margin:0 0 10px; border-bottom:1px solid var(--watch-line); overflow-x:auto; scrollbar-width:thin; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button { display:flex; flex-direction:row; align-items:center; justify-content:center; flex:0 0 auto; gap:7px; min-height:34px; padding:7px 12px; border:0; border-bottom:2px solid transparent; border-radius:0; background:transparent; color:var(--terminal-muted); box-shadow:none; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button span { font-size:13px; line-height:18px; white-space:nowrap; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button b { display:inline; min-width:0; width:auto; height:auto; padding:0; border-radius:0; color:var(--terminal-muted); background:none; font-size:12px; line-height:18px; font-weight:400; font-variant-numeric:tabular-nums; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button:hover { background:var(--watch-soft); color:var(--terminal-text); }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button.active { background:transparent; border-color:var(--terminal-accent); color:var(--terminal-text); box-shadow:none; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button.active span { font-weight:600; }
+html .terminal-shell .ten-day-workspace .watch-node-tabs button.active b { color:var(--terminal-accent); background:none; }
+.watch-workspace-columns { display:grid; grid-template-columns:minmax(0,1fr) 310px; flex:1; min-height:0; gap:12px; align-items:stretch; }
+html .terminal-shell .ten-day-workspace .watch-stock-panel { display:flex; flex-direction:column; min-width:0; min-height:0; margin:0; border:1px solid var(--watch-line); border-radius:3px; box-shadow:none; background:var(--terminal-panel); overflow:hidden; }
+.watch-ladder-sidebar { display:flex; min-width:0; min-height:0; }
+.watch-table-scroll { flex:1; min-height:0; overflow:auto; scrollbar-width:thin; }
+.watch-stock-table { width:100%; table-layout:fixed; border-collapse:collapse; text-align:left; white-space:nowrap; font-size:13px; line-height:22px; }
+.watch-col-index { width:42px; }.watch-col-name { width:20%; }.watch-col-code { width:92px; }.watch-col-node { width:15%; }.watch-col-date { width:24%; }.watch-col-boards { width:8%; }.watch-col-actions { width:75px; }
+.watch-stock-table th { position:sticky; top:0; z-index:1; background:var(--watch-soft); color:var(--terminal-muted); font-weight:400; padding:5px 10px; border-bottom:1px solid var(--watch-line); font-size:12px; }
+.watch-stock-table td { height:34px; border-bottom:1px solid color-mix(in srgb,var(--watch-line) 60%,transparent); padding:4px 10px; color:var(--terminal-text); font-variant-numeric:tabular-nums; overflow:hidden; text-overflow:ellipsis; }
+.watch-stock-table tbody tr:hover { background:var(--watch-soft); }
+.watch-stock-table th:first-child,.watch-stock-table td:first-child { text-align:right; padding-right:10px; color:var(--terminal-muted); font-size:12px; }
+.watch-stock-table th:nth-child(6),.watch-stock-table td:nth-child(6) { text-align:right; }
+.watch-stock-table .watch-security-code { color:var(--terminal-muted); font-size:12px; }
+.watch-security-code small { font-size:10px; margin-left:5px; }
+.watch-stock-open { display:block; max-width:100%; border:0; background:none; color:var(--terminal-text); padding:0; cursor:pointer; text-align:left; overflow:hidden; text-overflow:ellipsis; }
+.watch-stock-open strong { font-size:14px; font-weight:500; line-height:22px; }
+.watch-day-badge { background:none; color:var(--terminal-muted); font-size:13px; border-radius:0; padding:0; }
+.watch-board-count { font-weight:500; color:var(--terminal-rise); }
+.watch-row-actions { display:flex; align-items:center; gap:9px; }
+.watch-row-actions button { display:flex; align-items:center; padding:2px 0; border:0; background:none; color:var(--terminal-muted); cursor:pointer; font-size:12px; line-height:22px; }
+.watch-row-actions button:hover { color:var(--terminal-accent); }
+.watch-pagination { display:flex; flex-shrink:0; justify-content:space-between; padding:6px 12px; gap:12px; align-items:center; border-top:1px solid var(--watch-line); color:var(--terminal-muted); font-size:12px; line-height:24px; }
+.watch-pagination > div { display:flex; gap:10px; align-items:center; }
+.watch-pagination button { display:grid; place-items:center; background:none; color:var(--terminal-text); border:1px solid var(--watch-line); width:25px; height:25px; border-radius:3px; cursor:pointer; }
+.watch-pagination button:disabled { opacity:.35; cursor:default; }
+.watch-stock-panel > .empty-state { flex:1; min-height:0; }
+@media (max-width:1150px) {
+  html .terminal-shell[data-workspace="watchlist"] .main > .page { display:block; overflow:auto; padding:12px; }
+  .ten-day-workspace { min-height:100%; }
+  .watch-workspace-columns { display:flex; flex-direction:column; flex:none; }
+  .watch-table-scroll { flex:none; max-height:560px; }
+  .watch-stock-table { min-width:560px; }
+}
+@media (max-height:640px) and (min-width:1151px) {
+  html .terminal-shell[data-workspace="watchlist"] .main > .page { overflow:auto; }
+  .ten-day-workspace { min-height:390px; }
+}
+
+/* Fifteen combinations remain reachable within a bounded menu. */
+html .terminal-shell .strategy-quick-menu { width:min(380px,calc(100vw - 40px)); max-height:min(650px,calc(100vh - 120px)); overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; }
+html .terminal-shell .strategy-quick-menu > strong { position:sticky; top:-10px; padding:10px 5px; background:var(--terminal-elevated); z-index:1; }
+html .terminal-shell .strategy-presets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch; gap:8px; }
+html .terminal-shell .strategy-presets > span { grid-column:1/-1; font-size:14px; margin-bottom:3px; }
+html .terminal-shell .strategy-presets button { text-align:left; color:var(--terminal-text); padding:10px; background:var(--terminal-soft); border:1px solid var(--terminal-line); }
+html .terminal-shell .strategy-presets button b { display:block; font-size:14px; font-weight:600; }
+html .terminal-shell .strategy-presets button small { display:block; font-size:12px; color:var(--terminal-muted); margin-top:4px; line-height:1.55; }
+html .terminal-shell .strategy-presets button[aria-pressed="true"] { background:var(--terminal-accent-soft); border-color:var(--terminal-accent); }
+@media (max-width:760px) {
+  html .terminal-shell .strategy-presets { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+
+/* Personal monitoring keeps a stock's quote, rules and controls together. */
+.personal-monitor-heading { display:flex; align-items:center; justify-content:space-between; padding:17px 20px; border-bottom:1px solid var(--terminal-line); gap:12px; flex-wrap:wrap; }
+.personal-monitor-heading > div { display:flex; align-items:center; gap:10px; font-size:13px; color:var(--terminal-muted); }
+.personal-monitor-heading h3 { margin:0; color:var(--terminal-text); font-size:16px; }
+.personal-monitor-heading b { font-weight:500; color:var(--terminal-accent); }
+.personal-monitor-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; padding:18px; align-items:start; }
+.personal-monitor-card { min-width:0; border:1px solid var(--terminal-line); border-radius:7px; background:var(--terminal-panel); padding:16px; }
+.personal-monitor-card.is-editing { grid-column:1/-1; }
+.personal-monitor-card > header { display:flex; align-items:flex-start; justify-content:space-between; }
+.monitor-stock-name { display:flex; flex-direction:column; gap:2px; text-align:left; border:0; background:none; padding:0; color:var(--terminal-text); cursor:pointer; }
+.monitor-stock-name strong { font-size:17px; font-weight:600; }
+.monitor-stock-name span { color:var(--terminal-muted); font-size:13px; }
+.monitor-remove-stock { border:0; background:none; color:var(--terminal-muted); padding:3px; cursor:pointer; }
+.monitor-card-quote { display:flex; align-items:baseline; gap:10px; margin:16px 0 12px; }
+.monitor-card-quote strong { font-size:25px; font-weight:600; color:var(--terminal-text); font-variant-numeric:tabular-nums; }
+.monitor-card-quote .up { color:var(--terminal-rise); }.monitor-card-quote .down { color:var(--terminal-fall); }
+.monitor-status { margin-left:auto; color:var(--terminal-muted); font-size:12px; white-space:nowrap; background:var(--terminal-soft); padding:3px 7px; border-radius:4px; }
+.monitor-status.is-on { color:var(--terminal-accent); background:var(--terminal-accent-soft); }
+.monitor-rule-summary { font-size:14px; color:var(--terminal-text); line-height:1.7; min-height:48px; margin:0 0 9px; }
+.monitor-card-detail { display:flex; flex-direction:column; gap:4px; min-height:43px; font-size:12px; line-height:1.6; color:var(--terminal-muted); }
+.personal-monitor-card > footer { display:flex; gap:12px; flex-wrap:wrap; align-items:center; border-top:1px solid var(--terminal-line); padding-top:12px; margin-top:14px; }
+.personal-monitor-card > footer button { display:flex; align-items:center; gap:4px; font-size:13px; padding:3px 0; background:none; border:0; color:var(--terminal-muted); cursor:pointer; }
+.personal-monitor-card > footer .monitor-configure { color:var(--terminal-accent); }
+.personal-monitor-card > footer button:last-child { margin-left:auto; }
+.monitor-storage-error { color:var(--terminal-rise); margin:12px 20px; font-size:14px; }
+.monitor-alert-panel { margin-top:18px; }
+.monitor-alert-panel > header { display:flex; gap:10px; align-items:center; padding:16px 20px; border-bottom:1px solid var(--terminal-line); }
+.monitor-alert-panel h3 { margin:0; font-size:16px; }.monitor-alert-panel > header > span { margin-left:auto; color:var(--terminal-muted); font-size:13px; }
+.monitor-alert-panel > div { max-height:320px; overflow:auto; }
+.monitor-alert-panel article { padding:13px 20px; border-bottom:1px solid var(--terminal-line); }.monitor-alert-panel article:last-child{border-bottom:0;}
+.monitor-alert-panel article > div { display:flex; align-items:baseline; gap:10px; font-size:14px; }.monitor-alert-panel time { margin-left:auto; font-size:12px; color:var(--terminal-muted); }.monitor-alert-panel article span{color:var(--terminal-muted);font-size:12px;}
+.monitor-alert-panel p { margin:5px 0 0; font-size:13px; color:var(--terminal-muted); }
+@media(max-width:1450px) { .personal-monitor-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:800px) { .personal-monitor-grid { grid-template-columns:1fr; padding:12px; }.monitor-alert-panel article > div{flex-wrap:wrap;}.monitor-alert-panel time{margin-left:0;} }

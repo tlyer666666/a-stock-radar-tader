@@ -40,7 +40,10 @@ function powershellLiteral(value) {
 }
 
 function buildWindowsZip(architecture) {
-  runPnpm(["build"]);
+  // dist:platform already installed and audited dependencies. This private
+  // compilation core avoids auditing twice in the same Windows release chain.
+  // Invoke the public package script dist:platform for a release build.
+  runPnpm(["internal:build:unpacked"]);
   cleanOutput();
   const sourcePattern = path.join(projectRoot, "release", "win-unpacked", "*");
   const artifact = path.join(
@@ -57,6 +60,7 @@ function buildWindowsZip(architecture) {
 function buildElectronTarget(platform, architecture) {
   cleanOutput();
   runPnpm(["build:web"]);
+  runPnpm(["build:review"]);
   const target = platform === "darwin" ? "mac" : "linux";
   runPnpm(["exec", "electron-builder", `--${target}`, `--${architecture}`, "--publish", "never"]);
   for (const name of fs.readdirSync(outputRoot)) {

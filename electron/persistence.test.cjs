@@ -113,3 +113,78 @@ test("a corrupt primary cannot replace the last-good backup during a later write
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("schema-invalid JSON recovers from a compatible last-good list without poisoning it on save",()=>{
+  const directory=createFixture(),primary=path.join(directory,"watchlist.json"),backup=path.join(directory,"watchlist.last-good.json");
+  try{
+    const old=[{code:"600000",favorite:true}];
+    writeJsonAtomic(primary,backup,old,Array.isArray);
+    for(const invalid of [null,{},"wrong-shape",12]){
+      fs.writeFileSync(primary,JSON.stringify(invalid));
+      const recovered=readJsonWithBackup(primary,backup,[],Array.isArray);
+      assert.equal(recovered.recovered,true);assert.deepEqual(recovered.value,old);
+    }
+    writeJsonAtomic(primary,backup,[{code:"600001"}],Array.isArray);
+    assert.deepEqual(JSON.parse(fs.readFileSync(backup,"utf8")),old);
+  }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test("schema-rejected writes leave both files intact and legacy calls remain compatible",()=>{
+  const directory=createFixture(),primary=path.join(directory,"watchlist.json"),backup=path.join(directory,"watchlist.last-good.json");
+  try{
+    writeJsonAtomic(primary,backup,[{code:"600000"}],Array.isArray);
+    for(const value of [null,{},"text",1])assert.throws(()=>writeJsonAtomic(primary,backup,value,Array.isArray),error=>error.code==="INVALID_JSON_SCHEMA");
+    assert.equal(JSON.parse(fs.readFileSync(primary,"utf8")).length,1);
+    assert.equal(JSON.parse(fs.readFileSync(backup,"utf8")).length,1);
+    assert.equal(fs.readdirSync(directory).filter(name=>name.endsWith(".tmp")).length,0);
+    writeJsonAtomic(primary,backup,{legacy:true});
+    assert.deepEqual(readJsonWithBackup(primary,backup,{}).value,{legacy:true});
+    assert.deepEqual(readJsonWithBackup(primary,backup,[],Array.isArray).value,[{code:"600000"}]);
+  }finally{fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test("an interrupted backup copy preserves the previous valid backup and cleans temporary files",()=>{
+  const directory=createFixture(),primary=path.join(directory,"watchlist.json"),backup=path.join(directory,"watchlist.last-good.json");
+  const originalCopy=fs.copyFileSync;
+  try{
+    writeJsonAtomic(primary,backup,[{version:1}],Array.isArray);
+    writeJsonAtomic(primary,backup,[{version:2}],Array.isArray);
+    fs.copyFileSync=(source,destination,...args)=>{
+      if(source===primary){fs.writeFileSync(destination,"{partial");throw Object.assign(Error("simulated half-copy I/O failure"),{code:"EIO"});}
+      return originalCopy(source,destination,...args);
+    };
+    assert.throws(()=>writeJsonAtomic(primary,backup,[{version:3}],Array.isArray),/half-copy/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(primary,"utf8")),[{version:2}]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(backup,"utf8")),[{version:1}]);
+    assert.equal(fs.readdirSync(directory).filter(name=>name.endsWith(".tmp")).length,0);
+  }finally{fs.copyFileSync=originalCopy;fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test("first backup failure reports degraded recovery after commit without falsely rejecting the saved value", () => {
+  const directory=createFixture(),primary=path.join(directory,"watchlist.json"),backup=path.join(directory,"watchlist.last-good.json");
+  const originalCopy=fs.copyFileSync, reported=[];
+  const first=[{version:1}], second=[{version:2}];
+  try {
+    fs.copyFileSync=()=>{throw Object.assign(Error("first backup unavailable"),{code:"EIO"});};
+    assert.equal(writeJsonAtomic(primary,backup,first,Array.isArray,error=>reported.push(error)),first);
+    assert.deepEqual(JSON.parse(fs.readFileSync(primary,"utf8")),first);
+    assert.equal(fs.existsSync(backup),false);
+    assert.equal(reported.length,1);assert.equal(reported[0].code,"EIO");
+    assert.equal(fs.readdirSync(directory).filter(name=>name.endsWith(".tmp")).length,0);
+    fs.copyFileSync=originalCopy;
+    writeJsonAtomic(primary,backup,second,Array.isArray,error=>reported.push(error));
+    assert.deepEqual(JSON.parse(fs.readFileSync(primary,"utf8")),second);
+    assert.deepEqual(JSON.parse(fs.readFileSync(backup,"utf8")),first);
+    assert.equal(reported.length,1);
+  } finally {fs.copyFileSync=originalCopy;fs.rmSync(directory,{recursive:true,force:true});}
+});
+
+test("a degraded-backup logger failure cannot turn an already committed save into an error", () => {
+  const directory=createFixture(),primary=path.join(directory,"watchlist.json"),backup=path.join(directory,"watchlist.last-good.json");
+  const originalCopy=fs.copyFileSync;
+  try {
+    fs.copyFileSync=()=>{throw Error("backup failure");};
+    assert.doesNotThrow(()=>writeJsonAtomic(primary,backup,[],Array.isArray,()=>{throw Error("logger failure");}));
+    assert.deepEqual(JSON.parse(fs.readFileSync(primary,"utf8")),[]);
+  } finally {fs.copyFileSync=originalCopy;fs.rmSync(directory,{recursive:true,force:true});}
+});

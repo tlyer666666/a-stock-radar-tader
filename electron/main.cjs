@@ -10,6 +10,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { createRuntimeLogger } = require("./runtime-diagnostics.cjs");
 const { pathToFileURL } = require("node:url");
 
 if (process.env.A_STOCK_E2E_USER_DATA) {
@@ -46,6 +47,10 @@ const {
   discoverRecentLimitUps,
   scanStrategySignals,
   getLimitUpSectorBoard,
+  getSectorCatalog,
+  getSectorClassifications,
+  getSectorDetail,
+  cancelSectorRequest,
   searchSectors,
   getConceptChain,
   analyzeSector,
@@ -54,12 +59,20 @@ const {
   testProvider,
   getStrategyDefinitions,
   runPortfolioBacktest,
-  runBacktest
+  runBacktest,
+  cancelServiceJob,
+  cancelServiceOwner,
+  shutdownServiceResources
 } = require("./services.cjs");
+const { createShutdownGate } = require("./shutdown-gate.cjs");
+const { shutdownThsTokenManager } = require("./ths-token-manager.cjs");
 const {
   getProfessionalReview,
   resetProfessionalReviewCache
 } = require("./review-service.cjs");
+const { createTrendScreenerService } = require("./trend-screener-service.cjs");
+const { createTrendMarketData } = require("./trend-screener-adapter.cjs");
+const trendScreener = createTrendScreenerService(createTrendMarketData());
 
 let mainWindow;
 let tray;
@@ -67,7 +80,7 @@ let themeMode = "system";
 let isQuitting = false;
 let rendererRecoveryTimer;
 const rendererRecoveryAttempts = [];
-const RUNTIME_LOG_MAX_BYTES = 512 * 1024;
+const serviceJobOwners = new WeakSet();
 const RENDERER_RECOVERY_WINDOW_MS = 60 * 1000;
 const RENDERER_RECOVERY_MAX_ATTEMPTS = 3;
 const RENDERER_RECOVERY_DELAY_MS = 750;
@@ -100,44 +113,11 @@ function debugLog(message) {
   }
 }
 
-function describeRuntimeError(error) {
-  if (!error || typeof error !== "object") {
-    return `non-error ${typeof error}`;
-  }
-  const name = typeof error.name === "string" ? error.name : "Error";
-  const message = typeof error.message === "string" ? error.message : "no message";
-  const stack = typeof error.stack === "string" ? error.stack : "";
-  return redactRuntimeText(stack || `${name}: ${message}`);
-}
-
-function rotateRuntimeLogIfNeeded(logPath, nextBytes) {
-  try {
-    if (!fs.existsSync(logPath)) return;
-    if (fs.statSync(logPath).size + nextBytes <= RUNTIME_LOG_MAX_BYTES) return;
-    const rotatedPath = `${logPath}.1`;
-    if (fs.existsSync(rotatedPath)) fs.unlinkSync(rotatedPath);
-    fs.renameSync(logPath, rotatedPath);
-  } catch {
-    // Runtime diagnostics must never affect the application.
-  }
-}
-
-function runtimeErrorLog(eventName, error, metadata = "") {
-  const safeEventName = redactRuntimeText(eventName).replace(/[\r\n]+/g, " ").slice(0, 80);
-  const safeMetadata = redactRuntimeText(metadata).replace(/[\r\n]+/g, " ").slice(0, 320);
-  const detail = describeRuntimeError(error);
-  const entry = `${new Date().toISOString()} ${safeEventName}${safeMetadata ? ` ${safeMetadata}` : ""}\n${detail}\n`;
-  debugLog(`runtime-error ${safeEventName} ${safeMetadata}`);
-  if (!app.isPackaged) return;
-  try {
-    const logPath = path.join(app.getPath("userData"), "runtime-errors.log");
-    const bytes = Buffer.byteLength(entry, "utf8");
-    rotateRuntimeLogIfNeeded(logPath, bytes);
-    fs.appendFileSync(logPath, entry, "utf8");
-  } catch {
-    // Runtime diagnostics must never affect the application.
-  }
-}
+const runtimeErrorLog = createRuntimeLogger({
+  isEnabled: () => app.isPackaged,
+  getDirectory: () => app.getPath("userData"),
+  debugLog
+});
 
 process.on("uncaughtExceptionMonitor", (error, origin) =>
   runtimeErrorLog("uncaughtException", error, `origin=${origin}`)
@@ -152,22 +132,23 @@ function backupJsonPath(name) {
   return path.join(app.getPath("userData"), `${name}.last-good.json`);
 }
 
-function readJson(name, fallback) {
-  const result = readJsonWithBackup(jsonPath(name), backupJsonPath(name), fallback);
+function readJson(name, fallback, validator) {
+  const result = readJsonWithBackup(jsonPath(name), backupJsonPath(name), fallback, validator);
   if (result.recovered) debugLog(`recovered ${name} from last-good backup`);
   return result.value;
 }
 
-function writeJson(name, value) {
-  return writeJsonAtomic(jsonPath(name), backupJsonPath(name), value);
+function writeJson(name, value, validator, synchronizeBackup = false) {
+  return writeJsonAtomic(jsonPath(name), backupJsonPath(name), value, validator,
+    error => runtimeErrorLog("persistence-backup-degraded", error, name), { synchronizeBackup });
+}
+
+function isSettingsRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function writeSettings(value, synchronizeBackup = false) {
-  const saved = writeJson("settings", value);
-  if (!synchronizeBackup) return saved;
-  // The second atomic write replaces a last-good file that may still contain
-  // a legacy plaintext or a secret the user explicitly cleared.
-  return writeJson("settings", value);
+  return writeJson("settings", value, isSettingsRecord, synchronizeBackup);
 }
 
 function normalizeHoldings(value) {
@@ -251,6 +232,13 @@ function clampNumber(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, number));
+}
+
+function usableWatchlist(value) {
+  return Array.isArray(value) && (value.length === 0 || normalizeWatchlist(value).length > 0);
+}
+function usableHoldings(value) {
+  return Array.isArray(value) && (value.length === 0 || normalizeHoldings(value).length > 0);
 }
 
 function encryptSecret(value) {
@@ -387,7 +375,7 @@ function normalizeSettings(value) {
 }
 
 function loadStoredSettings() {
-  const stored = normalizeSettings({ ...defaultSettings(), ...readJson("settings", {}) });
+  const stored = normalizeSettings({ ...defaultSettings(), ...readJson("settings", {}, isSettingsRecord) });
   const migration = migrateLegacyStoredSecrets(stored, SECRET_SETTING_KEYS, safeStorage);
   if (!migration.migrated) return stored;
   try {
@@ -508,8 +496,9 @@ function requestExplicitQuit() {
 function createTray() {
   if (process.env.A_STOCK_E2E_HIDDEN === "1") return undefined;
   if (tray && !tray.isDestroyed()) return tray;
+  let createdTray;
   try {
-    const createdTray = new Tray(applicationIconPath(true));
+    createdTray = new Tray(applicationIconPath(true));
     createdTray.setToolTip("A股雷达");
     createdTray.setContextMenu(Menu.buildFromTemplate([
       {
@@ -527,6 +516,8 @@ function createTray() {
     tray = createdTray;
     return tray;
   } catch (error) {
+    try { if (createdTray && !createdTray.isDestroyed()) createdTray.destroy(); }
+    catch { /* Preserve the setup failure; never leave the window unreachable. */ }
     tray = undefined;
     runtimeErrorLog("tray-create-failed", error);
     return undefined;
@@ -558,16 +549,57 @@ function handleTrustedIpc(channel, handler) {
   );
 }
 
+function serviceRequestId(value, required = false) {
+  if (value === undefined && !required) return undefined;
+  if (typeof value !== "string" || !value.trim() || value.length > 256) {
+    throw Object.assign(new TypeError("任务 requestId 必须是 1–256 字符的非空字符串"), { code: "INVALID_IPC_PAYLOAD" });
+  }
+  return value.trim();
+}
+
+function serviceRequestRuntime(event, input = {}) {
+  const requestId = serviceRequestId(input?.requestId);
+  const timeoutMs = input?.timeoutMs;
+  if (timeoutMs !== undefined && (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw Object.assign(new TypeError("任务 timeoutMs 必须是正数"), { code: "INVALID_IPC_PAYLOAD" });
+  }
+  const sender = event?.sender;
+  if (!sender || !Number.isInteger(sender.id) || sender.id < 0 || sender.isDestroyed?.() || typeof sender.once !== "function") {
+    throw Object.assign(new TypeError("任务窗口已关闭或无效"), { code: "INVALID_IPC_PAYLOAD" });
+  }
+  if (!serviceJobOwners.has(sender)) {
+    serviceJobOwners.add(sender);
+    const cancelOwner = () => cancelServiceOwner(sender.id);
+    const navigation = (details, _url, legacySameDocument, legacyMainFrame) => {
+      // Electron 43 carries these fields in details; positional fields remain
+      // available for compatibility with older supported Electron callbacks.
+      const isMainFrame = typeof details?.isMainFrame === "boolean" ? details.isMainFrame : legacyMainFrame;
+      const isSameDocument = typeof details?.isSameDocument === "boolean" ? details.isSameDocument : legacySameDocument;
+      if (isMainFrame === true && isSameDocument === false) cancelOwner();
+    };
+    sender.on("render-process-gone", cancelOwner);
+    sender.on("did-start-navigation", navigation);
+    sender.once("destroyed", () => {
+      sender.removeListener("render-process-gone", cancelOwner);
+      sender.removeListener("did-start-navigation", navigation);
+      cancelOwner();
+    });
+  }
+  return { owner: sender.id, ...(requestId === undefined ? {} : { requestId }), ...(timeoutMs === undefined ? {} : { timeoutMs }) };
+}
+
 function createWindow() {
   debugLog(`createWindow packaged=${app.isPackaged} dirname=${__dirname}`);
-  applyWindowTheme(settingsForService().theme);
+  // Window appearance needs no credentials. Keychain authorization must not
+  // delay constructing the window simply to read a non-sensitive preference.
+  applyWindowTheme(normalizeSettings(readJson("settings", {}, isSettingsRecord)).theme);
   const dark = nativeTheme.shouldUseDarkColors;
   const hiddenE2E = process.env.A_STOCK_E2E_HIDDEN === "1";
   const createdWindow = new BrowserWindow({
     show: !hiddenE2E,
     width: 1480,
     height: 940,
-    minWidth: 1120,
+    minWidth: 1024,
     minHeight: 720,
     backgroundColor: dark ? "#070b14" : "#f4f6fb",
     icon: applicationIconPath(),
@@ -591,7 +623,8 @@ function createWindow() {
     if (isQuitting) return;
     if (process.platform !== "win32") return;
     event.preventDefault();
-    createTray();
+    const availableTray = createTray();
+    if (!availableTray || availableTray.isDestroyed()) return;
     if (!createdWindow.isDestroyed()) createdWindow.hide();
     debugLog("window hidden to tray");
   });
@@ -699,16 +732,28 @@ if (!hasSingleInstanceLock) {
       forceRefresh: options?.forceRefresh === true
     })
   );
-  handleTrustedIpc("strategy:scan", (_, options = {}) => {
+  handleTrustedIpc("strategy:scan", (event, options = {}) => {
+    const safeOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+    const runtime = serviceRequestRuntime(event, safeOptions);
     const settings = settingsForService();
     return scanStrategySignals({
-      ...(options && typeof options === "object" && !Array.isArray(options) ? options : {}),
+      ...safeOptions,
       provider: settings.provider,
       fallbackEnabled: settings.fallbackEnabled,
       multiSourceEnabled: settings.multiSourceEnabled
-    });
+    }, runtime);
   });
+  handleTrustedIpc("service:cancel", (event, requestId) =>
+    cancelServiceJob(serviceRequestRuntime(event, { requestId: serviceRequestId(requestId, true) }))
+  );
+  handleTrustedIpc("sector:classifications", (_, options = {}) => getSectorClassifications(options));
+  handleTrustedIpc("sector:catalog", (_, options = {}) => getSectorCatalog(options));
+  handleTrustedIpc("sector:detail", (_, options = {}) => getSectorDetail(options));
+  handleTrustedIpc("sector:cancel", (_, requestId) => cancelSectorRequest(requestId));
   handleTrustedIpc("strategy:definitions", () => getStrategyDefinitions());
+  handleTrustedIpc("trend-screener:start", (_, options = {}) => trendScreener.start(options));
+  handleTrustedIpc("trend-screener:status", () => trendScreener.getStatus());
+  handleTrustedIpc("trend-screener:cancel", () => trendScreener.cancel());
   handleTrustedIpc("market:limit-up-sectors", (_, options = {}) =>
     getLimitUpSectorBoard({
       ...settingsForService(),
@@ -723,7 +768,6 @@ if (!hasSingleInstanceLock) {
     analyzeSector(sector, settingsForService())
   );
   handleTrustedIpc("review:get-market", (_, options = {}) => {
-    if (options?.refresh) resetProfessionalReviewCache();
     return getProfessionalReview({
       ...options,
       settings: settingsForService()
@@ -736,26 +780,33 @@ if (!hasSingleInstanceLock) {
     resetNewsCache();
     return getNewsFeed(input || {}, settingsForService());
   });
-  handleTrustedIpc("backtest:run", (_, input, options = {}) => {
+  handleTrustedIpc("backtest:run", (event, input, options = {}) => {
     const safeOptions = options && typeof options === "object" && !Array.isArray(options)
       ? { ...options }
       : {};
     const allowedOverrides = pickBacktestSettingOverrides(safeOptions.settings);
     const mergedSettings = settingsForService(allowedOverrides);
     safeOptions.settings = pickBacktestSettingOverrides(mergedSettings);
-    return runBacktest(input, mergedSettings, safeOptions);
+    return runBacktest(input, mergedSettings, safeOptions, serviceRequestRuntime(event, {
+      requestId: safeOptions.requestId ?? input?.requestId,
+      timeoutMs: safeOptions.timeoutMs ?? input?.timeoutMs
+    }));
   });
-  handleTrustedIpc("backtest:run-portfolio", (_, input = {}) =>
-    runPortfolioBacktest(input, settingsForService())
+  handleTrustedIpc("backtest:run-portfolio", (event, input = {}) =>
+    runPortfolioBacktest(input, settingsForService(), serviceRequestRuntime(event, input))
   );
-  handleTrustedIpc("watchlist:get", () => normalizeWatchlist(readJson("watchlist", [])));
-  handleTrustedIpc("watchlist:save", (_, items) =>
-    writeJson("watchlist", normalizeWatchlist(items))
-  );
-  handleTrustedIpc("holdings:get", () => normalizeHoldings(readJson("holdings", [])));
-  handleTrustedIpc("holdings:save", (_, items) =>
-    writeJson("holdings", normalizeHoldings(items))
-  );
+  handleTrustedIpc("watchlist:get", () => normalizeWatchlist(readJson("watchlist", [], usableWatchlist)));
+  handleTrustedIpc("watchlist:save", (_, items) => {
+    if (!Array.isArray(items)) throw Object.assign(new TypeError("观察池保存参数必须为数组"), { code: "INVALID_IPC_PAYLOAD" });
+    if (!usableWatchlist(items)) throw Object.assign(new Error("自选列表没有有效股票"), { code: "INVALID_IPC_PAYLOAD" });
+    return writeJson("watchlist", normalizeWatchlist(items), usableWatchlist);
+  });
+  handleTrustedIpc("holdings:get", () => normalizeHoldings(readJson("holdings", [], usableHoldings)));
+  handleTrustedIpc("holdings:save", (_, items) => {
+    if (!Array.isArray(items)) throw Object.assign(new TypeError("持仓保存参数必须为数组"), { code: "INVALID_IPC_PAYLOAD" });
+    if (!usableHoldings(items)) throw Object.assign(new Error("持仓列表没有有效股票"), { code: "INVALID_IPC_PAYLOAD" });
+    return writeJson("holdings", normalizeHoldings(items), usableHoldings);
+  });
   handleTrustedIpc("settings:get", () => publicSettings());
   handleTrustedIpc("settings:save", (_, next) => {
     const input = next && typeof next === "object" && !Array.isArray(next) ? next : {};
@@ -817,9 +868,23 @@ if (!hasSingleInstanceLock) {
   });
 }
 
-app.on("before-quit", () => {
+const finishShutdown = createShutdownGate({
+  cleanup: async () => {
+    const results = await Promise.allSettled([
+      Promise.resolve().then(shutdownServiceResources),
+      Promise.resolve().then(shutdownThsTokenManager)
+    ]);
+    for (const result of results) if (result.status === "rejected") runtimeErrorLog("shutdown-resource", result.reason);
+  },
+  complete: () => app.quit(),
+  onError: error => runtimeErrorLog("shutdown-cleanup", error)
+});
+
+app.on("before-quit", (event) => {
   isQuitting = true;
   cancelRendererRecovery();
+  trendScreener.cancel();
+  finishShutdown(event);
 });
 
 app.on("will-quit", destroyTray);

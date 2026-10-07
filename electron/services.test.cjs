@@ -667,6 +667,19 @@ test("price limit rates follow board and ST rules", () => {
   assert.equal(priceLimitRate("920000", "北交所测试"), 0.3);
 });
 
+test("302 ChiNext securities retain Shenzhen identity and the 20 percent board rule", () => {
+  const security = toSecurity({ code: "302132", name: "中航成飞" });
+  assert.equal(security.secid, "0.302132");
+  assert.equal(security.thscode, "302132.SZ");
+  assert.equal(priceLimitRate("302132", "中航成飞"), 0.2);
+  assert.equal(security.assetType, "stock");
+  assert.throws(() => toSecurity("303132"));
+  const service = require("./services.cjs");
+  const diversity = service.buildStrategySampleDiversity([security]);
+  assert.equal(diversity.boardBuckets["创业板"], 1);
+  assert.deepEqual(service.selectIndependentValidationSample([security], 1).map(row => row.code), ["302132"]);
+});
+
 test("security identifiers are normalized", () => {
   assert.equal(toSecurity("600000").secid, "1.600000");
   assert.equal(toSecurity("000001").thscode, "000001.SZ");
@@ -915,6 +928,77 @@ test("backtest history uses THS first, Eastmoney second, then the public relay",
     ),
     /同花顺历史行情获取失败.*token expired/
   );
+});
+
+test("amount-dependent backtest history replaces an incomplete public feed with verified raw bars", async () => {
+  const security = toSecurity({ code: "600825", name: "新华传媒" });
+  const complete = Array.from({length:120}, (_, i) => ({date:recentDate(i-120),open:10,high:11,low:9,close:10,volume:100,amount:123456}));
+  const missing = complete.map(row => ({...row,amount:null})); let repairs=0;
+  const rows = await loadBacktestHistory(security, {fallbackEnabled:true},120, {
+    eastmoney:async()=>{throw Error("network");}, public:async()=>missing,
+    completeRaw:async(target,bars)=>{repairs++;assert.equal(target.code,"600825");assert.equal(bars,120);return {rows:complete,adjustment:"none",source:"sohu+tencent-raw",provenance:{amountUnit:"CNY"}};}
+  }, {requireAmount:true});
+  assert.equal(repairs,1);assert.equal(rows[0].amount,123456);assert.equal(rows[0].close,10);
+  assert.equal(rows.actualAdjustment,0);assert.equal(rows.dataSource,"sohu+tencent-raw");
+});
+
+test("amount-dependent history cannot return false zero-signal evidence on missing fields, short windows or wrong adjustment", async () => {
+  const complete = Array.from({length:120}, (_, i) => ({date:recentDate(i-120),open:10,high:11,low:9,close:10,volume:100,amount:123456}));
+  for(const replacement of [
+    {rows:complete.map(row=>({...row,amount:null})),adjustment:"none"},
+    {rows:complete.map(row=>({...row,volume:null})),adjustment:"none"},
+    {rows:complete.slice(-80),adjustment:"none"},
+    {rows:complete,adjustment:"front"}
+  ]) await assert.rejects(loadBacktestHistory(toSecurity("600825"),{fallbackEnabled:true},120,{
+    eastmoney:async()=>complete.map(row=>({...row,amount:null})),public:async()=>[],completeRaw:async()=>replacement
+  },{requireAmount:true}), error=>error.code==="BACKTEST_DATA_INCOMPLETE" && /数据不足|口径|窗口/.test(error.message));
+});
+
+test("amount-dependent history respects disabled fallback and does not require index amount by default", async () => {
+  const rows=Array.from({length:120},(_,i)=>({date:recentDate(i-120),open:10,high:11,low:9,close:10,volume:100,amount:null}));let calls=0;
+  await assert.rejects(loadBacktestHistory(toSecurity("600825"),{fallbackEnabled:false},120,{eastmoney:async()=>rows,completeRaw:async()=>{calls++;return rows;}},{requireAmount:true}),/数据不足.*amount/);
+  assert.equal(calls,0);
+  assert.strictEqual(await loadBacktestHistory({code:"000985",secid:"1.000985"},{},120,{eastmoney:async()=>rows}),rows);
+});
+
+test("manual catalog-combination runBacktest rejects missing stock amount instead of returning zero signals", async(t)=>{
+  const originalFetch=global.fetch;t.after(()=>{global.fetch=originalFetch;});
+  global.fetch=async url=>{
+    assert.match(String(url),/push2his\.eastmoney\.com/);
+    const klines=mockRecentEastHistory(140).map(line=>{
+      const fields=line.split(",");
+      if(new URL(String(url)).searchParams.get("secid")==="1.600825")fields[6]="invalid";
+      return fields.join(",");
+    });
+    return mockJsonResponse({data:{klines}});
+  };
+  await assert.rejects(runBacktest({code:"600825",name:"新华传媒",secid:"1.600825",assetType:"stock"},
+    {provider:"eastmoney",fallbackEnabled:false},
+    {lookbackBars:120,strategyContext:{universeSource:"manual",strategyId:"limit_rsi_pullback_resonance",strategyIds:["limit_rsi_pullback_resonance"],minimumVotes:1}}),/个股历史数据加载失败.*amount.*0信号/);
+});
+
+test("amount-dependent history distinguishes all-zero missing usability from a real suspension followed by an evaluable window",async()=>{
+  const rows=Array.from({length:180},(_,i)=>({date:recentDate(i-180),open:10,high:11,low:9,close:10,volume:100,amount:123456}));
+  for(const field of ["volume","amount"]) {
+    const zeros=rows.map(row=>({...row,[field]:0}));
+    await assert.rejects(loadBacktestHistory(toSecurity("600825"),{fallbackEnabled:false},180,{eastmoney:async()=>zeros},{requireAmount:true}),/数据不足.*80.*正量额/);
+  }
+  const suspended=rows.map((row,i)=>i===30?{...row,volume:0,amount:0}:row);
+  assert.strictEqual(await loadBacktestHistory(toSecurity("600825"),{fallbackEnabled:false},180,{eastmoney:async()=>suspended},{requireAmount:true}),suspended);
+  const recentZeros=rows.map((row,i)=>i>=100?{...row,volume:0,amount:0}:row);
+  await assert.rejects(loadBacktestHistory(toSecurity("600825"),{fallbackEnabled:false},180,{eastmoney:async()=>recentZeros},{requireAmount:true,signalFrom:rows[100].date}),/数据不足.*信号区间/);
+});
+
+test("manual combination backtest refuses short or internally gapped benchmark price coverage", async(t)=>{
+  const originalFetch=global.fetch;t.after(()=>{global.fetch=originalFetch;});let mode="short";
+  global.fetch=async url=>{
+    let klines=mockRecentEastHistory(140);
+    if(new URL(String(url)).searchParams.get("secid")==="1.000985")klines=mode==="short"?klines.slice(-30):klines.filter((_,i)=>i!==100);
+    return mockJsonResponse({data:{klines}});
+  };
+  for(mode of ["short","gap"])await assert.rejects(runBacktest({code:"600825",name:"新华传媒",secid:"1.600825",assetType:"stock"},
+    {provider:"eastmoney",fallbackEnabled:false},
+    {lookbackBars:120,strategyContext:{universeSource:"manual",strategyId:"limit_rsi_pullback_resonance",strategyIds:["limit_rsi_pullback_resonance"],minimumVotes:1}}),/回测数据不足.*基准.*窗口|回测数据不足.*日历/);
 });
 
 test("renderer backtest settings cannot override or preserve sensitive service settings", () => {
@@ -1396,9 +1480,16 @@ test("portfolio service lists a strategy-hit stock by signal date even when entr
 
 test("portfolio strategy definition endpoint exposes the full auditable library", () => {
   const definitions = getStrategyDefinitions();
-  assert.equal(definitions.length, 18);
+  assert.equal(definitions.length, 32);
   assert.ok(definitions.every((item) => item.id && item.name && item.detail));
-  assert.ok(definitions.some((item) => item.type === "composite"));
+  assert.equal(definitions.filter((item) => item.type === "base").length, 14);
+  assert.equal(definitions.filter((item) => item.type === "composite").length, 18);
+  for (const entry of require("../config/strategy-signal-combinations.json")) {
+    const definition = definitions.find((item) => item.id === entry.id);
+    assert.equal(definition.version, entry.version);
+    assert.deepEqual(definition.sources, entry.sources);
+    assert.deepEqual(definition.parameters, entry.parameters);
+  }
   assert.equal(definitions.some((item) => typeof item.matches === "function"), false);
 });
 

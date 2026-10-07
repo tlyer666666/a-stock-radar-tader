@@ -1,3 +1,4 @@
+import { createServiceJobScope } from "./serviceJobClient";
 import {
   Activity,
   CheckCircle2,
@@ -14,6 +15,7 @@ import {
   TrendingUp
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import SignalStockTester from "./SignalStockTester";
 
 type StrategySignalStock = Security & {
   industry?: string;
@@ -163,9 +165,41 @@ type StrategySignalGroup = {
   voteRule?: string;
   conditions?: string[];
   risk?: string;
+  version?: string;
+  componentNames?: string[];
+  parameters?: Record<string, number>;
+  sources?: Array<{ title: string; url: string }>;
+  adaptationNote?: string;
   validation?: StrategyValidation;
   stocks: StrategySignalStock[];
 };
+
+export function StrategyRuleSources({ group }: { group: Pick<StrategySignalGroup, "version" | "sources" | "parameters" | "adaptationNote"> }) {
+  if (!group.sources?.length) return null;
+  const labels: Record<string, string> = {
+    marketCalendarLookback: "指数日期对齐", recentLimitSessions: "涨停回看", maFast: "短均线", maMiddle: "承接均线",
+    maTrend: "趋势均线", maLong: "长均线", maxMa20ExtensionPercent: "MA20最大偏离(%)",
+    fastPeriod: "MACD快周期", slowPeriod: "MACD慢周期", signalPeriod: "MACD信号周期",
+    bollPeriod: "布林周期", bollMultiplier: "标准差倍数", widthLookback: "带宽回看",
+    breakoutPeriod: "突破回看", dmiPeriod: "DMI周期", adxPeriod: "ADX均值周期", adxThreshold: "ADX门槛",
+    rsvPeriod: "RSV周期", kPeriod: "K平滑周期", dPeriod: "D平滑周期", maxK: "K上限",
+    minVolumeRatio: "最低量比", maxVolumeRatio: "最高量比"
+  };
+  return <>
+    <div className="strategy-rule-field conditions">
+      <span>公式来源与适配 · {group.version}</span>
+      <div>
+        {group.sources.map(source => <button key={source.url} className="secondary-btn" type="button"
+          onClick={() => void window.stockApi.openExternal(source.url)} title={source.url}>{source.title}</button>)}
+        <p>{group.adaptationNote}</p>
+      </div>
+    </div>
+    <div className="strategy-rule-field components">
+      <span>固定参数</span>
+      <div>{Object.entries(group.parameters || {}).map(([key, value]) => <em key={key}>{labels[key] || key}：{value}</em>)}</div>
+    </div>
+  </>;
+}
 
 type OptimizedPortfolio = {
   id?: string;
@@ -657,7 +691,7 @@ const methodologyText = (input: unknown) => {
   return "按历史事件回放、样本外复核、风险否决与当前行情共同筛选。";
 };
 
-const normalizeReport = (input: any): StrategySignalReport => {
+export const normalizeSignalReport = (input: any): StrategySignalReport => {
   const groupSources = [
     ...(Array.isArray(input?.groups) ? input.groups : []),
     ...(Array.isArray(input?.strategies) ? input.strategies : []),
@@ -688,6 +722,13 @@ const normalizeReport = (input: any): StrategySignalReport => {
       return {
         id: String(group?.id || `strategy-${index + 1}`),
         name: String(group?.name || group?.label || `策略 ${index + 1}`),
+        version: String(group?.version || ""),
+        componentNames: normalizeStringList(group?.componentNames),
+        parameters: Object.fromEntries(Object.entries(group?.parameters || {}).filter(([, value]) => typeof value === "number" && Number.isFinite(value))) as Record<string, number>,
+        sources: (Array.isArray(group?.sources) ? group.sources : []).filter((source: any) =>
+          typeof source?.title === "string" && /^https:\/\/(help\.tdx\.com\.cn|search\.10jqka\.com\.cn|quant\.10jqka\.com\.cn|www\.tradingview\.com|cn\.tradingview\.com)\//.test(String(source?.url || "")))
+          .map((source: any) => ({ title: source.title, url: source.url })),
+        adaptationNote: String(group?.adaptationNote || ""),
         type:
           String(group?.type || "").toLowerCase() === "composite" ||
           normalizeStringList(group?.components).length
@@ -1161,27 +1202,45 @@ export default function StrategySignalsView({
   const strategyKey = "verified-signal-engine-v2";
   const selectedStrategyIds = useMemo<string[]>(() => [], []);
   const cachedEntry = strategyReportCache.get(strategyKey);
-  const [report, setReport] = useState<StrategySignalReport | null>(
+  const [scannedReport, setReport] = useState<StrategySignalReport | null>(
     cachedEntry?.report || null
   );
+  const [catalogReport, setCatalogReport] = useState<StrategySignalReport | null>(null);
+  const report = scannedReport || catalogReport;
+  const [strategyQuery, setStrategyQuery] = useState("");
+  const [qualityFilter, setQualityFilter] = useState("all");
+  const [strategySort, setStrategySort] = useState("catalog");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeId, setActiveId] = useState(
     strategyActiveIdCache.get(strategyKey) || ""
   );
+  const scanJobs = useRef(createServiceJobScope());
   const requestId = useRef(0);
+  useEffect(() => {
+    let active = true;
+    window.stockApi.getStrategyDefinitions().then(input => {
+      if (!active) return;
+      const definitions = Array.isArray(input) ? input : input.strategies || input.definitions || [];
+      setCatalogReport(normalizeSignalReport({ strategies: definitions.map(item => ({ ...item, stocks: [], validation: { status: "INSUFFICIENT", accepted: false, publicationAccepted: false, sampleCount: 0, reason: "策略规则已加载，历史收益尚待复核。" } })), source: "本地规则目录 · 尚未生成收益验证", mode: "目录" }));
+    }).catch(() => { /* A completed scan may still supply its versioned catalog. */ });
+    return () => { active = false; };
+  }, []);
+
 
   const load = useCallback(async (force = false) => {
     const cached = strategyReportCache.get(strategyKey);
     // Always re-enter the main-process cache so a provider/settings change is
     // reflected immediately. Keep the renderer copy only as a non-blocking
     // placeholder while the provider-keyed backend result is resolved.
+    void scanJobs.current.cancelAll();
     const currentRequest = ++requestId.current;
     setLoading(true);
     setError("");
     if (!cached) setReport(null);
     try {
-      const next = await window.stockApi.scanStrategySignals({
+      const next = await scanJobs.current.run(requestId => window.stockApi.scanStrategySignals({
+        requestId,
         strategyIds: selectedStrategyIds,
         historyBars: 720,
         maxUniverse: 300,
@@ -1192,9 +1251,9 @@ export default function StrategySignalsView({
         minWalkForwardFoldSamples: 10,
         walkForwardFolds: 4,
         refresh: force
-      });
+      }));
       if (requestId.current !== currentRequest) return;
-      const normalized = normalizeReport(next);
+      const normalized = normalizeSignalReport(next);
       strategyReportCache.set(strategyKey, {
         report: normalized,
         savedAt: Date.now()
@@ -1222,6 +1281,7 @@ export default function StrategySignalsView({
     load(false);
     return () => {
       requestId.current += 1;
+      void scanJobs.current.cancelAll();
     };
   }, [load]);
 
@@ -1241,7 +1301,10 @@ export default function StrategySignalsView({
   const strategyNames = useMemo(
     () =>
       new Map(
-        (report?.strategies || []).map((group) => [group.id, group.name])
+        (report?.strategies || []).flatMap((group): Array<[string, string]> => [
+          [group.id, group.name], ...(group.components || []).map((id, index): [string, string] =>
+            [id, group.componentNames?.[index] || componentFallbackNames[id] || id])
+        ])
       ),
     [report]
   );
@@ -1274,6 +1337,15 @@ export default function StrategySignalsView({
   const activeStocks = activeAccepted ? activeGroup?.stocks || [] : [];
   const coverage = reportCoverage(report);
 
+  const filterStrategies = (groups: StrategySignalGroup[]) => {
+    const filtered = groups.filter(group => `${group.name} ${group.detail}`.toLowerCase().includes(strategyQuery.trim().toLowerCase()) && (qualityFilter === "all" || validationState(group.validation) === qualityFilter));
+    if (strategySort === "catalog") return filtered;
+    return [...filtered].sort((a, b) => {
+      const av = nullableNumber(strategySort === "win" ? a.validation?.outOfSample?.winRate : a.validation?.stabilityScore);
+      const bv = nullableNumber(strategySort === "win" ? b.validation?.outOfSample?.winRate : b.validation?.stabilityScore);
+      return av === null ? (bv === null ? 0 : 1) : bv === null ? -1 : bv - av;
+    });
+  };
   const renderStrategyTabs = (
     groups: StrategySignalGroup[],
     label: string,
@@ -1293,6 +1365,7 @@ export default function StrategySignalsView({
           <button
             key={group.id}
             className={`${activeGroup?.id === group.id ? "active" : ""} state-${state} type-${kind}`}
+            aria-pressed={activeGroup?.id === group.id}
             onClick={() => activateStrategy(group.id)}
           >
             <span>
@@ -1302,7 +1375,6 @@ export default function StrategySignalsView({
                   {kind === "composite" ? "组合共振" : "基础"}
                 </i>
               </span>
-              <small>{group.detail || "历史与当前信号共同过滤"}</small>
               <small className="strategy-signal-tab-audit">
                 {state === "verified"
                   ? `发布 ${group.stocks.length} 只合格股票`
@@ -1321,11 +1393,11 @@ export default function StrategySignalsView({
     <div className="strategy-signals-view">
       <div className="page-heading">
         <div>
-          <span className="eyebrow">VERIFIED STRATEGY SIGNALS</span>
           <h1>策略信号</h1>
-          <p>不同策略独立选股；只有完成历史推演、样本外复核和当前风险过滤的结果才进入信号板。</p>
+          <details className="signal-purpose-details"><summary>用途与复核口径</summary><span className="eyebrow">VERIFIED STRATEGY SIGNALS</span><p>不同策略独立选股；只有完成历史推演、样本外复核和当前风险过滤的结果才进入信号板。</p></details>
         </div>
         <div className="heading-actions">
+          {loading && <button className="secondary-btn" onClick={() => { requestId.current += 1; void scanJobs.current.cancelAll(); setLoading(false); }}>取消复核</button>}
           <button className="primary-btn" onClick={() => load(true)} disabled={loading}>
             {loading ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}
             重新推演复核
@@ -1337,27 +1409,11 @@ export default function StrategySignalsView({
         <div className="warning-banner"><CircleAlert size={17} />{report.warning}</div>
       )}
 
-      {report && (report.selectionBiasWarning || report.multipleTestingWarning) && (
-        <section className="panel strategy-validation-disclosure">
-          <CircleAlert size={19} />
-          <div>
-            <b>验证边界（必须同时查看）</b>
-            {report.selectionBiasWarning && <p>{report.selectionBiasWarning}</p>}
-            {report.multipleTestingWarning && <p>{report.multipleTestingWarning}</p>}
-            {report.publicationPolicy && <small>{report.publicationPolicy}</small>}
-          </div>
-        </section>
-      )}
+      {activeGroup && <details className="research-disclosure signal-test-disclosure"><summary><span>指定股票测试</span><small>{activeGroup.name} · 查询 / 逐项核验 / 带入回测</small></summary><SignalStockTester strategy={activeGroup} strategies={report?.strategies || []} onStrategy={activateStrategy} onBacktest={onOpenBacktest} /></details>}
 
-      {report?.optimizedPortfolio && (
-        <OptimizedPortfolioPanel
-          portfolio={report.optimizedPortfolio}
-          onOpen={onOpen}
-          onOpenBacktest={onOpenBacktest}
-        />
-      )}
-
-      <section className="strategy-signal-summary">
+      <div className="terminal-strategy-workspace">
+        <div className="terminal-strategy-primary">
+      <details className="research-disclosure signal-overview-disclosure"><summary><span>复核概况</span><small>策略 {report?.strategies.length || 0} · 通过 {acceptedCount} · 合格股票 {uniqueStockCount}</small></summary><section className="strategy-signal-summary">
         <div className="panel">
           <Sparkles size={20} />
           <span>策略复核库</span>
@@ -1368,7 +1424,7 @@ export default function StrategySignalsView({
         </div>
         <div className="panel">
           <Target size={20} />
-          <span>优质股票</span>
+          <span>复核通过候选</span>
           <b>{uniqueStockCount}</b>
           <small>仅统计复核通过策略</small>
         </div>
@@ -1403,8 +1459,10 @@ export default function StrategySignalsView({
             {report?.sampleDiversity?.concentrationWarnings?.length ? " · 主板偏重" : ""}
           </small>
         </div>
-      </section>
+      </section></details>
 
+      <details className="strategy-quality-standard"><summary>怎样判断策略是否优质</summary><p>同时检查样本外胜率、扣除成本后的净收益与基准超额、最大回撤、走步窗口通过率、独立信号日和市场状态覆盖。单只股票、少量样本或训练期高胜率，都不能证明稳定性。当前五日信号诊断不替代2—6周持有期验证。</p><p>只有通过服务端完整发布门槛的策略标为“已验证”；排序仅用于比较已有数据。</p></details>
+      {loading && report && <div className="signal-test-status" role="status">历史复核进行中，规则目录与指定股票测试可先使用。</div>}
       {loading && !report && (
         <div className="panel strategy-signal-loading">
           <LoaderCircle className="spin" size={32} />
@@ -1428,9 +1486,11 @@ export default function StrategySignalsView({
               <Activity size={18} />
               <div><b>策略复核库</b><small>组合共振与基础策略分组审计</small></div>
             </header>
+            <div className="signal-catalog-filter"><input aria-label="搜索信号策略" placeholder="查找策略名称或规则" value={strategyQuery} onChange={e => setStrategyQuery(e.target.value)} /><div><select aria-label="策略验证状态" value={qualityFilter} onChange={e => setQualityFilter(e.target.value)}><option value="all">全部状态</option><option value="verified">复核通过</option><option value="observing">观察中</option><option value="insufficient">样本不足</option></select><select aria-label="策略排序" value={strategySort} onChange={e => setStrategySort(e.target.value)}><option value="catalog">默认排序</option><option value="win">样本外胜率</option><option value="stability">稳定性</option></select></div></div>
             <div className="strategy-signal-tab-list">
-              {renderStrategyTabs(compositeStrategies, "组合共振策略", "composite")}
-              {renderStrategyTabs(baseStrategies, "基础策略", "base")}
+              {renderStrategyTabs(filterStrategies(compositeStrategies), "组合共振策略", "composite")}
+              {renderStrategyTabs(filterStrategies(baseStrategies), "基础策略", "base")}
+              {!filterStrategies(report.strategies).length && <p className="signal-catalog-empty">没有符合条件的策略。</p>}
             </div>
             <footer>
               <Clock3 size={15} />
@@ -1443,9 +1503,6 @@ export default function StrategySignalsView({
               <>
                 <section className="panel strategy-signal-group-head">
                   <div className="strategy-signal-group-copy">
-                    <span className="strategy-signal-active-kicker">
-                      {activeComposite ? "ACTIVE COMPOSITE" : "ACTIVE BASE STRATEGY"}
-                    </span>
                     <div className="strategy-signal-title-line">
                       <h2>{activeGroup.name}</h2>
                       <i className={`strategy-type-badge ${activeComposite ? "composite" : "base"}`}>
@@ -1463,6 +1520,7 @@ export default function StrategySignalsView({
                         strategyEngine: "verified-signal-v2",
                         strategyId: activeGroup.id,
                         strategyName: activeGroup.name,
+                        ...(activeGroup.version ? { strategyVersion: activeGroup.version } : {}),
                         strategyIds: [activeGroup.id],
                         minimumVotes: 1
                       })}
@@ -1471,61 +1529,7 @@ export default function StrategySignalsView({
                       带入回测中心
                     </button>
                   </div>
-                  <ValidationPanel group={activeGroup} report={report} />
-                  {(activeComposite ||
-                    activeGroup.conditions?.length ||
-                    activeGroup.risk) && (
-                    <div className={`strategy-rule-panel ${activeComposite ? "composite" : "base"}`}>
-                      <header>
-                        <Sparkles size={16} />
-                        <div>
-                          <b>{activeComposite ? "组合共振构成" : "基础策略规则"}</b>
-                          <small>
-                            {activeComposite
-                              ? "组件只说明规则构成，不代表放宽发布复核门槛"
-                              : "单策略硬条件与风险否决"}
-                          </small>
-                        </div>
-                      </header>
-                      {activeComposite && (
-                        <div className="strategy-rule-field components">
-                          <span>组成策略</span>
-                          <div>
-                            {(activeGroup.components || []).map((componentId) => (
-                              <em key={componentId}>
-                                {componentName(componentId, strategyNames)}
-                              </em>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {activeComposite && (
-                        <div className="strategy-rule-field vote">
-                          <span>投票 / 同时满足</span>
-                          <b>
-                            {activeGroup.voteRule ||
-                              "服务端未返回组合投票规则，不据此推测命中。"}
-                          </b>
-                        </div>
-                      )}
-                      {!!activeGroup.conditions?.length && (
-                        <div className="strategy-rule-field conditions">
-                          <span>{activeComposite ? "组合硬条件" : "策略硬条件"}</span>
-                          <ul>
-                            {activeGroup.conditions.map((condition) => (
-                              <li key={condition}>{condition}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {activeGroup.risk && (
-                        <div className="strategy-rule-field risk">
-                          <span>策略风险</span>
-                          <p>{activeGroup.risk}</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
+
                 </section>
 
                 <section className="panel strategy-stock-panel">
@@ -1590,7 +1594,7 @@ export default function StrategySignalsView({
                             <b>{unit(stock.signalScore ?? stock.score ?? stock.mrs, 0, "分")}</b>
                             <em>{stock.grade || "--"}级 · 匹配 {unit(stock.strategyMatchRate, 0, "%")}</em>
                           </span>
-                          <span className={`strategy-stock-reasons ${activeComposite ? "composite" : ""}`}>
+                          <details className={`strategy-stock-reasons ${activeComposite ? "composite" : ""}`}><summary>{activeComposite ? `命中 ${matchedComponents.length} 个组件` : `${reasons.length || 1} 项策略依据`}</summary>
                             {activeComposite && (
                               <span className="strategy-stock-component-hits">
                                 <small>
@@ -1616,7 +1620,7 @@ export default function StrategySignalsView({
                                   ))
                                 : <em>通过策略硬条件</em>}
                             </span>
-                          </span>
+                          </details>
                           <span className="strategy-stock-action">
                             <small className={risks.length || !riskVetoPassed ? "has-risk" : "no-risk"}>
                               {risks.length
@@ -1636,6 +1640,7 @@ export default function StrategySignalsView({
                                   strategyEngine: "verified-signal-v2",
                                   strategyId: activeGroup.id,
                                   strategyName: activeGroup.name,
+                                  ...(activeGroup.version ? { strategyVersion: activeGroup.version } : {}),
                                   strategyIds: [activeGroup.id],
                                   minimumVotes: 1
                                 })}
@@ -1660,12 +1665,71 @@ export default function StrategySignalsView({
                         <p>
                           {activeAccepted
                             ? "不以放宽风险阈值凑数；等待下一次行情刷新。"
-                            : "不把未验证候选包装成优质信号；可查看上方完整拒绝原因。"}
+                            : "不把未验证候选包装成优质信号；可展开下方历史验证证据查看完整拒绝原因。"}
                         </p>
                       </div>
                     )}
                   </div>
                 </section>
+                <div className="strategy-evidence-disclosures">
+                  <details className="research-disclosure signal-validation-details"><summary>历史验证证据 · {validationStateLabel(activeValidationState)}</summary><ValidationPanel group={activeGroup} report={report} /></details>
+                  {(activeComposite ||
+                    activeGroup.conditions?.length ||
+                    activeGroup.risk) && (
+                    <details className="research-disclosure signal-rule-details"><summary>完整规则与来源</summary><div className={`strategy-rule-panel ${activeComposite ? "composite" : "base"}`}>
+                      <header>
+                        <Sparkles size={16} />
+                        <div>
+                          <span className="strategy-signal-active-kicker">{activeComposite ? "ACTIVE COMPOSITE" : "ACTIVE BASE STRATEGY"}</span>
+                          <b>{activeComposite ? "组合共振构成" : "基础策略规则"}</b>
+                          <small>
+                            {activeComposite
+                              ? "组件只说明规则构成，不代表放宽发布复核门槛"
+                              : "单策略硬条件与风险否决"}
+                          </small>
+                        </div>
+                      </header>
+                      {activeComposite && (
+                        <div className="strategy-rule-field components">
+                          <span>组成策略</span>
+                          <div>
+                            {(activeGroup.components || []).map((componentId) => (
+                              <em key={componentId}>
+                                {componentName(componentId, strategyNames)}
+                              </em>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {activeComposite && (
+                        <div className="strategy-rule-field vote">
+                          <span>投票 / 同时满足</span>
+                          <b>
+                            {activeGroup.voteRule ||
+                              "服务端未返回组合投票规则，不据此推测命中。"}
+                          </b>
+                        </div>
+                      )}
+                      {!!activeGroup.conditions?.length && (
+                        <div className="strategy-rule-field conditions">
+                          <span>{activeComposite ? "组合硬条件" : "策略硬条件"}</span>
+                          <ul>
+                            {activeGroup.conditions.map((condition) => (
+                              <li key={condition}>{condition}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {activeGroup.risk && (
+                        <div className="strategy-rule-field risk">
+                          <span>策略风险</span>
+                          <p>{activeGroup.risk}</p>
+                        </div>
+                      )}
+                      <StrategyRuleSources group={activeGroup} />
+                    </div></details>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -1680,11 +1744,36 @@ export default function StrategySignalsView({
         </div>
       )}
 
+        </div>
+        <aside className="terminal-strategy-audit">
+      {report && (report.selectionBiasWarning || report.multipleTestingWarning) && (
+        <details className="research-disclosure signal-boundary-disclosure"><summary>验证边界（必须同时查看）</summary><section className="panel strategy-validation-disclosure">
+          <CircleAlert size={19} />
+          <div>
+            {report.selectionBiasWarning && <p>{report.selectionBiasWarning}</p>}
+            {report.multipleTestingWarning && <p>{report.multipleTestingWarning}</p>}
+            {report.publicationPolicy && <small>{report.publicationPolicy}</small>}
+          </div>
+        </section></details>
+      )}
+
+      {report?.optimizedPortfolio && (
+        <details className="research-disclosure signal-portfolio-disclosure"><summary>优化组合与独立验证</summary><OptimizedPortfolioPanel
+          portfolio={report.optimizedPortfolio}
+          onOpen={onOpen}
+          onOpenBacktest={onOpenBacktest}
+        /></details>
+      )}
+
+        </aside>
+      </div>
+
       {report && (
         <div className="strategy-method-note">
           <CheckCircle2 size={16} />
           <span>
             {report.methodology}
+            {" 五日历史诊断不等于2–6周持有收益已验证；当前候选池与分层验证样本不代表完整全市场覆盖。"}
             {report.historyBarsRequested
               ? ` 服务端回传历史请求窗口 ${report.historyBarsRequested} 根日线（约 ${Math.max(1, Math.round(report.historyBarsRequested / 240))} 年）。`
               : " 服务端未回传历史请求窗口。"}

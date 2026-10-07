@@ -1,6 +1,6 @@
 export type NormalizedSettings = Required<Settings>;
 
-export const initialSettings: Settings = {
+export const initialSettings: NormalizedSettings = {
   provider: "ths",
   riskProfile: "balanced",
   refreshToken: "",
@@ -202,62 +202,83 @@ export const clampNumber = (value: unknown, min: number, max: number, fallback =
 export const normalizeRiskProfile = (value: unknown): Settings["riskProfile"] =>
   value === "conservative" || value === "aggressive" ? value : "balanced";
 
-export const normalizeSettings = (input: Settings): NormalizedSettings => {
-  const merged = { ...initialSettings, ...input } as Settings;
-  const stopLoss = clampNumber(merged.stopLossATRMultiple, 0.8, 5, 1.8);
-  const takeProfitDefault = Math.max(2, stopLoss + 0.4);
-  const selectedStrategies = Array.isArray(merged.selectedStrategies) && merged.selectedStrategies.length
-    ? merged.selectedStrategies
-    : initialSettings.selectedStrategies;
-  const dedupedStrategies = [...new Set(selectedStrategies.filter((item) => typeof item === "string"))];
+export const normalizeSettings = (value: unknown): NormalizedSettings => {
+  const fallback = initialSettings;
+  const input: Record<string, unknown> = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const selected = Array.isArray(input.selectedStrategies) && input.selectedStrategies.length
+    ? input.selectedStrategies
+    : fallback.selectedStrategies;
+  const stopLossATRMultiple = clampNumber(
+    input.stopLossATRMultiple,
+    0.8,
+    5,
+    fallback.stopLossATRMultiple
+  );
+  const takeProfitMinimum = Math.max(2, stopLossATRMultiple + 0.4);
+  const selectedStrategies = [...new Set(
+    selected
+      .filter((item) => typeof item === "string")
+      .map((item) => item.trim().slice(0, 64))
+      .filter(Boolean)
+  )];
   return {
-    ...merged,
+    ...fallback,
+    ...input,
+    // The application topology is fixed: THS is the requested primary and
+    // Eastmoney is the first automatic fallback/verification source.
     provider: "ths",
-    refreshToken: String(merged.refreshToken || ""),
-    tushareToken: String(merged.tushareToken || ""),
-    multiSourceEnabled: merged.multiSourceEnabled !== false,
-    fallbackEnabled: merged.fallbackEnabled !== false,
-    quoteRefreshSeconds: clampNumber(merged.quoteRefreshSeconds, 3, 20, 5),
-    refreshSeconds: clampNumber(merged.refreshSeconds, 30, 300, 90),
-    newsRefreshSeconds: clampNumber(merged.newsRefreshSeconds, 5, 45, 6),
-    newsVoiceEnabled: merged.newsVoiceEnabled !== false,
-    alertScore: clampNumber(merged.alertScore, 50, 95, 75),
-    exactNodesOnly: Boolean(merged.exactNodesOnly),
-    strictGate: Boolean(merged.strictGate),
-    riskProfile: normalizeRiskProfile(merged.riskProfile),
-    maxPositionPercent: clampNumber(merged.maxPositionPercent, 5, 90, 28),
-    maxRiskPerTradePercent: clampNumber(merged.maxRiskPerTradePercent, 0.2, 5, 1),
-    stopLossATRMultiple: stopLoss,
-    takeProfitATRMultiple: clampNumber(Math.max(merged.takeProfitATRMultiple, takeProfitDefault), Math.max(stopLoss + 0.2, takeProfitDefault), 10, takeProfitDefault),
-    maxHoldingBars: Math.round(clampNumber(merged.maxHoldingBars, 3, 120, 30)),
-    minMarketCap: clampNumber(merged.minMarketCap, 0, 100000, 0),
-    minTurnoverPercent: clampNumber(merged.minTurnoverPercent, 0, 20, 0.4),
-    minQuoteAmount: clampNumber(merged.minQuoteAmount, 0, 1_000_000_000, 1200000),
-    maxQuoteAgeSeconds: clampNumber(merged.maxQuoteAgeSeconds, 30, 1800, 480),
-    maxDailyRiskPercent: clampNumber(merged.maxDailyRiskPercent ?? 3.2, 0.3, 12, 3.2),
-    maxSectorExposurePercent: clampNumber(merged.maxSectorExposurePercent ?? 45, 10, 100, 45),
-    commissionBps: clampNumber(merged.commissionBps ?? 7, 0, 40, 7),
-    slippageBps: clampNumber(merged.slippageBps ?? 2, 0, 40, 2),
-    maxDailyTrades: Math.round(clampNumber(merged.maxDailyTrades ?? 12, 1, 200, 12)),
-    timeDecayPerBarPercent: clampNumber(merged.timeDecayPerBarPercent ?? 0.11, 0, 1, 0.11),
-    minProjectedNetEdgePercent: clampNumber(merged.minProjectedNetEdgePercent ?? 0.2, -2, 10, 0.2),
-    minExpectancyPoints: clampNumber(merged.minExpectancyPoints ?? 0.2, -1, 5, 0.2),
-    maxConsecutiveLossesForStop: Math.round(clampNumber(merged.maxConsecutiveLossesForStop ?? 4, 2, 12, 4)),
-    lossStreakStepPercent: clampNumber(merged.lossStreakStepPercent ?? 18, 2, 60, 18),
-    lossStreakFloorPercent: clampNumber(merged.lossStreakFloorPercent ?? 30, 10, 80, 30),
-    maxPortfolioRiskPercent: clampNumber(merged.maxPortfolioRiskPercent ?? 70, 10, 100, 70),
-    minPaperWinRatePercent: clampNumber(merged.minPaperWinRatePercent ?? 52, 40, 90, 52),
-    minPaperRiskRewardRatio: clampNumber(merged.minPaperRiskRewardRatio ?? 1.15, 1, 3, 1.15),
-    minExecutionRatePercent: clampNumber(merged.minExecutionRatePercent ?? 90, 40, 100, 90),
-    trailingStopPercent: clampNumber(merged.trailingStopPercent ?? 3, 0, 20, 3),
-    maxOpenPositions: Math.round(clampNumber(merged.maxOpenPositions ?? 2, 1, 10, 2)),
-    enabledPaperSim: merged.enabledPaperSim !== false,
-    selectedStrategies: dedupedStrategies.includes("riskVeto")
-      ? dedupedStrategies
-      : [...dedupedStrategies, "riskVeto"],
-    theme: merged.theme === "light" || merged.theme === "dark" || merged.theme === "system"
-      ? merged.theme
-      : "system"
+    riskProfile: input.riskProfile === "conservative" || input.riskProfile === "aggressive"
+      ? input.riskProfile
+      : "balanced",
+    refreshToken: typeof input.refreshToken === "string" ? input.refreshToken : fallback.refreshToken,
+    tushareToken: typeof input.tushareToken === "string" ? input.tushareToken : fallback.tushareToken,
+    quoteRefreshSeconds: clampNumber(input.quoteRefreshSeconds, 3, 20, fallback.quoteRefreshSeconds),
+    refreshSeconds: clampNumber(input.refreshSeconds, 30, 300, fallback.refreshSeconds),
+    newsRefreshSeconds: clampNumber(input.newsRefreshSeconds, 5, 45, fallback.newsRefreshSeconds),
+    newsVoiceEnabled: input.newsVoiceEnabled !== false,
+    multiSourceEnabled: input.multiSourceEnabled !== false,
+    fallbackEnabled: input.fallbackEnabled !== false,
+    alertScore: clampNumber(input.alertScore, 50, 95, fallback.alertScore),
+    exactNodesOnly: input.exactNodesOnly === true,
+    strictGate: input.strictGate === true,
+    maxPositionPercent: clampNumber(input.maxPositionPercent, 5, 90, fallback.maxPositionPercent),
+    maxRiskPerTradePercent: clampNumber(input.maxRiskPerTradePercent, 0.2, 5, fallback.maxRiskPerTradePercent),
+    stopLossATRMultiple,
+    takeProfitATRMultiple: clampNumber(
+      Math.max(Number(input.takeProfitATRMultiple) || takeProfitMinimum, takeProfitMinimum),
+      takeProfitMinimum,
+      10,
+      takeProfitMinimum
+    ),
+    maxHoldingBars: Math.round(clampNumber(input.maxHoldingBars, 3, 120, fallback.maxHoldingBars)),
+    minMarketCap: clampNumber(input.minMarketCap, 0, 100_000, fallback.minMarketCap),
+    maxDailyRiskPercent: clampNumber(input.maxDailyRiskPercent, 0.3, 12, fallback.maxDailyRiskPercent),
+    maxPortfolioRiskPercent: clampNumber(input.maxPortfolioRiskPercent, 10, 100, fallback.maxPortfolioRiskPercent),
+    maxSectorExposurePercent: clampNumber(input.maxSectorExposurePercent, 10, 100, fallback.maxSectorExposurePercent),
+    minProjectedNetEdgePercent: clampNumber(input.minProjectedNetEdgePercent, -2, 10, fallback.minProjectedNetEdgePercent),
+    minExpectancyPoints: clampNumber(input.minExpectancyPoints, -1, 5, fallback.minExpectancyPoints),
+    maxConsecutiveLossesForStop: Math.round(clampNumber(input.maxConsecutiveLossesForStop, 2, 12, fallback.maxConsecutiveLossesForStop)),
+    lossStreakStepPercent: clampNumber(input.lossStreakStepPercent, 2, 60, fallback.lossStreakStepPercent),
+    lossStreakFloorPercent: clampNumber(input.lossStreakFloorPercent, 10, 80, fallback.lossStreakFloorPercent),
+    minExecutionRatePercent: clampNumber(input.minExecutionRatePercent, 40, 100, fallback.minExecutionRatePercent),
+    minPaperWinRatePercent: clampNumber(input.minPaperWinRatePercent, 40, 90, fallback.minPaperWinRatePercent),
+    minPaperRiskRewardRatio: clampNumber(input.minPaperRiskRewardRatio, 1, 3, fallback.minPaperRiskRewardRatio),
+    minTurnoverPercent: clampNumber(input.minTurnoverPercent, 0, 20, fallback.minTurnoverPercent),
+    minQuoteAmount: clampNumber(input.minQuoteAmount, 0, 1_000_000_000, fallback.minQuoteAmount),
+    maxQuoteAgeSeconds: clampNumber(input.maxQuoteAgeSeconds, 30, 1800, fallback.maxQuoteAgeSeconds),
+    maxDailyTrades: Math.round(clampNumber(input.maxDailyTrades, 1, 200, fallback.maxDailyTrades)),
+    trailingStopPercent: clampNumber(input.trailingStopPercent, 0, 20, fallback.trailingStopPercent),
+    commissionBps: clampNumber(input.commissionBps, 0, 40, fallback.commissionBps),
+    slippageBps: clampNumber(input.slippageBps, 0, 40, fallback.slippageBps),
+    timeDecayPerBarPercent: clampNumber(input.timeDecayPerBarPercent, 0, 1, fallback.timeDecayPerBarPercent),
+    maxOpenPositions: Math.round(clampNumber(input.maxOpenPositions, 1, 10, fallback.maxOpenPositions)),
+    enabledPaperSim: input.enabledPaperSim !== false,
+    selectedStrategies: selectedStrategies.includes("riskVeto")
+      ? selectedStrategies
+      : [...selectedStrategies, "riskVeto"],
+    theme: input.theme === "light" || input.theme === "dark" ? input.theme : "system"
   };
 };
 

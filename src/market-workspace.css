@@ -1,0 +1,207 @@
+/* Market, personal and information desks share the same compact surfaces. */
+html .terminal-shell .limit-pool-tools { margin:0 0 8px; gap:8px; }
+html .terminal-shell .limit-pool-tools :is(input,select) { height:32px; font-size:13px; border-radius:3px; }
+html .terminal-shell .discover-table { border-radius:3px; }
+html .terminal-shell .discover-table .tr { min-height:38px; padding-top:6px; padding-bottom:6px; }
+html .terminal-shell .market-summary-grid { gap:0; border:1px solid var(--terminal-line); border-radius:3px; }
+html .terminal-shell .market-summary-grid > div { border:0; border-right:1px solid var(--terminal-line); padding:10px 12px; border-radius:0; }
+html .terminal-shell .market-summary-grid b { font-size:20px; }
+/* Monitor: one security per row, editable rule form spans the full row. */
+html .terminal-shell .personal-monitor-heading { min-height:40px; padding:8px 12px; }
+html .terminal-shell .personal-monitor-heading h3 { font-size:14px; }
+html .terminal-shell .personal-monitor-list { overflow-x:auto; }
+html .terminal-shell .personal-monitor-grid { display:block; padding:0; min-width:800px; }
+.personal-monitor-columns,html .terminal-shell .personal-monitor-card { display:grid; grid-template-columns:150px 175px minmax(180px,1fr) minmax(155px,.7fr) 150px; gap:12px; align-items:center; }
+.personal-monitor-columns { min-width:800px; padding:7px 12px; color:var(--terminal-muted); font-size:12px; border-bottom:1px solid var(--terminal-line); background:var(--terminal-soft); }
+html .terminal-shell .personal-monitor-card { padding:12px; margin:0; border:0; border-bottom:1px solid var(--terminal-line); border-radius:0; }
+html .terminal-shell .personal-monitor-card:last-child { border-bottom:0; }
+html .terminal-shell .personal-monitor-card > header { align-items:center; gap:5px; }
+html .terminal-shell .monitor-stock-name strong { font-size:14px; }
+html .terminal-shell .monitor-stock-name span { font-size:12px; }
+html .terminal-shell .monitor-remove-stock { padding:2px; }
+html .terminal-shell .monitor-card-quote { flex-wrap:wrap; align-items:baseline; gap:4px 9px; margin:0; }
+html .terminal-shell .monitor-card-quote strong { font-size:17px; }
+html .terminal-shell .monitor-card-quote > span { font-size:12px; }
+html .terminal-shell .monitor-status { margin:0; padding:1px 5px; border-radius:2px; }
+html .terminal-shell .monitor-rule-summary { min-height:0; margin:0; font-size:13px; line-height:1.6; }
+html .terminal-shell .monitor-card-detail { min-height:0; font-size:12px; }
+html .terminal-shell .personal-monitor-card > footer { border:0; padding:0; margin:0; gap:5px 10px; }
+html .terminal-shell .personal-monitor-card > footer button { font-size:12px; }
+html .terminal-shell .personal-monitor-card > footer button:last-child { margin-left:0; }
+html .terminal-shell .personal-monitor-card > .stock-monitor-editor { grid-column:1/-1; margin:0; }
+html .terminal-shell .monitor-alert-panel { margin-top:12px; }
+html .terminal-shell .monitor-alert-panel > header { padding:10px 12px; }
+html .terminal-shell .monitor-alert-panel article { padding:10px 12px; }
+/* Holdings: totals and working table are visible together. */
+.holdings-workspace-grid { display:grid; grid-template-columns:280px minmax(0,1fr); gap:12px; align-items:start; }
+html .terminal-shell .holdings-summary-panel { padding:12px; margin-bottom:12px; }
+html .terminal-shell .holdings-summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; }
+html .terminal-shell .holdings-summary-grid .fact { padding:8px 12px; background:none; border:0; border-right:1px solid var(--terminal-line); }
+html .terminal-shell .holdings-summary-grid .fact:last-child { border-right:0; }
+html .terminal-shell :is(.holdings-entry-panel,.holdings-table-panel) { padding:12px; margin:0; min-width:0; }
+html .terminal-shell .holdings-entry-form { display:flex; flex-direction:column; gap:10px; }
+html .terminal-shell .holdings-entry-form input { width:100%; height:34px; border-radius:3px; font-size:13px; }
+html .terminal-shell .holdings-table { overflow-x:auto; }
+html .terminal-shell .holdings-table .tr { min-width:650px; grid-template-columns:1.35fr 1fr 1fr .8fr 1fr 112px; gap:10px; min-height:54px; }
+html .terminal-shell .holdings-table .th { min-height:30px; font-size:12px; }
+html .terminal-shell .holdings-table .stock-cell { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0; }
+html .terminal-shell .holdings-table .stock-cell b { white-space:nowrap; }
+html .terminal-shell .holdings-table .stock-cell small { white-space:normal; overflow-wrap:anywhere; }
+html .terminal-shell .holdings-row-actions { gap:5px; }
+html .terminal-shell .holdings-row-actions button { padding:3px 4px; font-size:12px; }
+/* Information: filters stay beside the feed, explanatory material stays available. */
+.information-layout { display:grid; grid-template-columns:240px minmax(0,1fr); gap:12px; align-items:start; }
+.information-filter-rail,.information-feed { min-width:0; }
+html .terminal-shell .information-type-tabs { gap:0; margin-bottom:12px; border-bottom:1px solid var(--terminal-line); }
+html .terminal-shell .information-type-tabs button { padding:7px 18px; background:none; border:0; border-bottom:2px solid transparent; border-radius:0; color:var(--terminal-muted); }
+html .terminal-shell .information-type-tabs button.active { border-bottom-color:var(--terminal-accent); color:var(--terminal-text); background:none; }
+html .terminal-shell .news-control-panel { padding:12px; margin:0; }
+html .terminal-shell .information-filter-rail .news-scope-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:5px; }
+html .terminal-shell .news-scope-tabs button { border-radius:3px; font-size:12px; padding:5px 7px; }
+html .terminal-shell .news-scope-tabs button.active { background:var(--terminal-accent-soft); border-color:var(--terminal-line); color:var(--terminal-text); }
+html .terminal-shell .information-filter-rail .news-filters { display:flex; flex-direction:column; align-items:stretch; gap:10px; margin-top:12px; }
+html .terminal-shell .information-filter-rail .news-filters > label { width:100%; min-width:0; flex:none; }
+html .terminal-shell .information-filter-rail .news-filters input { min-width:0; width:100%; font-size:12px; }
+html .terminal-shell .information-filter-rail .news-filters > div { flex-wrap:wrap; gap:5px; }
+html .terminal-shell .news-filters button { font-size:12px; padding:4px 7px; border-radius:3px; }
+html .terminal-shell .news-filters button.active { background:var(--terminal-accent-soft); border-color:var(--terminal-line); color:var(--terminal-text); }
+.information-disclosure { margin-top:10px; border:1px solid var(--terminal-line); background:var(--terminal-panel); border-radius:3px; font-size:12px; }
+.information-disclosure > summary { padding:9px 12px; color:var(--terminal-muted); cursor:pointer; }
+html .terminal-shell .information-disclosure :is(.news-mode-banner,.news-source-strip,.news-method-panel) { display:block; padding:10px; margin:0; border:0; box-shadow:none; background:none; }
+html .terminal-shell .information-disclosure .news-mode-banner > * { display:block; margin:5px 0; font-size:12px; }
+html .terminal-shell .information-disclosure .news-source-strip > div { margin-top:5px; padding:8px; border-radius:3px; background:var(--terminal-soft); }
+html .terminal-shell .news-overview-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; margin:0 0 12px; border:1px solid var(--terminal-line); border-radius:3px; overflow:hidden; }
+html .terminal-shell .news-overview-grid > .panel { display:grid; grid-template-columns:1fr auto; gap:2px 7px; padding:10px 12px; border:0; border-right:1px solid var(--terminal-line); border-radius:0; min-height:0; }
+html .terminal-shell .news-overview-grid > .panel:last-child { border-right:0; }
+html .terminal-shell .news-overview-grid svg { display:none; }
+html .terminal-shell .news-overview-grid span { font-size:12px; color:var(--terminal-muted); }
+html .terminal-shell .news-overview-grid b { font-size:18px; line-height:22px; grid-column:2; grid-row:1/3; }
+html .terminal-shell .news-overview-grid small { font-size:11px; grid-column:1; }
+html .terminal-shell .realtime-news-list { padding:12px; }
+html .terminal-shell .realtime-news-card { padding:13px 0; gap:10px; }
+html .terminal-shell .news-card-body h3 { font-size:15px; line-height:1.5; margin:5px 0; }
+html .terminal-shell .news-card-body p { font-size:13px; line-height:1.7; }
+html .terminal-shell .news-score-row { margin:8px 0; gap:10px; }
+html .terminal-shell .news-score-row > span { background:none; border:0; padding:0; font-size:11px; }
+/* Settings: one focused configuration section at a time; all drafts stay mounted. */
+.settings-category-tabs { display:flex; gap:0; border-bottom:1px solid var(--terminal-line); margin-bottom:12px; }
+.settings-category-tabs button { border:0; border-bottom:2px solid transparent; padding:9px 20px; border-radius:0; background:none; color:var(--terminal-muted); font-size:13px; cursor:pointer; }
+.settings-category-tabs button[aria-pressed="true"] { color:var(--terminal-text); border-bottom-color:var(--terminal-accent); font-weight:600; }
+html .terminal-shell .settings-workspace .settings-grid { display:block; }
+html .terminal-shell .settings-workspace .settings-card { padding:18px; max-width:1160px; margin:0; }
+html .terminal-shell .settings-workspace .settings-card > .panel-title { padding-bottom:12px; border-bottom:1px solid var(--terminal-line); margin-bottom:16px; }
+html .terminal-shell .settings-workspace .settings-card > .field { display:grid; grid-template-columns:minmax(160px,1fr) minmax(250px,1.2fr); align-items:center; column-gap:28px; margin:0; padding:12px 0; border-bottom:1px solid var(--terminal-line); }
+html .terminal-shell .settings-workspace .settings-card > .field > span { display:flex; justify-content:space-between; gap:10px; }
+html .terminal-shell .settings-workspace .settings-card > .field > small { grid-column:1/-1; margin-top:5px; }
+html .terminal-shell .settings-workspace .switch-row { padding:12px 0; margin:0; }
+html .terminal-shell .settings-workspace .settings-actions { position:sticky; bottom:-12px; padding:12px 0 0; background:var(--terminal-panel); z-index:2; margin-top:12px; }
+html .terminal-shell .settings-workspace .provider-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+html .terminal-shell .settings-workspace .provider-options label { padding:10px; border-radius:3px; }
+html .terminal-shell .settings-workspace .provider-icon { width:30px; height:30px; font-size:18px; border-radius:3px; }
+html .terminal-shell .settings-workspace .three-source-topology { margin:10px 0; }
+html .terminal-shell .settings-workspace .source-lane b { font-size:13px; }
+html .terminal-shell .settings-workspace .source-lane small { font-size:12px; line-height:1.5; }
+html .terminal-shell .settings-workspace .source-lane { padding:8px 10px; border-color:var(--terminal-line); background:var(--terminal-soft); border-radius:3px; }
+html .terminal-shell .settings-workspace .strategy-option-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+html .terminal-shell .settings-workspace .strategy-option-grid button { min-height:78px; padding:10px; border-radius:3px; }
+html .terminal-shell .settings-workspace .strategy-presets { grid-template-columns:repeat(4,minmax(0,1fr)); }
+/* Single-stock analysis and backtest: charts and results precede supporting prose. */
+html .terminal-shell .terminal-analysis-layout { gap:12px; grid-template-columns:minmax(0,1fr) 280px; }
+html .terminal-shell .terminal-analysis-layout > :is(.hero-grid,.content-grid:not(.lower)) { grid-template-columns:minmax(0,1fr) 280px; gap:12px; }
+html .terminal-shell .terminal-analysis-layout .price-card { padding:12px; grid-template-columns:145px minmax(0,1fr); gap:14px; }
+html .terminal-shell .price-block strong { font-size:30px; }
+html .terminal-shell .quote-grid { gap:8px 18px; }
+html .terminal-shell .score-card { padding:12px; }
+html .terminal-shell .signal-card { padding:10px 12px; }
+html .terminal-shell .signal-grid { border-radius:3px; }
+html .terminal-shell .content-grid.lower { gap:12px; }
+.backtest-context-disclosure { margin-bottom:12px; border:1px solid var(--terminal-line); background:var(--terminal-panel); border-radius:3px; }
+.backtest-context-disclosure > summary { cursor:pointer; padding:8px 12px; font-size:12px; color:var(--terminal-muted); }
+html .terminal-shell .backtest-context-disclosure .backtest-context-panel { border:0; margin:0; padding:12px; }
+html .terminal-shell .backtest-layout { grid-template-columns:310px minmax(0,1fr); gap:12px; align-items:start; }
+html .terminal-shell :is(.backtest-setup-panel,.backtest-result-panel) { padding:12px; }
+html .terminal-shell .backtest-strategy-options { grid-template-columns:1fr; max-height:230px; }
+html .terminal-shell .backtest-strategy-options label { padding:7px 9px; border-radius:3px; }
+html .terminal-shell .backtest-form-grid { gap:10px; }
+/* Sector directory becomes a compact split workspace. */
+html .terminal-shell .sector-explorer { border-radius:3px; margin:0; }
+html .terminal-shell .sector-explorer-heading { padding:12px 14px; gap:12px; }
+html .terminal-shell .sector-explorer h2 { font-size:18px; gap:8px; }
+html .terminal-shell .sector-explorer h2 svg { width:18px; }
+html .terminal-shell .sector-explorer-toolbar { padding:0 14px 10px; gap:10px; }
+html .terminal-shell .sector-explorer-toolbar > label { padding:5px 9px; border-radius:3px; }
+html .terminal-shell .sector-explorer-discover { margin:0; padding:10px 14px; background:var(--terminal-soft); border-top:1px solid var(--terminal-line); }
+html .terminal-shell .sector-explorer-layout { grid-template-columns:230px minmax(0,1fr); min-height:400px; }
+html .terminal-shell .sector-explorer-directory { background:var(--terminal-panel); max-height:640px; }
+html .terminal-shell .sector-explorer-entry { min-height:34px; padding:7px 12px; font-size:13px; }
+html .terminal-shell .sector-explorer-entry strong { font-size:13px; font-weight:400; }
+html .terminal-shell .sector-explorer-detail { padding:0 14px 14px; }
+html .terminal-shell .sector-explorer-detail-refresh { padding:10px 14px; }
+html .terminal-shell .sector-explorer-metrics { padding:10px; gap:10px; border-radius:3px; background:var(--terminal-soft); }
+html .terminal-shell .sector-explorer-metrics > div { gap:3px; }
+html .terminal-shell .sector-explorer-metrics strong { font-size:18px; }
+html .terminal-shell .sector-explorer-metrics span { font-size:12px; }
+html .terminal-shell .sector-explorer :is(th,td) { padding:8px 10px; font-size:13px; }
+html .terminal-shell .sector-explorer :is(button,input) { font-size:13px; border-radius:3px; }
+html .terminal-shell .sector-legacy-details { padding:10px 12px; margin-top:12px; border-radius:3px; }
+@media(max-width:1179px) {
+  .holdings-workspace-grid { grid-template-columns:1fr; }
+  html .terminal-shell .holdings-entry-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+  html .terminal-shell .holdings-entry-form button { grid-column:1/-1; }
+  .information-layout { grid-template-columns:210px minmax(0,1fr); }
+  html .terminal-shell .news-overview-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  html .terminal-shell .backtest-layout { grid-template-columns:minmax(0,1fr); }
+  html .terminal-shell .terminal-analysis-layout > :is(.hero-grid,.content-grid:not(.lower)) { grid-template-columns:minmax(0,1fr); }
+  html .terminal-shell .settings-workspace :is(.strategy-option-grid,.strategy-presets) { grid-template-columns:repeat(3,minmax(0,1fr)); }
+}
+@media(max-width:900px) {
+  .information-layout { grid-template-columns:1fr; }
+  html .terminal-shell .information-filter-rail .news-scope-tabs { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  html .terminal-shell .holdings-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  html .terminal-shell .settings-workspace .settings-card > .field { grid-template-columns:minmax(0,1fr); gap:8px; }
+  html .terminal-shell .settings-workspace :is(.strategy-option-grid,.strategy-presets) { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+
+/* Sector search and stock lookup belong to the directory, leaving the full right pane for members. */
+html .terminal-shell .sector-explorer-layout { grid-template-columns:260px minmax(0,1fr); }
+html .terminal-shell .sector-directory-tools { padding:10px; border-bottom:1px solid var(--terminal-line); }
+html .terminal-shell .sector-directory-tools .sector-explorer-toolbar { padding:0; display:flex; flex-direction:column; align-items:stretch; gap:8px; }
+html .terminal-shell .sector-directory-tools .sector-explorer-toolbar > label { width:100%; min-width:0; }
+html .terminal-shell .sector-directory-tools .sector-explorer-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
+html .terminal-shell .sector-directory-tools .sector-explorer-tabs button { padding:5px; font-size:12px; }
+html .terminal-shell .sector-directory-tools .sector-explorer-discover { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:10px 0 0; margin-top:10px; background:none; }
+html .terminal-shell .sector-directory-tools .sector-explorer-discover > label { grid-column:1/-1; font-size:12px; }
+html .terminal-shell .sector-directory-tools .sector-explorer-stock-search { width:100%; min-width:0; }
+html .terminal-shell .sector-directory-tools .sector-explorer-stock-input { min-width:0; padding:0 6px; }
+html .terminal-shell .sector-directory-tools .sector-explorer-stock-input input { width:100%; min-width:0; padding:6px 0; }
+html .terminal-shell .sector-directory-tools .sector-explorer-discover > button { padding:5px 7px; font-size:12px; }
+html .terminal-shell .sector-directory-tools .sector-explorer-search-status { grid-column:1/-1; }
+@media(max-width:900px) { html .terminal-shell .sector-explorer-layout { grid-template-columns:230px minmax(0,1fr); } }
+
+/* News links and timestamps must remain readable in both themes. */
+html .terminal-shell .information-workspace .news-card-meta { font-size:12px; }
+html .terminal-shell .information-workspace .news-card-meta time { color:var(--terminal-muted); }
+html .terminal-shell .information-workspace .news-card-meta em { font-size:11px; }
+html .terminal-shell .information-workspace .news-card-footer { font-size:11px; color:var(--terminal-muted); }
+html .terminal-shell .information-workspace .news-card-footer button { font-size:12px; color:var(--terminal-accent); }
+html .terminal-shell .information-workspace .news-relations > button { color:var(--terminal-text); background:var(--terminal-soft); border-color:var(--terminal-line); border-radius:3px; font-size:12px; }
+html .terminal-shell .information-workspace .news-relations button small { color:var(--terminal-muted); font-size:11px; }
+html .terminal-shell .information-workspace .news-relations > span { color:var(--terminal-muted); background:none; font-size:12px; }
+
+/* Only the directory list scrolls; stock suggestions must escape the tools area. */
+html .terminal-shell .sector-explorer { overflow:visible; }
+html .terminal-shell .sector-explorer-directory { overflow:visible; max-height:none; position:relative; z-index:3; }
+html .terminal-shell .sector-directory-tools { position:relative; overflow:visible; }
+html .terminal-shell .sector-directory-list { overflow:auto; max-height:520px; min-width:0; scrollbar-width:thin; }
+html .terminal-shell .sector-explorer-detail-refresh { padding:8px 14px; }
+html .terminal-shell .sector-explorer-detail-title { align-items:center; }
+html .terminal-shell .sector-explorer-detail-title h3 { font-size:18px; margin:0; }
+html .terminal-shell .sector-explorer-status { font-size:12px; padding:2px 6px; }
+html .terminal-shell .sector-explorer-date { font-size:12px; margin:6px 0 10px; }
+html .terminal-shell .sector-explorer-coverage { margin:10px 0; font-size:12px; }
+html .terminal-shell .sector-explorer-member-heading { margin:10px 0 8px; }
+html .terminal-shell .sector-explorer-member-heading h4 { font-size:14px; }
+html .terminal-shell .sector-explorer td button { display:inline-flex; vertical-align:middle; }
+html .terminal-shell .sector-explorer td .sector-explorer-peer-link { margin:0 0 0 10px; font-size:12px; }
+html .terminal-shell .sector-explorer td button strong { font-size:13px; }
+html .terminal-shell .sector-explorer td code { font-size:12px; }

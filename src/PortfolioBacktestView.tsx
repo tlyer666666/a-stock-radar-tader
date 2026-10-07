@@ -1,3 +1,4 @@
+import { createServiceJobScope } from "./serviceJobClient";
 import {
   Activity,
   ArrowLeft,
@@ -40,6 +41,7 @@ export type PortfolioBacktestStrategyContext = {
 };
 
 export type PortfolioBacktestViewProps = {
+  active?: boolean;
   initialStrategyContext?: PortfolioBacktestStrategyContext | null;
   initialSecurities?: Security[];
   onBack?: () => void;
@@ -162,9 +164,10 @@ const uniqueSecurities = (items: unknown, limit = MAX_BASKET_SIZE) => {
   return rows;
 };
 
-const loadStoredBasket = () => {
-  return uniqueSecurities(loadSafeLocalJson<unknown>(BASKET_STORAGE_KEY, []));
-};
+const usableBasket = (value: unknown): boolean => Array.isArray(value)
+  && (value.length === 0 || uniqueSecurities(value).length > 0);
+
+const loadStoredBasket = () => uniqueSecurities(loadSafeLocalJson<unknown>(BASKET_STORAGE_KEY, [], usableBasket));
 
 const loadStoredSetup = (): Record<string, any> => {
   const value = loadSafeLocalJson<unknown>(SETUP_STORAGE_KEY, {});
@@ -540,6 +543,7 @@ function ResultMetric({ label, value, detail, tone = "" }: { label: string; valu
 }
 
 export default function PortfolioBacktestView({
+  active = true,
   initialStrategyContext,
   initialSecurities = [],
   onBack,
@@ -549,11 +553,12 @@ export default function PortfolioBacktestView({
   onResult
 }: PortfolioBacktestViewProps) {
   const storedSetup = useMemo(loadStoredSetup, []);
+  const storedBasket = useMemo(loadStoredBasket, []);
   const contextStrategyIds = strategyIdsFrom(initialStrategyContext?.strategyIds);
   const [basket, setBasket] = useState<Security[]>(() =>
     initialStrategyContext?.universeSource === "strategy_current_matches" && initialSecurities.length
       ? uniqueSecurities(initialSecurities)
-      : uniqueSecurities([...initialSecurities, ...loadStoredBasket()])
+      : uniqueSecurities([...initialSecurities, ...storedBasket])
   );
   const [basketSource, setBasketSource] = useState<BasketSource>(() =>
     initialStrategyContext?.universeSource === "strategy_current_matches" && initialSecurities.length
@@ -590,6 +595,9 @@ export default function PortfolioBacktestView({
   const [searchText, setSearchText] = useState("");
   const [searching, setSearching] = useState(false);
   const [suggestions, setSuggestions] = useState<Security[]>([]);
+  const [suggestionQuery, setSuggestionQuery] = useState("");
+  const [searchComposing, setSearchComposing] = useState(false);
+  const searchGeneration = useRef(0);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [running, setRunning] = useState(false);
@@ -597,6 +605,8 @@ export default function PortfolioBacktestView({
   const [result, setResult] = useState<any>(null);
   const [signalTimelineExpanded, setSignalTimelineExpanded] = useState(true);
   const [signalTimelinePage, setSignalTimelinePage] = useState(1);
+  const backtestJobs = useRef(createServiceJobScope());
+  const universeJobs = useRef(createServiceJobScope());
   const requestId = useRef(0);
   const strategyUniverseRequestId = useRef(0);
 
@@ -605,7 +615,7 @@ export default function PortfolioBacktestView({
 
   useEffect(() => {
     if (!initialSecurities.length) return;
-    strategyUniverseRequestId.current += 1;
+    strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
     setStrategyUniverseLoading(false);
     setStrategyUniverseError("");
     if (initialStrategyContext?.universeSource === "strategy_current_matches") {
@@ -624,7 +634,7 @@ export default function PortfolioBacktestView({
 
   useEffect(() => {
     if (!contextStrategyIds.length) return;
-    strategyUniverseRequestId.current += 1;
+    strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
     setStrategyUniverseLoading(false);
     setStrategyUniverseMeta(null);
     setSelectedStrategyIds(contextStrategyIds);
@@ -652,10 +662,12 @@ export default function PortfolioBacktestView({
     };
   }, []);
 
+  const savedBasketSignature = useRef<string>();
+  savedBasketSignature.current ??= JSON.stringify(storedBasket);
   useEffect(() => {
-    if (!saveSafeLocalJson(BASKET_STORAGE_KEY, basket)) {
-      // 本地存储不可用时仍允许本次回测。
-    }
+    const signature = JSON.stringify(basket);
+    if (signature === savedBasketSignature.current) return;
+    if (saveSafeLocalJson(BASKET_STORAGE_KEY, basket, usableBasket)) savedBasketSignature.current = signature;
   }, [basket]);
 
   useEffect(() => {
@@ -677,40 +689,48 @@ export default function PortfolioBacktestView({
   }, [selectedStrategyIds.length]);
 
   useEffect(() => {
+    const generation = ++searchGeneration.current;
+    if (!active || searchComposing) {
+      setSearching(false);
+      setSuggestionsOpen(false);
+      setSuggestions([]);
+      return;
+    }
     const keyword = searchText.trim();
     if (keyword.length < 2) {
       setSuggestions([]);
       setSearching(false);
       return;
     }
-    let active = true;
+    let current = true;
     const timer = window.setTimeout(async () => {
       setSearching(true);
       try {
         const rows = uniqueSecurities(await window.stockApi.search(keyword));
-        if (!active) return;
+        if (!current || generation !== searchGeneration.current) return;
         const existing = new Set(basket.map((item) => item.code));
         setSuggestions(rows.filter((item) => !existing.has(item.code)).slice(0, 8));
+        setSuggestionQuery(keyword);
         setSuggestionsOpen(true);
         setSearchError("");
       } catch {
-        if (active) {
+        if (current && generation === searchGeneration.current) {
           setSuggestions([]);
           setSearchError("股票搜索暂不可用，请稍后重试");
         }
       } finally {
-        if (active) setSearching(false);
+        if (current && generation === searchGeneration.current) setSearching(false);
       }
     }, 220);
     return () => {
-      active = false;
+      current = false;
       window.clearTimeout(timer);
     };
-  }, [searchText, basket.map((item) => item.code).join(",")]);
+  }, [active, searchText, searchComposing, basket.map((item) => item.code).join(",")]);
 
   useEffect(() => () => {
-    requestId.current += 1;
-    strategyUniverseRequestId.current += 1;
+    requestId.current += 1; void backtestJobs.current.cancelAll();
+    strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
   }, []);
 
   useEffect(() => {
@@ -744,7 +764,7 @@ export default function PortfolioBacktestView({
       setSearchError(`股票篮子最多 ${MAX_BASKET_SIZE} 只`);
       return;
     }
-    strategyUniverseRequestId.current += 1;
+    strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
     setStrategyUniverseLoading(false);
     setBasket((current) => [...current, security]);
     setBasketSource("manual");
@@ -756,7 +776,7 @@ export default function PortfolioBacktestView({
   };
 
   const toggleStrategy = (id: string) => {
-    strategyUniverseRequestId.current += 1;
+    strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
     setStrategyUniverseLoading(false);
     setSelectedStrategyIds((current) => current.includes(id)
       ? current.filter((item) => item !== id)
@@ -778,7 +798,8 @@ export default function PortfolioBacktestView({
     setStrategyUniverseLoading(true);
     setStrategyUniverseError("");
     try {
-      const report = await window.stockApi.scanStrategySignals({
+      const report = await universeJobs.current.run(requestId => window.stockApi.scanStrategySignals({
+        requestId,
         strategyIds: [],
         historyBars: 720,
         maxUniverse: 300,
@@ -789,7 +810,7 @@ export default function PortfolioBacktestView({
         minWalkForwardFoldSamples: 10,
         walkForwardFolds: 4,
         refresh: false
-      });
+      }));
       const groups = Array.isArray(report?.strategies) ? report.strategies : [];
       const selectedGroups = groups.filter((group: any) =>
         requestedStrategyIds.includes(String(group?.id || ""))
@@ -803,16 +824,23 @@ export default function PortfolioBacktestView({
       if (
         requestedStrategyIds.length > 1 &&
         optimized?.publicationAccepted === true &&
-        requestedStrategyIds.every((id) => optimizedIds.includes(id))
+        optimizedIds.length === requestedStrategyIds.length &&
+        requestedStrategyIds.every((id) => optimizedIds.includes(id)) &&
+        Number(optimized.minimumVotes) === requestedMinimumVotes
       ) {
         candidates = Array.isArray(optimized.stocks) ? optimized.stocks : [];
         source = "稳健优选组合本轮命中";
       } else {
         const votes = new Map<string, { stock: any; count: number; score: number }>();
+        const codesByStrategy = new Map<string, Set<string>>();
         for (const group of selectedGroups) {
+          const strategyId = String(group.id);
+          const countedCodes = codesByStrategy.get(strategyId) || new Set<string>();
+          codesByStrategy.set(strategyId, countedCodes);
           for (const stock of Array.isArray(group?.stocks) ? group.stocks : []) {
             const code = String(stock?.code || "");
-            if (!/^\d{6}$/.test(code)) continue;
+            if (!/^\d{6}$/.test(code) || countedCodes.has(code)) continue;
+            countedCodes.add(code);
             const current = votes.get(code) || { stock, count: 0, score: 0 };
             current.count += 1;
             current.score = Math.max(current.score, Number(stock?.signalScore || stock?.score || 0));
@@ -820,7 +848,7 @@ export default function PortfolioBacktestView({
           }
         }
         candidates = [...votes.values()]
-          .filter((item) => item.count >= Math.min(selectedGroups.length, requestedMinimumVotes))
+          .filter((item) => item.count >= requestedMinimumVotes)
           .sort((left, right) => right.count - left.count || right.score - left.score)
           .map((item) => ({ ...item.stock, strategyVotes: item.count }));
       }
@@ -889,7 +917,8 @@ export default function PortfolioBacktestView({
         strategyIds: selectedStrategyIds,
         minimumVotes: safeVotes
       };
-      const next = await window.stockApi.runPortfolioBacktest({
+      const next = await backtestJobs.current.run(requestId => window.stockApi.runPortfolioBacktest({
+        requestId,
         securities: basket,
         universe: basket.map((item) => item.code),
         strategyIds: selectedStrategyIds,
@@ -904,7 +933,7 @@ export default function PortfolioBacktestView({
         benchmark: "000985",
         accountMode: "shared_cash",
         lotSize: 100
-      });
+      }));
       if (requestId.current !== currentRequest) return;
       setResult(next);
       onResult?.(next);
@@ -1037,6 +1066,7 @@ export default function PortfolioBacktestView({
         <div className="pbt-head-actions">
           {onBack && <button className="secondary-btn" onClick={onBack}><ArrowLeft size={16} />{backLabel}</button>}
           {onOpenSingle && <button className="secondary-btn" onClick={onOpenSingle}><Activity size={16} />单股明细回放</button>}
+          {running && <button className="secondary-btn" onClick={() => { requestId.current += 1; void backtestJobs.current.cancelAll(); setRunning(false); }}>取消回测</button>}
           <button className="primary-btn" disabled={running} onClick={execute}>
             {running ? <LoaderCircle className="spin" size={17} /> : <Play size={17} />}
             {running ? "策略回放中" : "执行策略回测"}
@@ -1044,6 +1074,8 @@ export default function PortfolioBacktestView({
         </div>
       </header>
 
+      <details className="pbt-workspace-method">
+        <summary>回测口径与流程<span>共享资金账户 · 最近半年 · {basket.length} 只股票</span></summary>
       <div className="pbt-account-disclosure">
         <WalletCards size={20} />
         <div>
@@ -1061,7 +1093,10 @@ export default function PortfolioBacktestView({
         <i>→</i>
         <span><b>4</b>最近半年逐日回放</span>
       </div>
+      </details>
 
+      <div className="pbt-workspace">
+      <aside className="pbt-workspace-config" aria-label="回测配置">
       <section className="pbt-setup-grid">
         <div className="panel pbt-config-panel">
           <div className="pbt-panel-title">
@@ -1099,7 +1134,7 @@ export default function PortfolioBacktestView({
               max={Math.max(1, selectedStrategyIds.length)}
               value={Math.min(minimumVotes, Math.max(1, selectedStrategyIds.length))}
               onChange={(event) => {
-                strategyUniverseRequestId.current += 1;
+                strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
                 setStrategyUniverseLoading(false);
                 setMinimumVotes(Number(event.target.value));
                 setBasketSource("manual");
@@ -1110,6 +1145,7 @@ export default function PortfolioBacktestView({
             <small>票数越高，信号更少且更严格；组合回测不会自动放宽门槛凑交易。</small>
           </label>
           <div className="pbt-strategy-universe-action">
+            {strategyUniverseLoading && <button className="secondary-btn" onClick={() => { strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll(); setStrategyUniverseLoading(false); }}>取消选股</button>}
             <button
               className="primary-btn"
               disabled={!selectedStrategyIds.length || strategyUniverseLoading}
@@ -1150,16 +1186,22 @@ export default function PortfolioBacktestView({
             <input
               value={searchText}
               onChange={(event) => {
+                searchGeneration.current += 1;
+                setSuggestions([]);
+                setSearching(false);
                 setSearchText(event.target.value);
                 setSearchError("");
                 setSuggestionsOpen(true);
               }}
+              onCompositionStart={() => { searchGeneration.current += 1; setSearchComposing(true); setSuggestions([]); setSuggestionsOpen(false); setSearching(false); }}
+              onCompositionEnd={() => setSearchComposing(false)}
+              onKeyDown={(event) => { if (event.key === "Enter" && (searchComposing || event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault(); }}
               onFocus={() => setSuggestionsOpen(Boolean(suggestions.length))}
               placeholder="输入股票名称或6位代码添加"
               autoComplete="off"
             />
             {searching && <LoaderCircle className="spin" size={15} />}
-            {suggestionsOpen && suggestions.length > 0 && (
+            {suggestionsOpen && !searchComposing && suggestionQuery === searchText.trim() && suggestions.length > 0 && (
               <div className="pbt-stock-suggestions">
                 {suggestions.map((item) => (
                   <button key={`${item.code}-${item.secid}`} onClick={() => addSecurity(item)}>
@@ -1173,13 +1215,13 @@ export default function PortfolioBacktestView({
           {searchError && <small className="pbt-field-error">{searchError}</small>}
           <div className="pbt-basket-actions">
             <span>当前篮子</span>
-            <button disabled={!basket.length} onClick={() => { strategyUniverseRequestId.current += 1; setStrategyUniverseLoading(false); setBasket([]); setBasketSource("manual"); setStrategyUniverseMeta(null); }}><Trash2 size={14} />清空</button>
+            <button disabled={!basket.length} onClick={() => { strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll(); setStrategyUniverseLoading(false); setBasket([]); setBasketSource("manual"); setStrategyUniverseMeta(null); }}><Trash2 size={14} />清空</button>
           </div>
           <div className="pbt-basket-chips">
             {basket.map((item) => (
               <span key={item.code}>
                 <b>{item.name}</b><small>{item.code}</small>
-                <button aria-label={`删除${item.name}`} onClick={() => { strategyUniverseRequestId.current += 1; setStrategyUniverseLoading(false); setBasketSource("manual"); setStrategyUniverseMeta(null); setBasket((current) => current.filter((row) => row.code !== item.code)); }}><X size={13} /></button>
+                <button aria-label={`删除${item.name}`} onClick={() => { strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll(); setStrategyUniverseLoading(false); setBasketSource("manual"); setStrategyUniverseMeta(null); setBasket((current) => current.filter((row) => row.code !== item.code)); }}><X size={13} /></button>
               </span>
             ))}
             {!basket.length && <div className="pbt-empty-basket"><Database size={23} /><span>先选择策略并生成对应股票池，也可以手工添加单只股票作补充验证</span></div>}
@@ -1187,11 +1229,11 @@ export default function PortfolioBacktestView({
         </div>
       </section>
 
-      <section className="panel pbt-account-panel">
-        <div className="pbt-panel-title">
+      <details className="panel pbt-account-panel">
+        <summary className="pbt-panel-title">
           <WalletCards size={18} />
           <div><b>账户与执行假设</b><small>参数会保存在本机，下次继续沿用</small></div>
-        </div>
+        </summary>
         <div className="pbt-account-fields">
           <label><span>起始资金</span><input type="number" min="10000" max="100000000" step="10000" value={startingCapital} onChange={(event) => setStartingCapital(Math.round(clamp(event.target.value, 10_000, 100_000_000, startingCapital)))} /><small>{formatMoney(startingCapital)}</small></label>
           <label><span>最大同时持仓</span><input type="number" min="1" max="20" value={maxPositions} onChange={(event) => setMaxPositions(Math.round(clamp(event.target.value, 1, 20, maxPositions)))} /><small>实际不超过篮子股票数</small></label>
@@ -1199,8 +1241,10 @@ export default function PortfolioBacktestView({
           <label><span>佣金（bps/边）</span><input type="number" min="0" max="60" step="0.1" value={commissionBps} onChange={(event) => setCommissionBps(clamp(event.target.value, 0, 60, commissionBps))} /><small>买卖双边计入；不含最低佣金与税费</small></label>
           <label><span>滑点（bps/边）</span><input type="number" min="0" max="60" step="0.1" value={slippageBps} onChange={(event) => setSlippageBps(clamp(event.target.value, 0, 60, slippageBps))} /><small>与佣金分别计算</small></label>
         </div>
-      </section>
+      </details>
+      </aside>
 
+      <section className="pbt-workspace-result" aria-label="回测结果">
       {error && <div className="pbt-error-state"><ShieldAlert size={20} /><div><b>策略回测未完成</b><p>{error}</p></div><button onClick={execute}>重试</button></div>}
       {running && (
         <div className="panel pbt-running-state">
@@ -1395,6 +1439,8 @@ export default function PortfolioBacktestView({
           </div>
         </section>
       )}
+      </section>
+      </div>
     </div>
   );
 }

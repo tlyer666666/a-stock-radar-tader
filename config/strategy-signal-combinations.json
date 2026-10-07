@@ -1,0 +1,529 @@
+[
+  {
+    "id": "limit_macd_pullback_resonance",
+    "version": "1.0.0",
+    "name": "回踩与MACD动能共振",
+    "detail": "涨停后MA10回踩，同时DIF>DEA>0且柱线较昨日增加。",
+    "shapeLabel": "MA10回踩",
+    "technicalId": "macd_momentum_confirm",
+    "technicalLabel": "MACD零轴上动能恢复",
+    "conditions": [
+      "涨停后MA10回踩成立",
+      "DIF高于DEA且DEA大于0",
+      "MACD柱较昨日增加"
+    ],
+    "risk": "MACD存在滞后，回踩后的动能恢复仍可能是假反弹。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "fastPeriod": 12,
+      "slowPeriod": 26,
+      "signalPeriod": 9
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：MACD",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3435"
+      }
+    ],
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_boll_breakout_resonance",
+    "version": "1.0.0",
+    "name": "二次突破与布林收口共振",
+    "detail": "涨停后二次突破，同时越过昨日布林上轨，且昨日带宽处于此前60日较低水平。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "boll_squeeze_confirm",
+    "technicalLabel": "布林收口后突破",
+    "conditions": [
+      "二次突破形态成立",
+      "昨日带宽不超过截至昨日60日中位数",
+      "昨收不高于昨上轨且今收越过昨上轨"
+    ],
+    "risk": "收口没有方向保证；向上突破也可能迅速跌回通道。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "bollPeriod": 20,
+      "bollMultiplier": 2,
+      "widthLookback": 60
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：BOLL",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3417"
+      }
+    ],
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_obv_breakout_resonance",
+    "version": "1.0.0",
+    "name": "二次突破与OBV量价共振",
+    "detail": "涨停后二次突破，同时收盘与OBV均严格突破此前20日最高值。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "obv_price_confirm",
+    "technicalLabel": "OBV与价格双新高",
+    "conditions": [
+      "二次突破形态成立",
+      "收盘超过此前20日最高收盘",
+      "OBV超过此前20日最高值"
+    ],
+    "risk": "OBV不是资金账户流向，量价同时新高也不排除高位换手。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "breakoutPeriod": 20
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：OBV计算及运用",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/111"
+      }
+    ],
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_dmi_reclaim_resonance",
+    "version": "1.0.0",
+    "name": "均线承接与DMI强化共振",
+    "detail": "涨停后回踩或收复MA10，同时PDI占优、ADX至少20且继续上升。",
+    "shapeLabel": "MA10回踩或重新收复",
+    "technicalId": "dmi_strength_confirm",
+    "technicalLabel": "正向动能与ADX强化",
+    "conditions": [
+      "MA10回踩或MA10反转成立",
+      "PDI严格高于MDI",
+      "ADX至少20且高于昨日"
+    ],
+    "risk": "DMI方向强度可能滞后于价格，承接失败时趋势确认不能替代止损。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "dmiPeriod": 14,
+      "adxPeriod": 6,
+      "adxThreshold": 20
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：DMI",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/77"
+      }
+    ],
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_kdj_dryup_resonance",
+    "version": "1.0.0",
+    "name": "地量修复与KDJ金叉共振",
+    "detail": "涨停后地量阳线修复，同时K上穿D、K不超过80并收盘上涨。",
+    "shapeLabel": "涨停后地量阳线修复",
+    "technicalId": "kdj_rebound_confirm",
+    "technicalLabel": "KDJ金叉与价格回升",
+    "conditions": [
+      "地量阳线修复成立",
+      "昨日K不高于D且今日K高于D",
+      "K不超过80且收盘高于昨日"
+    ],
+    "risk": "KDJ在趋势中可能钝化，地量也可能意味着参与资金不足。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rsvPeriod": 9,
+      "kPeriod": 3,
+      "dPeriod": 3,
+      "maxK": 80
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：KDJ及缺陷",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3475"
+      }
+    ],
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_gap_ma_resonance",
+    "version": "1.0.0",
+    "name": "缺口守卫与均线再起共振",
+    "detail": "涨停缺口未补，同时四条均线多头排列、收盘越过昨高且量比适中。",
+    "shapeLabel": "涨停后缺口守卫",
+    "technicalId": "ma_volume_confirm",
+    "technicalLabel": "多头排列与放量越昨高",
+    "conditions": [
+      "原缺口守卫形态成立",
+      "MA5高于MA10高于MA20高于MA60",
+      "收盘越昨高且量比1至2.5"
+    ],
+    "risk": "缺口回补会破坏强势假设；均线排列与放量无法排除追高风险。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "minVolumeRatio": 1,
+      "maxVolumeRatio": 2.5
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：均线突破与回踩",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3347"
+      }
+    ],
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_rsi_pullback_resonance",
+    "version": "1.0.0",
+    "name": "回踩与RSI强弱修复",
+    "detail": "MA10回踩成立，同时RSI14>50且≤75，且高于昨日。",
+    "shapeLabel": "MA10回踩",
+    "technicalId": "rsi_strength_confirm",
+    "technicalLabel": "RSI中位上方回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA10回踩成立",
+      "RSI14>50且≤75，且高于昨日"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rsiPeriod": 14,
+      "rsiThreshold": 50,
+      "maxRsi": 75
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_cci_breakout_resonance",
+    "version": "1.0.0",
+    "name": "二次突破与CCI强势上穿",
+    "detail": "涨停后二次突破成立，同时昨日CCI14≤100且今日>100。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "cci_strength_confirm",
+    "technicalLabel": "CCI新上穿100",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "涨停后二次突破成立",
+      "昨日CCI14≤100且今日>100"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "cciPeriod": 14,
+      "cciThreshold": 100
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_roc_reclaim_resonance",
+    "version": "1.0.0",
+    "name": "均线收复与ROC加速",
+    "detail": "MA20失而复得成立，同时ROC12>0且高于昨日。",
+    "shapeLabel": "MA20失而复得",
+    "technicalId": "roc_acceleration_confirm",
+    "technicalLabel": "ROC正值加速",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA20失而复得成立",
+      "ROC12>0且高于昨日"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rocPeriod": 12
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方 ROC 指标说明",
+        "url": "https://quant.10jqka.com.cn/view/article/1636"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_emv_dryup_resonance",
+    "version": "1.0.0",
+    "name": "地量修复与EMV轻推",
+    "detail": "地量回升成立，同时14日EOM>0且高于昨日；中点移动/量比箱体的算术均值。",
+    "shapeLabel": "地量回升",
+    "technicalId": "emv_strength_confirm",
+    "technicalLabel": "EMV正值回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "地量回升成立",
+      "14日EOM>0且高于昨日；中点移动/量比箱体的算术均值"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "emvPeriod": 14,
+      "volumeDivisor": 100000000
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "TradingView官方 EOM 计算口径",
+        "url": "https://www.tradingview.com/support/solutions/43000502256-ease-of-movement-eom/"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_mfi_pullback_resonance",
+    "version": "1.0.0",
+    "name": "回踩与MFI量价修复",
+    "detail": "MA10回踩成立，同时MFI14>50且≤80，且高于昨日；仅为量价代理。",
+    "shapeLabel": "MA10回踩",
+    "technicalId": "mfi_strength_confirm",
+    "technicalLabel": "MFI中位上方回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA10回踩成立",
+      "MFI14>50且≤80，且高于昨日；仅为量价代理"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "mfiPeriod": 14,
+      "mfiThreshold": 50,
+      "maxMfi": 80
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_donchian_breakout_resonance",
+    "version": "1.0.0",
+    "name": "二次突破与55日新高",
+    "detail": "涨停后二次突破成立，同时今收突破此前55日高点，昨收未突破昨日对应上轨。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "donchian_breakout_confirm",
+    "technicalLabel": "唐奇安55日首破",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "涨停后二次突破成立",
+      "今收突破此前55日高点，昨收未突破昨日对应上轨"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "channelPeriod": 55
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "TradingView官方 唐奇安通道",
+        "url": "https://cn.tradingview.com/support/solutions/43000502253/"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_rsi_mfi_resonance",
+    "version": "1.0.0",
+    "name": "地量修复与强弱量价双确认",
+    "detail": "地量回升成立，同时RSI14在(50,75]且回升；MFI14在(50,80]且回升。",
+    "shapeLabel": "地量回升",
+    "technicalId": "rsi_mfi_dual_confirm",
+    "technicalLabel": "RSI和MFI同步回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "地量回升成立",
+      "RSI14在(50,75]且回升；MFI14在(50,80]且回升"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rsiPeriod": 14,
+      "rsiThreshold": 50,
+      "maxRsi": 75,
+      "mfiPeriod": 14,
+      "mfiThreshold": 50,
+      "maxMfi": 80
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  },
+  {
+    "id": "limit_cci_roc_resonance",
+    "version": "1.0.0",
+    "name": "均线收复与偏离动能双确认",
+    "detail": "MA20失而复得成立，同时CCI14>100且回升；ROC12>0且回升。",
+    "shapeLabel": "MA20失而复得",
+    "technicalId": "cci_roc_dual_confirm",
+    "technicalLabel": "CCI与ROC同步强化",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA20失而复得成立",
+      "CCI14>100且回升；ROC12>0且回升"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "cciPeriod": 14,
+      "cciThreshold": 100,
+      "rocPeriod": 12
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。"
+  }
+]

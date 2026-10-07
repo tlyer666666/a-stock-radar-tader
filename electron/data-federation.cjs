@@ -4,7 +4,26 @@ const {
   fetchArrayBufferWithPolicy,
   fetchJsonWithPolicy
 } = require("./http-client.cjs");
-const tushareDailyCache = new Map();
+const { BoundedCache, credentialFingerprint } = require("./bounded-cache.cjs");
+const { createServiceRuntime } = require("./service-runtime.cjs");
+const tushareDailyCache = new BoundedCache({ maxEntries: 256, maxBytes: 512 * 1024, now: () => Date.now() });
+const federationController = new AbortController();
+const federationRuntime = createServiceRuntime({ controller: federationController });
+const federationRequests = new Set();
+
+function trackFederationRequest(factory) {
+  const promise = federationRuntime.track(factory);
+  const physical = Promise.resolve(promise?.drained ?? promise);
+  federationRequests.add(physical);
+  physical.then(() => federationRequests.delete(physical), () => federationRequests.delete(physical));
+  return promise;
+}
+
+function shutdownDataFederation() {
+  const stopping = federationRuntime.shutdown(new DOMException("应用正在退出，行情请求已取消", "AbortError"));
+  tushareDailyCache.clear();
+  return Promise.allSettled([stopping, ...federationRequests]).then(() => undefined);
+}
 
 function marketPrefix(security) {
   if (String(security.thscode || "").endsWith(".SH")) return "sh";
@@ -35,14 +54,16 @@ function requestPolicy(options = {}, timeoutMs = 5000) {
 }
 
 async function tencentQuote(security) {
+  federationRuntime.checkpoint();
   const startedAt = Date.now();
   const symbol = `${marketPrefix(security)}${security.code}`;
-  const options = { headers: { Referer: "https://gu.qq.com/" } };
-  const buffer = await fetchArrayBufferWithPolicy(
+  const options = { signal: federationRuntime.signal(), headers: { Referer: "https://gu.qq.com/" } };
+  const buffer = await trackFederationRequest(() => fetchArrayBufferWithPolicy(
     `${TENCENT_QUOTE}${symbol}`,
     options,
     requestPolicy(options)
-  );
+  ));
+  federationRuntime.checkpoint();
   let text;
   try {
     text = new TextDecoder("gb18030").decode(buffer);
@@ -58,6 +79,15 @@ async function tencentQuote(security) {
     : 2;
   const tradeSummary = String(fields[35] || "").split("/");
   const rawAmount = Number(tradeSummary[2]);
+  const monitorValues = {
+    latest: fields[3],
+    changePct: fields[32],
+    turnover: fields[38],
+    amount: Number.isFinite(rawAmount) && rawAmount > 0 ? tradeSummary[2] : fields[37]
+  };
+  const missingFields = Object.entries(monitorValues)
+    .filter(([, value]) => value == null || !String(value).trim() || !Number.isFinite(Number(value)))
+    .map(([field]) => field);
   if (!Number.isFinite(latest) || latest <= 0) throw new Error("未返回有效行情");
   return {
     id: "tencent",
@@ -90,6 +120,7 @@ async function tencentQuote(security) {
     change: Number(fields[31]),
     changePct: Number(fields[32]),
     updatedAt: formatTencentTime(fields[30]),
+    missingFields,
     latencyMs: Date.now() - startedAt,
     message: "仅作免费交叉校验，接口可用性以平台公开页面为准"
   };
@@ -106,33 +137,20 @@ function tableRows(json) {
 }
 
 async function tushareDailyQuote(security, token) {
-  const cacheKey = `${tushareCode(security)}:${String(token).slice(-8)}`;
-  const cached = tushareDailyCache.get(cacheKey);
-  if (cached?.value && cached.expiresAt > Date.now()) return cached.value;
-  if (cached?.promise) return cached.promise;
-  const promise = fetchTushareDailyQuote(security, token)
-    .then((value) => {
-      tushareDailyCache.set(cacheKey, {
-        value,
-        expiresAt: Date.now() + 15 * 60 * 1000
-      });
-      return value;
-    })
-    .catch((error) => {
-      tushareDailyCache.delete(cacheKey);
-      throw error;
-    });
-  tushareDailyCache.set(cacheKey, { promise, expiresAt: 0 });
-  return promise;
+  const cacheKey = `${tushareCode(security)}:${credentialFingerprint(token)}`;
+  return federationRuntime.cached(tushareDailyCache, cacheKey, 15 * 60 * 1000,
+    () => fetchTushareDailyQuote(security, token));
 }
 
 async function fetchTushareDailyQuote(security, token) {
+  federationRuntime.checkpoint();
   const startedAt = Date.now();
   const end = new Date();
   const start = new Date(end.getTime() - 14 * 86400000);
   const compact = (date) =>
     `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
   const options = {
+    signal: federationRuntime.signal(),
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -146,7 +164,8 @@ async function fetchTushareDailyQuote(security, token) {
       fields: "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
     })
   };
-  const payload = await fetchJsonWithPolicy(TUSHARE_API, options, requestPolicy(options, 8000));
+  const payload = await trackFederationRequest(() => fetchJsonWithPolicy(TUSHARE_API, options, requestPolicy(options, 8000)));
+  federationRuntime.checkpoint();
   const rows = tableRows(payload);
   const row = rows[0];
   if (!row) throw new Error("暂无最近日线");
@@ -178,6 +197,7 @@ async function settledSource(factory, fallback) {
   try {
     return await factory();
   } catch (error) {
+    federationRuntime.checkpoint();
     return {
       ...fallback,
       enabled: true,
@@ -188,6 +208,7 @@ async function settledSource(factory, fallback) {
 }
 
 async function collectAuxiliarySources(security, settings = {}) {
+  federationRuntime.checkpoint();
   if (settings.multiSourceEnabled === false) return [];
   const tasks = [
     settledSource(
@@ -269,6 +290,7 @@ function buildQuoteConsensus(sources = []) {
 }
 
 module.exports = {
+  shutdownDataFederation,
   tencentQuote,
   tushareDailyQuote,
   collectAuxiliarySources,

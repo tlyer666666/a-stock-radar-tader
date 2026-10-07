@@ -1,0 +1,398 @@
+[
+  {
+    "id": "macd-zero-cross-v1",
+    "version": "1.0.0",
+    "name": "MACD 零轴金叉",
+    "family": "趋势动能",
+    "summary": "DIF 上穿 DEA，且两线均在零轴上方。",
+    "trigger": "信号日收盘",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "fastPeriod": 12,
+      "slowPeriod": 26,
+      "signalPeriod": 9
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校 MACD",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3435"
+      }
+    ],
+    "technicalLabels": [
+      "MACD金叉",
+      "MACD零轴"
+    ]
+  },
+  {
+    "id": "boll-squeeze-breakout-v1",
+    "version": "1.0.0",
+    "name": "BOLL 收口突破",
+    "family": "波动突破",
+    "summary": "昨日带宽处于此前60日较低水平，今日收盘越过昨日上轨。",
+    "trigger": "昨日布林上轨",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "bollPeriod": 20,
+      "bollMultiplier": 2,
+      "squeezeLookback": 60
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校 BOLL",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3417"
+      }
+    ],
+    "technicalLabels": [
+      "布林收口",
+      "布林突破"
+    ]
+  },
+  {
+    "id": "dmi-trend-strength-v1",
+    "version": "1.0.0",
+    "name": "DMI 趋势强化",
+    "family": "方向强度",
+    "summary": "正向动能占优，ADX向上达到20，并出现方向或强度的新交叉。",
+    "trigger": "信号日收盘",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "dmiPeriod": 14,
+      "adxPeriod": 6,
+      "adxThreshold": 20
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校 DMI",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/1303"
+      }
+    ],
+    "technicalLabels": [
+      "方向占优",
+      "趋势强度",
+      "方向或强度新交叉"
+    ]
+  },
+  {
+    "id": "obv-volume-breakout-v1",
+    "version": "1.0.0",
+    "name": "OBV 量价突破",
+    "family": "量价确认",
+    "summary": "收盘价与累计方向成交量同时突破此前20日高点。",
+    "trigger": "此前20日最高收盘",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "breakoutPeriod": 20
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校 OBV",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/2051"
+      }
+    ],
+    "technicalLabels": [
+      "方向量创新高",
+      "收盘创新高"
+    ]
+  },
+  {
+    "id": "kdj-trend-cross-v1",
+    "version": "1.0.0",
+    "name": "KDJ 趋势金叉",
+    "family": "回调再起",
+    "summary": "上涨趋势中K线上穿D线，K不超过80，且收盘较昨日上涨。",
+    "trigger": "信号日收盘",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "rsvPeriod": 9,
+      "kPeriod": 3,
+      "dPeriod": 3,
+      "maxK": 80
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校 KDJ",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3475"
+      }
+    ],
+    "technicalLabels": [
+      "随机指标金叉",
+      "随机指标温度",
+      "收盘回升"
+    ]
+  },
+  {
+    "id": "ma-pullback-resume-v1",
+    "version": "1.0.0",
+    "name": "均线回踩再起",
+    "family": "均线承接",
+    "summary": "5/10/20/60均线多头排列，五日内回踩后收盘重新突破昨日高点。",
+    "trigger": "昨日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "fastPeriod": 5,
+      "middlePeriod": 10,
+      "trendPeriod": 20,
+      "longPeriod": 60,
+      "pullbackPeriod": 5
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校 均线回踩再起",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/5768"
+      }
+    ],
+    "technicalLabels": [
+      "均线多头排列",
+      "均线回踩承接",
+      "回踩后再起"
+    ]
+  },
+  {
+    "id": "rsi-midline-recovery-v1",
+    "version": "1.0.0",
+    "name": "RSI 中位修复",
+    "family": "强弱修复",
+    "summary": "RSI14从50或以下回到50上方且不超过75，收盘突破昨日高点。",
+    "trigger": "昨日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "period": 14,
+      "threshold": 50,
+      "maxRsi": 75
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "technicalLabels": [
+      "RSI中位上穿",
+      "RSI温度",
+      "价格确认"
+    ]
+  },
+  {
+    "id": "cci-strength-breakout-v1",
+    "version": "1.0.0",
+    "name": "CCI 强势突破",
+    "family": "价格偏离",
+    "summary": "CCI14由100或以下上穿100，收盘突破昨日高点。",
+    "trigger": "昨日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "period": 14,
+      "threshold": 100
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "technicalLabels": [
+      "CCI强势上穿",
+      "价格确认"
+    ]
+  },
+  {
+    "id": "roc-zero-recovery-v1",
+    "version": "1.0.0",
+    "name": "ROC 动能转正",
+    "family": "速度修复",
+    "summary": "ROC12从非正转正，同时收盘突破昨日高点。",
+    "trigger": "昨日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "period": 12
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方 ROC 指标说明",
+        "url": "https://quant.10jqka.com.cn/view/article/1636"
+      }
+    ],
+    "technicalLabels": [
+      "ROC零轴上穿",
+      "价格确认"
+    ]
+  },
+  {
+    "id": "emv-zero-recovery-v1",
+    "version": "1.0.0",
+    "name": "EMV 量价轻推",
+    "family": "量价效率",
+    "summary": "14日简易波动值由非正转正，且收盘突破昨日高点。采用EOM中点移动口径。",
+    "trigger": "昨日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "period": 14,
+      "volumeDivisor": 100000000
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "TradingView官方 EOM 计算口径",
+        "url": "https://www.tradingview.com/support/solutions/43000502256-ease-of-movement-eom/"
+      }
+    ],
+    "technicalLabels": [
+      "EMV零轴上穿",
+      "价格确认"
+    ]
+  },
+  {
+    "id": "mfi-midline-recovery-v1",
+    "version": "1.0.0",
+    "name": "MFI 量价修复",
+    "family": "成交权重",
+    "summary": "MFI14由50或以下上穿50且不超过80，收盘突破昨日高点；为量价代理指标。",
+    "trigger": "昨日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "period": 14,
+      "threshold": 50,
+      "maxMfi": 80
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "technicalLabels": [
+      "MFI中位上穿",
+      "MFI温度",
+      "价格确认"
+    ]
+  },
+  {
+    "id": "donchian-55-breakout-v1",
+    "version": "1.0.0",
+    "name": "唐奇安 55 日突破",
+    "family": "极值通道",
+    "summary": "收盘首次突破此前55日最高价；通道参照窗不含当日。",
+    "trigger": "此前55日最高价",
+    "parameters": {
+      "maxExtensionAtr": 3,
+      "stopLookback": 5,
+      "minStopAtr": 0.5,
+      "entryAtrAllowance": 0.5,
+      "channelPeriod": 55
+    },
+    "marketCalendarLookback": 80,
+    "fixedParameters": true,
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "TradingView官方 唐奇安通道",
+        "url": "https://cn.tradingview.com/support/solutions/43000502253/"
+      }
+    ],
+    "technicalLabels": [
+      "55日通道突破",
+      "首日突破"
+    ]
+  }
+]

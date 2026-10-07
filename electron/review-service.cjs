@@ -1,6 +1,12 @@
 const services = require("./services.cjs");
+const { buildMarketReviewDecision, marketScenarios, validBreadth } = require("./review-decision.cjs");
 
-let reviewCache = { value: null, expiresAt: 0 };
+const { BoundedCache, credentialFingerprint } = require("./bounded-cache.cjs");
+const { busyError } = require("./worker-runner.cjs");
+const reviewCache = new BoundedCache({ maxEntries: 8 });
+const reviewInFlight = new Map();
+const activeReviews = new Set();
+let reviewGeneration = 0;
 
 const INDEX_DEFINITIONS = [
   { code: "000985", secid: "1.000985", thscode: "000985.SH", name: "中证全指" },
@@ -32,6 +38,10 @@ function movingAverage(rows, days, field = "close") {
 
 function indexReview(definition, chart) {
   const rows = chart?.rows || [];
+  const historyValid = rows.every((row, i) => /^\d{4}-\d{2}-\d{2}$/.test(row?.date || "") &&
+    Number.isFinite(Date.parse(`${row.date}T00:00:00Z`)) && new Date(`${row.date}T00:00:00Z`).toISOString().slice(0, 10) === row.date &&
+    (!i || row.date > rows[i - 1].date) && [row.open, row.high, row.low, row.close].every(n => Number.isFinite(Number(n)) && Number(n) > 0) &&
+    Number(row.high) >= Math.max(Number(row.open), Number(row.close), Number(row.low)) && Number(row.low) <= Math.min(Number(row.open), Number(row.close), Number(row.high)));
   if (rows.length < 10) {
     return {
       ...definition,
@@ -41,6 +51,9 @@ function indexReview(definition, chart) {
       ma5: 0,
       ma10: 0,
       ma20: 0,
+      ma60: null,
+      historyBars: rows.length,
+      historyValid,
       volumeRatio: 0,
       score: 50,
       trend: "数据暂缺",
@@ -77,6 +90,9 @@ function indexReview(definition, chart) {
     ma5,
     ma10,
     ma20,
+    ma60: rows.length >= 60 && historyValid ? movingAverage(rows, 60) : null,
+    historyBars: rows.length,
+    historyValid,
     volumeRatio,
     score,
     trend:
@@ -189,48 +205,6 @@ function classifyRegime({ score, breadthScore, emotionScore, ecology, indices })
   return { id: "rotation", name: "混沌震荡", tone: "neutral", posture: "小仓试错，快进快出" };
 }
 
-function buildScenarios(snapshot) {
-  const { ecology, market, dimensions } = snapshot;
-  return [
-    {
-      id: "attack",
-      name: "进攻确认",
-      tone: "attack",
-      conditions: [
-        `上涨家数占比升至 ${Math.max(55, Math.round(market.breadth * 100))}% 以上`,
-        `晋级率不低于 ${Math.max(30, Math.round(ecology.promotionRate * 100))}%`,
-        "主线板块前三名强度不下降且量能温和放大"
-      ],
-      action: "只参与主线前排或缩量回踩核心，禁止追后排补涨。",
-      invalidation: "炸板率超过35%或核心龙头跌破涨停日低点。"
-    },
-    {
-      id: "rotation",
-      name: "轮动基准",
-      tone: "neutral",
-      conditions: [
-        `环境评分维持 ${Math.round(snapshot.score - 5)}–${Math.round(snapshot.score + 5)} 分`,
-        "指数分化、上涨家数在45%–55%之间",
-        "板块强度快速切换但跌停家数未扩散"
-      ],
-      action: "降低持仓时间，优先板块内相对强度前15%的股票。",
-      invalidation: "市场广度与情绪评分同时跌破45分。"
-    },
-    {
-      id: "defense",
-      name: "防守触发",
-      tone: "defense",
-      conditions: [
-        `情绪评分跌破 ${Math.min(45, dimensions.emotion)} 分`,
-        "跌停/涨停比超过0.5",
-        "三大指数多数跌破MA20并伴随放量"
-      ],
-      action: "停止新增交易，保留观察池并等待两日风险不再扩散。",
-      invalidation: "上涨广度重回55%，涨停数量和晋级率同步回升。"
-    }
-  ];
-}
-
 function buildProfessionalReviewSnapshot(input) {
   const generatedAt = input.generatedAt || new Date().toISOString();
   const emotion = input.emotion || {};
@@ -241,14 +215,13 @@ function buildProfessionalReviewSnapshot(input) {
   const ecology = buildLimitEcology(emotion, input.ladderPools || {});
   const sectorRows = (input.sectors || []).slice(0, 15);
   const availableIndices = indices.filter((item) => item.available !== false);
-  const marketAvailable =
-    Number(market.stockCount || 0) > 0 &&
-    Number(market.upCount || 0) + Number(market.downCount || 0) > 0;
+  const marketAvailable = input.sourceAvailability?.market !== false && validBreadth(market);
+  const measuredBreadth = marketAvailable ? Number(market.upCount) / Number(market.stockCount) : null;
   const trendScore = Math.round(
     availableIndices.length ? average(availableIndices.map((item) => item.score)) : 50
   );
   const breadthScore = marketAvailable
-    ? Math.round(clamp(50 + (Number(market.breadth || 0.5) - 0.5) * 100))
+    ? Math.round(clamp(measuredBreadth * 100))
     : 50;
   const emotionScore = Math.round(clamp(Number(emotion.score || 50)));
   const leadershipScore = Math.round(clamp(
@@ -335,11 +308,7 @@ function buildProfessionalReviewSnapshot(input) {
   if (confirmationScore < 42) riskSignals.push("核心指数趋势确认不足，反弹的一致性偏弱");
   if (liquidityScore < 42) riskSignals.push("核心指数成交参与度偏低，趋势持续性需要量能确认");
   if (!riskSignals.length) riskSignals.push("未触发系统级硬风险，但仍需服从个股止损");
-  const exposure =
-    score >= 75 ? { min: 60, max: 80, label: "积极但不满仓" } :
-      score >= 60 ? { min: 40, max: 60, label: "均衡试错" } :
-        score >= 45 ? { min: 20, max: 40, label: "轻仓轮动" } :
-          { min: 0, max: 20, label: "防守观察" };
+  const exposure = { min: null, max: null, label: "不从评分推导仓位" };
   const focusSectors = sectorRows.slice(0, 8).map((item, index) => ({
     ...item,
     reviewRank: index + 1,
@@ -364,7 +333,7 @@ function buildProfessionalReviewSnapshot(input) {
       upCount: Number(market.upCount || 0),
       downCount: Number(market.downCount || 0),
       flatCount: Number(market.flatCount || 0),
-      breadth: Number(market.breadth || 0),
+      breadth: measuredBreadth,
       averageReturn: Number(market.averageReturn || 0)
     },
     emotion: {
@@ -405,19 +374,49 @@ function buildProfessionalReviewSnapshot(input) {
       note: "结论用于复盘与条件预案，不预测单一方向，也不构成投资建议。"
     }
   };
-  snapshot.scenarios = buildScenarios(snapshot);
+  snapshot.scenarios = marketScenarios();
+  snapshot.decision = buildMarketReviewDecision(input, snapshot);
   return snapshot;
 }
 
-async function getProfessionalReview(options = {}) {
-  if (!options.refresh && reviewCache.value && reviewCache.expiresAt > Date.now()) {
-    return reviewCache.value;
-  }
+function reviewSettingsKey(settings) {
+  return credentialFingerprint(JSON.stringify(settings, (_key, value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
+      : value));
+}
+
+async function getProfessionalReview(input = {}) {
+  const options = input && typeof input === "object" ? input : {};
+  const settings = options.settings && typeof options.settings === "object" ? { ...options.settings } : {};
+  const key = reviewSettingsKey(settings);
+  const active = reviewInFlight.get(key);
+  if (active && (!options.refresh || active.refresh)) return active.promise;
+  const cached = reviewCache.get(key);
+  if (!options.refresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+  if (activeReviews.size >= 4) throw busyError("复盘任务繁忙，请稍后重试");
+  const entry = { generation: reviewGeneration, refresh: options.refresh === true };
+  activeReviews.add(entry);
+  // Keep the aggregate identity separate from its result cache: a reset or a
+  // newer forced generation must never be overwritten by late dependencies.
+  entry.promise = loadProfessionalReview({ ...options, settings }).then(value => {
+    if (reviewInFlight.get(key) === entry && entry.generation === reviewGeneration) {
+      reviewCache.set(key, { value, expiresAt: Date.now() + 45 * 1000 });
+    }
+    return value;
+  }).finally(() => {
+    activeReviews.delete(entry);
+    if (reviewInFlight.get(key) === entry) reviewInFlight.delete(key);
+  });
+  reviewInFlight.set(key, entry);
+  return entry.promise;
+}
+
+async function loadProfessionalReview(options) {
   const indexPromises = INDEX_DEFINITIONS.map(async (definition) => {
-    const chart = await services.getChart(definition, "101", {
+    const chart = await services.getReviewIndexChart(definition.secid, {
       range: "3m",
       limit: 90,
-      adjustment: 1,
       forceRefresh: options.refresh === true
     }).catch(() => ({ rows: [] }));
     return { definition, chart };
@@ -465,14 +464,16 @@ async function getProfessionalReview(options = {}) {
     ladderPools,
     sectors,
     limitUps,
-    indices
+    indices,
+    sourceAvailability: { emotion: Boolean(emotion), market: Boolean(market || sectors[0]?.marketSnapshot) }
   });
-  reviewCache = { value, expiresAt: Date.now() + 45 * 1000 };
   return value;
 }
 
 function resetProfessionalReviewCache() {
-  reviewCache = { value: null, expiresAt: 0 };
+  reviewGeneration += 1;
+  reviewCache.clear();
+  reviewInFlight.clear();
 }
 
 module.exports = {

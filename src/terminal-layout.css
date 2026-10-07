@@ -1,0 +1,91 @@
+/* One shared desktop frame. Page-specific workspaces own their internal grids. */
+:root,:root[data-theme="dark"] {
+  --terminal-bg:#111419; --terminal-sidebar:#181c22; --terminal-panel:#1a1f26;
+  --terminal-elevated:#252b34; --terminal-soft:#20262e; --terminal-line:#37414e;
+  --terminal-text:#e7ecf3; --terminal-muted:#aab5c4; --terminal-accent:#91b8ec;
+  --terminal-accent-soft:#293c55; --terminal-action:#35649e;
+  --terminal-rise:#f27883; --terminal-fall:#6ac7a2; --terminal-warning:#ddb97b;
+}
+:root[data-theme="light"] {
+  --terminal-bg:#f0f2f5; --terminal-sidebar:#f7f8fa; --terminal-panel:#fff;
+  --terminal-elevated:#e9edf2; --terminal-soft:#f5f7f9; --terminal-line:#cdd4de;
+  --terminal-text:#202936; --terminal-muted:#566375; --terminal-accent:#2c5b94;
+  --terminal-accent-soft:#e4edf8; --terminal-action:#2f609b;
+  --terminal-rise:#b93447; --terminal-fall:#187452; --terminal-warning:#885c18;
+}
+html .app-shell.terminal-shell { grid-template-columns:176px minmax(0,1fr); font-size:14px; line-height:1.5; }
+html .app-shell.terminal-shell[data-nav-collapsed="true"] { grid-template-columns:56px minmax(0,1fr); }
+html .terminal-shell [hidden] { display:none !important; }
+html .terminal-shell .workspace-navigation { padding:8px 7px; gap:0; background:var(--terminal-sidebar); }
+html .terminal-shell .workspace-nav-top { display:flex; align-items:center; justify-content:space-between; min-height:36px; padding:0 6px 7px; font-size:13px; border-bottom:1px solid var(--terminal-line); margin-bottom:12px; }
+html .terminal-shell .workspace-navigation nav { display:flex; flex-direction:column; flex:1; gap:18px; }
+html .terminal-shell .workspace-nav-group { min-width:0; }
+html .terminal-shell .workspace-navigation .nav-caption { margin:0 10px 5px; font-size:11px; letter-spacing:0; font-weight:400; }
+html .terminal-shell .workspace-navigation .nav-item { display:flex; align-items:center; width:100%; min-height:34px; height:34px; margin:2px 0; padding:6px 10px; gap:9px; border:0; border-radius:3px; color:var(--terminal-muted); font-size:13px; font-weight:400; }
+html .terminal-shell .workspace-navigation .nav-item span { flex:1; text-align:left; white-space:nowrap; }
+html .terminal-shell .workspace-navigation .nav-item em { font-size:11px; background:none; padding:0; color:inherit; }
+html .terminal-shell .workspace-navigation .nav-item svg { width:16px; height:16px; }
+html .terminal-shell .workspace-navigation .nav-item:hover { color:var(--terminal-text); background:var(--terminal-elevated); }
+html .terminal-shell .workspace-navigation .nav-item.active { background:var(--terminal-accent-soft); color:var(--terminal-text); font-weight:600; }
+html .terminal-shell .workspace-navigation .nav-item.active::before { width:2px; height:16px; background:var(--terminal-accent); left:0; }
+html .terminal-shell .workspace-nav-bottom { padding-top:8px; margin-top:12px; border-top:1px solid var(--terminal-line); }
+html .terminal-shell .sidebar-collapse { display:grid; place-items:center; width:27px; height:27px; padding:0; border:0; border-radius:3px; background:none; color:var(--terminal-muted); cursor:pointer; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption,.nav-item span,.nav-item em,.workspace-nav-top>span) { display:none; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation .nav-item { justify-content:center; padding:6px; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-nav-top { justify-content:center; padding:0 0 7px; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-nav-group + .workspace-nav-group { border-top:1px solid var(--terminal-line); padding-top:10px; }
+html .terminal-shell .topbar { min-height:48px; height:auto; padding:7px 14px; gap:12px; background:var(--terminal-sidebar); box-shadow:none; backdrop-filter:none; }
+.workspace-location { font-size:13px; font-weight:600; white-space:nowrap; padding-right:12px; border-right:1px solid var(--terminal-line); }
+html .terminal-shell .search-box { flex:0 1 320px; width:320px; min-width:200px; min-height:32px; height:32px; border-radius:3px; background:var(--terminal-panel); padding:0 10px; }
+html .terminal-shell .search-box input { font-size:13px; }
+html .terminal-shell .top-actions { gap:6px; }
+html .terminal-shell :is(.theme-switch,.strategy-quick-trigger,.live-toggle,.icon-button) { height:30px; min-height:30px; border-radius:3px; font-size:12px; }
+html .terminal-shell .theme-switch { padding:2px; background:transparent; }
+html .terminal-shell .theme-switch button { height:24px; padding:3px 6px; gap:4px; font-size:12px; border-radius:2px; }
+html .terminal-shell .icon-button { width:30px; padding:0; }
+html .terminal-shell .icon-button svg { width:16px; height:16px; }
+html .terminal-shell .strategy-quick-trigger { padding:0 8px; gap:5px; }
+html .terminal-shell .trend-header-rule { font-size:12px; }
+html .terminal-shell .main > .page { padding:12px; background:var(--terminal-bg); }
+html .terminal-shell .terminal-statusbar { min-height:26px; padding:4px 12px; gap:6px 12px; background:var(--terminal-sidebar); }
+html .terminal-shell .terminal-statusbar :is(.version,.status-row small,.status-row strong,.quota-text) { font-size:11px; }
+html .terminal-shell .page-heading { min-height:36px; margin:0 0 12px; padding:0 0 10px; gap:10px; align-items:center; }
+html .terminal-shell .page-heading h1 { font-size:18px !important; line-height:26px; font-weight:600; letter-spacing:0; margin:0; }
+.page-heading-identity { display:flex; align-items:center; gap:12px; min-width:0; }
+.page-heading-help { position:relative; font-size:12px; color:var(--terminal-muted); flex-shrink:0; }
+.page-heading-help > summary { cursor:pointer; }
+.page-heading-help > div { position:absolute; z-index:45; top:27px; left:0; width:min(390px,60vw); padding:12px; background:var(--terminal-panel); border:1px solid var(--terminal-line); border-radius:3px; box-shadow:0 5px 16px #0002; }
+.page-heading-help > div > span { font-size:10px; letter-spacing:.04em; }
+html .terminal-shell .page-heading-help p { margin:5px 0 0; font-size:13px; }
+html .terminal-shell .heading-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+html .terminal-shell :is(.primary-btn,.secondary-btn) { min-height:30px; padding:5px 9px; border-radius:3px; font-size:13px; line-height:18px; font-weight:400; }
+html .terminal-shell .primary-btn { background:var(--terminal-action); border-color:var(--terminal-action); }
+html .terminal-shell :is(.panel,.settings-card,.watch-card,.favorite-card) { border-radius:3px; box-shadow:none; background:var(--terminal-panel); }
+html .terminal-shell .panel-title { margin-bottom:10px; gap:8px; }
+html .terminal-shell .panel-title-icon { display:none; }
+html .terminal-shell .panel-title h3 { font-size:14px; font-weight:600; }
+html .terminal-shell .panel-title p { font-size:12px; line-height:1.5; }
+html .terminal-shell :is(.field input,.field select,.backtest-field input,.backtest-field select) { min-height:32px; border-radius:3px; font-size:13px; }
+html .terminal-shell :is(.field > span,.field small) { font-size:12px; }
+html .terminal-shell :is(.table .tr,.stock-cell,.table-action,.news-copy b,.news-list-large b) { font-size:13px; }
+html .terminal-shell :is(.warning-banner,.risk-strip,.quality-warning,.backtest-context-note) { border-radius:3px; font-size:12px; padding:8px 10px; }
+html .terminal-shell :is(.table,.stock-table,.holding-table) { font-variant-numeric:tabular-nums; }
+html .terminal-shell :is(.toast,.strategy-quick-menu,.suggestions) { border-radius:4px; }
+@media(max-width:1400px) {
+  html .terminal-shell .theme-switch button span { display:none; }
+  html .terminal-shell .theme-switch button { width:27px; padding:3px; justify-content:center; }
+  html .terminal-shell .search-box { flex-basis:285px; }
+}
+@media(max-width:1179px) {
+  .workspace-location { display:none; }
+  html .terminal-shell .topbar { gap:8px; padding:7px 12px; }
+  html .terminal-shell .search-box { flex:1 1 240px; }
+  html .terminal-shell .top-actions { margin-left:auto; }
+}
+@media(max-width:900px) {
+  html .app-shell.terminal-shell { grid-template-columns:56px minmax(0,1fr); }
+  html .terminal-shell .workspace-navigation :is(.nav-caption,.nav-item span,.nav-item em,.workspace-nav-top>span) { display:none; }
+  html .terminal-shell .workspace-navigation .nav-item { justify-content:center; padding:6px; }
+  html .terminal-shell .workspace-nav-top { justify-content:center; padding:0 0 7px; }
+  html .terminal-shell .workspace-nav-group + .workspace-nav-group { border-top:1px solid var(--terminal-line); padding-top:10px; }
+}

@@ -3,6 +3,8 @@ const FAST_NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList
 const ANNOUNCEMENT_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann";
 const CLS_TELEGRAPH_URL = "https://www.cls.cn/api/cache";
 const { fetchJsonWithPolicy } = require("./http-client.cjs");
+const newsController = new AbortController();
+const newsRequests = new Set();
 const {
   thsProviderError,
   withThsAccessToken
@@ -14,7 +16,9 @@ const sourceCaches = {
   announcement: { value: null, expiresAt: 0, fetchedAt: "", key: "" },
   ths: { value: null, expiresAt: 0, fetchedAt: "", key: "" }
 };
-const firstSeen = new Map();
+const { BoundedCache, credentialFingerprint } = require("./bounded-cache.cjs");
+const firstSeen = new BoundedCache({ maxEntries: 5000, maxBytes: 512 * 1024, now: () => Date.now() });
+let cacheGeneration = 0;
 
 const SECTOR_TERMS = {
   CPO: ["cpo", "光模块", "光通信", "800g", "1.6t", "硅光"],
@@ -46,8 +50,10 @@ const MATERIAL_TERMS = [
 ];
 
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
+  const signal = options.signal ? AbortSignal.any([options.signal, newsController.signal]) : newsController.signal;
+  signal.throwIfAborted();
   const method = String(options?.method || "GET").toUpperCase();
-  return fetchJsonWithPolicy(url, options, {
+  const request = fetchJsonWithPolicy(url, { ...options, signal }, {
     timeoutMs,
     retries: method === "GET" || method === "HEAD" ? 1 : 0,
     minimumGapMs: /eastmoney\.com/i.test(String(url)) ? 160 : 80,
@@ -55,6 +61,9 @@ async function fetchJson(url, options = {}, timeoutMs = 12000) {
       "User-Agent": "Mozilla/5.0 AStockRadar/0.9"
     }
   });
+  newsRequests.add(request);
+  request.then(() => newsRequests.delete(request), () => newsRequests.delete(request));
+  return request;
 }
 
 function normalizeTitle(value = "") {
@@ -144,8 +153,11 @@ function horizonFor(type) {
 }
 
 function rememberFirstSeen(id) {
-  if (!firstSeen.has(id)) firstSeen.set(id, new Date().toISOString());
-  return firstSeen.get(id);
+  const cached = firstSeen.get(id);
+  if (cached) return cached.value;
+  const value = new Date().toISOString();
+  firstSeen.set(id, { value, expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+  return value;
 }
 
 function normalizeFastNews(item) {
@@ -397,17 +409,16 @@ async function cachedSource(id, ttlMs, factory, key = "") {
       stale: false
     };
   }
-  try {
-    const items = await factory();
+  if (cache?.promise && cache.key === key && cache.generation === cacheGeneration) return cache.promise;
+  const generation = cacheGeneration;
+  const entry = { ...(cache?.key === key ? cache : {}), key, generation };
+  const promise = Promise.resolve().then(factory).then(items => {
     const fetchedAt = new Date().toISOString();
-    sourceCaches[id] = {
-      value: items,
-      expiresAt: Date.now() + ttlMs,
-      fetchedAt,
-      key
-    };
+    if (sourceCaches[id] === entry && generation === cacheGeneration) {
+      sourceCaches[id] = { value: items, expiresAt: Date.now() + ttlMs, fetchedAt, key, generation };
+    }
     return { items, fetchedAt, fromCache: false, stale: false };
-  } catch (error) {
+  }).catch(error => {
     if (cache?.value && (!key || cache.key === key)) {
       return {
         items: cache.value,
@@ -418,7 +429,12 @@ async function cachedSource(id, ttlMs, factory, key = "") {
       };
     }
     throw error;
-  }
+  }).finally(() => {
+    if (sourceCaches[id] === entry) delete entry.promise;
+  });
+  entry.promise = promise;
+  sourceCaches[id] = entry;
+  return promise;
 }
 
 async function fetchPublicFeed(settings) {
@@ -479,7 +495,7 @@ async function fetchPublicFeed(settings) {
           "ths",
           30000,
           () => fetchThsReports(settings),
-          settings.refreshToken
+          credentialFingerprint(settings.refreshToken)
         )
       : Promise.resolve({
           items: [],
@@ -656,14 +672,23 @@ async function getNewsFeed(input = {}, settings = {}) {
 }
 
 function resetNewsCache() {
+  cacheGeneration += 1;
   for (const cache of Object.values(sourceCaches)) {
     cache.expiresAt = 0;
+    delete cache.promise;
   }
+}
+
+function shutdownNewsService() {
+  newsController.abort(new DOMException("应用正在退出，资讯请求已取消", "AbortError"));
+  resetNewsCache();
+  return Promise.allSettled([...newsRequests]).then(() => undefined);
 }
 
 module.exports = {
   getNewsFeed,
   resetNewsCache,
+  shutdownNewsService,
   normalizeFastNews,
   normalizeClsTelegraph,
   normalizeEastAnnouncement,

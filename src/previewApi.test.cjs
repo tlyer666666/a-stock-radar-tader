@@ -101,3 +101,23 @@ test("preview A-share announcement feed honors the independent content contract"
   });
   assert.deepEqual(holdingFeed.items.map((item) => item.relatedStocks[0].code), [holding.code]);
 });
+
+test('preview exposes the same versioned combinations without publishing invented evidence', async () => {
+  const api = createPreviewApi();
+  const catalog = require('../config/strategy-signal-combinations.json');
+  const definitions = await api.getStrategyDefinitions();
+  assert.equal(definitions.length, 32);
+  const report = await api.scanStrategySignals();
+  assert.equal(report.compositeStrategyCount, 18);
+  assert.match(report.multipleTestingWarning, /32套策略（14套基础、18套组合/);
+  for (const entry of catalog) {
+    const definition = definitions.find(item => item.id === entry.id);
+    assert.equal(definition?.version, entry.version);
+    assert.deepEqual(definition.parameters, entry.parameters);
+    const audited = report.auditedStrategies.find(item => item.id === entry.id);
+    assert.equal(audited.publicationAccepted, false);
+    assert.equal(audited.validation.sampleCount, 0);
+    assert.equal(audited.validation.winRate5, null);
+    assert.equal(audited.stocks.length, 0);
+  }
+});

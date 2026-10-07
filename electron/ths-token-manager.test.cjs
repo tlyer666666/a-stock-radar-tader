@@ -91,3 +91,31 @@ test("THS token manager refreshes once after an authentication rejection", async
   assert.equal(isThsAuthenticationError(new Error("network timeout")), false);
   assert.equal(isThsAuthenticationError(thsProviderError({ errorcode: 1001, message: "认证失败" })), true);
 });
+
+test("a late refresh for an old credential cannot replace the current token cache",async()=>{
+  let release;let calls=0;const oldGate=new Promise(resolve=>{release=resolve;});
+  const options={baseUrl:"https://example.test",cacheKey:"late-old-credential"};
+  const fetchJson=async(_,request)=>{calls++;return request.headers.refresh_token==="old"?oldGate:{data:{access_token:"current-access",expires_in:3600}};};
+  const old=getThsAccessToken("old",fetchJson,options);
+  await getThsAccessToken("current",fetchJson,options);
+  release({data:{access_token:"old-access",expires_in:3600}});await old;
+  assert.equal(await getThsAccessToken("current",fetchJson,options),"current-access");
+  assert.equal(calls,2);
+});
+
+test("invalidation during refresh prevents stale successful completion from repopulating cache",async()=>{
+  let release;let calls=0;const gate=new Promise(resolve=>{release=resolve;});
+  const options={baseUrl:"https://example.test",cacheKey:"invalidate-pending"};
+  const fetchJson=async()=>++calls===1?gate:{data:{access_token:"fresh-access",expires_in:3600}};
+  const old=getThsAccessToken("refresh",fetchJson,options);
+  invalidateThsAccessToken("refresh",options.cacheKey);
+  release({data:{access_token:"discarded-access",expires_in:3600}});await old;
+  assert.equal(await getThsAccessToken("refresh",fetchJson,options),"fresh-access");assert.equal(calls,2);
+});
+
+test("explicit short token expiry never remains cached beyond the server lifetime",()=>{
+  for(const seconds of [.5,1,30,60,90,3600]){
+    const expiresAt=tokenExpiry({data:{expires_in:seconds}},1000);
+    assert.ok(expiresAt>=1000);assert.ok(expiresAt<=1000+seconds*1000);
+  }
+});

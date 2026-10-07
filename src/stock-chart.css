@@ -1,0 +1,239 @@
+/* Stock detail charts: solid quote surfaces and a shared price/volume palette. */
+html .terminal-shell .chart-panel {
+  --stock-chart-bg: #101214;
+  --stock-chart-toolbar: #1b1f24;
+  --stock-chart-border: #3b4149;
+  --stock-chart-grid: #30353b;
+  --stock-chart-text: #edf0f4;
+  --stock-chart-muted: #b7bec8;
+  --stock-chart-rise: #ff5b64;
+  --stock-chart-fall: #37c58c;
+  --stock-chart-ma5: #f3d66b;
+  --stock-chart-ma10: #83b5ff;
+  --stock-chart-ma20: #e68be5;
+  --stock-chart-ma60: #65d3d0;
+  --stock-chart-crosshair: #c8ced7;
+  min-width: 0;
+  background: var(--stock-chart-toolbar);
+  border-color: var(--stock-chart-border);
+  color: var(--stock-chart-text);
+}
+
+html[data-theme="light"] .terminal-shell .chart-panel {
+  --stock-chart-bg: #fff;
+  --stock-chart-toolbar: #f7f8fa;
+  --stock-chart-border: #cbd0d7;
+  --stock-chart-grid: #e2e5ea;
+  --stock-chart-text: #242a33;
+  --stock-chart-muted: #5a626e;
+  --stock-chart-rise: #cb303b;
+  --stock-chart-fall: #16805a;
+  --stock-chart-ma5: #876600;
+  --stock-chart-ma10: #306fc3;
+  --stock-chart-ma20: #a438a0;
+  --stock-chart-ma60: #147a80;
+  --stock-chart-crosshair: #697381;
+}
+
+html .terminal-shell .chart-panel .chart-heading {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+html .terminal-shell .chart-panel .panel-title h3 { color: var(--stock-chart-text); }
+html .terminal-shell .chart-panel .panel-title p { color: var(--stock-chart-muted); font-size: 13px; }
+html .terminal-shell .chart-panel .timeframe-tabs {
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 2px;
+  padding: 3px;
+  border-color: var(--stock-chart-border);
+  background: var(--stock-chart-bg);
+  border-radius: 6px;
+}
+
+html .terminal-shell .chart-panel :is(.timeframe-tabs,.range-tabs,.chart-density,.adjustment-tabs) button {
+  color: var(--stock-chart-muted);
+  background: transparent;
+  border-color: transparent;
+  border-radius: 4px;
+  padding: 6px 9px;
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow: none;
+}
+
+html .terminal-shell .chart-panel :is(.timeframe-tabs,.range-tabs,.chart-density,.adjustment-tabs) button.active {
+  color: var(--stock-chart-rise);
+  background: var(--stock-chart-bg);
+  border-color: var(--stock-chart-border);
+  font-weight: 700;
+  box-shadow: inset 0 -2px var(--stock-chart-rise);
+}
+
+html .terminal-shell .chart-panel :is(.timeframe-tabs,.range-tabs,.chart-density,.adjustment-tabs) button:hover {
+  color: var(--stock-chart-text);
+  background: var(--stock-chart-toolbar);
+}
+
+html .terminal-shell .chart-panel :is(.chart-control-row,.indicator-selector) {
+  border-color: var(--stock-chart-border);
+  gap: 8px 14px;
+  padding: 10px 0;
+}
+
+html .terminal-shell .chart-panel :is(.range-tabs,.chart-density,.adjustment-tabs) { flex-wrap: wrap; }
+html .terminal-shell .chart-panel :is(.range-tabs,.chart-density,.adjustment-tabs) > span,
+html .terminal-shell .chart-panel .indicator-selector em { color: var(--stock-chart-muted); font-size: 13px; }
+html .terminal-shell .chart-panel .indicator-selector > .indicator-selector-label {
+  padding: 0;
+  color: var(--stock-chart-muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+html .terminal-shell .chart-panel .indicator-selector button {
+  min-height: 33px;
+  padding: 5px 9px;
+  color: var(--stock-chart-muted);
+  background: var(--stock-chart-bg);
+  border-color: var(--stock-chart-border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+html .terminal-shell .chart-panel .indicator-selector button.active {
+  color: var(--stock-chart-text);
+  border-color: var(--stock-chart-muted);
+  background: var(--stock-chart-bg);
+  box-shadow: none;
+}
+
+html .terminal-shell .chart-panel .indicator-selector button.active svg { color: var(--stock-chart-rise); stroke-width: 2; }
+html .terminal-shell .chart-panel .indicator-selector button:hover { color: var(--stock-chart-text); border-color: var(--stock-chart-text); }
+html .terminal-shell .chart-panel button:focus-visible,
+html .terminal-shell .chart-panel input:focus-visible { outline: 2px solid var(--stock-chart-ma10); outline-offset: 3px; }
+
+html .terminal-shell .chart-panel .chart-window-slider { padding: 6px 0 12px; color: var(--stock-chart-muted); }
+html .terminal-shell .chart-panel .chart-window-slider :is(span,small,button) { font-size: 13px; color: var(--stock-chart-muted); }
+html .terminal-shell .chart-panel .chart-window-slider button { background: var(--stock-chart-bg); border-color: var(--stock-chart-border); }
+html .terminal-shell .chart-panel .chart-window-slider input { accent-color: var(--stock-chart-rise); }
+
+html .terminal-shell .chart-panel .kline-composite-chart {
+  /* Right-side space keeps SVG price labels legible without changing data coordinates. */
+  padding: 0 46px 6px 10px;
+  border: 1px solid var(--stock-chart-border);
+  border-radius: 4px;
+  background: var(--stock-chart-bg);
+  box-shadow: none;
+}
+
+html .terminal-shell .chart-panel .chart-wrap { height: auto; padding-bottom: 0; background: var(--stock-chart-bg); }
+html .terminal-shell .chart-panel .chart-wrap > svg { display: block; width: 100%; height: 300px; overflow: visible; }
+html .terminal-shell .chart-panel .chart-ohlc-strip {
+  min-height: 41px;
+  margin-right: -36px;
+  gap: 5px 14px;
+  padding: 8px 0 4px;
+  flex-wrap: wrap;
+  overflow: visible;
+  white-space: nowrap;
+  color: var(--stock-chart-muted);
+  font-size: 13px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
+html .terminal-shell .chart-panel .chart-ohlc-strip :is(b,em) { color: var(--stock-chart-text); }
+html .terminal-shell .chart-panel .chart-ohlc-strip .red { color: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .chart-ohlc-strip .green { color: var(--stock-chart-fall); }
+html .terminal-shell .chart-panel .chart-axis-text {
+  fill: var(--stock-chart-muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+html .terminal-shell .chart-panel .grid-line { stroke: var(--stock-chart-grid); stroke-width: 1; }
+html .terminal-shell .chart-panel .k-rise :is(.wick,.candle-body) { stroke: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .k-rise .candle-body { fill: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .k-fall :is(.wick,.candle-body) { stroke: var(--stock-chart-fall); }
+html .terminal-shell .chart-panel .k-fall .candle-body { fill: var(--stock-chart-fall); }
+html .terminal-shell .chart-panel :is(.wick,.candle-body) { stroke-width: 1; }
+html .terminal-shell .chart-panel :is(.ma5-path,.ma10-path,.ma20-path,.ma60-path) { stroke-width: 1.3; opacity: 1; }
+html .terminal-shell .chart-panel .ma5-path { stroke: var(--stock-chart-ma5); }
+html .terminal-shell .chart-panel .ma10-path { stroke: var(--stock-chart-ma10); }
+html .terminal-shell .chart-panel .ma20-path { stroke: var(--stock-chart-ma20); }
+html .terminal-shell .chart-panel .ma60-path { stroke: var(--stock-chart-ma60); }
+html .terminal-shell .chart-panel :is(.boll-upper-path,.boll-lower-path) { stroke: var(--stock-chart-ma20); stroke-width: 1.2; opacity: 1; }
+html .terminal-shell .chart-panel .boll-mid-path { stroke: var(--stock-chart-ma5); stroke-width: 1.2; opacity: 1; }
+html .terminal-shell .chart-panel .support-line { stroke: var(--stock-chart-rise); stroke-width: 1; opacity: .8; }
+html .terminal-shell .chart-panel .event-zone { fill: var(--stock-chart-rise); fill-opacity: .07; stroke: var(--stock-chart-rise); stroke-opacity: .3; }
+html .terminal-shell .chart-panel .chart-crosshair { stroke: var(--stock-chart-crosshair); stroke-width: 1; }
+html .terminal-shell .chart-panel .chart-crosshair-dot { fill: var(--stock-chart-text); stroke: var(--stock-chart-bg); stroke-width: 1.5; }
+html .terminal-shell .chart-panel .support-offscale { color: var(--stock-chart-rise); background: var(--stock-chart-bg); border-color: var(--stock-chart-border); font-size: 12px; }
+
+html .terminal-shell .chart-panel .chart-labels {
+  position: static;
+  padding: 3px 0 8px;
+  color: var(--stock-chart-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+
+html .terminal-shell .chart-panel .indicator-stack { gap: 0; margin-top: 0; }
+html .terminal-shell .chart-panel .indicator-chart {
+  border-color: var(--stock-chart-border);
+  background: var(--stock-chart-bg);
+  padding-top: 7px;
+}
+
+html .terminal-shell .chart-panel .indicator-chart-head { min-height: 26px; gap: 7px 16px; flex-wrap: wrap; font-variant-numeric: tabular-nums; }
+html .terminal-shell .chart-panel .indicator-chart-head > b { color: var(--stock-chart-muted); font-size: 13px; font-weight: 500; }
+html .terminal-shell .chart-panel .indicator-chart-head span { font-size: 13px; }
+html .terminal-shell .chart-panel .indicator-chart > svg { height: 100px; }
+html .terminal-shell .chart-panel .indicator-zero { stroke: var(--stock-chart-grid); }
+html .terminal-shell .chart-panel .indicator-reference { stroke: var(--stock-chart-grid); stroke-width: 1; }
+html .terminal-shell .chart-panel .indicator-bar.up { fill: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .indicator-bar.down { fill: var(--stock-chart-fall); }
+html .terminal-shell .chart-panel .indicator-yellow { color: var(--stock-chart-ma5); stroke: var(--stock-chart-ma5); }
+html .terminal-shell .chart-panel .indicator-blue { color: var(--stock-chart-ma10); stroke: var(--stock-chart-ma10); }
+html .terminal-shell .chart-panel .indicator-purple { color: var(--stock-chart-ma20); stroke: var(--stock-chart-ma20); }
+
+html .terminal-shell .chart-panel .chart-legend {
+  flex-wrap: wrap;
+  gap: 7px 17px;
+  padding-top: 12px;
+  border: 0;
+  color: var(--stock-chart-muted);
+  font-size: 13px;
+}
+
+html .terminal-shell .chart-panel .chart-legend .rise { background: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .chart-legend .fall { background: var(--stock-chart-fall); }
+html .terminal-shell .chart-panel .chart-legend .ma5 { background: var(--stock-chart-ma5); }
+html .terminal-shell .chart-panel .chart-legend .ma10 { background: var(--stock-chart-ma10); }
+html .terminal-shell .chart-panel .chart-legend :is(.ma20,.boll) { background: var(--stock-chart-ma20); }
+html .terminal-shell .chart-panel .chart-legend .ma60 { background: var(--stock-chart-ma60); }
+html .terminal-shell .chart-panel .chart-legend .support { background: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel :is(.chart-note,.chart-error,.empty-inline) { color: var(--stock-chart-muted); font-size: 13px; }
+html .terminal-shell .chart-panel .chart-loading { opacity: .7; }
+
+@media (max-width: 900px) {
+  html .terminal-shell .chart-panel .chart-wrap > svg { height: 280px; }
+  html .terminal-shell .chart-panel .indicator-selector em { margin-left: 0; width: 100%; }
+}
+
+@media (max-width: 560px) {
+  html .terminal-shell .chart-panel .kline-composite-chart { padding-right: 32px; padding-left: 4px; }
+  html .terminal-shell .chart-panel .chart-ohlc-strip { margin-right: -24px; gap: 4px 12px; }
+  html .terminal-shell .chart-panel .chart-wrap > svg { height: 250px; }
+  html .terminal-shell .chart-panel .chart-window-slider { grid-template-columns: auto minmax(80px,1fr) auto; }
+  html .terminal-shell .chart-panel .chart-window-slider > small { display: none; }
+  html .terminal-shell .chart-panel .chart-labels { font-size: 11px; }
+}
