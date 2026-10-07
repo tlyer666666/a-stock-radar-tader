@@ -48,7 +48,7 @@ test('job deadline interrupts HTTP Retry-After and prevents the next physical at
   await assert.rejects(job, { code: 'JOB_TIMEOUT' }); await job.drained;
   assert.equal(calls, 1); assert.equal(getHttpDiagnostics().active, 0); assert.equal(jobs.getDiagnostics().active, 0);
 });
-test('job cancellation returns promptly while a real SIGTERM subprocess keeps both job and transport leases until close', async () => {
+test('job cancellation returns promptly while a real SIGTERM subprocess keeps both job and transport leases until close', { skip: process.platform === 'win32' }, async () => {
   const jobs = createJobLifecycle({ maxActive: 1 }), ready = deferred(); let child, closed = false;
   const job = jobs.subscribe(request('child'), ctx => ctx.track(() => runWithTransportSlot(() => new Promise(resolve => {
     child = spawn(process.execPath, ['-e', "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),100));process.stdout.write('ready');setInterval(()=>{},1000);"], { signal: ctx.signal });

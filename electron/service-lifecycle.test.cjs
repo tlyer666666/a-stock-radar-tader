@@ -229,7 +229,7 @@ test('news and auxiliary provider shutdown cancels their own active HTTP calls',
   }
 });
 
-test('cancelled curl fallback retains its transport slot until the real subprocess closes', async () => {
+test('cancelled curl fallback retains its transport slot until the real subprocess closes', { skip: process.platform === 'win32' }, async () => {
   const childProcess = require('node:child_process');
   const transport = require('./http-client.cjs');
   const ready = deferred(), closed = deferred();
