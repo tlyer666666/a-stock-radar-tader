@@ -84,7 +84,7 @@ test('short CLI exercises real HTTP bodies, aborts, failures, worker and cache, 
   assert.equal(fs.readdirSync(output).some(name => name.includes('.tmp-')), false);
 });
 
-test('SIGTERM writes interrupted evidence and physically drains instead of reporting an eight-hour pass', { timeout: 15000 }, async t => {
+test('SIGTERM writes interrupted evidence and physically drains instead of reporting an eight-hour pass', { timeout: 15000, skip: process.platform === 'win32' }, async t => {
   const output = path.join(temporary(t), 'run');
   const run = launch(output, ['--duration-ms', '30000']);
   t.after(() => { if (run.child.exitCode === null) run.child.kill('SIGTERM'); });
