@@ -11,6 +11,12 @@ export function shanghaiDateTag(date = new Date()): string {
   return shanghaiDateFormatter.format(date);
 }
 
+/** Use the snapshot timestamp's trading day, or the current Shanghai day when absent/invalid. */
+export function shanghaiDateTagFrom(value: string | undefined, fallback = new Date()): string {
+  const parsed = value ? new Date(value) : fallback;
+  return shanghaiDateTag(Number.isFinite(parsed.getTime()) ? parsed : fallback);
+}
+
 export function shiftShanghaiDate(years: number, date = new Date()): string {
   const currentTag = shanghaiDateTag(date);
   const [year = 1970, month = 1, day = 1] = currentTag.split("-").map(Number);

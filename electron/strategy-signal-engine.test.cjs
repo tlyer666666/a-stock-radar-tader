@@ -164,7 +164,7 @@ test("all eighteen strategies replay identically with a shared feature timeline"
   }
 });
 
-test("returns eighteen auditable strategy groups and refuses current matches without OHLCV history", () => {
+test("returns thirty-two auditable strategy groups and refuses current matches without OHLCV history", () => {
   const candidates = [
     {
       code: "600001",
@@ -301,7 +301,7 @@ test("returns eighteen auditable strategy groups and refuses current matches wit
 
   assert.equal(report.generatedAt, "2026-07-30T15:00:00+08:00");
   assert.equal(report.source, "provided_ohlcv_replay");
-  assert.equal(report.strategies.length, 18);
+  assert.equal(report.strategies.length, 32);
   assert.deepEqual(
     report.strategies.map((strategy) => strategy.id),
     STRATEGY_DEFINITIONS.map((strategy) => strategy.id)

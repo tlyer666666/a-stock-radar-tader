@@ -112,7 +112,7 @@ type Settings = {
 };
 
 interface Window {
-  stockApi: {
+  stockApi: import("./sectorExplorerTypes").SectorExplorerApi & {
     search(query: string): Promise<Security[]>;
     analyze(security: Security | string, options?: { forceRefresh?: boolean }): Promise<any>;
     getQuoteSnapshot(security: Security | string): Promise<any>;
@@ -153,7 +153,9 @@ interface Window {
     getNewsFeed(input: Record<string, any>): Promise<any>;
     refreshNewsFeed(input: Record<string, any>): Promise<any>;
     getStrategyDefinitions(): Promise<any[] | { strategies?: any[]; definitions?: any[] }>;
+    cancelServiceJob(requestId: string): Promise<boolean>;
     runPortfolioBacktest(options: {
+      requestId?: string;
       securities: Security[];
       universe: string[];
       strategyIds: string[];
@@ -180,6 +182,7 @@ interface Window {
     runBacktest(
       security: Security | string,
       options?: {
+        requestId?: string;
         startDate?: string;
         customEntryPrice?: number | null;
         lookbackBars?: number;
@@ -204,6 +207,7 @@ interface Window {
       }
     ): Promise<any>;
     scanStrategySignals(options?: {
+      requestId?: string;
       strategyIds?: string[];
       lookbackDays?: number;
       historyBars?: number;
@@ -216,6 +220,9 @@ interface Window {
       walkForwardFolds?: number;
       refresh?: boolean;
     }): Promise<any>;
+    startTrendScan(options?: import("./trendScreenerTypes").TrendScanRequest): Promise<import("./trendScreenerTypes").TrendScanStatus>;
+    getTrendScan(): Promise<import("./trendScreenerTypes").TrendScanStatus>;
+    cancelTrendScan(): Promise<import("./trendScreenerTypes").TrendScanStatus>;
     getWatchlist(): Promise<WatchItem[]>;
     saveWatchlist(items: WatchItem[]): Promise<WatchItem[]>;
     getHoldings(): Promise<HoldingItem[]>;

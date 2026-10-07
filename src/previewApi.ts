@@ -1,3 +1,6 @@
+import signalCombinationCatalog from "../config/strategy-signal-combinations.json";
+import { createTrendPreviewStatus, createConfiguredTrendPreviewStatus } from "./trendScreenerPreview";
+
 const previewShanghaiDate = (date = new Date()) => new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
   year: "numeric",
@@ -61,6 +64,14 @@ const previewVerifiedStrategies = [
   components: [],
   voteRule: "单策略逐日命中"
 }));
+
+const previewExtraCombinations = signalCombinationCatalog.map(entry => ({
+  ...entry, type: "composite" as const,
+  components: ["recent_limit_trend_gate", `${entry.id}:shape`, entry.technicalId],
+  componentNames: ["近期涨停上升趋势", entry.shapeLabel, entry.technicalLabel],
+  voteRule: "共同趋势门槛、涨停后形态与技术确认全部成立"
+}));
+const previewExtraIds = new Set(previewExtraCombinations.map(entry => entry.id));
 
 const defaultPreviewSettings: Settings = {
   riskProfile: "balanced",
@@ -526,6 +537,7 @@ const buildPreviewProfessionalReview = () => {
 };
 
 export function createPreviewApi(): Window["stockApi"] {
+  let trendState = createTrendPreviewStatus();
   return {
     async search(query) {
       const keyword = String(query || "").trim().toLowerCase();
@@ -648,6 +660,14 @@ export function createPreviewApi(): Window["stockApi"] {
         ]
       };
     },
+    async getSectorCatalog() {
+      return { status: "unavailable" as const, entries: [], fetchedAt: new Date().toISOString(), asOf: null,
+        sources: [], warnings: ["浏览器预览不连接同花顺分类数据，请在桌面版读取真实目录。"],
+        coverage: { loaded: 0, declared: null, excluded: 0, invalid: 0, pagesLoaded: 0, pagesTotal: null, complete: false, scope: "预览目录未连接" } };
+    },
+    async getSectorClassifications() { throw new Error("浏览器预览没有真实行业分类，请使用桌面版。"); },
+    async getSectorDetail() { throw new Error("浏览器预览没有真实板块成分，请使用桌面版。"); },
+    async cancelSectorRequest() { return { cancelled: false }; },
     async analyzeSector(sector) {
       return {
         ...(sector || {}),
@@ -667,8 +687,9 @@ export function createPreviewApi(): Window["stockApi"] {
       return buildPreviewNews(input);
     },
     async getStrategyDefinitions() {
-      return previewVerifiedStrategies.map((item) => ({ ...item }));
+      return [...previewVerifiedStrategies, ...previewExtraCombinations].map((item) => ({ ...item }));
     },
+    async cancelServiceJob(_requestId) { return false; },
     async runBacktest(security, options = {}) {
       const resolved = resolveSecurity(security);
       const settings = { ...previewSettings, ...(options.settings || {}) };
@@ -1133,7 +1154,7 @@ export function createPreviewApi(): Window["stockApi"] {
           risk: "二次接力处于更高价格区间，筹码松动或板块降温会放大高位回撤。"
         }
       ];
-      const definitions = [...baseDefinitions, ...compositeDefinitions];
+      const definitions = [...baseDefinitions, ...compositeDefinitions, ...previewExtraCombinations];
       const previewComponentNames = new Map(
         baseDefinitions.map((definition) => [definition.id, definition.name])
       );
@@ -1143,17 +1164,18 @@ export function createPreviewApi(): Window["stockApi"] {
       ]);
       const auditedStrategies = definitions.map((definition, index) => {
         const composite = definition.type === "composite";
+        const newCombination = previewExtraIds.has(definition.id);
         const accepted =
           composite && acceptedCompositeIds.has(definition.id);
         const insufficient =
           !accepted &&
-          (definition.id === "n_relay_resonance" ||
+          (newCombination || definition.id === "n_relay_resonance" ||
             (!composite && index % 3 === 1));
-        const sampleCount = accepted ? 108 + index : insufficient ? 18 : 60 + index * 3;
-        const outOfSampleCount = accepted ? 31 : insufficient ? 5 : 18 + index;
+        const sampleCount = newCombination ? 0 : accepted ? 108 + index : insufficient ? 18 : 60 + index * 3;
+        const outOfSampleCount = newCombination ? 0 : accepted ? 31 : insufficient ? 5 : 18 + index;
         const passRate = accepted ? 1 : insufficient ? 0 : 1 / 3;
         const currentStocks = stocks
-          .filter((_, stockIndex) => stockIndex % 3 === index % 3)
+          .filter((_, stockIndex) => !newCombination && stockIndex % 3 === index % 3)
           .map((stock, stockIndex) => {
             if (!composite) return stock;
             const components = "components" in definition
@@ -1341,7 +1363,7 @@ export function createPreviewApi(): Window["stockApi"] {
         benchmarkBars: 720,
         publishedStrategyCount: publishedStrategies.length,
         baseStrategyCount: baseDefinitions.length,
-        compositeStrategyCount: compositeDefinitions.length,
+        compositeStrategyCount: compositeDefinitions.length + previewExtraCombinations.length,
         publishedBaseCount: 0,
         publishedCompositeCount: publishedStrategies.length,
         auditedStrategyCount: auditedStrategies.length,
@@ -1362,7 +1384,7 @@ export function createPreviewApi(): Window["stockApi"] {
         selectionBiasWarning:
           "预览只用于检查界面；桌面版会明确披露当前候选选择偏差与幸存者偏差。",
         multipleTestingWarning:
-          "同时比较18套策略（14套基础、4套组合共振）会增加偶然拟合风险，桌面版会提高收益与胜率发布门槛。",
+          `同时比较${definitions.length}套策略（${baseDefinitions.length}套基础、${compositeDefinitions.length + previewExtraCombinations.length}套组合共振）会增加偶然拟合风险，桌面版会提高收益与胜率发布门槛。`,
         publicationPolicy:
           "只有总样本、样本外、走步窗口、交易成本和基准证据全部达标的策略才发布股票。",
         dataRange: { from: "2023-09-01", to: "2026-07-23" },
@@ -1382,6 +1404,9 @@ export function createPreviewApi(): Window["stockApi"] {
     async getWatchlist() {
       return [...previewWatchlist];
     },
+    async startTrendScan(options) { trendState = await createConfiguredTrendPreviewStatus(options); return structuredClone(trendState); },
+    async getTrendScan() { return structuredClone(trendState); },
+    async cancelTrendScan() { return structuredClone(trendState); },
     async saveWatchlist(items) {
       previewWatchlist = Array.isArray(items) ? [...items] : [];
       return [...previewWatchlist];

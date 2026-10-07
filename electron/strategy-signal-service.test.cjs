@@ -819,3 +819,40 @@ test("optimized portfolio is published only with independent universe, terminal 
     /开发期基准可比交易不足：119\/120/
   );
 });
+
+// Keep actual service/job/cache code; replace only external market loading.
+function isolatedScanService(loader) {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const filename = path.join(__dirname, 'services.cjs'), isolated = {exports:{}};
+  vm.runInNewContext(fs.readFileSync(filename,'utf8')+'\nloadStrategySignals = syntheticLoader;\n', {
+    module:isolated,exports:isolated.exports,__dirname,__filename:filename, require:require('node:module').createRequire(filename),
+    process,console,URL,DOMException,AbortController,AbortSignal,TextDecoder,setTimeout,clearTimeout,setImmediate,queueMicrotask,Buffer,
+    syntheticLoader:loader,fetch:async()=>{throw Error('network prohibited');}
+  }, {filename});
+  return isolated.exports;
+}
+test('forced scan bypasses a concurrent ordinary cached response',async()=>{
+  let calls=0; const api=isolatedScanService(async(_options,runtime)=>({revision:++calls,forceRefresh:runtime.forceRefresh}));
+  try {
+    const seed=api.scanStrategySignals(); await seed; await seed.drained;
+    const normal=api.scanStrategySignals(), forced=api.scanStrategySignals({refresh:true});
+    const [a,b]=await Promise.all([normal,forced]); await normal.drained; await forced.drained;
+    assert.equal(a.revision,1); assert.equal(b.revision,2); assert.equal(b.forceRefresh,true);
+  } finally {await api.shutdownServiceResources();}
+});
+test('late ordinary scan cannot overwrite a newer forced scan cache',async()=>{
+  let releaseNormal;const api=isolatedScanService(async(_options,runtime)=>runtime.forceRefresh?{revision:2}:new Promise(resolve=>{releaseNormal=()=>resolve({revision:1});}));
+  let normal;
+  try {
+    normal=api.scanStrategySignals();
+    await new Promise(resolve=>setImmediate(resolve));
+    const forced=api.scanStrategySignals({refresh:true});
+    // A joined stale flight would stay pending until the ordinary loader completes.
+    const observed=forced.then(value=>({done:true,value}));
+    await new Promise(resolve=>setImmediate(resolve));
+    releaseNormal();
+    const fresh=await observed;await forced.drained;await normal;await normal.drained;
+    assert.equal(fresh.value.revision,2);
+    const after=api.scanStrategySignals();assert.equal((await after).revision,2);await after.drained;
+  } finally {releaseNormal?.();await normal?.drained;await api.shutdownServiceResources();}
+});

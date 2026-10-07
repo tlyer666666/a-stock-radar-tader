@@ -16,7 +16,7 @@ function roundPrice(value) {
 
 function priceLimitRate(code, name = "") {
   if (/ST|\*ST/i.test(name)) return 0.05;
-  if (/^(300|301|688|689)/.test(code)) return 0.2;
+  if (/^(300|301|302|688|689)/.test(code)) return 0.2;
   if (/^(8|4|9)/.test(code)) return 0.3;
   return 0.1;
 }

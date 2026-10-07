@@ -1,0 +1,36 @@
+/* The dedicated trend workspace has its own responsive application shell. */
+body:has([data-workspace="trend-screener"]) { min-width: 700px; }
+[data-workspace="trend-screener"] .topbar { flex: 0 0 66px; gap: 18px; }
+[data-workspace="trend-screener"] .search-box { width: min(390px, 34vw); }
+[data-workspace="trend-screener"] .search-box input { width: 100%; min-width: 0; }
+.trend-header-rule { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.trend-sidebar-note { display: grid; gap: 7px; }
+.trend-sidebar-note svg { color: var(--green); }
+.trend-sidebar-note strong { font-size: 13px; }
+.trend-sidebar-note span, .trend-sidebar-note small { color: var(--muted); font-size: 11px; line-height: 1.6; }
+@media (max-width: 1100px) {
+  .app-shell[data-workspace="trend-screener"] { grid-template-columns: 188px minmax(0,1fr); }
+  [data-workspace="trend-screener"] .sidebar { padding-left: 12px; padding-right: 12px; }
+  [data-workspace="trend-screener"] .brand { gap: 8px; }
+  [data-workspace="trend-screener"] .brand strong { font-size: 16px !important; }
+  [data-workspace="trend-screener"] .brand span { font-size: 8px !important; letter-spacing: 0; }
+  [data-workspace="trend-screener"] .topbar { padding: 0 18px; }
+  [data-workspace="trend-screener"] .trend-header-rule { display: none; }
+  [data-workspace="trend-screener"] .main > .page { padding: 20px 18px 40px; }
+}
+@media (max-width: 820px) {
+  .app-shell[data-workspace="trend-screener"] { grid-template-columns: 68px minmax(0,1fr); }
+  [data-workspace="trend-screener"] .sidebar { padding: 18px 8px; }
+  [data-workspace="trend-screener"] .brand { padding: 0 5px 15px; }
+  [data-workspace="trend-screener"] .brand > div:last-child,
+  [data-workspace="trend-screener"] .nav-caption,
+  [data-workspace="trend-screener"] .nav-item span,
+  [data-workspace="trend-screener"] .nav-item em,
+  [data-workspace="trend-screener"] .sidebar-status,
+  [data-workspace="trend-screener"] .version { display: none; }
+  [data-workspace="trend-screener"] .nav-item { justify-content: center; padding: 0; }
+  [data-workspace="trend-screener"] .search-box { flex: 1; width: auto; }
+  [data-workspace="trend-screener"] .theme-switch button span { display: none; }
+}
+
+[data-workspace="trend-screener"] .brand span { font-size: 9px !important; letter-spacing: 0; white-space: nowrap; }

@@ -133,7 +133,9 @@ function migrateLegacyStoredSecrets(settings, secretKeys, storage) {
     ? settings
     : {};
   const next = { ...input };
-  const encryptionAvailable = safeStorageIsAvailable(storage);
+  // Even an availability probe may initialize the OS keychain. Public settings
+  // reads need no protected storage when there is no legacy secret to migrate.
+  let encryptionAvailable;
   const migratedKeys = [];
   const discardedKeys = [];
   for (const key of Array.isArray(secretKeys) ? secretKeys : []) {
@@ -141,6 +143,9 @@ function migrateLegacyStoredSecrets(settings, secretKeys, storage) {
     if (typeof stored !== "string" || !stored || stored.startsWith("safe:")) continue;
     const plaintext = stored.startsWith("plain:") ? stored.slice(6) : stored;
     migratedKeys.push(key);
+    if (plaintext && encryptionAvailable === undefined) {
+      encryptionAvailable = safeStorageIsAvailable(storage);
+    }
     if (!plaintext || !encryptionAvailable) {
       next[key] = "";
       if (plaintext) discardedKeys.push(key);

@@ -1,0 +1,185 @@
+/* Research pages: result-first terminal layout. No selectors escape these views. */
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) {
+  min-width: 0;
+  max-width: 100%;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+}
+html .terminal-shell .trend-screener.page { padding: 0; }
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) [hidden] { display: none !important; }
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) :is(button, input, select, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--terminal-accent);
+  outline-offset: 2px;
+}
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) :is(button, input, select) { font-size: 14px; border-radius: 3px; }
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) :is(.panel, .trend-workbench, .trend-candidate, .trend-strategy-settings, .trend-gate, .trend-status-card, .trend-rule-note, .trend-example) {
+  border-radius: 4px;
+  box-shadow: none;
+  background-image: none;
+}
+html .terminal-shell :is(.trend-header, .strategy-signals-view > .page-heading) {
+  align-items: center;
+  min-height: 0;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 0 0 8px;
+}
+html .terminal-shell :is(.trend-header h1, .strategy-signals-view .page-heading h1) { margin: 0; font-size: 18px !important; line-height: 1.4; letter-spacing: 0; }
+html .terminal-shell .trend-header-actions { gap: 6px; max-width: none; flex-wrap: wrap; }
+html .terminal-shell .trend-btn { min-height: 30px; padding: 5px 9px; gap: 5px; }
+html .terminal-shell :is(.trend-btn-small, .trend-text-button) { font-size: 12px; }
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) .research-disclosure {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--terminal-line);
+  border-radius: 3px;
+  background: var(--terminal-panel);
+}
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) .research-disclosure > summary {
+  padding: 7px 10px;
+  margin: 0;
+  color: var(--terminal-text);
+  font-size: 14px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) .research-disclosure > summary small { margin-left: 12px; color: var(--terminal-muted); font-size: 12px; }
+html .terminal-shell :is(.trend-screener, .strategy-signals-view) .research-disclosure[open] > summary { border-bottom: 1px solid var(--terminal-line); }
+html .terminal-shell .trend-scan-configuration { margin-bottom: 8px; }
+html .terminal-shell .research-command-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 18px; margin: 8px 0; padding: 7px 10px; border: 1px solid var(--terminal-line); background: var(--terminal-panel); font-size: 12px; color: var(--terminal-muted); }
+html .terminal-shell .research-command-bar strong { color: var(--terminal-text); font-size: 14px; font-weight: 600; }
+html .terminal-shell .trend-terminal-layout { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+html .terminal-shell .trend-primary-column { gap: 8px; grid-column: auto; grid-row: auto; }
+html .terminal-shell .trend-notice, html .terminal-shell .trend-error { padding: 7px 10px; margin: 0 0 8px; border-radius: 3px; background: var(--terminal-panel); }
+html .terminal-shell .trend-notice :is(strong, span) { font-size: 12px; }
+html .terminal-shell .trend-workbench-head { padding: 5px 10px; gap: 8px; min-height: 0; }
+html .terminal-shell .trend-main-tabs { gap: 3px; }
+html .terminal-shell .trend-main-tabs button { padding: 6px 9px; font-size: 14px; }
+html .terminal-shell .trend-results-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; }
+html .terminal-shell .trend-result-strategy { min-width: 175px; flex-direction: row; align-items: center; gap: 6px; }
+html .terminal-shell .trend-result-strategy > span { flex-shrink: 0; font-size: 12px; }
+html .terminal-shell .trend-result-strategy select { height: 30px; max-width: 215px; padding: 3px 7px; }
+html .terminal-shell .trend-filters { flex: 0 1 auto; flex-wrap: wrap; gap: 3px; }
+html .terminal-shell .trend-filters button { padding: 5px 7px; font-size: 12px; }
+html .terminal-shell .trend-search { flex: 1 1 180px; min-width: 160px; max-width: 260px; margin-left: auto; height: 30px; }
+html .terminal-shell .trend-search input { width: 100%; font-size: 14px; }
+html .terminal-shell .trend-results-context { padding: 6px 10px; gap: 5px 14px; flex-direction: row; flex-wrap: wrap; font-size: 12px; }
+html .terminal-shell .trend-results-context p, html .terminal-shell .trend-plan-intro { font-size: 12px; }
+html .terminal-shell .trend-plan-intro { flex: 1 1 360px; margin: 0; }
+html .terminal-shell .trend-candidate-list { display: block; padding: 0; }
+html .terminal-shell .trend-result-scroll { max-width: 100%; overflow-x: auto; scrollbar-width: thin; }
+html .terminal-shell .trend-result-table { border-collapse: collapse; table-layout: auto; width: 100%; min-width: 920px; font-size: 14px; text-align: left; }
+html .terminal-shell .trend-result-table th, html .terminal-shell .trend-result-table td { padding: 7px 10px; border-bottom: 1px solid var(--terminal-line); vertical-align: middle; }
+html .terminal-shell .trend-result-table thead th { background: var(--terminal-elevated); color: var(--terminal-muted); font-size: 12px; font-weight: 500; white-space: nowrap; }
+html .terminal-shell .trend-result-row > th { min-width: 180px; font-weight: 500; }
+html .terminal-shell .trend-result-row > th :is(b, small) { display: block; }
+html .terminal-shell .trend-result-row > th b { font-size: 14px; font-weight: 600; }
+html .terminal-shell .trend-result-row small { font-size: 12px; color: var(--terminal-muted); }
+html .terminal-shell .trend-result-row > td { white-space: nowrap; }
+html .terminal-shell .trend-result-row:hover { background: var(--terminal-elevated); }
+html .terminal-shell .trend-numeric { text-align: right; }
+html .terminal-shell .trend-result-details > td { padding: 8px; background: var(--terminal-bg); white-space: normal; }
+html .terminal-shell .trend-result-details .trend-candidate { margin: 0; }
+html .terminal-shell .trend-result-details .trend-candidate :is(.trend-candidate-top, .trend-candidate-body, .trend-candidate-actions) { padding: 10px 12px; }
+html .terminal-shell .trend-result-details .trend-candidate-top h3 { font-size: 16px; }
+html .terminal-shell .trend-result-details .trend-candidate :is(small, .trend-limit-note, .trend-risk-caption, .trend-calc-description, .trend-check, .trend-kicker) { font-size: 12px; }
+html .terminal-shell .trend-empty { min-height: 160px; padding: 24px 12px; }
+html .terminal-shell .trend-support-column { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr); gap: 8px; padding: 8px; }
+html .terminal-shell .trend-support-column > .trend-diagnostics, html .terminal-shell .trend-support-column > .trend-diagnostic-legacy { grid-column: 1 / -1; }
+html .terminal-shell :is(.trend-gate, .trend-status-card) { padding: 12px; }
+html .terminal-shell .trend-strategy-settings { padding: 10px; margin: 0; border: 0; }
+html .terminal-shell .trend-strategy-settings h2 { font-size: 16px; }
+html .terminal-shell .trend-strategy-settings-head { margin-bottom: 8px; }
+html .terminal-shell .trend-strategy-mode { margin: 0 0 8px; }
+html .terminal-shell .trend-library-tools { margin: 0 0 8px; gap: 8px; }
+html .terminal-shell .trend-library-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--terminal-line); border-left: 1px solid var(--terminal-line); }
+html .terminal-shell .trend-library-choice { padding: 8px; border: 0; border-right: 1px solid var(--terminal-line); border-bottom: 1px solid var(--terminal-line); border-radius: 0; background: var(--terminal-panel); box-shadow: none; }
+html .terminal-shell .trend-library-choice.is-selected { background: var(--terminal-accent-soft); box-shadow: none; }
+html .terminal-shell .trend-library-choice b { font-size: 14px; }
+html .terminal-shell .trend-library-choice :is(small, p) { display: block; font-size: 12px; color: var(--terminal-muted); line-height: 1.5; }
+html .terminal-shell .trend-library-choice p { margin-top: 4px; }
+html .terminal-shell :is(.trend-library-reference, .trend-quality-parameters) { margin-top: 8px; padding: 8px 10px; border-radius: 3px; }
+html .terminal-shell .trend-strategy-current { margin-top: 8px; padding: 8px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+html .terminal-shell .trend-strategy-coverage { gap: 0; margin-top: 8px; }
+html .terminal-shell .trend-strategy-coverage > div { padding: 8px; border-radius: 0; }
+
+/* Signals use a narrow catalog and a wide result table; evidence stays below. */
+html .terminal-shell .strategy-signals-view > .page-heading > div:first-child { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
+html .terminal-shell .strategy-signals-view .signal-purpose-details { font-size: 12px; color: var(--terminal-muted); }
+html .terminal-shell .strategy-signals-view .signal-purpose-details summary { cursor: pointer; }
+html .terminal-shell .strategy-signals-view .signal-purpose-details[open] { flex-basis: 100%; }
+html .terminal-shell .strategy-signals-view .signal-purpose-details p { margin: 6px 0 0; font-size: 12px; }
+html .terminal-shell .strategy-signals-view > .warning-banner { padding: 8px 10px; margin-bottom: 8px; font-size: 12px; border-radius: 3px; background: var(--terminal-panel); }
+html .terminal-shell .strategy-signals-view > .signal-test-disclosure { margin-bottom: 8px; }
+html .terminal-shell .strategy-signals-view .signal-stock-tester { padding: 10px; border: 0; border-radius: 0; }
+html .terminal-shell .strategy-signals-view .terminal-strategy-workspace { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+html .terminal-shell .strategy-signals-view .terminal-strategy-primary { gap: 8px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary { grid-template-columns: repeat(5, minmax(0, 1fr)); border-radius: 3px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary > .panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: start; align-items: baseline; gap: 3px 8px; min-height: 0; padding: 7px 10px; border-radius: 0; grid-column: auto; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary > .panel:nth-last-child(-n+2) { grid-column: auto; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary svg { display: none; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary b { font-size: 16px; line-height: 1.4; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary span { font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-summary small { grid-column: 1 / -1; font-size: 12px; line-height: 1.4; }
+html .terminal-shell .strategy-signals-view .strategy-quality-standard { padding: 6px 10px; margin: 0; border-radius: 3px; font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-quality-standard summary { font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); align-items: start; gap: 8px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tabs { position: sticky; top: 0; max-height: calc(100dvh - 120px); border-radius: 3px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tabs > header { padding: 8px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tabs > header small, html .terminal-shell .strategy-signals-view .strategy-signal-tabs > footer { font-size: 12px; line-height: 1.45; }
+html .terminal-shell .strategy-signals-view .signal-catalog-filter { padding: 8px; }
+html .terminal-shell .strategy-signals-view .signal-catalog-filter :is(input, select) { padding: 5px 6px; font-size: 12px; border-radius: 3px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tab-list { display: block; max-height: none; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tab-list > button { min-height: 0; padding: 7px 8px; gap: 4px; border-radius: 0; grid-template-columns: minmax(0, 1fr) auto; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tab-list > button > svg { display: none; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tab-list > button.active { box-shadow: none; border-left: 2px solid var(--terminal-accent); }
+html .terminal-shell .strategy-signals-view .strategy-signal-tab-list small { font-size: 12px; line-height: 1.4; }
+html .terminal-shell .strategy-signals-view .strategy-signal-tab-section { padding: 7px 8px; font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-main { gap: 8px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-group-head { padding: 10px; gap: 0; }
+html .terminal-shell .strategy-signals-view .strategy-signal-group-copy { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-active-kicker { grid-column: 1; font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-title-line { grid-column: 1; grid-row: 1; }
+html .terminal-shell .strategy-signals-view .strategy-signal-group-head h2 { font-size: 16px; }
+html .terminal-shell .strategy-signals-view .strategy-signal-group-head p { grid-column: 1; grid-row: 2; margin: 0; font-size: 12px; line-height: 1.45; }
+html .terminal-shell .strategy-signals-view .strategy-group-backtest-btn { grid-column: 2; grid-row: 1 / 3; margin: 0; font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-stock-panel-title { padding: 8px 10px; align-items: center; }
+html .terminal-shell .strategy-signals-view .strategy-stock-panel-title small { font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-stock-table { overflow-x: auto; scrollbar-width: thin; }
+html .terminal-shell .strategy-signals-view .strategy-stock-row { grid-template-columns: 145px 115px 100px minmax(145px, 1fr) 175px; min-width: 730px; padding: 8px 10px; gap: 8px; font-size: 14px; }
+html .terminal-shell .strategy-signals-view .strategy-stock-row :is(small, em, button) { font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-stock-reasons { display: block; min-width: 0; font-size: 12px; }
+html .terminal-shell .strategy-signals-view .strategy-stock-reasons > summary { cursor: pointer; color: var(--terminal-text); }
+html .terminal-shell .strategy-signals-view .strategy-stock-reasons[open] > summary { margin-bottom: 6px; }
+html .terminal-shell .strategy-signals-view .strategy-evidence-disclosures { display: grid; gap: 8px; }
+html .terminal-shell .strategy-signals-view .signal-validation-details > .strategy-validation { margin: 8px; }
+html .terminal-shell .strategy-signals-view .signal-rule-details > .strategy-rule-panel { margin: 8px; }
+html .terminal-shell .strategy-signals-view .terminal-strategy-audit { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+html .terminal-shell .strategy-signals-view .strategy-validation-disclosure { border: 0; padding: 10px; }
+html .terminal-shell .strategy-signals-view .optimized-strategy-panel { border: 0; padding: 10px; }
+html .terminal-shell .strategy-signals-view .strategy-method-note { margin-top: 8px; padding: 8px 0; font-size: 12px; }
+
+@media (max-width: 1179px) {
+  html .terminal-shell .trend-library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  html .terminal-shell .strategy-signals-view .strategy-signal-layout { grid-template-columns: minmax(0, 1fr); }
+  html .terminal-shell .strategy-signals-view .strategy-signal-tabs { position: static; max-height: 300px; }
+  html .terminal-shell .strategy-signals-view .strategy-signal-tab-list { display: grid; grid-auto-flow: row; grid-auto-rows: max-content; align-content: start; grid-auto-columns: auto; grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: auto; }
+  html .terminal-shell .strategy-signals-view .strategy-signal-tab-section { display: flex; grid-column: 1 / -1; }
+  html .terminal-shell .strategy-signals-view .strategy-signal-tabs > footer { padding: 6px 8px; }
+}
+@media (max-width: 800px) {
+  html .terminal-shell .trend-header { align-items: center; flex-direction: row; flex-wrap: wrap; }
+  html .terminal-shell .trend-header-actions { justify-content: flex-start; }
+  html .terminal-shell .trend-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html .terminal-shell .trend-support-column { grid-template-columns: minmax(0, 1fr); }
+  html .terminal-shell .trend-search { max-width: none; }
+  html .terminal-shell .trend-result-strategy { flex: 0 1 auto; }
+  html .terminal-shell .trend-workbench-head > .trend-btn { margin: 0; }
+  html .terminal-shell .strategy-signals-view > .page-heading { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  html .terminal-shell .strategy-signals-view .strategy-signal-summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  html .terminal-shell .strategy-signals-view .strategy-signal-tab-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  html .terminal-shell .strategy-signals-view .terminal-strategy-audit { grid-template-columns: minmax(0, 1fr); }
+  html .terminal-shell .strategy-signals-view .strategy-signal-group-copy { grid-template-columns: minmax(0, 1fr); }
+  html .terminal-shell .strategy-signals-view .strategy-group-backtest-btn { grid-column: 1; grid-row: 3; justify-self: start; }
+}

@@ -2,9 +2,10 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { resolve } from "node:path";
 import packageJson from "./package.json";
+import { createBuildProvenancePlugin } from "./qa/build-provenance.cjs";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), createBuildProvenancePlugin({ root: __dirname, kind: "review" })],
   base: "./",
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),

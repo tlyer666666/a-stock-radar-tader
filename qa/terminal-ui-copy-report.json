@@ -1,0 +1,10 @@
+{
+  "checkedAt": "2026-09-30T10:05:25.373Z",
+  "sourceRoot": "/Users/fengjinwen/codex/a-stock-radar-tader/src",
+  "baselinePath": "/Users/fengjinwen/codex/a-stock-radar-tader/qa/terminal-ui-baseline.json",
+  "baselineOccurrences": 4002,
+  "currentOccurrences": 4002,
+  "passed": true,
+  "missing": [],
+  "added": []
+}
