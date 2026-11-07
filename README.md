@@ -1,191 +1,176 @@
-# A股雷达（A-Share Quant Radar）
+<div align="center">
+  <img src="assets/a-stock-radar-bull-v1.png" alt="A股雷达" width="112" />
 
-A 股研究用的桌面工具：多源行情、涨停与板块监控、策略信号与回测。Windows / macOS / Linux 都能跑，自选、持仓、模拟记录和回测历史都保存在本机。
+  <h1>A股雷达</h1>
 
-[![Latest release](https://img.shields.io/github/v/release/tlyer666666/a-stock-radar-tader?label=version)](https://github.com/tlyer666666/a-stock-radar-tader/releases/latest)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D4)
+  <p><strong>面向 A 股短线与波段研究的本地桌面工作台</strong><br/>涨停监控 · 策略选股 · AI 问股 · 专业复盘 · 回测</p>
+
+  <p>
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest"><img src="https://img.shields.io/github/v/release/tlyer666666/a-stock-radar-tader?style=flat-square&label=%E7%89%88%E6%9C%AC&color=E24B5F" alt="最新版本" /></a>
+    <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%20%7C%20macOS%20%7C%20Linux-0078D4?style=flat-square" alt="Windows、macOS、Linux" />
+    <img src="https://img.shields.io/badge/Electron-44-47848F?style=flat-square&logo=electron&logoColor=white" alt="Electron 44" />
+    <img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111827" alt="React 19" />
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/actions/workflows/qa.yml"><img src="https://img.shields.io/github/actions/workflow/status/tlyer666666/a-stock-radar-tader/qa.yml?branch=main&style=flat-square&label=QA" alt="QA 状态" /></a>
+  </p>
+
+  <p>
+    <a href="https://github.com/tlyer666666/a-stock-radar-tader/releases/latest"><b>下载最新版</b></a> ·
+    <a href="#界面预览">界面预览</a> ·
+    <a href="#主要功能">主要功能</a> ·
+    <a href="#从源码运行">从源码运行</a>
+  </p>
+</div>
+
+---
+
+A股雷达把每天盘后要做的几件事放在一个窗口里：看涨停和连板、按规则筛股、让 AI 对单只股票做一次完整分析、写复盘、回放策略。行情来自同花顺、东方财富等多个数据源，自选、持仓、对话记录和回测历史都只保存在你自己的电脑上。
 
 > [!IMPORTANT]
 > 本项目用于行情研究、策略验证与模拟记录，不构成投资建议，不提供收益保证，也不执行真实证券交易。
 
-## 功能
+## 界面预览
 
-- **涨停监控**：最近交易日涨停池、连板高度、封板质量、开板次数、成交额、换手率，以及 T+1 至 T+10 观察节点。
-- **个股分析**：实时报价、多周期 K 线、MA/BOLL/VOL/MACD/KDJ/RSI、量价结构、支撑阻力与 MRS 主线共振评分。
-- **策略选股**：19 套内置规则（深跌底部首板、连板后缩量回调、弱转强、涨停后量价收缩等）可按底部趋势、首板、回踩、收缩、修复等形态家族筛选，并支持用条件组合自定义策略；页面只给当日候选与入选理由。
-- **AI 选股与 AI 问股**：接入自己的大模型接口后，可对候选股打分点评、生成每日总结；「AI 问股」像对话一样单独分析个股，AI 自行查询行情、K 线、分时、涨停与龙虎榜、板块、公告资讯等数据，可连续追问。
-- **分析打法**：AI 问股可任选 1–3 种打法叠加（短线情绪、波段趋势、量价技术、消息资金、持仓风控五类共 19 种），也能自己编写打法；回答逐条对照，并给出每种打法「符合 / 接近 / 不符合」的结论。
-- **炸板观察与北交所 / 可转债 / 沪深港通**：当日、昨日涨停今日、近五日的炸板跟踪、北交所全量行情、可转债列表、沪深港通资金。
-- **单股回测**：可选择一套或多套策略、设置同日最低命中票数、指定股票与开始日期，并支持自定义买入价。
-- **组合回测**：最多 30 只股票，共享现金账户回放，保留容量、手数、现金复用、逐笔交易与每股贡献约束。
-- **专业复盘**：八维市场状态、20 因子个股诊断、数据完整度、失效边界、关键价位和次日情景推演。
-- **板块研究**：行业/概念搜索、板块涨停梯队、晋级率、炸板率、量能热度、内部广度与集中度诊断。
-- **资讯与公告**：财联社、电报快讯、A 股公司公告与可选同花顺公告，支持去重、时效、方向和风险分级。
-- **本地工作区**：自选、持仓、观察池、模拟交易、回测历史、设置和 last-good 恢复副本均保存在本机。
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="涨停监控" width="100%" />
+  <br/><sub>涨停监控：涨停生态、连板天梯与完整涨停池</sub>
+</p>
 
-标的范围：
+<table>
+  <tr>
+    <td width="33%" align="center"><img src="docs/images/strategy-selection.png" alt="策略选股" /><br/><sub>策略选股</sub></td>
+    <td width="33%" align="center"><img src="docs/images/ai-agent.png" alt="AI 问股" /><br/><sub>AI 问股与分析打法</sub></td>
+    <td width="33%" align="center"><img src="docs/images/sector-strength.png" alt="板块强度" /><br/><sub>板块强度</sub></td>
+  </tr>
+</table>
 
-- A 股：完整监控、分析、策略与回测入口。
-- 场内 ETF / 可转债：支持搜索、实时报价和多周期 K 线；默认不混入涨停池或 A 股策略信号。
-- ST、`*ST` 与退市风险股：从自动监控和策略候选中剔除。
+<sub>截图使用项目内置的演示数据，AI 问股中的回答也是演示文字，不代表实时行情、模型输出或策略收益。</sub>
 
-K 线与研究视图：
+## 主要功能
 
-- 1 / 5 / 15 / 30 / 60 / 120 分钟及日、周、月周期。
-- 前复权 / 不复权切换、历史窗口拖动、悬停十字线与 OHLCV 明细。
-- MA5/10/20/60、BOLL、VOL、MACD、KDJ、RSI 自由组合。
-- 多股同列最多并排比较 6 只股票，避免来回切页丢失上下文。
+### 选股研究
 
-## 截图
+- **策略选股**：19 套内置规则（深跌底部首板、连板后缩量回调、弱转强、涨停后量价收缩等），按形态家族筛选；也能用条件组合写自己的策略。结果可按策略或按股票汇总，附日 K 走势和入选依据，一键复制代码导入同花顺自选。
+- **AI 选股**：把策略候选或自己的股票交给大模型打分点评。基础分由软件按框架计算，AI 只在有限范围内微调并写出理由。
+- **AI 问股**：像聊天一样分析一只股票。AI 自己决定查哪些数据（行情、K 线、分时、涨停与龙虎榜、所属板块、公告资讯、策略信号等），查询过程实时可见，可以连续追问。
+- **分析打法**：问股时可叠加 1–3 种打法，内置短线情绪、波段趋势、量价技术、消息资金、持仓风控五类共 19 种，也可以自己编写。回答逐条对照，并给出每种打法「符合 / 接近 / 不符合」的结论。
+- **板块强度**：行业与概念排行、今日涨停主线、成分股实时行情与涨停标记。
 
-> 截图使用项目内置预览数据（AI 问股的回答也是演示文字），仅用于展示界面，不代表实时行情、模型输出或策略收益。
+### 行情跟踪
 
-| 涨停监控 | 策略选股 |
-| :---: | :---: |
-| ![A股雷达涨停监控](docs/images/dashboard.png) | ![A股雷达策略选股](docs/images/strategy-selection.png) |
-| 涨停生态、连板天梯与完整涨停池 | 策略库、命中个股、日 K 走势与入选依据 |
-| **AI 问股** | **板块强度** |
-| ![A股雷达AI问股](docs/images/ai-agent.png) | ![A股雷达板块强度](docs/images/sector-strength.png) |
-| 对话分析个股，按所选打法逐条对照并给出结论 | 行业 / 概念排行、今日涨停主线与成分股 |
+- **涨停监控**：涨停池、连板天梯、涨停原因、同花顺热榜、龙虎榜和异动解读，封板质量、开板次数、封单与成交一目了然。
+- **炸板观察**：当日炸板、昨日涨停今日炸板、近五日炸板三种视角。
+- **北交所 / 可转债 / 沪深港通**：北交所全量行情、可转债列表、沪深港通资金。
+- **观察池、自选、持仓**：最近涨停的股票自动进入十日观察池；自选和持仓可以设置价格与涨跌提醒。
 
-## 策略选股
+### 复盘与信息
 
-策略选股页按最近完整交易日扫描全市场，给出每套规则的当日候选、入选理由和次日注意事项：
+- **个股分析**：分钟到月线的多周期 K 线，MA / BOLL / VOL / MACD / KDJ / RSI 自由组合，支撑阻力与交易计划。
+- **专业复盘**：八维市场状态、个股多因子诊断、关键价位和次日情景；可以让 AI 写当日复盘，并回看上次判断是否兑现。
+- **回测中心**：单股多策略投票回测（支持自定义买入价，价格触达才算成交），以及最多 30 只股票共享资金的组合回测。
+- **资讯中心**：财联社快讯与公司公告，按时效、方向和风险分级。
 
-- 内置 19 套规则，可按底部趋势、首板、回踩、收缩、修复等形态家族筛选；也可以用条件组合自建策略（「我的策略」），与内置策略一起扫描。
+<details>
+<summary><b>标的范围与数据口径</b></summary>
+
+- A 股：完整的监控、分析、选股与回测。
+- 场内 ETF、可转债：支持搜索、实时报价和多周期 K 线，不混入涨停池和 A 股选股。
+- ST、`*ST` 与退市风险股：不进入自动监控和策略候选。
 - 交易日按内置的交易所休市日历判断，盘中不会把未收盘的数据当作完整日线。
-- 全市场日线首次扫描会建本地日线库，之后按日增量更新；数据缺失或校验不通过的股票单独列出，不参与入选。
-- 页面只做选股，不展示未经独立验证的胜率；历史表现请到回测中心自行回放。
+- 数据缺失时如实显示「暂缺」，不会用 0 代替。
 
-## 回测
+</details>
 
-### 单股回测
+## 下载与安装
 
-1. 选择一套或多套策略。
-2. 多策略时设置同一交易日的最低命中票数；`1` 表示任一策略命中即可形成组合信号。
-3. 选择一只股票和开始日期。
-4. 可留空买入价，按信号后下一主市场交易日开盘回放；也可输入自定义价格。
-5. 自定义价格只有落在下一交易日真实最低价与最高价区间内才视为成交，未触达不会虚构收益。
-6. 结果同时展示组合收益、每套策略独立收益、逐笔交易、胜率、最大回撤和被拒绝原因。
+安装包在 [Releases](https://github.com/tlyer666666/a-stock-radar-tader/releases/latest) 页面，按系统选择：
 
-### 组合回测
+| 系统 | 文件 |
+| --- | --- |
+| Windows 10 / 11（x64） | `…-Windows-x64-Portable.zip`，解压即用 |
+| Mac（Apple 芯片，M1 及更新） | `…-macOS-arm64.zip` |
+| Mac（Intel） | `…-macOS-x64.zip` |
+| Linux（x64） | `…-Linux-x86_64.AppImage` |
 
-- 使用共享现金账户，不把各股票收益简单平均。
-- A 股按 100 股一手约束，考虑最大持仓数、单股仓位和可用现金。
-- 当日退出所得从下一交易日才可复用，避免未来资金提前参与开仓。
-- 结果固定标注为“组合诊断”，并披露候选池与幸存者偏差边界。
+- macOS 版暂未做 Apple 签名与公证，第一次打开如被拦截，请到「系统设置 → 隐私与安全性」中点「仍要打开」。
+- Linux 的 AppImage 首次运行前需要执行 `chmod +x 文件名.AppImage`。
 
-### 成本与限制
+### 可选配置
 
-默认回放固定持有 5 个交易日并扣除简化的双边佣金与滑点。当前模型尚未完整覆盖历史税费变化和最低佣金，因此结果适合策略研究，不应直接当作实盘收益。
+在软件左下角「数据源设置」中：
+
+- **同花顺 QuantAPI / 同花顺扶摇**：填入令牌后可获得更完整的行情、涨停与龙虎榜数据；不填也能用免费行情。
+- **AI 助手**：添加任意兼容 OpenAI 接口的模型（DeepSeek、通义、Kimi、智谱或本机模型），填写接口地址、模型名和 API Key，可以保存多套随时切换。
+
+令牌和 Key 只保存在本机，并用本机密钥加密。发给模型的只有公开行情数据和你提的问题，不含持仓、账户和密钥。
 
 ## 数据源
 
 ```mermaid
 flowchart LR
-  UI["React 桌面界面"] --> IPC["受控 IPC / 输入校验"]
+  UI["桌面界面"] --> IPC["受控 IPC / 输入校验"]
   IPC --> Federation["多源行情编排"]
   Federation --> THS["同花顺 · 主源"]
   Federation --> EM["东方财富 · 次源"]
   Federation --> Public["腾讯 / 新浪 · 故障接力"]
-  Federation --> Normalize["统一证券与 OHLCV 契约"]
+  Federation --> Normalize["统一证券与 K 线口径"]
   Normalize --> Analysis["行情分析 / 板块 / 公告"]
-  Normalize --> Worker["策略与回测工作线程"]
-  Worker --> Audit["样本外 / 走步 / 终端留出"]
+  Normalize --> Worker["选股与回测工作线程"]
 ```
 
-- 同花顺有效时优先使用；东方财富补充行业、成交额、市值、封板字段和遗漏标的。
-- 主源未配置、超时、无权限或返回无效结构时，自动接力到免费行情通道。
-- 数据源状态会保留在结果中，不把缺失值伪装成零。
-- 同一分源的并发请求复用在途任务，减少重复访问和限流压力。
+同花顺可用时优先使用，东方财富补充行业、成交额、市值等字段；主源超时或返回异常时自动切换到其他通道，结果里会标明实际使用的数据源。
 
-需要同花顺 QuantAPI 或同花顺扶摇数据增强时，在“数据源设置”里填写对应令牌即可；AI 功能在同一页添加兼容 OpenAI 接口的模型配置（接口地址、模型名、API Key，可保存多套）。所有令牌与 Key 都用本机密钥加密后保存在用户数据目录，不进入源码仓库。
+## 从源码运行
 
-## 技术栈
+需要 Node.js 22.12 及以上（推荐 24）和 pnpm 11.16.0。
 
-| 层级 | 技术与职责 |
-| --- | --- |
-| Renderer | React 19、TypeScript、Vite；桌面工作区与交互视图 |
-| Desktop | Electron 44；单实例、窗口控制、系统主题和安全 IPC |
-| Services | Node.js 服务层；证券规范化、多源编排、缓存、公告和行情聚合 |
-| Compute | 独立工作线程；策略特征、历史回放、组合账户与验证统计 |
-| Persistence | 原子 JSON 写入、last-good 副本、敏感令牌本机 AES-256-GCM 加密 |
-| Quality | TypeScript 类型检查、ESLint、Node 测试、浏览器回归、构建清单和 SHA-256 逐文件校验 |
-
-模块边界、数据源规则和已知技术债见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
-
-## 下载
-
-二进制文件通过 [GitHub Releases](https://github.com/tlyer666666/a-stock-radar-tader/releases/latest) 分发，不提交到源码历史。请按系统与处理器下载：
-
-- Windows x64：`Windows-x64-Portable.zip`
-- Apple 芯片 Mac（M1 及更新）：`macOS-arm64.zip`
-- Intel Mac：`macOS-x64.zip`
-- Linux x64：`Linux-x86_64.AppImage`
-
-macOS 版本目前未使用 Apple Developer ID 签名与公证，首次运行可能需要在“系统设置 → 隐私与安全性”中手动允许。Linux AppImage 首次运行前需要授予执行权限：`chmod +x 文件名.AppImage`。
-
-## 开发
-
-环境要求：Windows 10 / 11、macOS 或主流 x64 Linux；Node.js 22.12 及以上（推荐 24）；pnpm 11.16.0。
-
-```powershell
+```bash
 pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-无窗口质量检查：
+常用检查：
 
-```powershell
-pnpm lint
-pnpm typecheck
-pnpm typecheck:review
-pnpm test
-pnpm build:web
-pnpm build:review
+```bash
+pnpm lint          # 代码规范
+pnpm typecheck     # 类型检查
+pnpm test          # 单元测试
+pnpm build:web     # 构建界面
 ```
 
-其中 `typecheck:review` / `build:review` 针对的是可以单独挂载的“专业复盘”模块（`src/review-entry.tsx`），与主界面共用同一套复盘组件。
+打包：
 
-构建 Windows 便携版，运行目录生成在 `release/win-unpacked`：
-
-```powershell
-pnpm build
+```bash
+pnpm build           # Windows 便携版，输出到 release/win-unpacked
+pnpm dist:platform   # 当前系统的发行包
 ```
 
-部署到日常使用目录：
+模块划分、数据源规则和已知技术债见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
-```powershell
-pnpm build:deploy
-```
+## 技术栈
 
-构建当前系统发行包：
+| 层级 | 说明 |
+| --- | --- |
+| 界面 | React 19、TypeScript、Vite |
+| 桌面 | Electron 44：单实例、窗口控制、系统主题、受控 IPC |
+| 服务 | Node.js：证券规范化、多源编排、缓存、公告与行情聚合 |
+| 计算 | 独立工作线程：策略特征、历史回放、组合账户 |
+| 存储 | 原子写入与恢复副本，敏感信息本机 AES-256-GCM 加密 |
+| 质量 | ESLint、类型检查、单元测试、浏览器回归、打包后端到端测试 |
 
-```powershell
-pnpm dist:platform
-```
-
-构建与部署采用暂存目录、逐文件 SHA-256 清单和原子替换；发布新版本时会清理旧的临时产物与多余旧文件，同时尽量保留最后一个完整可恢复版本。正式 Release 使用 GitHub 的 Windows、macOS Apple Silicon、macOS Intel 与 Linux 原生运行器分别构建，并生成统一的 `SHA256SUMS.txt`。
-
-## 质量保障
-
-- GitHub Actions 在 Windows、macOS 与 Linux 上执行锁定依赖安装、Lint、双入口类型检查和带覆盖率门槛的无网络测试，另跑浏览器回归套件与 Windows 打包后的桌面端到端测试，并按版本标签在四个原生系统/架构运行器上生成发行包。
-- 行情、历史 K 线、公告、策略回放、组合账户、敏感数据、持久化与部署均有契约测试。
-- 前后端 IPC 只接受当前主窗口主 frame，并对外部 URL、证券标识和设置覆盖做白名单校验。
-- `.env`、用户数据、备份、缓存、构建产物和正式 EXE 均通过 `.gitignore` 排除。
+每次推送都会在 Windows、macOS 和 Linux 上跑代码规范、类型检查和带覆盖率门槛的测试；推送版本标签后，会在四个平台分别构建安装包，并附上 `SHA256SUMS.txt`。
 
 ## 路线图
 
-- [x] Windows、macOS 与 Linux 的 GitHub Releases 下载页
+- [x] Windows、macOS、Linux 安装包
+- [x] AI 问股与可组合的分析打法
 - [ ] 更完整的历史税费与最低佣金模型
-- [ ] 回测结果的可分享静态报告
-- [ ] 更丰富的公告筛选和公司事件时间轴
-- [ ] 持续扩展策略验证覆盖，但保持严格样本外门槛
+- [ ] 可分享的回测报告
+- [ ] 公司事件时间轴
 
 ## 反馈
 
-欢迎通过 [Issues](https://github.com/tlyer666666/a-stock-radar-tader/issues) 提交问题。请附上：版本号、股票代码、发生时间、所在模块、操作步骤和脱敏后的错误信息。不要上传行情账户令牌、个人持仓或其他敏感数据。
+欢迎在 [Issues](https://github.com/tlyer666666/a-stock-radar-tader/issues) 提问题。请写明版本号、股票代码、发生时间、所在页面和操作步骤；不要上传令牌、API Key、个人持仓等敏感信息。
 
 ## 风险声明
 
-证券市场存在显著风险。软件中的评分、策略、回测、资讯方向和模拟交易均可能错误或失效；历史表现不代表未来结果。任何交易决策、资金损失和数据源服务条款责任均由使用者自行承担。
+证券市场有风险。软件中的评分、选股结果、AI 分析、回测和模拟交易都可能出错或失效，历史表现不代表未来。任何交易决策及其后果由使用者自行承担，使用各数据源时请遵守其服务条款。
