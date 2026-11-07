@@ -10,6 +10,10 @@
 - `electron/ths-token-manager.cjs`：同花顺令牌的唯一缓存、并发刷新与鉴权失败重试入口。
 - `electron/news-service.cjs`：资讯和 A 股公告聚合。
 - `electron/services.cjs`：现有行情与回测编排；后续拆分时应保持公开导出契约不变。
+- `src/features/`：按页面拆分的功能模块（策略选股、AI 选股、AI 问股、板块、回测、模拟交易等）。
+- `electron/stock-agent*.cjs`：AI 问股的对话循环、数据查询工具、分析打法与对话存储。
+- `electron/ai-*.cjs`：AI 选股、点评与复盘的模型调用、打分框架和多套模型配置。
+- `electron/daily-bar-store.cjs`：全市场不复权日线的本地库与增量更新。
 - `qa/`：桌面端到端、发布产物和工作流契约验证。
 
 ## 数据源规则
@@ -25,7 +29,7 @@
 ## 下一阶段拆分顺序
 
 1. 将 `electron/services.cjs` 的 providers、cache、backtest 和 strategy 编排逐块迁到独立模块。
-2. 将 `src/App.tsx` 的纸面交易领域逻辑和各页面迁入 feature 目录。
+2. 继续把 `src/App.tsx` 里剩余的纸面交易逻辑和页面状态迁入 `src/features/`。
 3. 建立 renderer/preload/main 共用的 IPC 契约与边界解码器，逐步消除 `any`。
 
 每次迁移都先搬纯函数、补契约测试，再替换调用方；不要在结构迁移中同时修改交易算法。
