@@ -1,0 +1,269 @@
+@media (min-width: 1600px) {
+  :root {
+    --content-pad: 22px;
+    --card-gap: 16px;
+  }
+}
+
+@media (max-width: 1360px) {
+  :root .app-shell.terminal-shell .theme-switch button span {
+    display: none;
+  }
+
+  :root .app-shell.terminal-shell .theme-switch button {
+    width: 28px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  :root .app-shell.terminal-shell .search-box {
+    flex: 1 1 240px;
+    width: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  :root {
+    --content-pad: 14px;
+    --card-gap: 10px;
+  }
+
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] {
+    grid-template-columns: var(--sidebar-w-compact) minmax(0, 1fr);
+  }
+
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption, .nav-item span, .nav-item em, .workspace-nav-top > span) {
+    display: none;
+  }
+
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation .nav-item {
+    justify-content: center;
+    padding: 0;
+  }
+
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-nav-top {
+    justify-content: center;
+    padding: 0 0 var(--space-sm);
+  }
+
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-nav-group + .workspace-nav-group {
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--line-1);
+  }
+
+  :root .app-shell.terminal-shell .workspace-location,
+  :root .app-shell.terminal-shell .trend-header-rule {
+    display: none;
+  }
+
+  :root .app-shell.terminal-shell .topbar {
+    padding: var(--space-sm) var(--space-md);
+    gap: var(--space-sm);
+  }
+
+  :root .app-shell.terminal-shell .main > .page {
+    padding: var(--content-pad) var(--content-pad) var(--space-xl);
+  }
+
+  :root .app-shell.terminal-shell .main > .page > *,
+  :root .app-shell.terminal-shell :is(.information-layout, .watch-workspace-columns, .sector-explorer-layout) > * {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  :root .app-shell.terminal-shell .topbar {
+    flex-wrap: wrap;
+  }
+
+  :root .app-shell.terminal-shell .search-box {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
+  }
+
+  :root .app-shell.terminal-shell .top-actions {
+    flex: 1 1 100%;
+    min-width: 0;
+    margin-left: 0;
+    justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  :root .app-shell.terminal-shell .top-actions > * {
+    flex: 0 0 auto;
+  }
+
+  :root .app-shell.terminal-shell .strategy-quick-menu {
+    position: fixed;
+    top: auto;
+    left: var(--space-md);
+    right: var(--space-md);
+    width: auto;
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+
+  :root .app-shell.terminal-shell .terminal-statusbar .quota-text {
+    display: none;
+  }
+}
+
+@media (max-width: 768px) {
+  :root {
+    --titlebar-h: 32px;
+    --mobile-nav-h: 56px;
+  }
+
+  :root .app-shell.terminal-shell,
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+  }
+
+  :root .app-shell.terminal-shell .window-dragbar {
+    padding-left: var(--space-md);
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation {
+    position: fixed;
+    z-index: var(--z-sticky);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    height: var(--mobile-nav-h);
+    padding: 0 var(--space-xs) env(safe-area-inset-bottom);
+    border-top: 1px solid var(--line-2);
+    border-right: 0;
+    overflow: auto hidden;
+    scrollbar-width: none;
+  }
+
+  :root .app-shell.terminal-shell .workspace-nav-top {
+    display: none;
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation nav,
+  :root .app-shell.terminal-shell .workspace-nav-group {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-3xs);
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation nav {
+    gap: var(--space-xs);
+  }
+
+  :root .app-shell.terminal-shell .workspace-nav-group + .workspace-nav-group {
+    padding: 0 0 0 var(--space-xs);
+    border-top: 0;
+    border-left: 1px solid var(--line-1);
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation .nav-item {
+    width: 44px;
+    min-height: 44px;
+    height: 44px;
+    margin: 0;
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation .nav-item svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation .nav-item::before {
+    top: auto;
+    bottom: 2px;
+    left: 50%;
+    width: 0;
+    height: 3px;
+    border-radius: var(--radius-2xs);
+    transform: translateX(-50%);
+    transition: width var(--dur-base) var(--ease-out);
+  }
+
+  :root .app-shell.terminal-shell .workspace-navigation .nav-item.active::before {
+    width: 16px;
+    height: 3px;
+  }
+
+  :root .app-shell.terminal-shell .workspace-nav-bottom {
+    flex: 0 0 auto;
+    margin: 0 0 0 var(--space-xs);
+    padding: 0 0 0 var(--space-xs);
+    border-top: 0;
+    border-left: 1px solid var(--line-1);
+  }
+
+  :root .app-shell.terminal-shell .main {
+    padding-bottom: var(--mobile-nav-h);
+  }
+
+  :root .app-shell.terminal-shell .topbar {
+    position: static;
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  :root .app-shell.terminal-shell .main > .page {
+    padding: var(--content-pad) var(--content-pad) var(--space-xl);
+  }
+
+  :root .app-shell.terminal-shell .page-heading {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  :root .app-shell.terminal-shell .page-heading h1 {
+    font-size: var(--fs-lg);
+    line-height: 24px;
+  }
+
+  :root .app-shell.terminal-shell .page-heading > :last-child:not(:first-child),
+  :root .app-shell.terminal-shell .page-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  :root .app-shell.terminal-shell .terminal-statusbar {
+    padding: var(--space-2xs) var(--space-md);
+  }
+
+  :root .app-shell.terminal-shell .terminal-statusbar .version {
+    margin-left: 0;
+    text-align: left;
+  }
+
+  :root .app-shell.terminal-shell .page-heading-help > div {
+    width: min(390px, calc(100vw - 32px));
+  }
+
+  :root .app-shell.terminal-shell :is(.settings-category-tabs, .news-scope-tabs, .sector-explorer-tabs, .trend-main-tabs) {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  :root .app-shell.terminal-shell :is(.settings-category-tabs, .news-scope-tabs, .sector-explorer-tabs, .trend-main-tabs) > * {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  :root .app-shell.terminal-shell .settings-workspace .provider-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+:root .app-shell.terminal-shell .trend-header h1,
+:root .terminal-shell :is(.trend-screener, .strategy-signals-view) .page-heading h1,
+:root .app-shell.terminal-shell :is(.trend-screener, .strategy-signals-view) .page-heading h1 {
+  font-size: var(--fs-terminal-heading);
+  line-height: 26px;
+}
+

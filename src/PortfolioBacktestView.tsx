@@ -24,10 +24,9 @@ import {
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import "./portfolio-backtest.css";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
 
-export type PortfolioBacktestStrategyContext = {
+type PortfolioBacktestStrategyContext = {
   source?: "single_strategy" | "optimized_portfolio" | string;
   strategyEngine?: string;
   strategyId?: string;
@@ -118,6 +117,43 @@ const SETUP_STORAGE_KEY = "a-stock-radar-portfolio-backtest-setup-v1";
 const MAX_BASKET_SIZE = 30;
 const HALF_YEAR_LOOKBACK_BARS = 120;
 const SIGNAL_DATES_PER_PAGE = 8;
+
+const ACCOUNT_FIELDS = {
+  startingCapital: { label: "起始资金", minimum: 10_000, maximum: 100_000_000, integer: true, hint: "请输入 10,000 至 100,000,000 的整数金额" },
+  maxPositions: { label: "最大同时持仓", minimum: 1, maximum: 20, integer: true, hint: "请输入 1 至 20 的整数" },
+  commissionBps: { label: "佣金", minimum: 0, maximum: 60, integer: false, hint: "请输入 0 至 60 bps" },
+  slippageBps: { label: "滑点", minimum: 0, maximum: 60, integer: false, hint: "请输入 0 至 60 bps" }
+} as const;
+type AccountField = keyof typeof ACCOUNT_FIELDS;
+type AccountValues = Record<AccountField, number>;
+type AccountDraft = Record<AccountField, string>;
+type RunSetup = AccountValues & {
+  strategyIds: string[];
+  minimumVotes: number;
+  universe: string[];
+  universeSource: BasketSource;
+  lookbackBars: number;
+};
+
+const validateAccountField = (key: AccountField, draft: string): string => {
+  const rule = ACCOUNT_FIELDS[key];
+  const value = Number(draft);
+  return !draft.trim() || !Number.isFinite(value) || value < rule.minimum || value > rule.maximum || (rule.integer && !Number.isInteger(value))
+    ? rule.hint
+    : "";
+};
+
+const setupSignature = (setup: RunSetup) => JSON.stringify({
+  startingCapital: setup.startingCapital,
+  maxPositions: setup.maxPositions,
+  commissionBps: setup.commissionBps,
+  slippageBps: setup.slippageBps,
+  strategyIds: setup.strategyIds,
+  minimumVotes: setup.minimumVotes,
+  universe: setup.universe,
+  universeSource: setup.universeSource,
+  lookbackBars: setup.lookbackBars
+});
 
 const numberOrNull = (...values: unknown[]) => {
   for (const value of values) {
@@ -216,7 +252,8 @@ const normalizeDefinitions = (input: any): StrategyDefinition[] => {
         : undefined;
     return [{
       id,
-      name: String(item?.name || item?.label || id),
+      // 2026-11-05 起已从策略选股下线的策略仍可在回测中心复核，名称后标注。
+      name: `${String(item?.name || item?.label || id)}${item?.retired === true ? "（已下线）" : ""}`,
       detail: String(item?.detail || item?.description || "使用历史事件与样本外窗口复核"),
       type: String(item?.type || (item?.components?.length ? "composite" : "base")),
       publicationAccepted,
@@ -446,8 +483,9 @@ const toneFor = (value: unknown) => {
   return number === null ? "" : number >= 0 ? "positive" : "negative";
 };
 
-function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; startingCapital: number }) {
+function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; startingCapital: number | null }) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  useEffect(() => setHoverIndex(null), [points]);
   if (!points.length) {
     return <div className="pbt-empty-chart"><BarChart3 size={28} /><span>接口未返回权益曲线</span></div>;
   }
@@ -457,8 +495,8 @@ function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; start
   const plotWidth = width - bounds.left - bounds.right;
   const plotHeight = height - bounds.top - bounds.bottom;
   const values = points.map((item) => item.equity);
-  const rawMinimum = Math.min(...values, startingCapital);
-  const rawMaximum = Math.max(...values, startingCapital);
+  const rawMinimum = Math.min(...values, ...(startingCapital === null ? [] : [startingCapital]));
+  const rawMaximum = Math.max(...values, ...(startingCapital === null ? [] : [startingCapital]));
   const padding = Math.max((rawMaximum - rawMinimum) * 0.12, rawMaximum * 0.008, 1);
   const minimum = rawMinimum - padding;
   const maximum = rawMaximum + padding;
@@ -467,7 +505,7 @@ function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; start
   const yAt = (value: number) => bounds.top + (maximum - value) / range * plotHeight;
   const linePath = points.map((item, index) => `${index ? "L" : "M"}${xAt(index).toFixed(2)},${yAt(item.equity).toFixed(2)}`).join(" ");
   const areaPath = `${linePath} L${xAt(points.length - 1)},${bounds.top + plotHeight} L${xAt(0)},${bounds.top + plotHeight} Z`;
-  const start = points[0]?.equity || startingCapital;
+  const start = points[0]?.equity ?? startingCapital ?? 0;
   const finish = points.at(-1)?.equity || start;
   const rising = finish >= start;
   const active = Math.min(points.length - 1, Math.max(0, hoverIndex ?? points.length - 1));
@@ -482,12 +520,31 @@ function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; start
         <b>{formatMoney(hover.equity)}</b>
         {hover.drawdownPercent !== undefined && <em>回撤 {formatPercent(hover.drawdownPercent)}</em>}
       </div>
+      <label className="pbt-equity-date-selector">
+        <span>查询日期（左右键逐日，Home / End 跳至首尾）</span>
+        <input
+          type="range"
+          min={0}
+          max={points.length - 1}
+          step={1}
+          value={active}
+          aria-label="权益曲线查询日期"
+          aria-valuetext={`${hover.date}，权益 ${formatMoney(hover.equity)}，回撤 ${hover.drawdownPercent === undefined ? "未提供" : formatPercent(hover.drawdownPercent)}`}
+          onChange={(event) => setHoverIndex(Number(event.target.value))}
+          onKeyDown={(event) => {
+            const next = event.key === "Home" ? 0 : event.key === "End" ? points.length - 1 : event.key === "ArrowLeft" ? active - 1 : event.key === "ArrowRight" ? active + 1 : null;
+            if (next === null) return;
+            event.preventDefault();
+            setHoverIndex(Math.min(points.length - 1, Math.max(0, next)));
+          }}
+        />
+        <output>{hover.date} · 权益 {formatMoney(hover.equity)} · 回撤 {hover.drawdownPercent === undefined ? "未提供" : formatPercent(hover.drawdownPercent)}</output>
+      </label>
       <svg
         className="pbt-equity-chart"
         viewBox={`0 0 ${width} ${height}`}
         role="img"
         aria-label="共享资金账户权益曲线"
-        onMouseLeave={() => setHoverIndex(null)}
         onMouseMove={(event) => {
           const rect = event.currentTarget.getBoundingClientRect();
           const localX = (event.clientX - rect.left) / Math.max(1, rect.width) * width;
@@ -511,13 +568,13 @@ function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; start
             </g>
           );
         })}
-        <line
+        {startingCapital !== null && <line
           x1={bounds.left}
           x2={width - bounds.right}
           y1={yAt(startingCapital)}
           y2={yAt(startingCapital)}
           className="pbt-chart-start-line"
-        />
+        />}
         <path d={areaPath} fill="url(#pbt-equity-area)" />
         <path d={linePath} className={rising ? "pbt-equity-line rising" : "pbt-equity-line falling"} />
         {dateLabelIndexes.map((index) => (
@@ -528,6 +585,16 @@ function EquityCurve({ points, startingCapital }: { points: EquityPoint[]; start
         <line x1={xAt(active)} x2={xAt(active)} y1={bounds.top} y2={bounds.top + plotHeight} className="pbt-chart-hover-line" />
         <circle cx={xAt(active)} cy={yAt(hover.equity)} r="5" className={rising ? "pbt-chart-point rising" : "pbt-chart-point falling"} />
       </svg>
+      <details className="pbt-equity-daily-data">
+        <summary>查看逐日权益与回撤（{points.length} 个日期）</summary>
+        <div className="pbt-semantic-table-scroll" tabIndex={0} role="region" aria-label="逐日权益明细，可滚动">
+          <table className="pbt-semantic-table">
+            <caption>共享资金账户逐日权益与回撤</caption>
+            <thead><tr><th scope="col">日期</th><th scope="col">权益</th><th scope="col">回撤</th></tr></thead>
+            <tbody>{points.map((point, index) => <tr key={`${point.date}-${index}`}><th scope="row">{point.date}</th><td>{formatMoney(point.equity)}</td><td>{point.drawdownPercent === undefined ? "未提供" : formatPercent(point.drawdownPercent)}</td></tr>)}</tbody>
+          </table>
+        </div>
+      </details>
     </div>
   );
 }
@@ -579,19 +646,22 @@ export default function PortfolioBacktestView({
   const [minimumVotes, setMinimumVotes] = useState(() =>
     Math.round(clamp(initialStrategyContext?.minimumVotes ?? storedSetup.minimumVotes, 1, 30, 1))
   );
-  const [startingCapital, setStartingCapital] = useState(() =>
-    Math.round(clamp(storedSetup.startingCapital, 10_000, 100_000_000, 500_000))
-  );
-  const [maxPositions, setMaxPositions] = useState(() =>
-    Math.round(clamp(storedSetup.maxPositions, 1, 20, 5))
-  );
+  const [accountDraft, setAccountDraft] = useState<AccountDraft>(() => ({
+    startingCapital: String(Math.round(clamp(storedSetup.startingCapital, 10_000, 100_000_000, 500_000))),
+    maxPositions: String(Math.round(clamp(storedSetup.maxPositions, 1, 20, 5))),
+    commissionBps: String(clamp(storedSetup.commissionBps, 0, 60, 7)),
+    slippageBps: String(clamp(storedSetup.slippageBps, 0, 60, 2))
+  }));
+  const [accountErrors, setAccountErrors] = useState<Partial<Record<AccountField, string>>>({});
+  const accountPanelRef = useRef<HTMLDetailsElement>(null);
+  const accountValues: AccountValues = {
+    startingCapital: Number(accountDraft.startingCapital),
+    maxPositions: Number(accountDraft.maxPositions),
+    commissionBps: Number(accountDraft.commissionBps),
+    slippageBps: Number(accountDraft.slippageBps)
+  };
+  const { startingCapital, maxPositions, commissionBps, slippageBps } = accountValues;
   const lookbackBars = HALF_YEAR_LOOKBACK_BARS;
-  const [commissionBps, setCommissionBps] = useState(() =>
-    clamp(storedSetup.commissionBps, 0, 60, 7)
-  );
-  const [slippageBps, setSlippageBps] = useState(() =>
-    clamp(storedSetup.slippageBps, 0, 60, 2)
-  );
   const [searchText, setSearchText] = useState("");
   const [searching, setSearching] = useState(false);
   const [suggestions, setSuggestions] = useState<Security[]>([]);
@@ -625,7 +695,7 @@ export default function PortfolioBacktestView({
         generatedAt: new Date().toISOString(),
         matchedCount: Math.max(initialSecurities.length, Number(initialStrategyContext.universeTotalCount || 0)),
         loadedCount: initialSecurities.length,
-        source: "策略信号页本轮命中"
+        source: "策略选股页本轮命中"
       });
     } else {
       setBasket((current) => uniqueSecurities([...initialSecurities, ...current]));
@@ -662,7 +732,7 @@ export default function PortfolioBacktestView({
     };
   }, []);
 
-  const savedBasketSignature = useRef<string>();
+  const savedBasketSignature = useRef<string | undefined>(undefined);
   savedBasketSignature.current ??= JSON.stringify(storedBasket);
   useEffect(() => {
     const signature = JSON.stringify(basket);
@@ -671,6 +741,7 @@ export default function PortfolioBacktestView({
   }, [basket]);
 
   useEffect(() => {
+    if ((Object.keys(ACCOUNT_FIELDS) as AccountField[]).some((key) => validateAccountField(key, accountDraft[key]))) return;
     if (!saveSafeLocalJson(SETUP_STORAGE_KEY, {
       strategyIds: selectedStrategyIds,
       minimumVotes,
@@ -682,7 +753,7 @@ export default function PortfolioBacktestView({
     })) {
       // 本地存储不可用时仍允许本次回测。
     }
-  }, [selectedStrategyIds, minimumVotes, startingCapital, maxPositions, lookbackBars, commissionBps, slippageBps]);
+  }, [selectedStrategyIds, minimumVotes, accountDraft, lookbackBars]);
 
   useEffect(() => {
     setMinimumVotes((current) => Math.min(Math.max(1, current), Math.max(1, selectedStrategyIds.length)));
@@ -732,6 +803,13 @@ export default function PortfolioBacktestView({
     requestId.current += 1; void backtestJobs.current.cancelAll();
     strategyUniverseRequestId.current += 1; void universeJobs.current.cancelAll();
   }, []);
+
+  useEffect(() => {
+    if (active) return;
+    strategyUniverseRequestId.current += 1;
+    void universeJobs.current.cancelAll();
+    setStrategyUniverseLoading(false);
+  }, [active]);
 
   useEffect(() => {
     setSignalTimelinePage(1);
@@ -820,7 +898,7 @@ export default function PortfolioBacktestView({
         ? optimized.selectedStrategies.map((item: any) => String(item?.id || ""))
         : [];
       let candidates: any[] = [];
-      let source = "已发布策略的本轮命中";
+      let source = "策略规则本轮选股";
       if (
         requestedStrategyIds.length > 1 &&
         optimized?.publicationAccepted === true &&
@@ -843,7 +921,7 @@ export default function PortfolioBacktestView({
             countedCodes.add(code);
             const current = votes.get(code) || { stock, count: 0, score: 0 };
             current.count += 1;
-            current.score = Math.max(current.score, Number(stock?.signalScore || stock?.score || 0));
+            current.score = Math.max(current.score, Number(stock?.signalStrength || stock?.signalScore || stock?.score || 0));
             votes.set(code, current);
           }
         }
@@ -859,7 +937,7 @@ export default function PortfolioBacktestView({
         );
         throw new Error(
           missing.length
-            ? `所选策略尚未通过发布复核或当前无可发布股票：${missing.join("、")}`
+            ? `所选策略未在本轮目录中返回：${missing.join("、")}`
             : "所选策略在本轮真实候选池中没有股票达到全部条件；系统不会放宽门槛凑数"
         );
       }
@@ -888,6 +966,17 @@ export default function PortfolioBacktestView({
 
   const execute = async () => {
     if (running) return;
+    const fieldErrors = Object.fromEntries((Object.keys(ACCOUNT_FIELDS) as AccountField[]).map((key) => [key, validateAccountField(key, accountDraft[key])])) as Record<AccountField, string>;
+    setAccountErrors(fieldErrors);
+    const invalidField = (Object.keys(ACCOUNT_FIELDS) as AccountField[]).find((key) => fieldErrors[key]);
+    if (invalidField) {
+      setError(`请修正账户与执行假设：${ACCOUNT_FIELDS[invalidField].label}，${fieldErrors[invalidField]}`);
+      if (accountPanelRef.current) {
+        accountPanelRef.current.open = true;
+        accountPanelRef.current.querySelector<HTMLInputElement>(`[name="${invalidField}"]`)?.focus();
+      }
+      return;
+    }
     if (basket.length < 1) {
       setError("请至少添加 1 只股票后再回测");
       return;
@@ -903,6 +992,14 @@ export default function PortfolioBacktestView({
       return;
     }
     const currentRequest = ++requestId.current;
+    const requestedSetup: RunSetup = {
+      ...accountValues,
+      strategyIds: [...selectedStrategyIds],
+      minimumVotes: safeVotes,
+      universe: basket.map((item) => item.code),
+      universeSource: basketSource,
+      lookbackBars
+    };
     setRunning(true);
     setError("");
     try {
@@ -935,8 +1032,9 @@ export default function PortfolioBacktestView({
         lotSize: 100
       }));
       if (requestId.current !== currentRequest) return;
-      setResult(next);
-      onResult?.(next);
+      const completedResult = { ...next, uiRunSetup: requestedSetup };
+      setResult(completedResult);
+      onResult?.(completedResult);
     } catch (reason) {
       if (requestId.current === currentRequest) {
         setError(reason instanceof Error ? reason.message : String(reason));
@@ -948,6 +1046,25 @@ export default function PortfolioBacktestView({
 
   const metrics = result?.metrics || {};
   const equityCurve = useMemo(() => normalizeEquityCurve(result), [result]);
+  // Older results contain the actual capital in settings/metrics but have no UI snapshot.
+  // Never use the editable draft as a fallback for a completed result.
+  const resultStartingCapital = numberOrNull(
+    result?.settings?.startingCapital,
+    result?.account?.startingCapital,
+    result?.metrics?.startingCapital,
+    result?.startingCapital,
+    result?.uiRunSetup?.startingCapital
+  );
+  const currentSetup: RunSetup = {
+    ...accountValues,
+    strategyIds: selectedStrategyIds,
+    minimumVotes,
+    universe: basket.map((item) => item.code),
+    universeSource: basketSource,
+    lookbackBars
+  };
+  const accountDraftInvalid = (Object.keys(ACCOUNT_FIELDS) as AccountField[]).some((key) => validateAccountField(key, accountDraft[key]));
+  const resultSetupChanged = Boolean(result?.uiRunSetup) && (accountDraftInvalid || setupSignature(currentSetup) !== setupSignature(result.uiRunSetup));
   const contributions = useMemo(() => normalizeContributions(result), [result]);
   const trades = useMemo(() => normalizeTrades(result), [result]);
   const signalTimeline = useMemo(
@@ -965,7 +1082,7 @@ export default function PortfolioBacktestView({
   const benchmark = result?.benchmark || {};
   const universe = result?.universe || {};
   const resultUniverseSource = String(
-    universe?.selectionMode || result?.universeSource || basketSource
+    universe?.selectionMode || result?.universeSource || result?.uiRunSetup?.universeSource || "manual"
   );
   const dataQuality = result?.dataQuality || {};
   const resultStrategyContext = result?.strategyContext || result?.strategy || {};
@@ -1003,7 +1120,7 @@ export default function PortfolioBacktestView({
     universe?.requestedCount,
     dataQuality.requestedStocks,
     Array.isArray(universe?.requestedCodes) ? universe.requestedCodes.length : null,
-    basket.length
+    result?.uiRunSetup?.universe?.length
   );
   const failedSecurityCount = numberOrNull(
     universe?.failedCount,
@@ -1055,6 +1172,28 @@ export default function PortfolioBacktestView({
       ? validation.reasons.filter((item: unknown): item is string => typeof item === "string" && Boolean(item.trim())).join("；")
       : "";
 
+  const renderAccountField = (key: AccountField, hint: string, label: string = ACCOUNT_FIELDS[key].label) => (
+    <label>
+      <span>{label}</span>
+      <input
+        name={key}
+        type="text"
+        inputMode={ACCOUNT_FIELDS[key].integer ? "numeric" : "decimal"}
+        value={accountDraft[key]}
+        aria-invalid={Boolean(accountErrors[key])}
+        aria-describedby={`pbt-${key}-hint${accountErrors[key] ? ` pbt-${key}-error` : ""}`}
+        onChange={(event) => {
+          const value = event.target.value;
+          setAccountDraft((current) => ({ ...current, [key]: value }));
+          setAccountErrors((current) => ({ ...current, [key]: "" }));
+        }}
+        onBlur={() => setAccountErrors((current) => ({ ...current, [key]: validateAccountField(key, accountDraft[key]) }))}
+      />
+      <small id={`pbt-${key}-hint`}>{hint}</small>
+      {accountErrors[key] && <small id={`pbt-${key}-error`} className="pbt-field-error" role="alert">{accountErrors[key]}</small>}
+    </label>
+  );
+
   return (
     <div className="portfolio-backtest-view">
       <header className="pbt-page-head">
@@ -1080,7 +1219,7 @@ export default function PortfolioBacktestView({
         <WalletCards size={20} />
         <div>
           <b>共享资金账户口径</b>
-          <p>所有股票竞争同一笔起始资金，受最大持仓数、A股 100 股整数手、简化佣金与滑点和同时信号约束；结果不是各股票收益率的简单平均。当前成本模型未覆盖最低佣金及按历史日期变化的税费。</p>
+          <p>股票共用起始资金。佣金按实际成交额逐边收取（每笔最低 5 元），滑点逐边计入。模型按固定情景计入卖出印花税 5 bps、双边过户费各 0.1 bps。</p>
         </div>
       </div>
 
@@ -1154,7 +1293,7 @@ export default function PortfolioBacktestView({
               {strategyUniverseLoading ? <LoaderCircle className="spin" size={16} /> : <Target size={16} />}
               {strategyUniverseLoading ? "正在复核策略股票池" : "按所选策略生成股票池"}
             </button>
-            <small>只采用策略信号页已经通过发布复核且本轮真实命中的股票；不会为了产生回测交易而降低门槛。</small>
+            <small>只采用策略选股页已经通过发布复核且本轮真实命中的股票；不会为了产生回测交易而降低门槛。</small>
           </div>
           {strategyUniverseError && (
             <div className="pbt-inline-state warning"><CircleAlert size={17} />{strategyUniverseError}</div>
@@ -1176,7 +1315,7 @@ export default function PortfolioBacktestView({
               <div>
                 <b>{strategyUniverseMeta.source} · 命中 {strategyUniverseMeta.matchedCount || basket.length} 只，已带入 {strategyUniverseMeta.loadedCount || basket.length} 只</b>
                 <small>
-                  生成于 {new Date(strategyUniverseMeta.generatedAt).toLocaleString("zh-CN", { hour12: false })}；执行后按历史信号日重新判断，不用今天的分数代替历史分数。
+                  生成于 {new Date(strategyUniverseMeta.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}；执行后按历史信号日重新判断，不用今天的分数代替历史分数。
                 </small>
               </div>
             </div>
@@ -1229,17 +1368,17 @@ export default function PortfolioBacktestView({
         </div>
       </section>
 
-      <details className="panel pbt-account-panel">
+      <details className="panel pbt-account-panel" ref={accountPanelRef}>
         <summary className="pbt-panel-title">
           <WalletCards size={18} />
           <div><b>账户与执行假设</b><small>参数会保存在本机，下次继续沿用</small></div>
         </summary>
         <div className="pbt-account-fields">
-          <label><span>起始资金</span><input type="number" min="10000" max="100000000" step="10000" value={startingCapital} onChange={(event) => setStartingCapital(Math.round(clamp(event.target.value, 10_000, 100_000_000, startingCapital)))} /><small>{formatMoney(startingCapital)}</small></label>
-          <label><span>最大同时持仓</span><input type="number" min="1" max="20" value={maxPositions} onChange={(event) => setMaxPositions(Math.round(clamp(event.target.value, 1, 20, maxPositions)))} /><small>实际不超过篮子股票数</small></label>
+          {renderAccountField("startingCapital", validateAccountField("startingCapital", accountDraft.startingCapital) ? ACCOUNT_FIELDS.startingCapital.hint : formatMoney(startingCapital))}
+          {renderAccountField("maxPositions", "1 至 20 只；实际不超过篮子股票数")}
           <label><span>历史窗口（日线）</span><input type="number" value={lookbackBars} readOnly aria-label="固定最近半年120个交易日" /><small>固定 120 根，约半年</small></label>
-          <label><span>佣金（bps/边）</span><input type="number" min="0" max="60" step="0.1" value={commissionBps} onChange={(event) => setCommissionBps(clamp(event.target.value, 0, 60, commissionBps))} /><small>买卖双边计入；不含最低佣金与税费</small></label>
-          <label><span>滑点（bps/边）</span><input type="number" min="0" max="60" step="0.1" value={slippageBps} onChange={(event) => setSlippageBps(clamp(event.target.value, 0, 60, slippageBps))} /><small>与佣金分别计算</small></label>
+          {renderAccountField("commissionBps", "0 至 60 bps，每边最低佣金 5 元", "佣金（bps/边）")}
+          {renderAccountField("slippageBps", "0 至 60 bps；与佣金分别计算", "滑点（bps/边）")}
         </div>
       </details>
       </aside>
@@ -1267,9 +1406,9 @@ export default function PortfolioBacktestView({
               <span>PORTFOLIO RESULT</span>
               <h2>共享账户回测结果</h2>
               <p>
-                {resultStrategyContext.strategyName || initialStrategyContext?.strategyName || `${selectedStrategyIds.length} 策略投票`}
-                {resultStrategyContext.minimumVotes || minimumVotes ? ` · 至少 ${resultStrategyContext.minimumVotes || minimumVotes} 票` : ""}
-                {result?.generatedAt ? ` · ${new Date(result.generatedAt).toLocaleString("zh-CN", { hour12: false })}` : ""}
+                {resultStrategyContext.strategyName || `${result?.uiRunSetup?.strategyIds?.length ?? result?.strategyIds?.length ?? "--"} 策略投票`}
+                {resultStrategyContext.minimumVotes || result?.uiRunSetup?.minimumVotes ? ` · 至少 ${resultStrategyContext.minimumVotes || result?.uiRunSetup?.minimumVotes} 票` : ""}
+                {result?.generatedAt ? ` · ${new Date(result.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}` : ""}
               </p>
             </div>
             <span className={`pbt-validation-badge ${validation.accepted === false ? "blocked" : "neutral"}`}>
@@ -1277,6 +1416,13 @@ export default function PortfolioBacktestView({
             </span>
           </div>
 
+          {universe?.pointInTime !== true && <div className="pbt-configuration-changed" role="note">历史股票池按当前篮子构建，存在幸存者偏差。历史 ST 身份缺失时标记未知。本页收益仅描述选定样本。</div>}
+          {dataQuality.historicalDataQuality && <div className="pbt-configuration-changed" role="note">回放日线质量 · 无效 {dataQuality.historicalDataQuality.invalidRows ?? 0} 行 · 重复日期 {dataQuality.historicalDataQuality.duplicateDates ?? 0} 行 · 历史 ST 身份未知 {dataQuality.historicalDataQuality.unknownStRows ?? 0} 行。</div>}
+          {resultSetupChanged && <div className="pbt-configuration-changed" role="status">配置已变更，需重新回测。以下结果仍对应上次运行参数，起始资金 {formatMoney(resultStartingCapital)}。</div>}
+          {!result.uiRunSetup && <div className="pbt-configuration-changed" role="status">此旧结果未保存完整运行配置；调整配置后需重新回测。权益曲线沿用结果中保存的资金信息。</div>}
+
+          {Array.isArray(result.holdings) && result.holdings.length > 0 && <div className="pbt-configuration-changed" role="status">期末仍有 {result.holdings.length} 只未退出持仓，已占用资金和席位并计入权益；完成交易与胜率仅统计已退出部分。未实现盈亏未扣未来卖出成本。</div>}
+          {metrics.valuationComplete === false && <div className="pbt-configuration-changed" role="alert">部分持仓行情或价格基准待核，已冻结最后可靠估值；当前权益证据不完整。</div>}
           <div className="pbt-result-metrics">
             <ResultMetric label="账户总收益" value={formatPercent(totalReturn)} tone={toneFor(totalReturn)} detail={endingCapital === null ? undefined : `期末 ${formatMoney(endingCapital)}`} />
             <ResultMetric label="年化收益" value={formatPercent(annualizedReturn)} tone={toneFor(annualizedReturn)} />
@@ -1285,7 +1431,11 @@ export default function PortfolioBacktestView({
             <ResultMetric label="交易胜率" value={formatPercent(winRate, 1)} />
             <ResultMetric label="完成交易" value={tradeCount === null ? "--" : `${Math.round(tradeCount)} 笔`} />
             <ResultMetric label="基准超额" value={formatPercent(excessReturn)} tone={toneFor(excessReturn)} detail={benchmark.name || "中证全指"} />
-            <ResultMetric label="Profit Factor" value={formatNumber(profitFactor)} detail="总盈利 / 总亏损" />
+            <ResultMetric
+              label="Profit Factor"
+              value={metrics?.profitFactorInfinite === true ? "∞" : formatNumber(profitFactor)}
+              detail={metrics?.profitFactorInfinite === true ? "总盈利 / 总亏损（无亏损交易）" : "总盈利 / 总亏损"}
+            />
             <ResultMetric label="实际股票覆盖" value={`${usedSecurityCount ?? "--"} / ${requestedSecurityCount ?? basket.length}`} detail={failedSecurityCount ? `失败 ${failedSecurityCount}` : undefined} />
           </div>
 
@@ -1296,12 +1446,14 @@ export default function PortfolioBacktestView({
             </div>
           )}
 
+          {Array.isArray(result.holdings) && result.holdings.length > 0 && <div className="panel pbt-table-panel"><h3>期末未退出持仓</h3><div className="pbt-table-scroll"><table><thead><tr><th scope="col">股票</th><th scope="col">入场日</th><th scope="col">股数</th><th scope="col">估值日期</th><th scope="col">市值</th><th scope="col">未实现盈亏</th></tr></thead><tbody>{result.holdings.map((holding: any) => <tr key={holding.sampleId}><th scope="row">{holding.name} {holding.code}</th><td>{holding.entryDate}</td><td>{holding.shares}</td><td>{holding.markDate}{holding.valuationComplete === false ? "（待核）" : ""}</td><td>{formatMoney(holding.marketValue)}</td><td>{formatMoney(holding.unrealizedPnl)}</td></tr>)}</tbody></table></div></div>}
           <div className="panel pbt-equity-panel">
             <div className="pbt-panel-title">
               <TrendingUp size={18} />
-              <div><b>账户权益曲线</b><small>包含空仓现金、并发持仓、整手约束和逐笔成本</small></div>
+              <div><b>账户权益曲线</b><small>本次运行起始资金 {formatMoney(resultStartingCapital)} · 包含空仓现金、并发持仓、整手约束和逐笔成本</small></div>
             </div>
-            <EquityCurve points={equityCurve} startingCapital={startingCapital} />
+            {resultStartingCapital === null && <p className="pbt-configuration-changed">旧结果未保存起始资金，曲线仅显示实际权益；重新回测后可恢复资金基准线。</p>}
+            <EquityCurve points={equityCurve} startingCapital={resultStartingCapital} />
           </div>
 
           <div className="panel pbt-table-panel pbt-signal-panel">
@@ -1388,19 +1540,24 @@ export default function PortfolioBacktestView({
               <div><b>每股账户贡献</b><small>贡献是该股票已结算盈亏占起始资金比例，不是单股独立回测收益</small></div>
               <em>{contributions.length} 只</em>
             </div>
-            <div className="pbt-data-table pbt-contribution-table">
-              <div className="pbt-tr pbt-th"><span>股票</span><span>账户盈亏</span><span>贡献</span><span>自身收益</span><span>交易数</span><span>胜率</span></div>
-              {contributions.map((row) => (
-                <button className="pbt-tr" key={row.code} onClick={() => onOpenSecurity?.({ code: row.code, name: row.name, secid: "" })} disabled={!onOpenSecurity}>
-                  <span><b>{row.name}</b><small>{row.code}</small></span>
-                  <span className={toneFor(row.pnl)}>{formatMoney(row.pnl)}</span>
-                  <span className={toneFor(row.contributionPercent)}>{formatPercent(row.contributionPercent)}</span>
-                  <span className={toneFor(row.returnPercent)}>{formatPercent(row.returnPercent)}</span>
-                  <span>{row.tradeCount === null ? "--" : Math.round(row.tradeCount)}</span>
-                  <span>{formatPercent(row.winRatePercent, 1)}</span>
-                </button>
-              ))}
-              {!contributions.length && <div className="pbt-table-empty">接口未返回每股贡献明细</div>}
+            <div className="pbt-semantic-table-scroll" tabIndex={0} role="region" aria-label="每股账户贡献，可横向滚动">
+              <table className="pbt-data-table pbt-contribution-table pbt-semantic-table">
+                <caption>每股账户贡献：已结算盈亏及其占本次起始资金比例</caption>
+                <thead><tr className="pbt-tr pbt-th"><th scope="col">股票</th><th scope="col">账户盈亏</th><th scope="col">贡献</th><th scope="col">自身收益</th><th scope="col">交易数</th><th scope="col">胜率</th></tr></thead>
+                <tbody>
+                  {contributions.map((row) => (
+                    <tr className="pbt-tr" key={row.code}>
+                      <th scope="row"><button className="pbt-security-action" onClick={() => onOpenSecurity?.({ code: row.code, name: row.name, secid: "" })} disabled={!onOpenSecurity} aria-label={`查看${row.name}（${row.code}）`}><b>{row.name}</b><small>{row.code}</small></button></th>
+                      <td className={toneFor(row.pnl)}>{formatMoney(row.pnl)}</td>
+                      <td className={toneFor(row.contributionPercent)}>{formatPercent(row.contributionPercent)}</td>
+                      <td className={toneFor(row.returnPercent)}>{formatPercent(row.returnPercent)}</td>
+                      <td>{row.tradeCount === null ? "--" : Math.round(row.tradeCount)}</td>
+                      <td>{formatPercent(row.winRatePercent, 1)}</td>
+                    </tr>
+                  ))}
+                  {!contributions.length && <tr><td colSpan={6} className="pbt-table-empty">接口未返回每股贡献明细</td></tr>}
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -1410,21 +1567,24 @@ export default function PortfolioBacktestView({
               <div><b>账户交易明细</b><small>按实际入场顺序记录；同时信号会受可用现金和最大持仓数限制</small></div>
               <em>{trades.length} 笔</em>
             </div>
-            <div className="pbt-trade-scroll">
-              <div className="pbt-data-table pbt-trade-table">
-                <div className="pbt-tr pbt-th"><span>股票</span><span>入场 / 退出</span><span>价格</span><span>股数</span><span>盈亏</span><span>策略 / 原因</span></div>
+            <div className="pbt-trade-scroll" tabIndex={0} role="region" aria-label="账户交易明细，可横向滚动">
+              <table className="pbt-data-table pbt-trade-table pbt-semantic-table">
+                <caption>账户交易明细：实际入场与退出、价格、数量、盈亏及原因</caption>
+                <thead><tr className="pbt-tr pbt-th"><th scope="col">股票</th><th scope="col">入场 / 退出</th><th scope="col">入场 / 退出价格</th><th scope="col">股数</th><th scope="col">盈亏 / 收益率</th><th scope="col">策略 / 原因</th></tr></thead>
+                <tbody>
                 {trades.map((trade) => (
-                  <div className="pbt-tr" key={trade.id}>
-                    <span><b>{trade.name}</b><small>{trade.code}</small></span>
-                    <span><b>{trade.entryDate || "--"}</b><small>{trade.exitDate || "--"}</small></span>
-                    <span><b>{formatNumber(trade.entryPrice)}</b><small>→ {formatNumber(trade.exitPrice)}</small></span>
-                    <span>{trade.shares === null ? "--" : Math.round(trade.shares)}</span>
-                    <span className={toneFor(trade.pnl)}><b>{formatMoney(trade.pnl)}</b><small>{formatPercent(trade.pnlPercent)}</small></span>
-                    <span><b>{trade.strategies.slice(0, 2).join(" / ") || "策略投票"}</b><small>{trade.exitReason}</small></span>
-                  </div>
+                  <tr className="pbt-tr" key={trade.id}>
+                    <th scope="row"><b>{trade.name}</b><small>{trade.code}</small></th>
+                    <td><b>{trade.entryDate || "--"}</b><small>{trade.exitDate || "--"}</small></td>
+                    <td><b>{formatNumber(trade.entryPrice)}</b><small>→ {formatNumber(trade.exitPrice)}</small></td>
+                    <td>{trade.shares === null ? "--" : Math.round(trade.shares)}</td>
+                    <td className={toneFor(trade.pnl)}><b>{formatMoney(trade.pnl)}</b><small>{formatPercent(trade.pnlPercent)}</small></td>
+                    <td><b>{trade.strategies.slice(0, 2).join(" / ") || "策略投票"}</b><small>{trade.exitReason}</small></td>
+                  </tr>
                 ))}
-                {!trades.length && <div className="pbt-table-empty">没有满足资金、票数与可成交条件的交易</div>}
-              </div>
+                {!trades.length && <tr><td colSpan={6} className="pbt-table-empty">没有满足资金、票数与可成交条件的交易</td></tr>}
+                </tbody>
+              </table>
             </div>
           </div>
 

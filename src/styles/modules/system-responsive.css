@@ -1,0 +1,171 @@
+/*
+ * responsive.css —— 响应式层：断点适配（1680 / 1440 / 1280 / 1100 / 920）
+ * 负责专项：E（交互反馈与响应式）
+ * 规范出处：《设计基座与分工简报》§6（断点表）/§8；配套说明：《专项E-交互与响应式.md》
+ *          （断点行为表/依据类名/与 A 的衔接全部在专项文档 §5，本文注释为落地摘要）
+ *
+ * 【运行环境前提】
+ * - Electron 窗口可任意缩放，等效 Web 视口；electron/main.cjs:606 设 minWidth:1024，
+ *   故 1024–1100px 是实际可达的最窄区间，≤920 为保护性断点（DevTools 响应式模式、
+ *   或未来调低 minWidth 时生效）。
+ * - styles.css:21 `body { min-width: 1120px }` 会把 1024–1119px 视口的内容横向裁切
+ *   （右侧不可达）——§0 以 body { min-width: 0 } 解锁，这是本层全部断点成立的前提。
+ *
+ * 【手法：断点内只做两类事】
+ * 1) 重声明令牌（:root 上改 --content-pad / --card-gap / --sidebar-w 的取值）——
+ *    布局消费方（A 层 layout.css 的栅格规则）自动跟随，无需逐条覆盖；
+ * 2) 显式覆盖个别既有规则 —— 凡涉及 terminal-* / market-workspace / trend-shell 的
+ *    html 前缀规则（(0,2,1) 系），一律用 `:root .app-shell.terminal-shell …`
+ *    （(0,4,0) 系）压制，不依赖载入顺序（视图级 css 可能晚于本层加载）。
+ *    断点内只动布局/可见性，不动颜色语义；不用 !important。
+ *
+ * 【可见性纪律】断点内 display:none 只施于装饰性文本（分组标题/导航文字/计数徽标/
+ * 状态栏说明文字），功能性控件（搜索框、策略触发、主题切换、实时开关、折叠按钮）
+ * 一律保留（允许收缩/截断，不允许消失）。
+ */
+
+/* ============================================================
+ * §0 基础解锁：放宽 body 最小宽度（styles.css:21 为 1120px）
+ *    Electron minWidth=1024 < 1120，原值令 1024–1119px 窗口的右侧内容被裁切且
+ *    不可达；放宽后视口与布局一致，各断点真正生效。≥1120px 时该声明无任何影响。
+ *    （min-height: 720px 不动：Electron minHeight 同为 720，无实际约束差异。）
+ * ============================================================ */
+body {
+  min-width: 0;
+}
+
+/* ============================================================
+ * §1 ≤1680px：收紧内容区内边距
+ *    --content-pad 16px（--space-lg）→ 12px（--space-md）。重声明令牌，
+ *    A 层 `.main > .page { padding: var(--content-pad) }` 自动跟随；
+ *    >1680px 的大窗保持 A 层基线 16px。已登记专项文档 §6 令牌变更表。
+ * ============================================================ */
+@media (max-width: 1680px) {
+  :root {
+    --content-pad: var(--space-md);
+  }
+}
+
+/* ============================================================
+ * §2 ≤1440px：内容栅格间距微调
+ *    --card-gap 12px（--space-md 系基值）→ 8px（--space-sm），维持 4px 基准网格。
+ *    消费方自动跟随：.content-grid / .content-grid.lower / .hero-grid /
+ *    .signal-grid / .market-summary-grid 的 gap 与面板纵向 margin。
+ * ============================================================ */
+@media (max-width: 1440px) {
+  :root {
+    --card-gap: var(--space-sm);
+  }
+}
+
+/* ============================================================
+ * §3 ≤1280px：顶栏与状态栏收缩
+ *    - 搜索盒收窄：terminal-layout 基线为固定 320px（flex:0 1 320px; width:320px，
+ *      (0,2,1)；其 ≤1350 的 flex:1 1 270px 规则同特异性但更早载入，实际被压制为
+ *      死规则）——此处以 (0,4,0) 收为 260px 可收缩，不再抢占顶栏横向空间；
+ *      min-width:200px 沿用既有规则，功能完整（placeholder 视觉截断属预期）。
+ *    - 次要文字省略号截断（不隐藏任何控件）：顶栏位置词 / 趋势页标语 / 状态栏版本行。
+ *      .strategy-quick-trigger > span 自带 max-width:112px 省略号（styles.css），不重复。
+ * ============================================================ */
+@media (max-width: 1280px) {
+  :root .app-shell.terminal-shell .search-box {
+    flex: 0 1 260px;
+    width: auto;
+  }
+
+  :root .app-shell.terminal-shell .workspace-location {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  :root .app-shell.terminal-shell .trend-header-rule {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  :root .app-shell.terminal-shell .terminal-statusbar .version {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+/* ≤1100px defaults to collapsed through the application breakpoint state.
+ * Manual expansion must retain the normal sidebar width and visible labels. */
+@media (max-width: 1100px) {
+  /* 隐藏装饰性文本：分组标题 / 导航文字 / 计数徽标 / 「工作台」标题 / 遗留品牌副标题
+     （导航按钮保留 title 与 aria-label，可访问名称不丢失） */
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(
+      .nav-caption,
+      .nav-item span,
+      .nav-item em,
+      .workspace-nav-top > span,
+      .brand span
+    ) {
+    display: none;
+  }
+
+  /* 图标居中：覆盖 A 层基础态的左对齐 padding（本规则 (0,4,0) 靠后胜出） */
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation .nav-item {
+    justify-content: center;
+    padding: var(--space-2xs);
+  }
+
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation .workspace-nav-top {
+    justify-content: center;
+    padding: 0 0 var(--space-sm);
+  }
+
+  :root .app-shell.terminal-shell .terminal-statusbar :is(.sidebar-status, .quota-text) {
+    display: none;
+  }
+}
+
+/* ============================================================
+ * §5 ≤920px：内容栅格塌陷单列 + 宽表容器横向滚动
+ *    - .content-grid（含 .lower）：styles.css:136 双列 / terminal-ui:144 .lower 双列
+ *      （(0,2,1)）→ 单列；
+ *    - .backtest-layout：market-workspace:121 基线 310px+1fr 在全宽段生效
+ *      （terminal-ui ≤1350 的塌陷规则同特异性但载入更早，被压制为死规则）→ 单列；
+ *    - .backtest-form-grid：terminal-ui:168 双列 / ≤1350 的 .backtest-setup-panel >
+ *      .backtest-form-grid 双列（(0,3,1)）→ 单列（含 data-single-stock-backtest 变体，
+ *      该属性无专属样式，grep 证实）；
+ *    - 宽表容器补 overflow-x:auto：经逐类核对，.backtest-trade-table-wrap /
+ *      .watch-table-scroll / .trend-result-scroll / .sector-explorer-table-wrap /
+ *      .review-observation-table-wrap / .strategy-stats-table / .sector-comparison-table
+ *      及 terminal-ui:173 的 :is(.table-wrap,.table-scroll,…) 族均已有滚动能力，
+ *      仅 .discover-table / .sector-member-table 只有纵向滚动，此处补齐横向。
+ * ============================================================ */
+@media (max-width: 920px) {
+  :root .app-shell.terminal-shell .content-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root .app-shell.terminal-shell .backtest-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root .app-shell.terminal-shell .backtest-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root .app-shell.terminal-shell :is(.discover-table, .sector-member-table) {
+    overflow-x: auto;
+  }
+}
+
+/* ============================================================
+ * 尾注 · 与专项 A / D 的衔接与移交（详见《专项E-交互与响应式.md》）
+ * - A（layout.css）：外壳列宽/折叠令牌、.nav-item 盒模型、内容内边距均由 A 层定义，
+ *   本层仅做断点内的令牌重声明与可见性切换，未改任何盒模型基线；
+ * - D（components.css）：hover/active/disabled 面相、容器 :focus-within 环、button
+ *   元素过渡归 D；本层的 :focus-visible 全局环对 D 的容器环做「内部输入让位」，
+ *   disabled 只补 opacity/cursor 面；
+ * - 触控目标：桌面鼠标场景下控件高已由 A/D 统一 36px（顶栏）与 36px（导航项），
+ *   行内小按钮（.table-action 等）不足 28px —— 若未来支持触控，建议由 D 层统一
+ *   提升，而非本层断点内改尺寸（登记专项文档 §7）。
+ * ============================================================ */

@@ -40,6 +40,7 @@ function sample(code, overrides = {}) {
     signalDate: DATES[0],
     entryDate: DATES[1],
     exitDate: DATES[2],
+    roundTripCostBps: 0,
     netReturn: 0,
     ...overrides
   };
@@ -47,13 +48,13 @@ function sample(code, overrides = {}) {
 
 test("shared account enforces capacity and same-day ordering deterministically", () => {
   const samples = [
-    sample("600001", { netReturn: 20, priority: 90 }),
-    sample("600002", { netReturn: -10, priority: 80 }),
-    sample("600003", { netReturn: 100, priority: 10 })
+    sample("600001", { roundTripCostBps: 0, netReturn: 20, priority: 90 }),
+    sample("600002", { roundTripCostBps: 0, netReturn: -10, priority: 80 }),
+    sample("600003", { roundTripCostBps: 0, netReturn: 100, priority: 10 })
   ];
   const histories = {
-    "600001": history(),
-    "600002": history(),
+    "600001": history([10, 10, 12, 12, 12, 12]).map(row => ({ ...row, noPriceLimit: true })),
+    "600002": history([10, 10, 9, 9, 9, 9]).map(row => ({ ...row, noPriceLimit: true })),
     "600003": history()
   };
   const left = simulateStrategyPortfolio(
@@ -122,7 +123,7 @@ test("exit-day proceeds and slots are unavailable to that morning entries", () =
   ];
   const result = simulateStrategyPortfolio(
     samples,
-    { "600001": history(), "600002": history() },
+    { "600001": history([10, 10, 10, 11, 11, 11]), "600002": history([10, 10, 10, 10, 10, 11]) },
     benchmark(),
     { startingCapital: 100, maxPositions: 1, lotSize: 1 }
   );
@@ -148,7 +149,7 @@ test("equity curve marks open positions to close and calculates drawdown", () =>
       exitDate: DATES[4],
       netReturn: 10
     })],
-    { "600001": history([10, 10, 8, 9, 11, 11]) },
+    { "600001": history([10, 10, 8, 9, 11, 11]).map(row => ({ ...row, noPriceLimit: true })) },
     benchmark(),
     { startingCapital: 100, maxPositions: 1, lotSize: 1 }
   );
@@ -213,7 +214,7 @@ test("empty signals return an all-cash diagnostic result", () => {
 test("A-share lot size and per-stock position cap determine actual cash usage", () => {
   const capped = simulateStrategyPortfolio(
     [sample("600001", { netReturn: 10 })],
-    { "600001": history() },
+    { "600001": history([10, 10, 11, 11, 11, 11]) },
     benchmark(),
     {
       startingCapital: 10000,
@@ -236,6 +237,37 @@ test("A-share lot size and per-stock position cap determine actual cash usage", 
   assert.equal(tooSmall.metrics.tradeCount, 0);
   assert.equal(tooSmall.metrics.insufficientLotRejected, 1);
   assert.equal(tooSmall.rejections[0].reason, "insufficient_lot");
+});
+
+test("C-05 a netReturn that contradicts the price-implied gross return is flagged, not trusted blindly", () => {
+  const result = simulateStrategyPortfolio(
+    [
+      sample("600001", { netReturn: -1.5 }),                 // 与毛收益 0% 相差 1.5pp（正常双边成本）→ 不标记
+      sample("600002", { netReturn: 90 })                    // 与毛收益 0% 相差 90pp → 标记
+    ],
+    { "600001": history(), "600002": history() },
+    benchmark(),
+    { startingCapital: 100, maxPositions: 2, lotSize: 1 }
+  );
+
+  assert.equal(result.netReturnInconsistencies.length, 1);
+  const flagged = result.netReturnInconsistencies[0];
+  assert.equal(flagged.code, "600002");
+  assert.equal(flagged.reason, "net_return_inconsistent");
+  assert.equal(flagged.netReturn, 90);
+  assert.equal(flagged.historicalGrossReturn, 0);
+  assert.equal(flagged.gapPercent, 90);
+  assert.equal(flagged.thresholdPercent, 15);
+  assert.equal(result.metrics.netReturnInconsistentCount, 1);
+
+  // 入场与退出价格均为10，伪造90%收益不会生成资金。
+  const anomalyTrade = result.trades.find((trade) => trade.code === "600002");
+  assert.equal(anomalyTrade?.netReturnPercent, 0);
+  assert.equal(result.metrics.endingCapital, 100);
+  assert.equal(result.metrics.tradeCount, 2);
+  assert.equal(result.metrics.rejectedSignalCount, 0);
+  assert.deepEqual(result.rejections, []);
+  assert.match(result.validation.reasons.join(" "), /相差超过 15 个百分点/);
 });
 
 test("portfolio input validation rejects malformed samples and histories", () => {
@@ -323,7 +355,7 @@ test("selected strategy portfolio replay exposes combined and per-security sampl
     "600002": replayHistory(40)
   };
   const replay = buildSelectedStrategyPortfolioReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     [
       { code: "600002", name: "样本二" },
       { code: "600001", name: "样本一" }
@@ -337,8 +369,8 @@ test("selected strategy portfolio replay exposes combined and per-security sampl
     }
   );
 
-  assert.equal(replay.id, "low_first_board");
-  assert.deepEqual(replay.componentNames, ["低位首板"]);
+  assert.equal(replay.id, "platform_breakout");
+  assert.deepEqual(replay.componentNames, ["平台突破首板"]);
   assert.equal(replay.securityCount, 2);
   assert.equal(replay.perSecurity.length, 2);
   assert.deepEqual(replay.perSecurity.map((row) => row.code), ["600001", "600002"]);
@@ -355,7 +387,7 @@ test("selected multi-stock replay removes entries missing the next master-market
     Array.from({ length: 90 }, (_, index) => replayDate(index))
   );
   const replay = buildSelectedStrategyPortfolioReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     [{ code: "600001", name: "停牌样本" }],
     { "600001": suspended },
     benchmarkRows,
@@ -375,7 +407,7 @@ test("portfolio replay limits signals to the requested window while retaining wa
     Array.from({ length: 90 }, (_, index) => replayDate(index))
   );
   const replay = buildSelectedStrategyPortfolioReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     [{ code: "600001", name: "预热窗口样本" }],
     { "600001": replayHistory(30) },
     benchmarkRows,
@@ -396,7 +428,7 @@ test("portfolio replay exposes a latest strategy hit as pending", () => {
     Array.from({ length: 90 }, (_, index) => replayDate(index))
   );
   const replay = buildSelectedStrategyPortfolioReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     [{ code: "600001", name: "最新信号样本" }],
     { "600001": replayHistory(89) },
     benchmarkRows,
@@ -425,7 +457,7 @@ test("portfolio replay counts a replay-layer rejection exactly once", () => {
     Array.from({ length: 90 }, (_, index) => replayDate(index))
   );
   const replay = buildSelectedStrategyPortfolioReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     [{ code: "600001", name: "一字板样本" }],
     { "600001": rows },
     benchmarkRows,
@@ -437,4 +469,15 @@ test("portfolio replay counts a replay-layer rejection exactly once", () => {
   assert.equal(replay.untradeableCount, 1);
   assert.equal(replay.validation.untradeableCount, 1);
   assert.equal(replay.perSecurity[0].validation.untradeableCount, 1);
+});
+
+
+test("a modeled round trip debits each side once and respects the minimum commission", () => {
+  const result = simulateStrategyPortfolio([sample("600001", { netReturn: 999 })], { "600001": history() }, benchmark(), {
+    startingCapital: 1100, maxPositions: 1, lotSize: 100,
+    costModel: { commissionBps: 7, minCommission: 5, slippageBps: 2, transferFeeBps: 0.1, sellTaxBps: 5 }
+  });
+  const [trade] = result.trades;
+  assert.equal(trade.shares, 100); assert.equal(trade.entryCost, 5.21); assert.equal(trade.exitCost, 5.71);
+  assert.equal(trade.pnl, -10.92); assert.equal(result.metrics.endingCapital, 1089.08);
 });

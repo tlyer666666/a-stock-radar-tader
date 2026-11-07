@@ -1,0 +1,408 @@
+html body,
+body:has([data-workspace="trend-screener"]) {
+  min-width: 0;
+  min-height: 0;
+  background: var(--page);
+  color: var(--ink-1);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+:root .app-shell.terminal-shell {
+  height: 100dvh;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+  background: var(--page);
+  color: var(--ink-1);
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+:root .app-shell.terminal-shell[data-nav-collapsed="true"] {
+  grid-template-columns: var(--sidebar-w-compact) minmax(0, 1fr);
+}
+
+:root .app-shell.terminal-shell .window-dragbar {
+  height: var(--titlebar-h);
+  padding: 0 0 0 var(--space-lg);
+  gap: var(--space-sm);
+  border-bottom: 1px solid var(--line-1);
+  background: var(--sidebar);
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  letter-spacing: .04em;
+}
+
+:root .app-shell.terminal-shell .window-dragbar > span::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: var(--space-sm);
+  border-radius: var(--radius-2xs);
+  background: var(--accent);
+  vertical-align: 0;
+}
+
+:root .app-shell.terminal-shell .window-control {
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation {
+  gap: 0;
+  padding: var(--space-sm) var(--space-sm) var(--space-md);
+  border-right: 1px solid var(--line-1);
+  background: var(--sidebar);
+  scrollbar-width: none;
+}
+
+:root .app-shell.terminal-shell .workspace-nav-top {
+  min-height: 36px;
+  margin: 0 0 var(--space-md);
+  padding: 0 var(--space-2xs) var(--space-sm) var(--space-sm);
+  border-bottom: 1px solid var(--line-1);
+  color: var(--ink-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+:root .app-shell.terminal-shell .sidebar-collapse {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-3);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .sidebar-collapse:hover {
+  color: var(--ink-1);
+  background: var(--hover-bg);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation nav {
+  gap: var(--space-lg);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-caption {
+  margin: 0 var(--space-sm) var(--space-2xs);
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+  letter-spacing: .08em;
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item {
+  position: relative;
+  min-height: 34px;
+  height: 34px;
+  margin: 1px 0;
+  padding: 0 var(--space-sm) 0 var(--space-md);
+  gap: var(--space-sm);
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-regular);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  color: var(--ink-3);
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item:hover {
+  color: var(--ink-1);
+  background: var(--hover-bg);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item:hover svg {
+  color: var(--ink-2);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item:active {
+  background: var(--pressed-bg);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item.active {
+  color: var(--ink-1);
+  background: var(--selected-bg);
+  font-weight: var(--fw-semibold);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item.active svg {
+  color: var(--accent);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 3px;
+  height: 0;
+  border-radius: 0 var(--radius-2xs) var(--radius-2xs) 0;
+  background: var(--accent);
+  box-shadow: none;
+  transform: translateY(-50%);
+  transition: height var(--dur-base) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item.active::before {
+  height: 16px;
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item em {
+  min-width: 20px;
+  height: 18px;
+  padding: 0 var(--space-xs);
+  border-radius: var(--radius-full);
+  color: var(--ink-2);
+  background: var(--surface-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  font-style: normal;
+  line-height: 18px;
+  text-align: center;
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item.active em {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+:root .app-shell.terminal-shell .workspace-nav-bottom {
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--line-1);
+}
+
+:root .app-shell.terminal-shell .main {
+  min-width: 0;
+  background: var(--page);
+}
+
+:root .app-shell.terminal-shell .topbar {
+  min-height: var(--topbar-h);
+  padding: var(--space-sm) var(--space-lg);
+  gap: var(--space-md);
+  border-bottom: 1px solid var(--line-1);
+  background: var(--sidebar);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+:root .app-shell.terminal-shell .workspace-location {
+  padding-right: var(--space-md);
+  border-right: 1px solid var(--line-2);
+  color: var(--ink-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+:root .app-shell.terminal-shell .search-box {
+  flex: 0 1 360px;
+  width: 360px;
+  min-width: 200px;
+  height: var(--control-h);
+  min-height: var(--control-h);
+  padding: 0 var(--space-sm) 0 var(--space-md);
+  gap: var(--space-sm);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--page);
+  color: var(--ink-3);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .search-box > svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+}
+
+:root .app-shell.terminal-shell .search-box:hover {
+  border-color: var(--line-3);
+}
+
+:root .app-shell.terminal-shell .search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface-1);
+}
+
+:root .app-shell.terminal-shell .search-box input {
+  min-width: 0;
+  color: var(--ink-1);
+  font-size: var(--fs-sm);
+}
+
+:root .app-shell.terminal-shell .search-box input::placeholder {
+  color: var(--ink-3);
+  opacity: 1;
+}
+
+:root .app-shell.terminal-shell .top-actions {
+  margin-left: auto;
+  gap: var(--space-xs);
+  flex-wrap: nowrap;
+}
+
+:root .app-shell.terminal-shell :is(.strategy-quick-trigger, .live-toggle, .icon-button) {
+  height: var(--control-h);
+  min-height: var(--control-h);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  background: var(--surface-1);
+  font-size: var(--fs-xs);
+  box-shadow: none;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell :is(.strategy-quick-trigger, .live-toggle, .icon-button):hover,
+:root .app-shell.terminal-shell .strategy-quick.open .strategy-quick-trigger {
+  color: var(--ink-1);
+  border-color: var(--line-3);
+  background: var(--surface-2);
+}
+
+:root .app-shell.terminal-shell .icon-button {
+  width: var(--control-h);
+  padding: 0;
+}
+
+:root .app-shell.terminal-shell .icon-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+:root .app-shell.terminal-shell .icon-button i {
+  background: var(--up);
+  box-shadow: 0 0 0 2px var(--sidebar);
+}
+
+:root .app-shell.terminal-shell .live-toggle span {
+  width: 6px;
+  height: 6px;
+  background: var(--ink-4);
+  box-shadow: none;
+}
+
+:root .app-shell.terminal-shell .live-toggle.on span {
+  background: var(--down);
+  box-shadow: 0 0 0 3px var(--down-soft);
+}
+
+:root .app-shell.terminal-shell .theme-switch {
+  height: var(--control-h);
+  min-height: var(--control-h);
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--page);
+}
+
+:root .app-shell.terminal-shell .theme-switch button {
+  height: 26px;
+  padding: 0 var(--space-sm);
+  gap: var(--space-2xs);
+  border-radius: var(--radius-xs);
+  color: var(--ink-3);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--fs-xs);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell .theme-switch button:hover {
+  color: var(--ink-1);
+}
+
+:root .app-shell.terminal-shell .theme-switch button.active {
+  color: var(--ink-1);
+  background: var(--surface-3);
+  box-shadow: none;
+}
+
+:root .app-shell.terminal-shell .trend-header-rule {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+
+:root .app-shell.terminal-shell :is(.suggestions, .strategy-quick-menu) {
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-3);
+  animation: pop-in var(--dur-base) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell :is(.suggestions button, .strategy-quick-menu > button) {
+  border-radius: var(--radius-sm);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+:root .app-shell.terminal-shell :is(.suggestions button, .strategy-quick-menu > button):is(:hover, :focus-visible) {
+  background: var(--hover-bg);
+}
+
+:root .app-shell.terminal-shell .strategy-quick-menu > button.active {
+  background: var(--selected-bg);
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+:root .app-shell.terminal-shell .strategy-quick-menu em {
+  color: var(--accent);
+}
+
+:root .app-shell.terminal-shell .main > .page {
+  padding: var(--content-pad) var(--content-pad) var(--space-2xl);
+  background: var(--page);
+  scrollbar-gutter: stable;
+}
+
+:root .app-shell.terminal-shell .terminal-statusbar {
+  min-height: 26px;
+  padding: var(--space-2xs) var(--space-lg);
+  gap: var(--space-2xs) var(--space-lg);
+  border-top: 1px solid var(--line-1);
+  background: var(--sidebar);
+  color: var(--ink-3);
+}
+
+:root .app-shell.terminal-shell .terminal-statusbar :is(.version, .status-row small, .status-row strong, .quota-text, .quota-text b) {
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-regular);
+}
+
+:root .app-shell.terminal-shell .terminal-statusbar .status-row strong {
+  color: var(--ink-2);
+  font-weight: var(--fw-medium);
+}
+
+:root .app-shell.terminal-shell .live-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--down);
+  box-shadow: 0 0 0 3px var(--down-soft);
+}
+
+:root .app-shell.terminal-shell .live-dot.paused {
+  background: var(--ink-4);
+  box-shadow: none;
+}
+
+:root .app-shell.terminal-shell .live-dot.degraded {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px var(--warn-soft);
+}

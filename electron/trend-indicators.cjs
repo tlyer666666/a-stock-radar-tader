@@ -26,9 +26,9 @@ function rollingMean(values, period) {
 
 function macd(closes, fast = 12, slow = 26, signal = 9) {
   const fastLine = ema(closes, fast), slowLine = ema(closes, slow);
-  const dif = closes.map((_, i) => fastLine[i] - slowLine[i]);
+  const dif = closes.map((_, i) => finite(fastLine[i]) && finite(slowLine[i]) ? fastLine[i] - slowLine[i] : null);
   const dea = ema(dif, signal);
-  return { dif, dea, histogram: dif.map((v, i) => 2 * (v - dea[i])) };
+  return { dif, dea, histogram: dif.map((v, i) => finite(v) && finite(dea[i]) ? 2 * (v - dea[i]) : null) };
 }
 
 function boll(closes, period = 20, multiplier = 2) {
@@ -141,7 +141,7 @@ function mfi(rows, period = 14) {
 function emv(rows, period = 14, volumeDivisor = 100000000) {
   // TradingView's documented EOM convention. Not the alternate normalized
   // EMV formula found in some Chinese terminals. Scaling changes no zero-cross.
-  const values = rows.map((row, i) => !i || !finite(row.volume) || row.volume <= 0 || !(row.high > row.low) ? null
+  const values = rows.map((row, i) => !i || !finite(row.volume) || row.volume <= 0 || ![row.high, row.low, rows[i - 1]?.high, rows[i - 1]?.low].every(finite) || row.high < row.low ? null
     : ((row.high + row.low - rows[i - 1].high - rows[i - 1].low) / 2) * (row.high - row.low) * volumeDivisor / row.volume);
   return rollingMean(values, period);
 }

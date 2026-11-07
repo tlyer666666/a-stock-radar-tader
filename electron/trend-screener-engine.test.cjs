@@ -291,3 +291,167 @@ test("302 ChiNext securities use the same 20-percent board rule as 300 and 301",
   input.adjustedRows[264]={...input.rawRows[264]};
   assert.equal(evaluateTrendStock(input).kind,"candidate","20-percent move is a 302 limit");
 });
+
+test("raw and adjusted feeds align the latest 250 observations even when page lengths differ", () => {
+  const input = fixture(); input.adjustedRows = input.adjustedRows.slice(-250);
+  assert.equal(evaluateTrendStock(input).kind, "candidate");
+});
+
+// ── 涨停趋势计算逻辑审计补测（第 5 项）─────────────────────────────────────
+// 这两条锁定本轮审计确认的契约，防止后续改动回退。
+
+test("偏离 MA20 必须落在 (0,10]，不允许负数被 <=10 静默放行", () => {
+  // 构造：价格在 MA20 之下（trend 不成立会 excluded），这里验证的是
+  // 「若 trend 放宽，signal 也不会因为负数满足 <=10 而误判」
+  const src = require("node:fs").readFileSync(require.resolve("./trend-screener-engine.cjs"), "utf8");
+  assert.match(src, /deviationPercent > 0 && deviationPercent <= 10/,
+    "signal 必须显式要求偏离度为正（MA20 之上）");
+  assert.doesNotMatch(src, /const signal = patterns\.length > 0 && deviationPercent <= 10/,
+    "不应回退到只有上界的写法");
+});
+
+test("A/B 形态的证据项区分总括项与分项，避免夸大命中条件数", () => {
+  const { evaluateTrendStock } = require("./trend-screener-engine.cjs");
+  // 复用本文件的 fixture 构造方式
+  const ds = [];
+  const day = new Date("2025-01-01T00:00:00Z");
+  while (ds.length < 270) {
+    if (day.getUTCDay() !== 0 && day.getUTCDay() !== 6) ds.push(day.toISOString().slice(0, 10));
+    day.setUTCDate(day.getUTCDate() + 1);
+  }
+  const rawRows = ds.map((date, i) => {
+    const close = Number((10 + i * 0.02).toFixed(2));
+    return { date, open: close - 0.06, high: close + 0.12, low: close - 0.12, close, volume: 8_000_000, amount: 240_000_000 };
+  });
+  rawRows[263] = { ...rawRows[263], close: 15, high: 15.2, low: 14.9 };
+  rawRows[264] = { ...rawRows[264], open: 15.9, high: 16.5, low: 15.8, close: 16.5, volume: 10_000_000, amount: 300_000_000 };
+  for (let i = 265; i <= 268; i += 1) {
+    rawRows[i] = { ...rawRows[i], open: 16, high: 16.3, low: 15.5, close: 16.1, volume: 5_000_000, amount: 220_000_000 };
+  }
+  rawRows[269] = { ...rawRows[269], open: 16.2, high: 16.7, low: 16.1, close: 16.6, volume: 8_000_000, amount: 260_000_000 };
+  const benchmarkRows = ds.map((date, i) => {
+    const close = 100 + i * 0.05;
+    return { date, open: close - 0.02, high: close + 0.1, low: close - 0.1, close, volume: 1, amount: 1 };
+  });
+  const result = evaluateTrendStock({
+    security: { code: "600001", name: "样本股份", secid: "1.600001", assetType: "stock" },
+    rawRows, adjustedRows: rawRows.map(r => ({ ...r })), benchmarkRows, asOf: ds.at(-1)
+  });
+  assert.equal(result.kind, "candidate");
+  const summaries = result.candidate.evidence.filter(e => e.group === "summary");
+  const details = result.candidate.evidence.filter(e => e.group === "detail");
+  assert.ok(summaries.length >= 1, "必须存在总括项");
+  assert.ok(details.length >= 3, "必须存在分项");
+  for (const s of summaries) assert.match(s.label, /^[AB]/, "总括项应是 A/B 形态命中");
+  for (const d of details) assert.match(d.label, /^[AB]/, "分项应归属 A/B 形态");
+});
+
+
+test("shared causal preparation returns exact common 250 dates despite unequal page lengths", () => {
+  const { prepareAlignedTrendSeries } = require("./trend-screener-engine.cjs").trendMath;
+  assert.equal(typeof prepareAlignedTrendSeries, "function");
+  const input = fixture(); input.adjustedRows = input.adjustedRows.slice(-250);
+  const before = structuredClone(input);
+  const result = prepareAlignedTrendSeries(input);
+  assert.equal(result.kind, "prepared");
+  assert.equal(result.raw.length, 250); assert.equal(result.prices.length, 250);
+  assert.equal(result.raw[0].date, input.rawRows[20].date);
+  assert.equal(result.prices[0].volume, input.rawRows[20].volume);
+  assert.deepEqual(input, before);
+  for (const key of ["rawRows", "adjustedRows", "benchmarkRows"]) {
+    input[key].push({ ...input[key].at(-1), date: "2030-01-01", close: -1 });
+    input[key].reverse();
+  }
+  assert.deepEqual(prepareAlignedTrendSeries(input), result);
+});
+
+test("shared alignment rejects holes anywhere in retained window rather than compressing time", () => {
+  const { prepareAlignedTrendSeries } = require("./trend-screener-engine.cjs").trendMath;
+  assert.equal(typeof prepareAlignedTrendSeries, "function");
+  for (const keys of [["rawRows"], ["adjustedRows"], ["rawRows", "adjustedRows"], ["benchmarkRows"]]) {
+    const input = fixture(); for (const key of keys) input[key].splice(key === "benchmarkRows" ? 240 : 100, 1);
+    assert.equal(prepareAlignedTrendSeries(input).kind, "unavailable", keys.join("/"));
+  }
+  const tail = fixture(); tail.adjustedRows.pop();
+  assert.equal(prepareAlignedTrendSeries(tail).kind, "unavailable");
+  const duplicate = fixture(); duplicate.adjustedRows.push({ ...duplicate.adjustedRows[100] });
+  assert.equal(prepareAlignedTrendSeries(duplicate).kind, "unavailable");
+});
+
+test("candidate exposes the median traded amount without changing the 2e8 mean gate", () => {
+  const input = fixture(); input.rawRows.at(-1).amount = 10_000_000_000;
+  const result = evaluateTrendStock(input);
+  assert.equal(result.kind, "candidate");
+  assert.equal(result.candidate.metrics.medianAmount20, 240_000_000);
+  assert.ok(result.candidate.metrics.avgAmount20 > result.candidate.metrics.medianAmount20);
+});
+
+
+test("raw prefilter rejects a calendar hole earlier than its previous 80-session check", () => {
+  const input = fixture(); input.rawRows.splice(100, 1);
+  assert.equal(require("./trend-screener-engine.cjs").prefilterTrendStock(input).kind, "unavailable");
+});
+
+
+test("limit price rounding matches the audited rule library across the whole cent grid", () => {
+  const { cents } = require("./trend-screener-engine.cjs");
+  const { roundPrice } = require("./price-limit-rules.cjs");
+  let mismatches = 0;
+  for (let step = 100; step <= 20000; step += 1) {
+    const previousClose = step / 100;
+    for (const multiplier of [1.1, 1.2, 1.3]) {
+      const raw = previousClose * multiplier;
+      if (cents(raw) !== roundPrice(raw)) mismatches += 1;
+    }
+  }
+  assert.equal(mismatches, 0);
+  // The three main-board previous closes that used to round DOWN by one cent.
+  assert.equal(cents(17.15 * 1.1), 18.87);
+  assert.equal(cents(33.05 * 1.1), 36.36);
+  assert.equal(cents(35.55 * 1.1), 39.11);
+});
+
+test("a genuine 10% limit-up on a half-cent previous close is not reported as a price conflict", () => {
+  const { prefilterTrendStock } = require("./trend-screener-engine.cjs");
+  function flatSeries(previousClose, lastClose) {
+    const rows = [];
+    let cursor = 0;
+    const start = Date.UTC(2025, 0, 6);
+    while (rows.length < 260) {
+      const day = new Date(start + cursor * 86400000);
+      cursor += 1;
+      if (day.getUTCDay() === 0 || day.getUTCDay() === 6) continue;
+      const last = rows.length === 259;
+      rows.push({
+        date: day.toISOString().slice(0, 10),
+        open: last ? Number((previousClose * 1.02).toFixed(4)) : previousClose,
+        high: last ? lastClose : previousClose,
+        low: last ? Number((previousClose * 0.99).toFixed(4)) : previousClose,
+        close: last ? lastClose : previousClose,
+        volume: 1_000_000,
+        amount: 300_000_000
+      });
+    }
+    return rows;
+  }
+  const security = { code: "600001", name: "样本股份", secid: "1.600001", assetType: "stock" };
+  // 17.15 * 1.1 = 18.865 -> exchange limit-up 18.87. This exact bar used to be
+  // rejected as "涨停价或日涨跌幅与原始收盘价冲突" and the stock disappeared.
+  const limitUp = flatSeries(17.15, 18.87);
+  assert.equal(prefilterTrendStock({ security, rawRows: limitUp, asOf: limitUp.at(-1).date }), null);
+  // One cent below the real limit must NOT be treated as a limit-up anchor.
+  const almost = flatSeries(17.15, 18.86);
+  const rejected = prefilterTrendStock({ security, rawRows: almost, asOf: almost.at(-1).date });
+  assert.equal(rejected.kind, "excluded");
+  assert.match(rejected.reason, /没有收盘涨停/);
+});
+
+test("an exact 80-session benchmark is sufficient for a full250 stock-price window", () => {
+  const input = fixture(), expected = evaluateTrendStock(input);
+  input.benchmarkRows = input.benchmarkRows.slice(-80);
+  assert.deepEqual(evaluateTrendStock(input), expected);
+  const { prepareAlignedTrendSeries } = require("./trend-screener-engine.cjs").trendMath;
+  const prepared = prepareAlignedTrendSeries(input);
+  assert.equal(prepared.kind, "prepared"); assert.equal(prepared.raw.length, 250);
+  assert.equal(prepared.benchmark.length, 80);
+});

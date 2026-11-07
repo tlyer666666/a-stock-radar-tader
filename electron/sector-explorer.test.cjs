@@ -17,7 +17,7 @@ test('catalog cache, force refresh, independent IDs and unknown URL rejection', 
 test('conflicting duplicate membership removed instead of arbitrarily keeping quote', async () => { const s = createSectorExplorer(opts(async (url) => url.includes('/detail/') ? page(1, 1, row('300964', '本川智能', '10') + row('300964', '本川智能', '11')) : catalog(url.includes('/gn/') ? 'concept' : 'industry'))); await s.getSectorCatalog(); const r = await s.getSectorDetail({ id: entry.id }); assert.equal(r.members.length, 0); assert.ok(r.coverage.invalid >= 1); assert.equal(r.coverage.complete, false); });
 test('stale fallback preserves original fetchedAt, unavailable not cached', async () => { let t = 100000, fail = false; const s = createSectorExplorer(opts(async (url) => { if (fail)
     throw new Error('offline'); return url.includes('/detail/') ? page() : catalog(url.includes('/gn/') ? 'concept' : 'industry'); }, { now: () => t })); await s.getSectorCatalog(); const a = await s.getSectorDetail({ id: entry.id }); t += 100000; fail = true; const b = await s.getSectorDetail({ id: entry.id }); assert.equal(b.status, 'stale'); assert.equal(b.fetchedAt, a.fetchedAt); t += 1800001; const c = await s.getSectorDetail({ id: entry.id }); assert.equal(c.status, 'unavailable'); assert.equal(c.metrics, null); });
-test('cancellation keeps physical concurrency at two even transport settles later', async () => { let active = 0, max = 0; const releases = []; const s = createSectorExplorer(opts((url, { signal }) => new Promise(resolve => { active++; max = Math.max(max, active); releases.push(() => { active--; resolve(catalog(url.includes('/gn/') ? 'concept' : 'industry')); }); }))); const first = s.getSectorCatalog({ requestId: 'old' }); await new Promise(setImmediate); assert.equal((await s.cancelSectorRequest('old')).cancelled, true); const second = s.getSectorCatalog({ requestId: 'new' }); await new Promise(setImmediate); assert.equal(max, 2); releases.splice(0).forEach(f => f()); await assert.rejects(first, /取消|abort/i); await new Promise(setImmediate); releases.splice(0).forEach(f => f()); await second; assert.equal(max, 2); });
+test('cancellation keeps physical concurrency at two even transport settles later', async () => { let active = 0, max = 0; const releases = []; const s = createSectorExplorer(opts((url, { signal: _signal }) => new Promise(resolve => { active++; max = Math.max(max, active); releases.push(() => { active--; resolve(catalog(url.includes('/gn/') ? 'concept' : 'industry')); }); }))); const first = s.getSectorCatalog({ requestId: 'old' }); await new Promise(setImmediate); assert.equal((await s.cancelSectorRequest('old')).cancelled, true); const second = s.getSectorCatalog({ requestId: 'new' }); await new Promise(setImmediate); assert.equal(max, 2); releases.splice(0).forEach(f => f()); await assert.rejects(first, /取消|abort/i); await new Promise(setImmediate); releases.splice(0).forEach(f => f()); await second; assert.equal(max, 2); });
 test('default catalog uses only official public directories with no seed or artificial research requests', async () => { const urls = []; const s = createSectorExplorer({ fetchHtml: async url => { urls.push(url); return catalog(url.includes('/gn/') ? 'concept' : 'industry'); } }); const c = await s.getSectorCatalog(); assert.deepEqual(urls.sort(), ['https://q.10jqka.com.cn/gn/', 'https://q.10jqka.com.cn/thshy/']); assert.deepEqual(c.entries.map(x => x.kind).sort(), ['concept', 'industry']); assert.equal(c.coverage.loaded, 2); assert.equal(c.coverage.total, 2); assert.equal(c.coverage.failed, 0); assert.equal(c.coverage.complete, false, 'a flat public directory is not a full hierarchy'); await assert.rejects(s.getSectorDetail({ id: 'research:electronic-cloth' }), /未知板块/); await s.dispose(); });
 test('B shares and unrelated Beijing-like prefixes cannot become A-stock members', () => { const r = parseQuotePage(page(1, 1, row('900901', '上海B股', '1') + row('800001', '无效代码', '1') + row('920001', '北京样本', '20')), entry); assert.deepEqual(r.members.map(x => x.code), ['920001']); assert.equal(r.members[0].secid, '0.920001'); });
 test('source board amount handles explicit units without double scaling', () => { for (const [raw, expected] of [['12.5', 1250000000], ['12.5亿', 1250000000], ['1200万', 12000000], ['--', null]]) {
@@ -93,5 +93,107 @@ test('oversized catalog is delivered without exceeding completed-result cache bu
   assert.equal(calls, 4, 'oversized result must not be retained');
   assert.equal(s.getDiagnostics().cache.completedEntries, 0);
   assert.equal(s.getDiagnostics().cache.accountedBytes, 0);
+  await s.dispose();
+});
+
+test('Shanghai midnight does not mark the current local report date as future', async () => {
+  const s=createSectorExplorer(opts(async()=>field.replaceAll('2026-06-30','2026-10-19'),{now:()=>Date.parse('2026-10-18T17:00:00Z')}));
+  try {
+    const catalog=await s.getSectorClassifications({code:'300964'});
+    const leaf=catalog.entries.find(x=>x.level===3);
+    const detail=await s.getSectorDetail({id:leaf.id});
+    assert.equal(detail.reportDate,'2026-10-19');
+    assert.equal(detail.warnings.some(w=>w.includes('晚于抓取日期')),false);
+  } finally {await s.dispose();}
+});
+
+const gnSection = (items) => `<input type="hidden" id="gnSection" value='${JSON.stringify(items)}'>`;
+
+test('member pages use the public /page/N/ path and stop at the anonymous five-page limit with a clear note', async () => {
+  const urls = [];
+  const s = createSectorExplorer(opts(async (url) => {
+    urls.push(url);
+    if (!url.includes('/detail/')) return catalog(url.includes('/gn/') ? 'concept' : 'industry');
+    const n = Number(url.match(/\/page\/(\d+)\//)?.[1] || 1);
+    return page(n, 8, row(String(300000 + n).padStart(6, '0'), `样本${n}`, '10'));
+  }));
+  await s.getSectorCatalog();
+  const r = await s.getSectorDetail({ id: entry.id });
+  const detailUrls = urls.filter(url => url.includes('/detail/'));
+  assert.equal(detailUrls.length, 5, 'pages 6-8 require a login and are not requested');
+  assert.ok(detailUrls.slice(1).every(url => /\/gn\/detail\/code\/308832\/page\/\d\/$/.test(url)), 'no rejected /ajax/ paging path');
+  assert.equal(r.members.length, 5);
+  assert.equal(r.coverage.complete, false);
+  assert.deepEqual(r.coverage.anonymousLimit, { pages: 5, approxTotal: 160 });
+  assert.match(r.warnings.join(), /未登录只开放前 5 页/);
+  await s.dispose();
+});
+
+test('board quotes merge concept page data and industry fund flow, and details carry the index trend', async () => {
+  const historyCalls = [];
+  const s = createSectorExplorer(opts(async (url) => {
+    if (url === 'https://q.10jqka.com.cn/gn/') return catalog('concept') + gnSection({ a: { platecode: '885959', cid: '308832', platename: 'PCB概念', 199112: '3.25', zjjlr: '12.5' } });
+    if (url.includes('/detail/')) return page(1, 1);
+    return catalog('industry');
+  }, {
+    loadIndustryQuotes: async () => [{ code: '881270', changePct: -0.72, netInflow: -3.2e8, leaderName: '鹏鼎控股', leaderChangePct: 4.1, companyCount: 63 }, { code: '', changePct: 1 }],
+    loadIndexHistory: async (code) => { historyCalls.push(code); return Array.from({ length: 25 }, (_, i) => ({ date: `2026-09-${String(i + 1).padStart(2, '0')}`, close: 100 + i })); }
+  }));
+  await s.getSectorCatalog();
+  const q = await s.getSectorQuotes();
+  assert.equal(q.status, 'ready');
+  assert.deepEqual(q.quotes['ths:concept:308832'], { changePct: 3.25, netInflow: 1250000000, indexCode: '885959', leaderName: '', leaderChangePct: null, companyCount: null });
+  assert.equal(q.quotes['ths:industry:881270'].leaderName, '鹏鼎控股');
+  assert.equal(Object.keys(q.quotes).length, 2, 'rows without a board code are skipped');
+  const d = await s.getSectorDetail({ id: entry.id });
+  assert.deepEqual(historyCalls, ['885959'], 'a concept uses its index platecode, not the page cid');
+  assert.equal(d.quote.changePct, 3.25);
+  assert.equal(d.trend.asOf, '2026-09-25');
+  assert.equal(d.trend.change5, Number(((124 / 119 - 1) * 100).toFixed(2)));
+  assert.equal(d.trend.change20, Number(((124 / 104 - 1) * 100).toFixed(2)));
+  assert.equal(d.trend.closes.length, 25);
+  await s.dispose();
+});
+
+test('board quotes degrade per source and are cached for a minute', async () => {
+  let t = 1_000_000, gnCalls = 0;
+  const s = createSectorExplorer(opts(async (url) => { if (url === 'https://q.10jqka.com.cn/gn/') { gnCalls++; return '<html>验证码</html>'; } return catalog('industry'); }, {
+    now: () => t,
+    loadIndustryQuotes: async () => [{ code: '881270', changePct: 1.2, netInflow: null }]
+  }));
+  const q = await s.getSectorQuotes();
+  assert.equal(q.status, 'partial');
+  assert.match(q.warnings.join(), /概念行情不可用/);
+  assert.equal(q.quotes['ths:industry:881270'].changePct, 1.2);
+  await s.getSectorQuotes();
+  assert.equal(gnCalls, 1, 'second read within a minute is served from cache');
+  t += 61_000;
+  await s.getSectorQuotes();
+  assert.equal(gnCalls, 2);
+  await s.dispose();
+});
+
+test('with a Fuyao key a board beyond the anonymous five pages is completed from the Fuyao constituent list', async () => {
+  const fullCalls = [];
+  const s = createSectorExplorer(opts(async (url) => {
+    if (url === 'https://q.10jqka.com.cn/gn/') return catalog('concept') + gnSection({ a: { platecode: '885959', cid: '308832', platename: 'PCB概念', 199112: '3.25', zjjlr: '12.5' } });
+    if (!url.includes('/detail/')) return catalog('industry');
+    const n = Number(url.match(/\/page\/(\d+)\//)?.[1] || 1);
+    return page(n, 8, row(String(300000 + n).padStart(6, '0'), `样本${n}`, '10'));
+  }, {
+    loadFullMembers: async (thscode) => {
+      fullCalls.push(thscode);
+      return Array.from({ length: 150 }, (_, i) => ({ code: String(300001 + i), name: i === 0 ? '*ST风险' : `成分${i}`, latest: 10 + i, changePercent: 1, amount: 1e6 }));
+    }
+  }));
+  await s.getSectorCatalog();
+  await s.getSectorQuotes();
+  const r = await s.getSectorDetail({ id: entry.id });
+  assert.deepEqual(fullCalls, ['885959.TI'], 'a concept is looked up by its index platecode');
+  assert.equal(r.members.length, 149, 'ST names are still excluded');
+  assert.equal(r.coverage.complete, true);
+  assert.equal(r.coverage.anonymousLimit, null);
+  assert.match(r.coverage.scope, /扶摇/);
+  assert.doesNotMatch(r.warnings.join(), /未登录只开放前 5 页/);
   await s.dispose();
 });

@@ -15,7 +15,7 @@ before(async () => {
     import {createRoot} from 'react-dom/client';
     import {FavoritesView} from '/src/App.tsx';
     import useStockMonitors,{STOCK_MONITOR_STORAGE_KEY} from '/src/useStockMonitors.ts';
-    import '/src/styles.css';import '/src/review.css';import '/src/terminal-research.css';import '/src/terminal-ui.css';import '/src/workbench.css';import '/src/watch-workspace.css';import '/src/stock-chart.css';
+    import '/src/styles/index.css';
     const stocks=[{code:'600000',name:'合成监控甲',secid:'1.600000',thscode:'600000.SH',createdAt:new Date().toISOString(),favorite:true},{code:'000001',name:'合成监控乙',secid:'0.000001',thscode:'000001.SZ',createdAt:new Date().toISOString(),favorite:true}];
     localStorage.setItem(STOCK_MONITOR_STORAGE_KEY,JSON.stringify({configs:{'600000':{enabled:true,mode:'all',cooldownMinutes:5,conditions:[{id:'p',field:'latest',operator:'gte',value:10.8},{id:'c',field:'changePct',operator:'gte',value:3}]},'000001':{enabled:true,mode:'any',cooldownMinutes:10,conditions:[{id:'p',field:'changePct',operator:'lte',value:-4},{id:'t',field:'turnover',operator:'gte',value:8}]}},alerts:[]}));
     window.stockApi={getQuoteSnapshot:async stock=>({quote:{code:stock.code,latest:stock.code==='600000'?10.25:12.98,changePct:stock.code==='600000'?2.5:-1.2,turnover:2.8,amount:38000000,source:'qa-fixture'},actualProvider:'qa-fixture',updatedAt:new Date().toISOString()})};

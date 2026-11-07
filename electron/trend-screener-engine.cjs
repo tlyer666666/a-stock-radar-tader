@@ -1,6 +1,9 @@
 "use strict";
 
 const PRICE_KEYS = ["open", "high", "low", "close"];
+const { isBseAshareCode, roundPrice } = require("./price-limit-rules.cjs");
+// C2-03：与选股报告、策略信号共用一个 ST/退市名称判定（原先三处口径不一致）。
+const { isRiskSecurityName } = require("./strategy-intelligence.cjs");
 const DAY_MS = 86_400_000;
 
 function isoDate(value) {
@@ -13,9 +16,13 @@ function finiteNumber(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function cents(value) {
-  return Math.round((value + Number.EPSILON) * 100) / 100;
-}
+// Exchange prices round half up on the cent. `+ Number.EPSILON` (2.2e-16) is far
+// below the floating-point error of `price * 100` at these magnitudes, so it
+// silently rounded x.xx5 DOWN by one cent for some previous closes (17.15 * 1.1
+// became 18.86 instead of 18.87). That made a genuine limit-up bar look like a
+// price/limit conflict and could also accept a non-limit bar as the anchor.
+// Delegate to the single audited implementation in price-limit-rules.
+const cents = value => roundPrice(value);
 
 function floorCents(value) {
   return Math.floor((value + 1e-9) * 100) / 100;
@@ -29,7 +36,7 @@ function boardFor(code) {
   if (/^(?:000|001|002|003|600|601|603|605)\d{3}$/.test(code)) return "main";
   if (/^(?:300|301|302)\d{3}$/.test(code)) return "growth";
   if (/^(?:688|689)\d{3}$/.test(code)) return "star";
-  if (/^(?:4|8)\d{5}$/.test(code) || /^920\d{3}$/.test(code)) return "beijing";
+  if (isBseAshareCode(code)) return "beijing";
   return null;
 }
 
@@ -75,6 +82,63 @@ function prepareBenchmarkRows(rows, asOf) {
   return selected;
 }
 
+/** Prepare one causal, exact-date 250-session window for every trend model.
+ * Older feed pagination may differ; a missing date within the retained window
+ * must never be hidden by intersecting or by joining array offsets.
+ */
+function prepareAlignedTrendSeries({ rawRows, adjustedRows, benchmarkRows, asOf } = {}) {
+  if (!isoDate(asOf)) return unavailable("截止日期无效");
+  const rawFull = prepareRows(rawRows, asOf, true);
+  const adjustedFull = prepareRows(adjustedRows, asOf, false);
+  if (!rawFull || !adjustedFull) return unavailable("原始或前复权日线存在缺失、重复或无效字段");
+  const adjustedDates = new Set(adjustedFull.map(row => row.date));
+  const common = rawFull.filter(row => adjustedDates.has(row.date)).slice(-250);
+  if (common.length < 250) return unavailable("有效共同日线少于250根");
+  const firstDate = common[0].date;
+  const raw = rawFull.filter(row => row.date >= firstDate);
+  const adjusted = adjustedFull.filter(row => row.date >= firstDate);
+  if (raw.length !== 250 || adjusted.length !== 250 || raw.some((row, i) => row.date !== adjusted[i].date)) {
+    return unavailable("原始与前复权日线日期不一致，250日窗口存在缺失行情");
+  }
+  let benchmark = null;
+  if (benchmarkRows !== undefined && benchmarkRows !== null && !Array.isArray(benchmarkRows)) {
+    return unavailable("中证全指日线字段无效");
+  }
+  if (Array.isArray(benchmarkRows) && benchmarkRows.length) {
+    const full = prepareBenchmarkRows(benchmarkRows, asOf);
+    if (!full) return unavailable("中证全指日线字段无效");
+    benchmark = full.slice(-250);
+    const marketWindow = benchmark.slice(-80), stockWindow = raw.slice(-80);
+    if (marketWindow.length < 80 || marketWindow.some((row, i) => row.date !== stockWindow[i].date)) {
+      return unavailable("近80个交易所交易日与个股K线不齐或基准不足，可能存在停牌或缺失行情");
+    }
+    // Use older benchmark sessions when supplied to catch a date omitted by
+    // both stock feeds. Their availability is optional, never a new data gate.
+    const stockDates = new Set(raw.map(row => row.date));
+    if (benchmark.some(row => row.date >= firstDate && !stockDates.has(row.date))) {
+      return unavailable("250日窗口内缺少已有基准交易日对应的个股行情");
+    }
+  }
+  const factor = raw.at(-1).close / adjusted.at(-1).close;
+  if (!finiteNumber(factor) || factor <= 0) return unavailable("前复权价无法换算实际报价");
+  for (let i = raw.length - 20; i < raw.length; i++) {
+    const ratio = raw[i].close / adjusted[i].close;
+    if (!finiteNumber(ratio) || Math.abs(ratio / factor - 1) > .002) {
+      return unavailable("近20日复权因子变化，原始成交量不可直接与复权形态混用");
+    }
+  }
+  const prices = adjusted.map((row, i) => ({ ...row,
+    open: row.open * factor, high: row.high * factor, low: row.low * factor, close: row.close * factor,
+    volume: raw[i].volume, amount: raw[i].amount }));
+  if (prices.some(row => !validRow(row, false))) return unavailable("复权换算价格无效");
+  return { kind: "prepared", raw, adjusted, benchmark, prices, factor };
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b), middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
 function mean(rows, key) {
   return rows.reduce((sum, row) => sum + row[key], 0) / rows.length;
 }
@@ -87,6 +151,7 @@ function maAt(rows, end, length) {
 }
 
 function atr14(rows) {
+  if (!Array.isArray(rows) || rows.length < 15 || !rows.slice(-15).every(row => [row?.high, row?.low, row?.close].every(finiteNumber))) return null;
   let sum = 0;
   for (let i = rows.length - 14; i < rows.length; i++) {
     const row = rows[i];
@@ -123,84 +188,63 @@ function limitAt(rows, i, board) {
   return { limited: Math.abs(row.close - target) < 0.005, evidence: "calculated" };
 }
 
-function evidence(label, passed, value, rule) {
-  return { label, passed, value: String(value), rule };
+/**
+ * `group` 用于区分「复合判定的总括项」与「构成它的分项」。
+ * 例：A 形态命中是一个 AND 组合，A时间窗/A均线回踩/A缩量/A突破与放量 是它的分项。
+ * 若不区分，证据链会被误读成「命中了 6 条独立条件」，夸大信号强度。
+ * 该字段是增量信息，不影响任何判定逻辑。
+ */
+function evidence(label, passed, value, rule, group) {
+  return { label, passed, value: String(value), rule, ...(group ? { group } : {}) };
 }
 
-function evaluateTrendStock({ security, rawRows, adjustedRows, benchmarkRows, asOf } = {}) {
-  if (!isoDate(asOf)) return unavailable("截止日期无效");
+/** Identity, asset-type and ST gates shared by the full evaluation and the fast prefilter.
+ * Both entry points must accept and reject exactly the same securities, in the same order. */
+function gateTrendSecurity(security) {
   const code = String(security?.code || "");
   const name = String(security?.name || "");
-  if (!/^\d{6}$/.test(code) || !name || !security?.secid) return unavailable("证券身份字段缺失或无效");
-  if (security.assetType && security.assetType !== "stock") return excluded("非股票资产");
-  if (security.isST === true || /\*?ST|退市|退$/i.test(name)) return excluded("ST或退市证券");
+  if (!/^\d{6}$/.test(code) || !name || !security?.secid) return { error: unavailable("证券身份字段缺失或无效") };
+  if (security.assetType && security.assetType !== "stock") return { error: excluded("非股票资产") };
+  if (security.isST === true || isRiskSecurityName(name)) return { error: excluded("ST或退市证券") };
   const board = boardFor(code);
-  if (!board) return excluded("非沪深北A股代码");
+  if (!board) return { error: excluded("非沪深北A股代码") };
+  return { code, name, board };
+}
 
-  const raw = prepareRows(rawRows, asOf, true);
-  const adjusted = prepareRows(adjustedRows, asOf, false);
-  if (!raw || !adjusted) return unavailable("原始或前复权日线存在缺失、重复或无效字段");
-  if (raw.length < 250 || adjusted.length < 250) return unavailable("有效日线少于250根");
-  if (raw.length !== adjusted.length || raw.some((row, i) => row.date !== adjusted[i].date)) {
-    return unavailable("原始与前复权日线日期不一致");
-  }
-  if (raw.slice(-15).some((row) => row.isST === true)) return excluded("近期存在ST交易状态");
-  if (raw.at(-1).volume <= 0 || raw.at(-1).amount <= 0) return unavailable("当日停牌或无有效成交");
+/** Raw-series gates shared by the full evaluation and the fast prefilter: ST trading state,
+ * suspension, benchmark calendar alignment and freshness. */
+function gateTrendSeries({ raw, benchmarkRows, asOf }) {
+  if (raw.slice(-15).some((row) => row.isST === true)) return { error: excluded("近期存在ST交易状态") };
+  if (raw.at(-1).volume <= 0 || raw.at(-1).amount <= 0) return { error: unavailable("当日停牌或无有效成交") };
   if (raw.slice(-20).some((row) => row.volume <= 0 || row.amount <= 0)) {
-    return unavailable("近20日存在停牌或无有效成交记录");
+    return { error: unavailable("近20日存在停牌或无有效成交记录") };
   }
   let benchmark = null;
   if (Array.isArray(benchmarkRows) && benchmarkRows.length) {
     benchmark = prepareBenchmarkRows(benchmarkRows, asOf);
-    if (!benchmark) return unavailable("中证全指日线字段无效");
+    if (!benchmark) return { error: unavailable("中证全指日线字段无效") };
     // The broad index is a conservative exchange-calendar proxy for all four A-share boards.
     // A source that omits a suspended stock's bar must not shorten limit/MA/volume windows.
-    if (benchmark.length < 65) return unavailable("基准交易日历不足65日，无法核对信号窗口");
-    const exchangeDates = benchmark.slice(-65);
-    const stockDates = raw.slice(-65);
+    if (benchmark.length < 80) return { error: unavailable("基准交易日历不足80日，无法核对信号窗口") };
+    const exchangeDates = benchmark.slice(-80);
+    const stockDates = raw.slice(-80);
     if (exchangeDates.some((row, i) => row.date !== stockDates[i].date)) {
-      return unavailable("近65个交易所交易日与个股K线不齐，可能存在停牌或缺失行情");
+      return { error: unavailable("近80个交易所交易日与个股K线不齐，可能存在停牌或缺失行情") };
+    }
+    const retained = raw.slice(-250), retainedDates = new Set(retained.map(row => row.date));
+    if (benchmark.some(row => row.date >= retained[0].date && !retainedDates.has(row.date))) {
+      return { error: unavailable("250日窗口内缺少已有基准交易日对应的个股行情") };
     }
   }
   const expectedDate = benchmark?.length ? benchmark.at(-1).date : asOf;
   if (raw.at(-1).date !== expectedDate || (Date.parse(`${asOf}T00:00:00Z`) - Date.parse(`${raw.at(-1).date}T00:00:00Z`)) / DAY_MS > 14) {
-    return unavailable("日线未更新至最近交易日");
+    return { error: unavailable("日线未更新至最近交易日") };
   }
+  return { benchmark };
+}
 
-  const currentFactor = raw.at(-1).close / adjusted.at(-1).close;
-  if (!Number.isFinite(currentFactor) || currentFactor <= 0) return unavailable("前复权价无法换算实际报价");
-  for (let i = raw.length - 20; i < raw.length; i++) {
-    const ratio = raw[i].close / adjusted[i].close;
-    if (!Number.isFinite(ratio) || Math.abs(ratio / currentFactor - 1) > 0.002) {
-      return unavailable("近20日复权因子变化，原始成交量不可直接与复权形态混用");
-    }
-  }
-  const prices = adjusted.map((row, i) => ({ ...row,
-    open: row.open * currentFactor, high: row.high * currentFactor,
-    low: row.low * currentFactor, close: row.close * currentFactor,
-    volume: raw[i].volume,
-    amount: raw[i].amount
-  }));
-  const last = prices.length - 1;
-  const close = prices[last].close;
-  const ma20 = maAt(prices, last, 20);
-  const ma60 = maAt(prices, last, 60);
-  const avgAmount20 = mean(raw.slice(-20), "amount");
-  const deviationPercent = (close / ma20 - 1) * 100;
-  let t0 = -1;
-  let limitEvidence = "calculated";
-  for (let i = last; i >= last - 14; i--) {
-    const state = limitAt(raw, i, board);
-    if (state.invalid) return unavailable("涨停价或日涨跌幅与原始收盘价冲突，无法核验涨停");
-    if (state.limited) { t0 = i; limitEvidence = state.evidence; break; }
-  }
-  if (t0 < 0) return excluded("最近15根交易日没有收盘涨停");
-  const t0Low = prices[t0].low;
-  const trend = close > ma20 && ma20 > ma60 && ma20 > maAt(prices, last - 5, 20);
-  if (!trend) return excluded("未满足收盘价>MA20>MA60且MA20上升");
-  if (prices.slice(t0 + 1).some((row) => row.close < t0Low - 1e-9)) return excluded("涨停后收盘跌破t0最低价");
-  if (avgAmount20 < 200_000_000) return excluded("近20日平均成交额不足2亿元");
-
+function trendAnchorShape(raw, prices, t0) {
+  const last = prices.length - 1, close = prices[last].close, t0Low = prices[t0].low;
   const daysSinceLimit = last - t0;
   const prior3 = prices.slice(last - 3, last);
   const prior5 = prices.slice(last - 5, last);
@@ -225,6 +269,61 @@ function evaluateTrendStock({ security, rawRows, adjustedRows, benchmarkRows, as
   const bBreakout = close > consolidationHigh;
   const bVolume = raw[last].volume >= avgVolume5 * 1.2;
   const b = bWindow && bRange && bContracted && bBreakout && bVolume;
+  return { daysSinceLimit, prior3, avgVolume3, avgVolume5, pullbackTouch, aWindow, aContracted,
+    aBreakout, aVolume, a, consolidation, consolidationLow, consolidationHigh, bWindow,
+    bRange, bContracted, bBreakout, bVolume, b };
+}
+
+function evaluateTrendStock({ security, rawRows, adjustedRows, benchmarkRows, asOf } = {}, { anchorPolicy = "latest" } = {}) {
+  if (!isoDate(asOf)) return unavailable("截止日期无效");
+  const gate = gateTrendSecurity(security);
+  if (gate.error) return gate.error;
+  const { code, name, board } = gate;
+
+  const prepared = prepareAlignedTrendSeries({ rawRows, adjustedRows, benchmarkRows, asOf });
+  if (prepared.kind !== "prepared") return prepared;
+  const { raw, prices } = prepared;
+  const series = gateTrendSeries({ raw, benchmarkRows: prepared.benchmark, asOf });
+  if (series.error) return series.error;
+  const benchmark = prepared.benchmark;
+
+  const last = prices.length - 1;
+  const close = prices[last].close;
+  const ma20 = maAt(prices, last, 20);
+  const ma60 = maAt(prices, last, 60);
+  const avgAmount20 = mean(raw.slice(-20), "amount");
+  const deviationPercent = (close / ma20 - 1) * 100;
+  const anchors = [];
+  for (let i = last; i >= last - 14; i--) {
+    const state = limitAt(raw, i, board);
+    if (state.invalid) return unavailable("涨停价或日涨跌幅与原始收盘价冲突，无法核验涨停");
+    if (state.limited) {
+      anchors.push({ index: i, evidence: state.evidence });
+      if (anchorPolicy !== "active") break;
+    }
+  }
+  if (!anchors.length) return excluded("最近15根交易日没有收盘涨停");
+  let anchor = anchors[0];
+  if (anchorPolicy === "active") {
+    const supported = anchors.filter(({ index }) => !prices.slice(index + 1).some(row => row.close < prices[index].low - 1e-9));
+    if (!supported.length) return excluded("涨停后收盘跌破t0最低价，最近15日没有有效活动形态");
+    // Prefer the oldest still-supported shape that
+    // actually triggers A/B today. Otherwise retain the latest valid watch.
+    anchor = [...supported].reverse().find(({ index }) => {
+      const shape = trendAnchorShape(raw, prices, index);
+      return last - index >= 4 && (shape.a || shape.b);
+    }) || supported[0];
+  }
+  const t0 = anchor.index, limitEvidence = anchor.evidence;
+  const t0Low = prices[t0].low;
+  const trend = close > ma20 && ma20 > ma60 && ma20 > maAt(prices, last - 5, 20);
+  if (!trend) return excluded("未满足收盘价>MA20>MA60且MA20上升");
+  if (prices.slice(t0 + 1).some((row) => row.close < t0Low - 1e-9)) return excluded("涨停后收盘跌破t0最低价");
+  if (avgAmount20 < 200_000_000) return excluded("近20日平均成交额不足2亿元");
+
+  const { daysSinceLimit, prior3, avgVolume3, avgVolume5, pullbackTouch, aWindow, aContracted,
+    aBreakout, aVolume, a, consolidation, consolidationLow, consolidationHigh, bWindow,
+    bRange, bContracted, bBreakout, bVolume, b } = trendAnchorShape(raw, prices, t0);
   const patterns = [a && "A", b && "B"].filter(Boolean);
   const atr = atr14(prices);
   const patternLow = a ? Math.min(...prior3.map((row) => row.low)) : consolidationLow;
@@ -247,7 +346,12 @@ function evaluateTrendStock({ security, rawRows, adjustedRows, benchmarkRows, as
   if (marketBlocked) warnings.push("中证全指低于MA60，暂停新开仓");
   warnings.push("观察结果需复核次日交易状态、公告及交易权限");
   const marketOpen = benchmarkMa60 !== null && !marketBlocked;
-  const signal = patterns.length > 0 && deviationPercent <= 10 && riskValid && marketOpen;
+  // 偏离度必须落在 (0, 10] 区间：上界防止追高，下界显式表达
+  // 「信号日必须在 MA20 之上」。trend 门槛已强制 close > ma20，
+  // 这里再写一次下界是为了让 signal 的成立条件自洽 —— 将来若 trend 规则调整，
+  // 不会因为负数也满足 `<= 10` 而静默放行。
+  const deviationInRange = deviationPercent > 0 && deviationPercent <= 10;
+  const signal = patterns.length > 0 && deviationInRange && riskValid && marketOpen;
   const plan = signal ? {
     stop,
     maxEntry,
@@ -260,25 +364,25 @@ function evaluateTrendStock({ security, rawRows, adjustedRows, benchmarkRows, as
     board, asOf: raw[last].date, limitDate: raw[t0].date, daysSinceLimit,
     patterns, stage: signal ? "signal" : "watch", limitEvidence,
     evidence: [
-      evidence("收盘涨停", true, raw[t0].date, "最近15根交易日内最近一次收盘涨停"),
+      evidence("收盘涨停", true, raw[t0].date, anchorPolicy === "active" ? "最近15日内优先最早仍有支撑且当日触发A/B的4–14日锚点；否则最近有效观察锚点" : "最近15根交易日内最近一次收盘涨停"),
       evidence("趋势", trend, `${close.toFixed(2)} / ${ma20.toFixed(2)} / ${ma60.toFixed(2)}`, "收盘价>MA20>MA60且MA20上升"),
       evidence("成交额", true, avgAmount20.toFixed(0), "近20日平均成交额至少2亿元"),
-      evidence("A缩量回踩", a, a ? "命中" : "未命中", "涨停后第4–14日三根缩量回踩并放量反包"),
-      evidence("A时间窗", aWindow, `${daysSinceLimit}日`, "涨停后第4–14日"),
-      evidence("A均线回踩", pullbackTouch, pullbackTouch ? "触及" : "未触及", "此前三根至少一根最低价在当日MA20的98%–102%"),
-      evidence("A缩量", aContracted, `${(avgVolume3 / raw[t0].volume * 100).toFixed(1)}%`, "三根均量不超过t0量70%"),
-      evidence("A突破与放量", aBreakout && aVolume, `${aBreakout ? "突破" : "未突破"} / ${(raw[last].volume / avgVolume5 * 100).toFixed(1)}%`, "收盘高于前高且当日量不低于前五根均量"),
-      evidence("B整理突破", b, b ? "命中" : "未命中", "涨停后第4–11日整理并放量突破"),
-      evidence("B时间窗", bWindow, `${consolidation.length}根`, "t0后3–10根整理且信号日在第4–11日"),
-      evidence("B整理幅度", bRange, `${((consolidationHigh / consolidationLow - 1) * 100).toFixed(1)}%`, "整理最高/最低-1不超过10%"),
-      evidence("B缩量", bContracted, consolidation.length ? `${(mean(consolidation, "volume") / raw[t0].volume * 100).toFixed(1)}%` : "无整理", "整理均量不超过t0量80%"),
-      evidence("B突破与放量", bBreakout && bVolume, `${bBreakout ? "突破" : "未突破"} / ${(raw[last].volume / avgVolume5 * 100).toFixed(1)}%`, "收盘突破整理最高价且当日量不低于前五根均量120%"),
-      evidence("偏离MA20", deviationPercent <= 10, `${deviationPercent.toFixed(2)}%`, "信号时不超过10%"),
+      evidence("A缩量回踩", a, a ? "命中" : "未命中", "涨停后第4–14日三根缩量回踩并放量反包", "summary"),
+      evidence("A时间窗", aWindow, `${daysSinceLimit}日`, "涨停后第4–14日", "detail"),
+      evidence("A均线回踩", pullbackTouch, pullbackTouch ? "触及" : "未触及", "此前三根至少一根最低价在当日MA20的98%–102%", "detail"),
+      evidence("A缩量", aContracted, `${(avgVolume3 / raw[t0].volume * 100).toFixed(1)}%`, "三根均量不超过t0量70%", "detail"),
+      evidence("A突破与放量", aBreakout && aVolume, `${aBreakout ? "突破" : "未突破"} / ${(raw[last].volume / avgVolume5 * 100).toFixed(1)}%`, "收盘高于前高且当日量不低于前五根均量", "detail"),
+      evidence("B整理突破", b, b ? "命中" : "未命中", "涨停后第4–11日整理并放量突破", "summary"),
+      evidence("B时间窗", bWindow, `${consolidation.length}根`, "t0后3–10根整理且信号日在第4–11日", "detail"),
+      evidence("B整理幅度", bRange, `${((consolidationHigh / consolidationLow - 1) * 100).toFixed(1)}%`, "整理最高/最低-1不超过10%", "detail"),
+      evidence("B缩量", bContracted, consolidation.length ? `${(mean(consolidation, "volume") / raw[t0].volume * 100).toFixed(1)}%` : "无整理", "整理均量不超过t0量80%", "detail"),
+      evidence("B突破与放量", bBreakout && bVolume, `${bBreakout ? "突破" : "未突破"} / ${(raw[last].volume / avgVolume5 * 100).toFixed(1)}%`, "收盘突破整理最高价且当日量不低于前五根均量120%", "detail"),
+      evidence("偏离MA20", deviationInRange, `${deviationPercent.toFixed(2)}%`, "信号时在 MA20 之上且偏离不超过10%"),
       evidence("参考风险区间", riskValid, riskValid ? `${cents(stop)}–${maxEntry}` : "无有效区间", "S<P≤min(1.03C,S/0.92)"),
       evidence("市场门槛", marketOpen, marketBlocked ? "暂停" : benchmarkMa60 === null ? "未知" : "通过", "中证全指收盘不低于MA60")
     ],
     metrics: { close: cents(raw[last].close), ma20: cents(ma20), ma60: cents(ma60),
-      avgAmount20: Number(avgAmount20.toFixed(2)), deviationPercent: Number(deviationPercent.toFixed(2)),
+      avgAmount20: Number(avgAmount20.toFixed(2)), medianAmount20: median(raw.slice(-20).map(row => row.amount)), deviationPercent: Number(deviationPercent.toFixed(2)),
       relativeStrength20: relativeStrength20 === null ? null : Number(relativeStrength20.toFixed(2)),
       atr14: Number(atr.toFixed(4)) },
     plan, warnings
@@ -298,50 +402,106 @@ function rankTrendCandidates(candidates) {
   });
 }
 
+/** 最近 61 根原始日线里是否有除权等价格基准变化（报告涨跌幅与原始收盘不符，或昨收接不上）。 */
+function rawBasisChanged(raw, sessions = 61) {
+  for (let i = Math.max(1, raw.length - sessions); i < raw.length; i += 1) {
+    const row = raw[i], previous = raw[i - 1];
+    const reported = changePercent(row);
+    if (reported !== null && Math.abs(reported - (row.close / previous.close - 1) * 100) > 0.75) return true;
+    const preClose = finiteNumber(row.preClose) ? row.preClose : finiteNumber(row.previousClose) ? row.previousClose : null;
+    if (preClose !== null && Math.abs(preClose / previous.close - 1) > 0.002) return true;
+  }
+  return false;
+}
+
 /** Necessary raw-data conditions only. A null result requires the complete
  * adjusted-price evaluation; it is never an affirmative candidate result.
- * Sharing prepareRows/limitAt keeps the fast path on the classic rules. */
-function prefilterTrendStock({ security, rawRows, benchmarkRows, asOf } = {}) {
+ * Sharing prepareRows/limitAt keeps the fast path on the classic rules.
+ * requireLimit=false（只选了经典技术策略库）：不要求近期涨停；没有除权的股票先用原始价核对趋势，
+ * 不满足就不必再下载前复权日线（无除权时原始价与前复权只差一个常数比例，均线关系相同）。 */
+function prefilterTrendStock({ security, rawRows, benchmarkRows, asOf } = {}, { requireLimit = true } = {}) {
   if (!isoDate(asOf)) return unavailable("截止日期无效");
-  const code = String(security?.code || "");
-  const name = String(security?.name || "");
-  if (!/^\d{6}$/.test(code) || !name || !security?.secid) return unavailable("证券身份字段缺失或无效");
-  if (security.assetType && security.assetType !== "stock") return excluded("非股票资产");
-  if (security.isST === true || /\*?ST|退市|退$/i.test(name)) return excluded("ST或退市证券");
-  const board = boardFor(code);
-  if (!board) return excluded("非沪深北A股代码");
+  const gate = gateTrendSecurity(security);
+  if (gate.error) return gate.error;
+  const { board } = gate;
+
   const raw = prepareRows(rawRows, asOf, true);
   if (!raw) return unavailable("原始日线存在缺失、重复或无效字段");
   if (raw.length < 250) return unavailable("有效日线少于250根");
-  if (raw.slice(-15).some((row) => row.isST === true)) return excluded("近期存在ST交易状态");
-  if (raw.at(-1).volume <= 0 || raw.at(-1).amount <= 0) return unavailable("当日停牌或无有效成交");
-  if (raw.slice(-20).some((row) => row.volume <= 0 || row.amount <= 0)) {
-    return unavailable("近20日存在停牌或无有效成交记录");
-  }
-  let benchmark = null;
-  if (Array.isArray(benchmarkRows) && benchmarkRows.length) {
-    benchmark = prepareBenchmarkRows(benchmarkRows, asOf);
-    if (!benchmark) return unavailable("中证全指日线字段无效");
-    if (benchmark.length < 65) return unavailable("基准交易日历不足65日，无法核对信号窗口");
-    const stockDates = raw.slice(-65);
-    if (benchmark.slice(-65).some((row, i) => row.date !== stockDates[i].date)) {
-      return unavailable("近65个交易所交易日与个股K线不齐，可能存在停牌或缺失行情");
-    }
-  }
-  const expectedDate = benchmark?.length ? benchmark.at(-1).date : asOf;
-  if (raw.at(-1).date !== expectedDate || (Date.parse(`${asOf}T00:00:00Z`) - Date.parse(`${raw.at(-1).date}T00:00:00Z`)) / DAY_MS > 14) {
-    return unavailable("日线未更新至最近交易日");
-  }
+  const series = gateTrendSeries({ raw, benchmarkRows, asOf });
+  if (series.error) return series.error;
   let found = false;
   for (let i = raw.length - 1; i >= raw.length - 15; i--) {
     const state = limitAt(raw, i, board);
     if (state.invalid) return unavailable("涨停价或日涨跌幅与原始收盘价冲突，无法核验涨停");
-    if (state.limited) { found = true; break; }
+    if (state.limited) { found = true; if (requireLimit) break; }
   }
-  if (!found) return excluded("最近15根交易日没有收盘涨停");
+  if (requireLimit && !found) return excluded("最近15根交易日没有收盘涨停");
   if (mean(raw.slice(-20), "amount") < 200_000_000) return excluded("近20日平均成交额不足2亿元");
+  if (!requireLimit && !rawBasisChanged(raw)) {
+    const last = raw.length - 1, close = raw[last].close, ma20 = maAt(raw, last, 20), ma60 = maAt(raw, last, 60);
+    if (!(close > ma20 && ma20 > ma60 && ma20 > maAt(raw, last - 5, 20))) return excluded("未满足收盘价>MA20>MA60且MA20上升");
+  }
   return null;
 }
 
-module.exports = { evaluateTrendStock, rankTrendCandidates, prefilterTrendStock,
-  trendMath: Object.freeze({ prepareRows, prepareBenchmarkRows, maAt, atr14, mean, ceilCents, floorCents }) };
+/**
+ * 经典技术策略库的共同底座：只要求身份/日线/交易日历核验、上升趋势（收盘>MA20>MA60且MA20上升）
+ * 和近20日平均成交额≥2亿元，不要求近期涨停。若最近15日内有收盘涨停且此后收盘未跌破涨停日最低价，
+ * 记下涨停日供止损参考（止损取涨停日最低价与前低减0.5ATR的较高者）。
+ */
+function evaluateTrendBase({ security, rawRows, adjustedRows, benchmarkRows, asOf } = {}) {
+  if (!isoDate(asOf)) return unavailable("截止日期无效");
+  const gate = gateTrendSecurity(security);
+  if (gate.error) return gate.error;
+  const { code, name, board } = gate;
+  const prepared = prepareAlignedTrendSeries({ rawRows, adjustedRows, benchmarkRows, asOf });
+  if (prepared.kind !== "prepared") return prepared;
+  const { raw, prices } = prepared;
+  const series = gateTrendSeries({ raw, benchmarkRows: prepared.benchmark, asOf });
+  if (series.error) return series.error;
+  const benchmark = prepared.benchmark;
+  const last = prices.length - 1;
+  const close = prices[last].close;
+  const ma20 = maAt(prices, last, 20);
+  const ma60 = maAt(prices, last, 60);
+  const avgAmount20 = mean(raw.slice(-20), "amount");
+  const deviationPercent = (close / ma20 - 1) * 100;
+  let anchor = null;
+  for (let i = last; i >= last - 14; i--) {
+    const state = limitAt(raw, i, board);
+    if (state.invalid) return unavailable("涨停价或日涨跌幅与原始收盘价冲突，无法核验涨停");
+    if (state.limited && !anchor && !prices.slice(i + 1).some(row => row.close < prices[i].low - 1e-9)) anchor = { index: i, evidence: state.evidence };
+  }
+  const trend = close > ma20 && ma20 > ma60 && ma20 > maAt(prices, last - 5, 20);
+  if (!trend) return excluded("未满足收盘价>MA20>MA60且MA20上升");
+  if (avgAmount20 < 200_000_000) return excluded("近20日平均成交额不足2亿元");
+  const benchmarkByDate = new Map((benchmark || []).map((row) => [row.date, row]));
+  const benchmarkStart = benchmarkByDate.get(prices[last - 20].date);
+  const benchmarkEnd = benchmarkByDate.get(prices[last].date);
+  const relativeStrength20 = benchmarkStart && benchmarkEnd
+    ? ((prices[last].close / prices[last - 20].close - 1) - (benchmarkEnd.close / benchmarkStart.close - 1)) * 100 : null;
+  const warnings = [];
+  if (anchor?.evidence === "calculated") warnings.push("涨停价按常规板块规则推算，待官方数据核验");
+  warnings.push("观察结果需复核次日交易状态、公告及交易权限");
+  const candidate = {
+    security: { code, name, secid: String(security.secid),
+      ...(security.industry ? { industry: String(security.industry) } : {}), assetType: "stock" },
+    board, asOf: raw[last].date, limitDate: anchor ? raw[anchor.index].date : null, daysSinceLimit: anchor ? last - anchor.index : null,
+    patterns: [], stage: "watch", ...(anchor ? { limitEvidence: anchor.evidence } : {}),
+    evidence: [
+      evidence("趋势", trend, `${close.toFixed(2)} / ${ma20.toFixed(2)} / ${ma60.toFixed(2)}`, "收盘价>MA20>MA60且MA20上升"),
+      evidence("成交额", true, avgAmount20.toFixed(0), "近20日平均成交额至少2亿元"),
+      ...(anchor ? [evidence("近期涨停", true, raw[anchor.index].date, "最近15日内收盘涨停且此后收盘未跌破涨停日最低价；仅作止损参考，不是入选条件")] : [])
+    ],
+    metrics: { close: cents(raw[last].close), ma20: cents(ma20), ma60: cents(ma60),
+      avgAmount20: Number(avgAmount20.toFixed(2)), medianAmount20: median(raw.slice(-20).map(row => row.amount)), deviationPercent: Number(deviationPercent.toFixed(2)),
+      relativeStrength20: relativeStrength20 === null ? null : Number(relativeStrength20.toFixed(2)),
+      atr14: Number(atr14(prices).toFixed(4)) },
+    plan: null, warnings
+  };
+  return { kind: "candidate", reason: "趋势底座通过", candidate };
+}
+
+module.exports = { evaluateTrendStock, evaluateTrendBase, rankTrendCandidates, prefilterTrendStock, gateTrendSeries, cents,
+  trendMath: Object.freeze({ prepareRows, prepareBenchmarkRows, prepareAlignedTrendSeries, maAt, atr14, mean, ceilCents, floorCents, cents }) };

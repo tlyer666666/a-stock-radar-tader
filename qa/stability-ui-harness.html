@@ -56,7 +56,7 @@ if(mode==='chart-slow') {
 }
 if(mode==='settings-strict') {
   window.stockApi.testProvider=async()=>({ok:true,message:'连接测试完成',latency:1});
-  content=React.createElement(React.StrictMode,null,React.createElement(appModule['Audit'+'Settings'],{value:initialSettings,onSave:async()=>{window.calls.push({kind:'settingsSave'});if(window.failSettingsSave)throw Error('隔离保存错误');}}));
+  content=React.createElement(React.StrictMode,null,React.createElement(appModule['Audit'+'Settings'],{value:initialSettings,loadState:'ready',onSave:async patch=>{window.calls.push({kind:'settingsSave'});if(window.failSettingsSave)throw Error('隔离保存错误');return {...initialSettings,...patch};}}));
 }
 const root=createRoot(document.getElementById('root'));window.unmountFixture=()=>root.unmount();root.render(content);
 </script></body></html>

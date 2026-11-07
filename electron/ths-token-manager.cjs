@@ -1,6 +1,6 @@
 "use strict";
 
-const { BoundedCache } = require("./bounded-cache.cjs");
+const { BoundedCache, credentialFingerprint } = require("./bounded-cache.cjs");
 const { createServiceRuntime } = require("./service-runtime.cjs");
 const tokenCaches = new BoundedCache({ maxEntries: 128, maxBytes: 512 * 1024 });
 const tokenRuntime = createServiceRuntime();
@@ -25,7 +25,7 @@ async function getThsAccessToken(refreshToken, fetchJson, options = {}) {
   const normalizedToken = String(refreshToken || "");
   if (!normalizedToken) throw new Error(options.missingMessage || "请先填写同花顺 refresh token");
   tokenRuntime.checkpoint();
-  const cacheKey = String(options.cacheKey || "default");
+  const cacheKey = `${String(options.cacheKey || "default")}:${credentialFingerprint(normalizedToken)}`;
   const cached = tokenCaches.get(cacheKey);
   const credential = cached?.value?.refreshToken ?? cached?.refreshToken;
   if (credential && credential !== normalizedToken) tokenCaches.delete(cacheKey);
@@ -51,11 +51,11 @@ async function getThsAccessToken(refreshToken, fetchJson, options = {}) {
 }
 
 function invalidateThsAccessToken(refreshToken, cacheKey = "default", rejectedAccessToken = "") {
-  const cached = tokenCaches.get(String(cacheKey));
-  const refreshTokenMatches = !refreshToken || (cached?.value?.refreshToken ?? cached?.refreshToken) === String(refreshToken);
-  const accessTokenMatches = !rejectedAccessToken || cached?.value?.accessToken === String(rejectedAccessToken);
-  if (refreshTokenMatches && accessTokenMatches) {
-    tokenCaches.delete(String(cacheKey));
+  const prefix = `${String(cacheKey)}:`;
+  const keys = refreshToken ? [`${prefix}${credentialFingerprint(String(refreshToken))}`] : [...tokenCaches.keys()].filter(key => key.startsWith(prefix));
+  for (const key of keys) {
+    const cached = tokenCaches.get(key);
+    if (!rejectedAccessToken || cached?.value?.accessToken === String(rejectedAccessToken)) tokenCaches.delete(key);
   }
 }
 

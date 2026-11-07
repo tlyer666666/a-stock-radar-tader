@@ -2,7 +2,8 @@
 
 const { performance } = require('node:perf_hooks');
 const { busyError } = require('./worker-runner.cjs');
-const DEFAULT_OPERATION_TIMEOUTS = Object.freeze({ single: 180000, portfolio: 300000, scan: 600000, cache: 180000 });
+// selection：全市场选股首次运行要建立本地日线库（约五千只股票逐只下载），给 25 分钟；之后每天只补一根，通常一两分钟。
+const DEFAULT_OPERATION_TIMEOUTS = Object.freeze({ single: 180000, portfolio: 300000, scan: 600000, selection: 1500000, cache: 180000 });
 
 function jobError(code, message, name = 'Error') { return Object.assign(new Error(message), { code, name }); }
 function cancelledError() { return jobError('JOB_CANCELLED', '任务已取消', 'AbortError'); }
@@ -69,6 +70,10 @@ function createJobLifecycle({ maxActive = 2, maxQueued = 0, maxSubscribers = 256
     if (!subscriber || subscriber.settled) return false;
     finishSubscriber(subscriber, { ok: false, error: reason });
     if (![...subscriber.flight.subscribers].some(item => !item.settled)) abortProducer(subscriber.flight, reason);
+    else {
+      subscriber.flight.subscribers.delete(subscriber);
+      requests.delete(subscriber.id);
+    }
     return true;
   }
   function checkpoint(flight) {
@@ -100,6 +105,7 @@ function createJobLifecycle({ maxActive = 2, maxQueued = 0, maxSubscribers = 256
   function publish(flight, outcome) {
     if (!flight.controller.signal.aborted && performance.now() >= flight.deadlineAt) abortProducer(flight, timeoutError());
     flight.returned = true;
+    forgetIdentity(flight);
     flight.outcome = flight.controller.signal.aborted ? { ok: false, error: flight.controller.signal.reason } : outcome;
     for (const subscriber of flight.subscribers) {
       if (flight.outcome.ok && performance.now() >= subscriber.deadlineAt) cancelSubscriber(subscriber, timeoutError());

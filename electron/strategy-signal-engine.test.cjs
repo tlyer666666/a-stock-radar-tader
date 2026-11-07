@@ -6,6 +6,7 @@ const {
   buildStrategySignalReport,
   buildSelectedStrategyReplay,
   STRATEGY_DEFINITIONS,
+  ALL_STRATEGY_DEFINITIONS,
   temporalSplit,
   strategyDependence,
   robustStrategyScore,
@@ -23,7 +24,7 @@ function dateAt(index) {
   return new Date(Date.UTC(2024, 0, index + 1)).toISOString().slice(0, 10);
 }
 
-function replayableHistory({ onePriceEntry = false, eventIndex = 30 } = {}) {
+function replayableHistory({ onePriceEntry = false, noPriceLimitEntry = false, eventIndex = 30 } = {}) {
   const rows = [];
   for (let index = 0; index < 90; index += 1) {
     let open = 10;
@@ -83,7 +84,8 @@ function replayableHistory({ onePriceEntry = false, eventIndex = 30 } = {}) {
       close,
       volume,
       amount: volume ? close * volume * 100 : null,
-      turnover: 2
+      turnover: 2,
+      ...(index === eventIndex + 1 && noPriceLimitEntry ? { noPriceLimit: true } : {})
     });
   }
   return rows;
@@ -125,6 +127,21 @@ test("precomputed feature timeline is identical to on-demand snapshots", () => {
   }
 });
 
+test("limit-up event detection uses date-specific board rules and skips explicit no-limit sessions", () => {
+  const { isLimitUpAt } = __test;
+  const bars = (date, close, high, extras = {}) => [
+    { date: "2026-07-02", close: 10, high: 10 },
+    { date, close, high, ...extras }
+  ];
+
+  assert.equal(isLimitUpAt(bars("2026-07-03", 10.5, 10.5), 1, "600001", "ST样本"), true);
+  assert.equal(isLimitUpAt(bars("2026-07-06", 10.5, 10.5), 1, "600001", "ST样本"), false);
+  assert.equal(isLimitUpAt(bars("2026-07-06", 10.99, 10.99), 1, "600001", "普通样本"), false);
+  assert.equal(isLimitUpAt(bars("2026-07-06", 11, 11), 1, "600001", "ST样本"), true);
+  assert.equal(isLimitUpAt(bars("2026-07-06", 11.2, 11.2, { upperLimit: 11.2 }), 1, "600001", "普通样本"), true);
+  assert.equal(isLimitUpAt(bars("2026-07-06", 12, 12, { noPriceLimit: true }), 1, "600001", "普通样本"), false);
+});
+
 test("all eighteen strategies replay identically with a shared feature timeline", () => {
   const history = replayableHistory();
   const benchmarkByDate = new Map(
@@ -164,7 +181,7 @@ test("all eighteen strategies replay identically with a shared feature timeline"
   }
 });
 
-test("returns thirty-two auditable strategy groups and refuses current matches without OHLCV history", () => {
+test("returns the catalogued strategy groups and refuses current matches without OHLCV history", () => {
   const candidates = [
     {
       code: "600001",
@@ -301,10 +318,10 @@ test("returns thirty-two auditable strategy groups and refuses current matches w
 
   assert.equal(report.generatedAt, "2026-07-30T15:00:00+08:00");
   assert.equal(report.source, "provided_ohlcv_replay");
-  assert.equal(report.strategies.length, 32);
+  assert.equal(report.strategies.length, ALL_STRATEGY_DEFINITIONS.length);
   assert.deepEqual(
     report.strategies.map((strategy) => strategy.id),
-    STRATEGY_DEFINITIONS.map((strategy) => strategy.id)
+    ALL_STRATEGY_DEFINITIONS.map((strategy) => strategy.id)
   );
   for (const strategy of report.strategies) {
     assert.equal(typeof strategy.name, "string");
@@ -439,8 +456,8 @@ test("replays signals with next-open entry and exposes time-split and walk-forwa
       generatedAt: "2024-03-30T15:00:00+08:00"
     }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
   const platform = report.strategies.find(
     (strategy) => strategy.id === "platform_breakout"
@@ -460,29 +477,36 @@ test("replays signals with next-open entry and exposes time-split and walk-forwa
 
   assert.equal(report.coverage.historiesUsed, 12);
   assert.equal(report.coverage.benchmarkBars, 90);
-  assert.equal(lowFirst.validation.sampleCount, 12);
+  assert.equal(boardSignal.validation.sampleCount, 12);
   assert.equal(platform.validation.sampleCount, 12);
   assert.ok(compression.validation.sampleCount >= 12);
   assert.equal(secondBreakout.validation.sampleCount, 12);
   assert.equal(weakToStrong.validation.sampleCount, 12);
-  assert.equal(firstBoardComposite.validation.sampleCount, 12);
-  assert.ok(lowFirst.validation.averageReturn > 4);
-  assert.equal(lowFirst.validation.averageReturn, 4.52);
-  assert.equal(lowFirst.validation.benchmarkSampleCount, 12);
-  assert.equal(lowFirst.validation.averageExcessReturn > 4, true);
-  assert.equal(lowFirst.validation.outOfSample.sampleCount, 6);
-  assert.equal(lowFirst.validation.walkForward.available, true);
-  assert.equal(lowFirst.validation.walkForward.folds.length, 3);
-  assert.equal(lowFirst.validation.walkForward.accepted, true);
-  assert.equal(lowFirst.validation.accepted, true);
-  assert.equal(firstBoardComposite.validation.accepted, true);
+  // 首板质量共振 v1.3.0 以“低位首板”为必要票；横盘样本的涨停收盘高于 MA20 约 9.5%，不是低位。
+  assert.equal(firstBoardComposite.validation.sampleCount, 0);
+  assert.ok(boardSignal.validation.averageReturn > 4);
+  assert.equal(boardSignal.validation.averageReturn, 4.52);
+  assert.equal(boardSignal.validation.benchmarkSampleCount, 12);
+  assert.equal(boardSignal.validation.averageExcessReturn > 4, true);
+  assert.equal(boardSignal.validation.outOfSample.sampleCount, 6);
+  assert.equal(boardSignal.validation.walkForward.available, true);
+  assert.equal(boardSignal.validation.walkForward.folds.length, 3);
+  // Fail-closed: 6 out-of-sample signal days over a 5-session hold give
+  // effectiveIndependentSamples = floor(6 / 5) = 1, so the 95% one-sided lower
+  // bound cannot be computed. It used to be null and `Number(null) === 0`
+  // silently cleared the minReturnLowerBound gate; now it must not pass.
+  assert.equal(boardSignal.validation.outOfSample.averageReturnLowerBound95, null);
+  assert.equal(boardSignal.validation.walkForward.accepted, false);
+  assert.equal(boardSignal.validation.accepted, false);
+  assert.match(boardSignal.validation.reason, /无法计算95%单侧下限/);
+  assert.equal(firstBoardComposite.validation.accepted, false);
   assert.notStrictEqual(
     firstBoardComposite.validation,
-    lowFirst.validation,
+    boardSignal.validation,
     "composite validation must be replayed independently"
   );
   assert.equal(
-    lowFirst.validation.entryRule.includes("次一交易日开盘"),
+    boardSignal.validation.entryRule.includes("次一交易日开盘"),
     true
   );
   assert.deepEqual(
@@ -512,15 +536,15 @@ test("keeps all stocks from the same signal date on one side of the temporal spl
       outOfSampleRatio: 0.3
     }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
 
-  assert.equal(lowFirst.validation.sampleCount, 30);
-  assert.equal(lowFirst.validation.independentSignalDays, 1);
-  assert.equal(lowFirst.validation.outOfSample.sampleCount, 0);
-  assert.equal(lowFirst.validation.accepted, false);
-  assert.match(lowFirst.validation.reason, /独立信号日不足/);
+  assert.equal(boardSignal.validation.sampleCount, 30);
+  assert.equal(boardSignal.validation.independentSignalDays, 1);
+  assert.equal(boardSignal.validation.outOfSample.sampleCount, 0);
+  assert.equal(boardSignal.validation.accepted, false);
+  assert.match(boardSignal.validation.reason, /独立信号日不足/);
 });
 
 test("aggregates stocks from the same signal date equally before equity drawdown", () => {
@@ -541,6 +565,7 @@ test("aggregates stocks from the same signal date equally before equity drawdown
       high: 9.8,
       low: 9.6,
       close: 9.7,
+      noPriceLimit: true,
       volume: 95000
     };
   }
@@ -553,14 +578,14 @@ test("aggregates stocks from the same signal date equally before equity drawdown
     flatBenchmark(),
     { minSamples: 6 }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
 
-  assert.equal(lowFirst.validation.sampleCount, 2);
-  assert.equal(lowFirst.validation.independentSignalDays, 1);
-  assert.equal(lowFirst.validation.maxDrawdown, -0.18);
-  assert.match(lowFirst.validation.equityAggregation, /同一信号日股票等权聚合/);
+  assert.equal(boardSignal.validation.sampleCount, 2);
+  assert.equal(boardSignal.validation.independentSignalDays, 1);
+  assert.equal(boardSignal.validation.maxDrawdown, -0.046);
+  assert.match(boardSignal.validation.equityAggregation, /同一信号日股票等权聚合/);
 });
 
 test("future bars after the holding window cannot change an earlier signal or its replay return", () => {
@@ -594,10 +619,10 @@ test("future bars after the holding window cannot change an earlier signal or it
     options
   );
   const originalLowFirst = originalReport.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+    (strategy) => strategy.id === "platform_breakout"
   );
   const changedLowFirst = changedReport.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+    (strategy) => strategy.id === "platform_breakout"
   );
 
   assert.equal(originalLowFirst.validation.sampleCount, 1);
@@ -629,14 +654,14 @@ test("excludes a flat next-day entry with no volume or amount as untradeable", (
     flatBenchmark(),
     { minSamples: 6 }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
 
-  assert.equal(lowFirst.validation.sampleCount, 0);
-  assert.equal(lowFirst.validation.untradeableCount, 1);
+  assert.equal(boardSignal.validation.sampleCount, 0);
+  assert.equal(boardSignal.validation.untradeableCount, 1);
   assert.equal(
-    lowFirst.validation.untradeableReasons.suspendedOrNoLiquidity,
+    boardSignal.validation.untradeableReasons.suspendedOrNoLiquidity,
     1
   );
 });
@@ -652,13 +677,43 @@ test("excludes a next-day one-price limit-up because the simulated entry cannot 
       generatedAt: "2024-03-30T15:00:00+08:00"
     }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
 
-  assert.equal(lowFirst.validation.sampleCount, 0);
-  assert.equal(lowFirst.validation.untradeableCount, 1);
-  assert.equal(lowFirst.validation.accepted, false);
+  assert.equal(boardSignal.validation.sampleCount, 0);
+  assert.equal(boardSignal.validation.untradeableCount, 1);
+  assert.equal(boardSignal.validation.accepted, false);
+});
+
+test("does not reject a one-price entry on a no-price-limit day as a limit-up lock", () => {
+  const history = replayableHistory({ onePriceEntry: true, noPriceLimitEntry: true });
+  history[31].amount = 1_000_000;
+  history[31].volume = 100000;
+  const report = buildStrategySignalReport(
+    [{ code: "600001", name: "无涨跌幅限制样本", date: dateAt(89) }],
+    { "600001": history },
+    flatBenchmark(),
+    { minSamples: 6, generatedAt: "2024-03-30T15:00:00+08:00" }
+  );
+  const boardSignal = report.strategies.find(strategy => strategy.id === "platform_breakout");
+
+  assert.equal(boardSignal.validation.untradeableReasons.nextDayOnePriceLimitUp || 0, 0);
+  assert.equal(boardSignal.validation.untradeableCount, 0);
+});
+
+test("missing volume cannot prove an entry fill even when amount is reported", () => {
+  const history = replayableHistory();
+  history[31] = { ...history[31], open: 10.98, high: 10.98, low: 10.98, close: 10.98, volume: null, amount: 1_000_000 };
+  const report = buildStrategySignalReport(
+    [{ code: "600001", name: "有成交额样本", date: dateAt(89) }],
+    { "600001": history },
+    flatBenchmark(),
+    { minSamples: 6, generatedAt: "2024-03-30T15:00:00+08:00" }
+  );
+  const boardSignal = report.strategies.find(strategy => strategy.id === "platform_breakout");
+
+  assert.equal(boardSignal.validation.untradeableReasons.suspendedOrNoLiquidity || 0, 1);
 });
 
 test("does not synthesize validation metrics when OHLCV rows are incomplete", () => {
@@ -705,15 +760,15 @@ test("does not convert missing benchmark returns into zero excess returns", () =
     [],
     { minSamples: 6 }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
 
-  assert.equal(lowFirst.validation.sampleCount, 1);
-  assert.equal(lowFirst.validation.benchmarkSampleCount, 0);
-  assert.equal(lowFirst.validation.averageExcessReturn, null);
-  assert.equal(lowFirst.validation.outOfSample.benchmarkSampleCount, 0);
-  assert.equal(lowFirst.validation.outOfSample.averageExcessReturn, null);
+  assert.equal(boardSignal.validation.sampleCount, 1);
+  assert.equal(boardSignal.validation.benchmarkSampleCount, 0);
+  assert.equal(boardSignal.validation.averageExcessReturn, null);
+  assert.equal(boardSignal.validation.outOfSample.benchmarkSampleCount, 0);
+  assert.equal(boardSignal.validation.outOfSample.averageExcessReturn, null);
 });
 
 test("incomplete benchmark matches can never pass validation or publish the optimized portfolio", () => {
@@ -742,18 +797,18 @@ test("incomplete benchmark matches can never pass validation or publish the opti
       outOfSampleRatio: 0.5
     }
   );
-  const lowFirst = report.strategies.find(
-    (strategy) => strategy.id === "low_first_board"
+  const boardSignal = report.strategies.find(
+    (strategy) => strategy.id === "platform_breakout"
   );
 
-  assert.equal(lowFirst.validation.sampleCount, 12);
+  assert.equal(boardSignal.validation.sampleCount, 12);
   assert.ok(
-    lowFirst.validation.benchmarkSampleCount < lowFirst.validation.sampleCount
+    boardSignal.validation.benchmarkSampleCount < boardSignal.validation.sampleCount
   );
-  assert.equal(lowFirst.validation.benchmarkCoverage.complete, false);
-  assert.equal(lowFirst.validation.accepted, false);
-  assert.equal(lowFirst.validation.walkForward.accepted, false);
-  assert.match(lowFirst.validation.reason, /基准可比交易不足/);
+  assert.equal(boardSignal.validation.benchmarkCoverage.complete, false);
+  assert.equal(boardSignal.validation.accepted, false);
+  assert.equal(boardSignal.validation.walkForward.accepted, false);
+  assert.match(boardSignal.validation.reason, /基准可比交易不足/);
   assert.equal(report.optimizedPortfolio.accepted, false);
   assert.equal(report.optimizedPortfolio.publicationAccepted, false);
   assert.match(report.optimizedPortfolio.reason, /组合基准复核未完成/);
@@ -833,13 +888,13 @@ test("current signals require real history and expose structured rule evidence",
     { minCurrentHistoryBars: 60 }
   );
   const signal = report.strategies
-    .find((strategy) => strategy.id === "low_first_board")
+    .find((strategy) => strategy.id === "platform_breakout")
     .stocks[0];
 
   assert.equal(signal.matchSource, "ohlcv");
   assert.equal(signal.historyBars, 90);
   assert.equal(signal.riskVetoStatus, "passed");
-  assert.deepEqual(signal.matchedStrategyIds, ["low_first_board"]);
+  assert.deepEqual(signal.matchedStrategyIds, ["platform_breakout"]);
   assert.equal(signal.componentEvidence[0].source, "ohlcv_rule_engine");
   assert.equal(signal.componentEvidence[0].passed, true);
 });
@@ -855,7 +910,7 @@ test("optimized portfolio contract always separates development selection and te
 
 test("selected strategy replay uses the exact strategy-signal definition for one stock", () => {
   const replay = buildSelectedStrategyReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     { code: "600001", name: "策略联动样本" },
     replayableHistory(),
     flatBenchmark(),
@@ -867,18 +922,19 @@ test("selected strategy replay uses the exact strategy-signal definition for one
     }
   );
 
-  assert.equal(replay.id, "low_first_board");
-  assert.equal(replay.name, "低位首板");
-  assert.deepEqual(replay.components, ["low_first_board"]);
+  assert.equal(replay.id, "platform_breakout");
+  assert.equal(replay.name, "平台突破首板");
+  assert.deepEqual(replay.components, ["platform_breakout"]);
+  assert.deepEqual(replay.componentNames, ["平台突破首板"], "versioned base metadata cannot erase the single-strategy name");
   assert.equal(replay.validation.validationVersion, "robust-v2-single-stock");
   assert.equal(replay.validation.sampleCount, 1);
-  assert.equal(replay.samples[0].strategyId, "low_first_board");
+  assert.equal(replay.samples[0].strategyId, "platform_breakout");
   assert.equal(replay.samples[0].code, "600001");
 });
 
 test("selected replay uses a custom entry price only when the next trading day reaches it", () => {
   const filled = buildSelectedStrategyReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     { code: "600001", name: "自定义买入价样本" },
     replayableHistory(),
     flatBenchmark(),
@@ -889,7 +945,7 @@ test("selected replay uses a custom entry price only when the next trading day r
   assert.equal(filled.samples[0].entryPriceSource, "custom_limit_price");
 
   const notReached = buildSelectedStrategyReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     { code: "600001", name: "自定义买入价未触达样本" },
     replayableHistory(),
     flatBenchmark(),
@@ -903,7 +959,7 @@ test("selected replay uses a custom entry price only when the next trading day r
 
 test("selected replay preserves an untradeable strategy hit with stock, date and reason", () => {
   const replay = buildSelectedStrategyReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     { code: "600001", name: "一字板样本" },
     replayableHistory({ onePriceEntry: true }),
     flatBenchmark(),
@@ -913,7 +969,7 @@ test("selected replay preserves an untradeable strategy hit with stock, date and
   assert.equal(replay.samples.length, 0);
   assert.equal(replay.rejectedSignals.length, 1);
   assert.equal(replay.matchedSignalCount, 1);
-  assert.deepEqual(replay.rejectedSignals[0].strategyIds, ["low_first_board"]);
+  assert.deepEqual(replay.rejectedSignals[0].strategyIds, ["platform_breakout"]);
   assert.equal(replay.rejectedSignals[0].code, "600001");
   assert.equal(replay.rejectedSignals[0].signalDate, dateAt(30));
   assert.equal(replay.rejectedSignals[0].status, "rejected");
@@ -924,7 +980,7 @@ test("selected single-stock replay rejects a post-suspension bar that is not the
   const history = replayableHistory();
   history.splice(31, 1);
   const replay = buildSelectedStrategyReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     { code: "600001", name: "跨日复牌样本" },
     history,
     flatBenchmark(),
@@ -942,7 +998,7 @@ test("selected single-stock replay rejects a post-suspension bar that is not the
 
 test("selected replay keeps a recent hit pending without inventing future returns", () => {
   const replay = buildSelectedStrategyReplay(
-    ["low_first_board"],
+    ["platform_breakout"],
     { code: "600001", name: "最新信号样本" },
     replayableHistory({ eventIndex: 89 }),
     flatBenchmark(),
@@ -967,4 +1023,170 @@ test("selected strategy replay rejects IDs outside the verified signal library",
     ),
     /未知策略/
   );
+});
+
+test('selection-only report runs existing current rules without any historical validation output', () => {
+  const engine = require('./strategy-signal-engine.cjs');
+  assert.equal(typeof engine.buildStrategySelectionReport, 'function');
+  const history = replayableHistory({ eventIndex: 89 });
+  const candidate = { code: '600001', name: '规则命中股份', latest: 11, tradingDaysSince: 0, turnover: 2, amount: 20000000 };
+  // 夹具命中的是（已下线的）涨停形态规则：按 id 明确指定完整策略库。
+  const options = { minCurrentHistoryBars: 60, asOfDate: history.at(-1).date, marketDates: history.map(row => row.date), generatedAt: '2026-10-20T10:00:00+08:00', strategyIds: ALL_STRATEGY_DEFINITIONS.map(definition => definition.id) };
+  const expected = buildStrategySignalReport([candidate], { '600001': history }, flatBenchmark(), options);
+  const actual = engine.buildStrategySelectionReport([candidate], { '600001': history }, flatBenchmark(), options);
+  assert.equal(actual.mode, 'selection');
+  assert.equal(actual.strategies.length, ALL_STRATEGY_DEFINITIONS.length);
+  assert.ok(actual.strategies.some(group => group.stocks.length > 0));
+  // 不指定 id 时（策略选股页）只跑在用策略。
+  assert.deepEqual(engine.buildStrategySelectionReport([candidate], { '600001': history }, flatBenchmark(), { ...options, strategyIds: undefined }).strategies.map(group => group.id), STRATEGY_DEFINITIONS.map(definition => definition.id));
+  for (const group of actual.strategies) {
+    assert.deepEqual(group.stocks.map(stock => stock.code), expected.strategies.find(item => item.id === group.id).stocks.map(stock => stock.code));
+    for (const field of ['validation', 'publicationAccepted', '_samples', 'backtest']) assert.equal(field in group, false);
+  }
+  for (const field of ['optimizedPortfolio', 'strategyAudit', 'auditedStrategies']) assert.equal(field in actual, false);
+  const excluded = engine.buildStrategySelectionReport([{ ...candidate, isST: true }], { '600001': history }, flatBenchmark(), options);
+  assert.ok(excluded.strategies.every(group => group.stocks.length === 0));
+});
+
+test('C2-03 ST/delisting names are filtered by the same shared predicate in every strategy list', () => {
+  const engine = require('./strategy-signal-engine.cjs');
+  const history = replayableHistory({ eventIndex: 89 });
+  const options = { minCurrentHistoryBars: 60, asOfDate: history.at(-1).date, marketDates: history.map(row => row.date), generatedAt: '2026-10-20T10:00:00+08:00' };
+  const run = name => buildStrategySignalReport(
+    [{ code: '600001', name, latest: 11, tradingDaysSince: 0, turnover: 2, amount: 20000000 }],
+    { '600001': history }, flatBenchmark(), options
+  );
+  // 正常名称会被列出，说明下面的 0 不是"夹具本来就不命中"。
+  assert.ok(run('规则命中股份').strategies.some(group => group.stocks.length > 0));
+  // 修复前这里只有 /ST|\*ST/：'甲退' 与 '退市乙' 会被列入 4 个策略；
+  // 统一判定后与选股报告、趋势扫描一致，一律剔除。
+  for (const name of ['*ST甲', '甲退', '退市乙', ' ST 丙 ']) {
+    assert.equal(run(name).strategies.filter(group => group.stocks.length > 0).length, 0, name);
+  }
+  const selection = engine.buildStrategySelectionReport(
+    [{ code: '600001', name: '甲退', latest: 11 }], { '600001': history }, flatBenchmark(), options
+  );
+  assert.equal(selection.dataQuality.excluded, 1);
+  assert.equal(selection.dataQuality.reasons.risk_security, 1);
+  assert.ok(selection.strategies.every(group => group.stocks.length === 0));
+});
+
+test('a null 95% lower bound is fail-closed instead of passing as zero', () => {
+  const { summarizeSamples } = require('./strategy-signal-engine.cjs');
+  const { buildValidation, lowerBoundPasses } = __test;
+  // 9 independent signal days x 3 samples with a 5-session hold:
+  // effectiveIndependentSamples = floor(9 / 5) = 1, so the bound cannot exist.
+  const makeSamples = clusters => {
+    const rows = [];
+    for (let cluster = 0; cluster < clusters; cluster += 1) {
+      const signalDate = dateAt(cluster * 2);
+      for (let copy = 0; copy < 3; copy += 1) {
+        rows.push({
+          sampleId: `${cluster}-${copy}`, code: cluster % 2 ? '600001' : '600002', name: '样本',
+          strategyId: 'demo', signalDate,
+          entryDate: dateAt(cluster * 2 + 1), exitDate: dateAt(cluster * 2 + 6),
+          netReturn: 1.2 + (cluster % 5) * 0.1, grossReturn: 1.5 + (cluster % 5) * 0.1,
+          holdingTradingDays: 5, maxAdverseExcursion: -1,
+          excessReturn: 0.8 + (cluster % 5) * 0.1
+        });
+      }
+    }
+    return rows;
+  };
+  const small = summarizeSamples(makeSamples(9));
+  assert.equal(small.effectiveIndependentSamples, 1);
+  assert.equal(small.averageReturnLowerBound95, null);
+  // 20 signal days at a 30% hold-out still leaves 6 out-of-sample signal days,
+  // which clears minOutOfSampleSamples but again yields floor(6 / 5) = 1.
+  const samples = makeSamples(20);
+
+  assert.equal(lowerBoundPasses(null, -0.25), false);
+  assert.equal(lowerBoundPasses(undefined, -0.25), false);
+  assert.equal(lowerBoundPasses('', -0.25), false);
+  assert.equal(lowerBoundPasses(-0.3, -0.25), false);
+  assert.equal(lowerBoundPasses(0, -0.25), true);
+
+  const options = resolvedOptions({
+    minSamples: 6, minOutOfSampleSamples: 3, minIndependentSignalDays: 6,
+    minWalkForwardFoldSamples: 2, signalTo: dateAt(40)
+  });
+  const validation = buildValidation(samples, 0, {}, options);
+  assert.equal(validation.outOfSample.independentSignalDays, 6);
+  assert.equal(validation.outOfSample.averageReturnLowerBound95, null);
+  assert.equal(validation.accepted, false);
+  assert.match(validation.reason, /无法计算95%单侧下限/);
+});
+
+test('selection rules use current daily bars rather than historical pool prices or prior analysis', () => {
+  const { buildStrategySelectionReport } = require('./strategy-signal-engine.cjs');
+  const history = replayableHistory({ eventIndex: 30 });
+  const last = history.at(-1);
+  const candidate = { code: '600001', name: '历史涨停股', latest: 999, changePct: 10, isLimitUp: true, tradingDaysSince: 0, consecutiveBoards: 1, analysis: { eventCount60: 0 } };
+  const report = buildStrategySelectionReport([candidate], { '600001': history }, flatBenchmark(), { asOfDate: history.at(-1).date, marketDates: history.map(row => row.date), minCurrentHistoryBars: 60, strategyIds: ALL_STRATEGY_DEFINITIONS.map(definition => definition.id) });
+  assert.equal(report.strategies.find(group => group.id === 'platform_breakout').stocks.length, 0);
+  for (const stock of report.strategies.flatMap(group => group.stocks)) {
+    assert.equal(stock.latest, last.close);
+    assert.equal(stock.changePct, ((last.close / history.at(-2).close) - 1) * 100);
+  }
+});
+
+// A04: report output must use the selected shape's existing support, never an unrelated old limit low.
+const selectionDates = require('./trend-trading-calendar.cjs').createTradingCalendar().sessionsThrough('2026-10-20', 120);
+const selectionRow = (date, [open, high, low, close, volume = 150000]) => ({ date, open, high, low, close, volume, amount: close * volume * 100 });
+function selectionPath(tail, price = 10) {
+  const prefix = selectionDates.length - tail.length;
+  return selectionDates.map((date, index) => selectionRow(date, index < prefix ? [price, price + .1, price - .1, price, 100000] : tail[index - prefix]));
+}
+const selectionBoard = (close, previous) => [previous * 1.02, close, previous * 1.01, close, 200000];
+function selectionReport(rows, strategyId) {
+  return require('./strategy-signal-engine.cjs').buildStrategySelectionReport([{ code: '600001', name: '离线样本' }], { '600001': rows }, [],
+    { asOfDate: '2026-10-20', marketDates: selectionDates, strategyIds: [strategyId] });
+}
+test('dragon pullback reports its already-observed trough and the volume condition for invalidation', () => {
+  const rows = selectionPath([selectionBoard(11, 10), selectionBoard(12.1, 11), selectionBoard(13.31, 12.1),
+    [13.2, 13.3, 12.9, 13, 120000], [12.9, 13, 12.3, 12.4, 120000], [12.4, 12.5, 11.7, 11.8, 120000],
+    [11.8, 11.9, 11.2, 11.3, 120000], [11.3, 11.4, 10.9, 11, 120000], [11, 11.35, 10.95, 11.3, 90000]]);
+  const report = selectionReport(rows, 'youzi_dragon_pullback');
+  assert.equal(report.dataQuality.processed, 1);
+  assert.equal(report.strategies[0].stocks.length, 1);
+  const stock = report.strategies[0].stocks[0];
+  assert.equal(stock.latest, 11.3);
+  assert.equal(stock.invalidationPrice, 10.9, 'the observed pullback low is 10.90; the old limit low is 12.221');
+  assert.match(stock.executionNotes.join(' '), /失效依据.*回调低点.*放量/);
+});
+for (const oldLimit of [false, true]) test(`volume rebound reports the big up candle low (${oldLimit ? 'older limit exists' : 'no limit history'})`, () => {
+  const rows = selectionDates.map((date, index) => {
+    const close = index < 105 ? 20 : 20 - (index - 104) * .25;
+    return selectionRow(date, [close, close + .1, close - .1, close, 100000]);
+  });
+  if (oldLimit) rows[100] = selectionRow(selectionDates[100], [20.4, 22, 20.1, 22, 200000]);
+  rows[118] = selectionRow(selectionDates[118], [16.84, 17.97, 16.75, 17.92, 300000]);
+  rows[119] = selectionRow(selectionDates[119], [17.92, 18.12, 17.60, 17.78, 300000]);
+  const report = selectionReport(rows, 'volume_rebound_hold');
+  assert.equal(report.dataQuality.processed, 1);
+  assert.equal(report.strategies[0].stocks.length, 1);
+  assert.equal(report.strategies[0].stocks[0].invalidationPrice, 16.75);
+  assert.match(report.strategies[0].stocks[0].executionNotes.join(' '), /失效依据.*大阳.*最低价/);
+});
+test('a first-negative reclaim without a numeric support rule leaves the invalidation price empty', () => {
+  const rows = selectionPath([selectionBoard(11, 10), selectionBoard(12.1, 11), [12.5, 12.6, 11.9, 12], [12, 12.8, 11.95, 12.7]]);
+  const report = selectionReport(rows, 'youzi_first_negative_reclaim');
+  assert.equal(report.strategies[0].stocks.length, 1);
+  assert.equal(report.strategies[0].stocks[0].invalidationPrice, null);
+});
+test('existing limit-support rules keep their support boundary and publish its basis', () => {
+  const rows = selectionPath([selectionBoard(11, 10)]);
+  const original = selectionReport(rows, 'platform_breakout');
+  assert.equal(original.strategies[0].stocks.length, 1);
+  assert.equal(original.strategies[0].stocks[0].invalidationPrice, 10.05);
+  assert.match(original.strategies[0].stocks[0].executionNotes.join(' '), /失效依据.*涨停日/);
+});
+test('arbitrary custom conditions publish no assumed numeric exit boundary', () => {
+  const rows = selectionPath([selectionBoard(11, 10)]);
+  const custom = require('./strategy-signal-engine.cjs').buildStrategySelectionReport([{code:'600001',name:'离线样本'}], {'600001':rows}, [], {
+    asOfDate:'2026-10-20',marketDates:selectionDates,includeBuiltIn:false,
+    customStrategies:[{id:'cs_exit0001',name:'平台条件',conditions:[{ref:'pattern:platform_breakout'}],minMatchPercent:100}]
+  });
+  assert.equal(custom.strategies[0].stocks.length, 1);
+  assert.equal(custom.strategies[0].stocks[0].invalidationPrice, null);
 });

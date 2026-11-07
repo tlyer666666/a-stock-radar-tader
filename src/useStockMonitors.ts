@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
+import { whenVisible } from "./visiblePolling";
 import {
   evaluateStockMonitor,
   normalizeStockMonitorConfig,
@@ -160,11 +161,11 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
     runtimeRef.current = nextRuntimes;
     setRuntimes(nextRuntimes);
     setLatestQuotes(current => Object.fromEntries(Object.entries(current).filter(([code]) => activeCodes.has(code))));
-    if (poller.configure(items, saved.configs, live)) void poller.poll();
+    if (poller.configure(items, saved.configs, live)) whenVisible(() => void poller.poll())();
   }, [items, live, saved.configs]);
 
   useEffect(() => {
-    const timer = live ? window.setInterval(() => void pollerRef.current?.poll(), Math.max(5, Number(refreshSeconds) || 5) * 1000) : undefined;
+    const timer = live ? window.setInterval(whenVisible(() => void pollerRef.current?.poll()), Math.max(5, Number(refreshSeconds) || 5) * 1000) : undefined;
     return () => window.clearInterval(timer);
   }, [live, refreshSeconds]);
 

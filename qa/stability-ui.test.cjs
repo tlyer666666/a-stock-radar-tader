@@ -6,9 +6,30 @@ let browser, server, base;
 before(async () => {
   const { createServer } = await import('vite');
   server = await createServer({
-    plugins: [{ name: 'qa-private-component-exports', enforce: 'pre', transform(code, id) {
-      if (id.endsWith('/src/App.tsx')) return code + '\nexport { TrendChartPanel as AuditChart, SettingsView as AuditSettings };\n';
-    } }],
+    // qa-private-component-exports：把两个内部组件挂到 App 模块上，供 harness 单独挂载。
+    //
+    // 1.5.4 重构后这两个组件搬到了 src/features/ 下，原先「往 App.tsx 追加
+    // export { TrendChartPanel as AuditChart, SettingsView as AuditSettings }」的写法失效：
+    // TrendChartPanel 已不在 App.tsx 作用域内，追加语句变成 ReferenceError，
+    // 整个 App.tsx 模块加载失败 —— 该套件 23 条全部报错。
+    //
+    // 现在分两步：先在 MarketWorkspace 里导出 TrendChartPanel，
+    // 再让 App.tsx 从新位置 re-export。这样组件搬家时只需要改这里一处。
+    plugins: [{
+      name: 'qa-private-component-exports',
+      enforce: 'pre',
+      transform(code, id) {
+        if (id.endsWith('/src/features/market/MarketWorkspace.tsx')) {
+          return code + '\nexport { TrendChartPanel as AuditChart };\n';
+        }
+        if (id.endsWith('/src/App.tsx')) {
+          return code
+            + '\nexport { AuditChart } from "./features/market/MarketWorkspace";\n'
+            + 'export { SettingsView as AuditSettings } from "./features/settings/SettingsView";\n';
+        }
+        return null;
+      }
+    }],
     optimizeDeps: { entries: ['index.html', 'qa/stability-ui-harness.html'] },
     server: { host: '127.0.0.1', port: 0, strictPort: false }, logLevel: 'error'
   });
@@ -32,7 +53,7 @@ test('changing compare selection keeps a remaining loading stock able to complet
 test('failed favorite persistence keeps the existing item and reports the failure', async () => withPage('', async page => {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.getByRole('button', { name: '自选板块', exact: true }).click();
-  const item = page.locator('.favorite-card').filter({ hasText: '甲银行' });
+  const item = page.locator('.personal-monitor-card').filter({ hasText: '甲银行' });
   await item.locator('[title="移出自选"]').click();
   await page.waitForTimeout(200);
   assert.equal(await item.count(), 1);
@@ -42,8 +63,14 @@ test('failed favorite persistence keeps the existing item and reports the failur
 test('slow holdings quote completes instead of being invalidated at every poll', async () => withPage('', async page => {
   await page.getByRole('button', { name: '持仓股', exact: true }).click();
   await page.waitForTimeout(6500);
-  assert.match(await page.locator('.holdings-summary-panel').innerText(), /已取得 2\/2 条有效报价/);
-  assert.equal(await page.evaluate(() => window.calls.filter(x => x.kind === 'quote').length), 2);
+  // D2-05：持仓总览副标题已由「已取得 2/2 条有效报价」改为
+  // 「本轮有效报价 2/2 条；汇总仅覆盖本轮有效报价的持仓」
+  // （见 src/features/collections/CollectionViews.tsx 的 holdings-summary-panel 副标题）。
+  // 本轮整改只校正「报价完成数」这一个观测点，因此用兼容新旧文案的正则，
+  // 避免下次纯文案调整再次把整条用例判红。
+  assert.match(await page.locator('.holdings-summary-panel').innerText(), /(?:已取得 2\/2 条有效报价|本轮有效报价 2\/2 条)/);
+  // 默认首页「策略选股」会为它自己的结果行取行情；这里只数持仓股的报价请求。
+  assert.equal(await page.evaluate(() => window.calls.filter(x => x.kind === 'quote' && ['600000', '000001'].includes(x.code)).length), 2);
 }));
 test('late holding security lookup merges against current holdings without resurrecting removals', async () => withPage('', async page => {
   await page.evaluate(() => {
@@ -116,13 +143,13 @@ test('editing a backtest target without selecting a suggestion invalidates the p
 test('repeated favorite removal stays removed when persistence is delayed', async () => withPage('', async page => {
   await page.evaluate(() => { window.stockApi.saveWatchlist = items => new Promise(resolve => { window.calls.push({kind:'saveFavorite',items}); window.finishFavoriteSave = () => resolve(items); }); });
   await page.getByRole('button', {name:'自选板块',exact:true}).click();
-  await page.locator('.favorite-card').filter({hasText:'甲银行'}).locator('[title="移出自选"]').evaluate(element => { element.click(); element.click(); });
+  await page.locator('.personal-monitor-card').filter({hasText:'甲银行'}).locator('[title="移出自选"]').evaluate(element => { element.click(); element.click(); });
   await page.waitForFunction(() => window.calls.filter(x=>x.kind==='saveFavorite').length===1);
   await page.evaluate(() => window.finishFavoriteSave());
   await page.waitForFunction(() => window.calls.filter(x=>x.kind==='saveFavorite').length===2);
   await page.evaluate(() => window.finishFavoriteSave());
   await page.waitForTimeout(150);
-  assert.equal(await page.locator('.favorite-card').filter({hasText:'甲银行'}).count(),0);
+  assert.equal(await page.locator('.personal-monitor-card').filter({hasText:'甲银行'}).count(),0);
 }));
 test('saving holdings before startup load settles cannot overwrite stored holdings', async () => withPage('holdings-startup', async page => {
   await page.evaluate(() => {
@@ -145,11 +172,13 @@ test('saving holdings before startup load settles cannot overwrite stored holdin
 test('unmounting holdings stops old workers from requesting the rest of the removed batch', async () => withPage('holdings-six', async page => {
   await page.evaluate(()=>{window.quoteResolvers=[];window.stockApi.getQuoteSnapshot=security=>new Promise(resolve=>{window.calls.push({kind:'quote',code:security.code});window.quoteResolvers.push(()=>resolve({security,quote:{latest:10}}));});});
   await page.getByRole('button',{name:'持仓股',exact:true}).click();
-  await page.waitForFunction(()=>window.calls.filter(x=>x.kind==='quote').length===4);
-  await page.getByRole('button',{name:'涨停趋势',exact:true}).click();
+  // 只数持仓股的报价请求（「策略选股」页会为它自己的结果行另取行情）。
+  const holdingQuotes = () => page.evaluate(()=>window.calls.filter(x=>x.kind==='quote'&&/^(600000|000001|60000[1-4])$/.test(x.code)).length);
+  await page.waitForFunction(()=>window.calls.filter(x=>x.kind==='quote'&&/^(600000|000001|60000[1-4])$/.test(x.code)).length===4);
+  await page.getByRole('button',{name:'策略选股',exact:true}).click();
   await page.evaluate(()=>window.quoteResolvers.splice(0).forEach(resolve=>resolve()));
   await page.waitForTimeout(150);
-  assert.equal(await page.evaluate(()=>window.calls.filter(x=>x.kind==='quote').length),4);
+  assert.equal(await holdingQuotes(),4);
 }));
 test('removed comparison stocks are evicted and reselected stocks fetch a fresh result', async () => withPage('compare', async page => {
   await page.waitForFunction(()=>window.calls.filter(x=>x.kind==='analyze').length===2);
@@ -166,9 +195,13 @@ test('removed comparison stocks are evicted and reselected stocks fetch a fresh 
 }));
 
 test('news polling retries transient failures with bounded backoff and displays recovery', async () => withPage('news-retry', async page => {
-  await page.waitForFunction(() => window.calls.some(x => x.kind === 'news'));
-  await page.clock.runFor(16000);
-  assert.ok(await page.evaluate(() => window.calls.filter(x => x.kind === 'news').length >= 3));
+  await page.waitForFunction(() => window.calls.some(x => x.kind === 'news') && document.body.innerText.includes('离线模拟断网'));
+  await page.clock.runFor(5000);
+  await page.waitForFunction(() => window.calls.filter(x => x.kind === 'news').length >= 2);
+  await page.clock.runFor(10000);
+  await page.waitForFunction(() => window.calls.filter(x => x.kind === 'news').length >= 3);
+  const calls = await page.evaluate(() => window.calls.filter(x => x.kind === 'news'));
+  assert.ok(calls.length >= 3, JSON.stringify(calls));
   assert.match(await page.locator('body').innerText(), /恢复后的资讯/);
 }, true));
 test('slow minute chart responses can complete without overlapping polling requests', async () => withPage('chart-slow', async page => {
@@ -200,16 +233,23 @@ test('an old holding edit is update-only and cannot reinsert a subsequently remo
   await item.getByRole('button',{name:'移除',exact:true}).click();
   await page.waitForFunction(()=>window.calls.some(x=>x.kind==='holdingsWrite'));
   await page.evaluate(()=>window.finishHoldingEdit());
-  await page.waitForFunction(()=>window.calls.filter(x=>x.kind==='holdingsWrite').length===2);
+  // 迟到的编辑只更新、不插入：被移除的记录不会回来；没有变化时也不再多写一次盘。
+  await page.waitForTimeout(300);
   assert.equal(await item.count(),0);
-  assert.deepEqual(await page.evaluate(()=>window.calls.filter(x=>x.kind==='holdingsWrite').at(-1).codes),['000001']);
+  const writes = await page.evaluate(()=>window.calls.filter(x=>x.kind==='holdingsWrite').map(x=>x.codes));
+  assert.ok(writes.length >= 1 && writes.every(codes => JSON.stringify(codes) === JSON.stringify(['000001'])), JSON.stringify(writes));
 }));
 
 test('news backoff keeps retrying at its cap and returns to the normal cadence after recovery', async () => withPage('news-retry', async page => {
+  await page.waitForFunction(()=>window.calls.some(x=>x.kind==='news') && document.body.innerText.includes('离线模拟断网'));
   await page.evaluate(()=>{window.newsFailUntil=8;});
-  await page.clock.runFor(330000);
+  const retryDelays = [5000,10000,20000,40000,60000,60000,60000,60000,5000];
+  for (let index = 0; index < retryDelays.length; index += 1) {
+    await page.clock.runFor(retryDelays[index]);
+    await page.waitForFunction(count => window.calls.filter(x=>x.kind==='news').length >= count, index + 2);
+  }
   const calls=await page.evaluate(()=>window.calls.filter(x=>x.kind==='news'));
-  assert.ok(calls.length>=10,'retrying must continue beyond the capped failure count');
+  assert.ok(calls.length>=10,`retrying must continue beyond the capped failure count: ${JSON.stringify(calls)}`);
   const gaps=calls.slice(1).map((call,index)=>call.time-calls[index].time);
   assert.ok(gaps.slice(4,8).every(gap=>gap>=59000 && gap<=61000),'failure retry delay stays bounded at one minute');
   assert.ok(gaps[8]>=4900 && gaps[8]<=6100,'successful retry restores the normal refresh interval');
@@ -249,7 +289,12 @@ test('StrictMode reports a settings save rejection and allows retrying', async (
 
 async function openPortfolio(page) {
   await page.getByRole('button',{name:'回测中心',exact:true}).click();
+  // BacktestView 是 lazy 加载的，点完导航按钮时「多股组合回测」还没挂载。
+  // 原来用 isVisible() 判断（它不等待、立即返回），几乎必然拿到 false，
+  // 于是跳过这次点击，组合回测页永远打不开，四条用例全部超时。
+  // 改成显式等待按钮出现再点。
   const open=page.getByRole('button',{name:'多股组合回测',exact:true});
+  await open.waitFor({state:'visible',timeout:15000}).catch(()=>{});
   if(await open.isVisible()) await open.click();
   await page.getByRole('heading',{name:'策略回测中心',exact:true}).waitFor();
 }
@@ -308,10 +353,10 @@ test('explicit portfolio cancel reaches backend, ignores late result and retries
 },true));
 test('signal cancel and unmount cancel their exact request without publishing old results', async () => withPage('signals-cancel', async page => {
   await page.waitForFunction(()=>window.scanResolves.length===1);
-  await page.getByRole('button',{name:'取消复核',exact:true}).click();
+  await page.getByRole('button',{name:'取消',exact:true}).click();
   await page.evaluate(()=>window.scanResolves[0]());await page.clock.runFor(100);
   assert.doesNotMatch(await page.locator('body').innerText(),/取消后不得显示的过期结果/);
-  await page.getByRole('button',{name:'重新推演复核',exact:true}).click();
+  await page.getByRole('button',{name:'重新选股',exact:true}).click();
   await page.waitForFunction(()=>window.scanResolves.length===2);
   await page.evaluate(()=>window.unmountFixture());
   const calls=await page.evaluate(()=>window.calls.filter(x=>['scanRun','cancelJob'].includes(x.kind)));

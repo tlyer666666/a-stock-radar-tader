@@ -1,0 +1,1689 @@
+[
+  {
+    "version": "1.0.0",
+    "family": "bottom_trend",
+    "parameters": {
+      "deepMa60GapPercent": -15
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "v1.0.0（2026-11-03）：全A实测，底部首板离60日线越远，之后20日相对同日涨停股池越强，两段年份一致。",
+    "id": "bottom_deep_first_board",
+    "name": "深跌底部首板",
+    "detail": "低位首板里跌得最深的一类：涨停当天收盘仍低于60日均线15%以上。",
+    "conditions": [
+      "当日首板",
+      "符合低位首板：涨停收盘不高于MA20的105%，近60日涨幅不为正",
+      "涨停收盘低于MA60至少15%"
+    ],
+    "risk": "深跌股的首板常在大盘见底时成批出现，单只的持续性取决于后续能否企稳；次日高开过多不追，跌破涨停日最低价视为失败。",
+    "overheatGate": false,
+    "featured": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "bottom_trend",
+    "parameters": {
+      "window": [
+        1,
+        10
+      ],
+      "maxVolumeRatio": 1,
+      "deepMa60GapPercent": -15
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "v1.0.0（2026-11-03）：全A实测，深跌底部首板之后缩量回到10日线下方的，20日相对同日涨停股池平均高4.9个百分点，六年均为正。",
+    "id": "bottom_board_pullback",
+    "name": "深跌首板后缩量回踩",
+    "detail": "深跌后出现底部首板，1至10天内缩量回落到10日线下方，仍在60日线下方15%以外；等回踩低吸，不追高。",
+    "conditions": [
+      "1至10个交易日前出现底部首板，之后没有再涨停",
+      "收盘不高于MA10",
+      "量比不超过1",
+      "收盘低于MA60至少15%",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "回踩可能演变成继续下跌；跌破底部首板最低价后要降低预期，反弹需重新放量确认。",
+    "overheatGate": true,
+    "featured": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "bottom_trend",
+    "parameters": {
+      "window": [
+        1,
+        10
+      ],
+      "quietBoardVolumeRatio": 1.2,
+      "deepMa60GapPercent": -15
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "v1.0.0（2026-11-03）：全A实测，底部首板量比越小后续越强；按信号日等权计算也为正，六年均为正。",
+    "id": "bottom_quiet_board_follow",
+    "name": "底部温和首板后承接",
+    "detail": "底部首板当天没有放出巨量（量比不超过1.2），1至10天内股价仍在60日线下方15%以外，等承接跟进。",
+    "conditions": [
+      "1至10个交易日前出现底部首板，之后没有再涨停",
+      "底部首板当天量比不超过1.2",
+      "收盘低于MA60至少15%",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "温和放量说明抛压不重，但也可能只是成交清淡；流动性差的股票进出要控制仓位。",
+    "overheatGate": true,
+    "featured": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "bottom_trend",
+    "parameters": {
+      "window": [
+        3,
+        15
+      ],
+      "ma60GapPercent": -10
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "v1.0.0（2026-11-03）：全A实测，底部首板后重新站上10日线的，20日相对同日涨停股池平均高3.5个百分点，六年均为正。",
+    "id": "bottom_ma10_reclaim",
+    "name": "深跌首板后收复10日线",
+    "detail": "底部首板后3至15天，股价由10日线下方重新站上10日线，离60日线仍有10%以上空间：趋势重新启动的位置。",
+    "conditions": [
+      "3至15个交易日前出现底部首板，之后没有再涨停",
+      "前一日收盘在MA10下方，当日收盘站上MA10",
+      "收盘低于MA60至少10%",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "收复10日线后若很快再跌破，说明反弹乏力；跌破底部首板最低价视为失败。",
+    "overheatGate": true,
+    "featured": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "pullback",
+    "parameters": {
+      "windowStart": 3,
+      "windowEnd": 10,
+      "minBoards": 2,
+      "maxPostVolumeRatio": 0.6
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "v1.0.0（2026-11-05）：全A日线回放（次日开盘买入），相对同期近15日涨停股基线，5/10/20日在2021–2023与2024–2026两段都更好；阈值附近（2–8/3–12天、量比0.5–0.7）同样成立。",
+    "id": "board_streak_quiet_pullback",
+    "name": "连板后缩量回调",
+    "detail": "2板及以上的连板结束后3至10天，成交明显缩小（日均量不到涨停日的60%），且始终守住涨停日最低价：强势股缩量洗盘、等承接。",
+    "conditions": [
+      "最近一次涨停为2连板及以上，3至10个交易日前，之后没有再涨停",
+      "涨停后日均成交量不到涨停日的60%",
+      "涨停后最低价始终不低于涨停日最低价",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "缩量也可能是资金离场；放量跌破涨停日最低价视为失败。缩量越明显，实测越好。",
+    "overheatGate": true,
+    "featured": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "limit_gap_hold",
+    "name": "涨停高开支撑守卫",
+    "detail": "涨停日高开至少1%，之后1至8日最低价始终高于涨停前收盘价且量能不过热。",
+    "conditions": [
+      "涨停日高开至少1%",
+      "涨停后1至8日不回落至涨停前收盘价",
+      "守住涨停日支撑",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "跌回涨停前收盘支撑会破坏短期强势假设；高开本身不代表形成未回补价格缺口。",
+    "overheatGate": true,
+    "featured": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {
+      "declineLookback": 20,
+      "minDeclinePercent": 10,
+      "minBigYangChangePercent": 5,
+      "minBigYangBodyPercent": 3,
+      "volumeBaseSessions": 5,
+      "minBigYangVolumeRatio": 1.8,
+      "minHoldVolumeRatio": 0.8,
+      "maxHoldVolumeRatio": 1.25,
+      "maxHoldChangePercent": 2
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "按用户描述的形态写成的固定规则（2026-10-23 新增）；阈值为事先指定的工程假设，未证明收益更优。“量和前天差不多”按“与大阳日相近”实现。",
+    "id": "volume_rebound_hold",
+    "name": "下跌后放量大阳·次日平量",
+    "detail": "一段下跌后出现放量大阳反弹，次日成交量与大阳日相近，股价微涨或微跌，承接住大阳的成果。",
+    "conditions": [
+      "大阳前处于下跌：前一日收盘较此前20日最高收盘回落至少10%",
+      "大阳日涨幅≥5%、收阳且实体≥3%，成交量≥此前5日均量1.8倍",
+      "信号日成交量为大阳日的0.8至1.25倍，涨跌幅在±2%以内，最低价不破大阳日最低价",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "下跌后的放量反弹可能只是超跌反抽；次日平量不涨说明分歧仍在，跌破大阳最低价即视为反弹失败。",
+    "overheatGate": true,
+    "featured": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "contraction",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "vcp_compression",
+    "name": "涨停后量价收缩",
+    "detail": "涨停后3至12日波动和成交同步收缩，且始终守住涨停日低点。",
+    "conditions": [
+      "涨停后3至12日",
+      "量能缩至涨停日的78%以内",
+      "波动收缩且支撑有效",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "缩量也可能代表资金撤离；跌破涨停日低点时必须视为形态失败。",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "weak_to_strong",
+    "name": "弱转强修复",
+    "detail": "近期涨停股低开回收或重新站回涨停收盘价，收盘位置强且量能不过热。",
+    "conditions": [
+      "近期存在涨停事件",
+      "低开回收或重回涨停收盘价",
+      "收盘位于日内上部",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "修复信号对次日情绪依赖较强，若竞价再次转弱，容易形成二次下杀。",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "volume_dryup_rebound",
+    "name": "涨停后缩量阳线修复",
+    "detail": "涨停后2至12日平均量能显著收缩，随后出现收盘靠近日内高位的阳线修复。",
+    "conditions": [
+      "整理量不高于涨停日的68%",
+      "当日阳线且收盘位置不低于65%",
+      "涨停日支撑有效",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "地量反弹的持续性依赖后续增量资金；没有放量确认时可能仅是弱反抽。",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "contraction",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "high_tight_flag",
+    "name": "涨停后高位窄幅整理",
+    "detail": "涨停后2至12日保持高位窄幅整理，区间宽度不超过8%且成交显著收缩。",
+    "conditions": [
+      "涨停后2至12日",
+      "整理区间宽度不超过8%",
+      "整理均量不高于涨停日的85%",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "高位窄幅也可能是派发；放量跌破旗形下沿时应立即否定该信号。",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "ma_reclaim_after_limit",
+    "name": "涨停后MA10收复修复",
+    "detail": "涨停后2至15日一度收于MA10下方，随后阳线重新站回MA10并收在日内上部。",
+    "conditions": [
+      "近期涨停后回落",
+      "前收盘低于MA10",
+      "当日重新站上MA10",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "单日站回均线可能是假修复；次日重新跌回MA10下方时反转信号失效。",
+    "overheatGate": true
+  },
+  {
+    "version": "1.3.0",
+    "family": "first_board",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "first_board_quality_resonance",
+    "type": "composite",
+    "name": "首板质量共振",
+    "detail": "低位首板为必要条件，并由平台突破、趋势多头或低量首板中的至少一项再次确认。",
+    "components": [
+      "low_first_board",
+      "platform_breakout",
+      "trend_first_board",
+      "low_volume_first_board"
+    ],
+    "voteRule": "低位首板必须成立，另3个质量组件至少1票，总计至少2个组件同时成立",
+    "conditions": [
+      "低位首板为必要票",
+      "平台/趋势/低量首板至少一票",
+      "所有条件使用同一信号日快照"
+    ],
+    "risk": "多条件共振仍无法消除次日情绪退潮风险，竞价明显转弱时不应机械追入。",
+    "overheatGate": false
+  },
+  {
+    "version": "1.2.0",
+    "family": "contraction",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "post_limit_contraction_resonance",
+    "type": "composite",
+    "name": "涨停后缩量共振",
+    "detail": "涨停后量价收缩为必要条件，并由高位窄幅整理或缩量阳线修复再次确认。",
+    "components": [
+      "vcp_compression",
+      "high_tight_flag",
+      "volume_dryup_rebound"
+    ],
+    "voteRule": "量价收缩必须成立，窄幅整理/缩量阳线修复至少1票，总计至少2个组件同时成立",
+    "conditions": [
+      "量价收缩为必要票",
+      "窄幅整理或缩量阳线修复至少一票",
+      "涨停日支撑必须有效",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "缩量共振可能来自参与资金减少；若整理末端未出现增量承接，突破容易失败。",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "minVolumeRatio": 1,
+      "maxVolumeRatio": 2.5
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：均线突破与回踩",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3347"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "涨停高开支撑守卫",
+      "多头排列与放量越昨高"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。",
+    "id": "limit_gap_ma_resonance",
+    "name": "高开支撑与均线再起共振",
+    "detail": "涨停高开的前收盘支撑未破，同时四条均线多头排列、收盘越过昨高且量比适中。",
+    "shapeLabel": "涨停高开支撑守卫",
+    "technicalId": "ma_volume_confirm",
+    "technicalLabel": "多头排列与放量越昨高",
+    "conditions": [
+      "高开前收盘支撑守卫形态成立",
+      "MA5高于MA10高于MA20高于MA60",
+      "收盘越昨高且量比1至2.5",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "跌破涨停前收盘支撑会破坏强势假设；均线排列与量能确认无法排除追高风险。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_gap_ma_resonance:shape",
+      "ma_volume_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rocPeriod": 12
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方 ROC 指标说明",
+        "url": "https://quant.10jqka.com.cn/view/article/1636"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "MA10失而复得",
+      "ROC正值加速"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_roc_reclaim_resonance",
+    "name": "均线收复与ROC加速",
+    "detail": "MA10失而复得成立，同时ROC12>0且高于昨日。",
+    "shapeLabel": "MA10失而复得",
+    "technicalId": "roc_acceleration_confirm",
+    "technicalLabel": "ROC正值加速",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA10失而复得成立",
+      "ROC12>0且高于昨日",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_roc_reclaim_resonance:shape",
+      "roc_acceleration_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "emvPeriod": 14,
+      "volumeDivisor": 100000000
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "TradingView官方 EOM 计算口径",
+        "url": "https://www.tradingview.com/support/solutions/43000502256-ease-of-movement-eom/"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "缩量回升",
+      "EMV正值回升"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_emv_dryup_resonance",
+    "name": "地量修复与EMV轻推",
+    "detail": "缩量回升成立，同时14日EOM>0且高于昨日；中点移动/量比箱体的算术均值。",
+    "shapeLabel": "缩量回升",
+    "technicalId": "emv_strength_confirm",
+    "technicalLabel": "EMV正值回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "缩量回升成立",
+      "14日EOM>0且高于昨日；中点移动/量比箱体的算术均值",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_emv_dryup_resonance:shape",
+      "emv_strength_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "breakout",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "channelPeriod": 55
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "TradingView官方 唐奇安通道",
+        "url": "https://cn.tradingview.com/support/solutions/43000502253/"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "涨停后二次突破",
+      "唐奇安55日首破"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_donchian_breakout_resonance",
+    "name": "二次突破与55日新高",
+    "detail": "涨停后二次突破成立，同时今收突破此前55日高点，昨收未突破昨日对应上轨。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "donchian_breakout_confirm",
+    "technicalLabel": "唐奇安55日首破",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "涨停后二次突破成立",
+      "今收突破此前55日高点，昨收未突破昨日对应上轨",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_donchian_breakout_resonance:shape",
+      "donchian_breakout_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rsiPeriod": 14,
+      "rsiThreshold": 50,
+      "maxRsi": 75,
+      "mfiPeriod": 14,
+      "mfiThreshold": 50,
+      "maxMfi": 80
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "缩量回升",
+      "RSI和MFI同步回升"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_rsi_mfi_resonance",
+    "name": "地量修复与强弱量价双确认",
+    "detail": "缩量回升成立，同时RSI14在(50,75]且回升；MFI14在(50,80]且回升。",
+    "shapeLabel": "缩量回升",
+    "technicalId": "rsi_mfi_dual_confirm",
+    "technicalLabel": "RSI和MFI同步回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "缩量回升成立",
+      "RSI14在(50,75]且回升；MFI14在(50,80]且回升",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_rsi_mfi_resonance:shape",
+      "rsi_mfi_dual_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true
+  },
+  {
+    "version": "1.3.0",
+    "family": "first_board",
+    "parameters": {
+      "maxMa20ExtensionPercent": 5,
+      "maxReturn60Percent": 0
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "v1.3.0（2026-10-27）：“低位”改为按涨停收盘相对MA20的位置和近60日涨幅判断，取代旧版的板前20日涨幅与100日区间位置。",
+    "id": "low_first_board",
+    "name": "低位首板",
+    "detail": "下跌或横盘之后的第一个涨停：涨停收盘距20日均线不超过5%，近60日涨幅不为正。",
+    "conditions": [
+      "当日首板",
+      "涨停收盘不高于MA20的105%",
+      "近60个交易日涨幅不为正"
+    ],
+    "risk": "超跌后的首板也可能只是一日反抽；次日高开过多时不追，跌破涨停日最低价即视为失败。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "first_board",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "platform_breakout",
+    "name": "平台突破首板",
+    "detail": "窄幅平台上沿被首板突破，同时约束板前位置与涨停日放量。",
+    "conditions": [
+      "板前平台宽度不超过18%",
+      "涨停突破平台上沿",
+      "涨停日量比0.9至3.5"
+    ],
+    "risk": "平台可能是假突破；次日若跌回平台上沿下方，突破逻辑即失效。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "breakout",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "second_breakout",
+    "name": "涨停后二次突破",
+    "detail": "涨停后3至15日突破整理高点，量比适中且支撑未失效。",
+    "conditions": [
+      "涨停后3至15日",
+      "收盘突破此前整理高点",
+      "当日量比1.05至2.5",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "二次突破容易出现冲高回落，过度放量或尾盘回落会削弱有效性。",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "first_board",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "trend_first_board",
+    "name": "多头趋势首板",
+    "detail": "均线多头排列且MA5继续上行时出现首板，限制板前涨幅和涨停日量能。",
+    "conditions": [
+      "当日首板",
+      "MA5高于MA10且MA10高于MA20",
+      "涨停日量比0.8至2.8"
+    ],
+    "risk": "趋势末端也可能满足均线条件；板前涨幅接近上限时追高风险明显增加。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "first_board",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "low_volume_first_board",
+    "name": "低量首板",
+    "detail": "首板成交量不高于近5日均量约1.08倍，同时收盘位于MA20之上。",
+    "conditions": [
+      "当日首板",
+      "涨停日量比0.50至1.08",
+      "收盘高于MA20"
+    ],
+    "risk": "缩量封板可能来自流动性不足；次日放量开板时承接能力难以确认。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "limit_ma10_pullback",
+    "name": "涨停后MA10回踩",
+    "detail": "涨停后2至15日缩量回踩MA10附近，当日收回均线上方且支撑未破。",
+    "conditions": [
+      "涨停后2至15日",
+      "最低价触及MA10附近",
+      "收盘重回MA10且日内位置偏强",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "均线支撑具有滞后性；若MA10转为下行，回踩可能演变为趋势破位。",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "youzi",
+    "parameters": {
+      "minStreak": 2,
+      "reclaimMinReturnPercent": 5
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "按游资通用口径写成的固定规则（2026-10-29 新增）；属主动追强打法，不套用过热否决。",
+    "id": "youzi_first_negative_reclaim",
+    "name": "首阴反包",
+    "detail": "游资经典打法：连续涨停至少2板后出现第一根阴线（首阴），次日阳线反包，收盘收复首阴开盘价。",
+    "conditions": [
+      "此前连续涨停至少2板",
+      "前一日为连板后的第一根阴线（未涨停、收盘低于开盘）",
+      "当日阳线、收盘不低于首阴开盘价，涨幅至少5%"
+    ],
+    "risk": "反包失败会形成双阴破位；高位多次反包后的筹码松动风险大，次日不能继续走强时应离场。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "youzi",
+    "parameters": {
+      "minStreak": 2,
+      "minClosePosition": 0.7
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "按游资通用口径写成的固定规则（2026-10-29 新增）；属主动追强打法，不套用过热否决。",
+    "id": "youzi_broken_board_weak_to_strong",
+    "name": "断板弱转强",
+    "detail": "游资经典打法：连续涨停至少2板后断板，次日竞价高开、收盘站上断板日最高价，资金重新转强。",
+    "conditions": [
+      "此前连续涨停至少2板",
+      "前一日断板（未涨停）",
+      "当日高开，收盘不低于断板日最高价且收在日内上部70%以上"
+    ],
+    "risk": "断板后的转强需要板块情绪配合；高开低走跌回断板日区间即视为转强失败。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "youzi",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "按游资通用口径写成的固定规则（2026-10-29 新增）；信号日即涨停日。",
+    "id": "youzi_first_to_second_board",
+    "name": "一进二接力",
+    "detail": "游资经典打法：前一日首板，今日再次封板成为2连板；两天都是换手板（非一字板），筹码有交换。",
+    "conditions": [
+      "前一日首板（再前一日未涨停）",
+      "当日涨停成为2连板",
+      "两日都不是一字板"
+    ],
+    "risk": "2板是分歧最大的位置，次日不能晋级3板时回撤较快；一字加速后的接力不在此列。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.0.0",
+    "family": "youzi",
+    "parameters": {
+      "minStreak": 3,
+      "minPullbackPercent": 15,
+      "maxPullbackPercent": 40,
+      "maxVolumeRatio": 1.2
+    },
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "按游资通用口径写成的固定规则（2026-10-29 新增）；回调股会跌破涨停日低点，所以不套用涨停日支撑否决，承接改由“不破启动价”判断。",
+    "id": "youzi_dragon_pullback",
+    "name": "龙回头",
+    "detail": "游资经典打法：近20日内出现至少3连板的龙头，从高点回调15%–40%后出现缩量阳线企稳，且回调未跌破首板启动价（只看最近一段连板；回调中每个满足条件的企稳日都会选出）。",
+    "conditions": [
+      "3–20个交易日前出现至少3连板",
+      "从连板后高点回调15%–40%，最低未跌破首板前收盘（启动价）",
+      "当日缩量阳线（量比≤1.2）、收盘高于前一日，收在日内上部60%以上"
+    ],
+    "risk": "龙头回调后可能是退潮的开始；再次放量跌破回调低点时，龙回头逻辑失效。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "relay",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "double_limit_relay",
+    "name": "双涨停N形接力",
+    "detail": "两次非连续涨停间隔3至20日，第二次涨停站上前板且未破前板主要支撑。",
+    "conditions": [
+      "两次涨停间隔3至20日",
+      "第二次为非连板涨停",
+      "第二板收盘高于第一板"
+    ],
+    "risk": "二次涨停可能是高位诱多；前一涨停低点附近失守时，N形结构不再成立。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "first_board",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "long_lower_shadow_limit",
+    "name": "长下影涨停封板",
+    "detail": "涨停日盘中曾明显下探但最终收于日内高位，且成交放大处于可控范围。",
+    "conditions": [
+      "当日涨停",
+      "下影占日内振幅至少25%",
+      "涨停日量比1.1至3.0"
+    ],
+    "risk": "长下影意味着盘中分歧较大；次日若低开且不能迅速修复，抛压可能延续。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "breakout",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "breakout_repair_resonance",
+    "type": "composite",
+    "name": "突破修复共振",
+    "detail": "涨停后二次突破为必要条件，同时出现弱转强或MA10反转修复。",
+    "components": [
+      "second_breakout",
+      "weak_to_strong",
+      "ma_reclaim_after_limit"
+    ],
+    "voteRule": "二次突破必须成立，弱转强/MA10反转至少1票，总计至少2个组件同时成立",
+    "conditions": [
+      "二次突破为必要票",
+      "弱转强或MA10反转至少一票",
+      "量能不得触发风险否决",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "突破和修复发生在同日时波动通常较高，尾盘回落会显著增加假突破概率。",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "relay",
+    "parameters": {},
+    "sources": [],
+    "componentNames": [],
+    "dataRequirements": [
+      "必要完整股票窗口及正有限成交量/额",
+      "以独立交易日历确认已完成收盘日"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "固定规则仅用于筛选技术候选，不能证明可成交收益或收益优越性。",
+    "id": "n_relay_resonance",
+    "type": "composite",
+    "name": "N形接力共振",
+    "detail": "双涨停N形接力为必要条件，并由平台、趋势或长下影封板质量中的至少一项确认。",
+    "components": [
+      "double_limit_relay",
+      "platform_breakout",
+      "trend_first_board",
+      "long_lower_shadow_limit"
+    ],
+    "voteRule": "双涨停N形必须成立，另3个封板质量组件至少1票，总计至少2个组件同时成立",
+    "conditions": [
+      "双涨停N形为必要票",
+      "平台/趋势/长下影至少一票",
+      "第二板必须站上第一板"
+    ],
+    "risk": "二次接力处于更高价格区间，筹码松动或板块降温会放大高位回撤。",
+    "overheatGate": false,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "fastPeriod": 12,
+      "slowPeriod": 26,
+      "signalPeriod": 9
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：MACD",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3435"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "MA10回踩",
+      "MACD零轴上动能恢复"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。",
+    "id": "limit_macd_pullback_resonance",
+    "name": "回踩与MACD动能共振",
+    "detail": "涨停后MA10回踩，同时DIF>DEA>0且柱线较昨日增加。",
+    "shapeLabel": "MA10回踩",
+    "technicalId": "macd_momentum_confirm",
+    "technicalLabel": "MACD零轴上动能恢复",
+    "conditions": [
+      "涨停后MA10回踩成立",
+      "DIF高于DEA且DEA大于0",
+      "MACD柱较昨日增加",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "MACD存在滞后，回踩后的动能恢复仍可能是假反弹。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_macd_pullback_resonance:shape",
+      "macd_momentum_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "breakout",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "bollPeriod": 20,
+      "bollMultiplier": 2,
+      "widthLookback": 60
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：BOLL",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3417"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "涨停后二次突破",
+      "布林收口后突破"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。",
+    "id": "limit_boll_breakout_resonance",
+    "name": "二次突破与布林收口共振",
+    "detail": "涨停后二次突破，同时越过昨日布林上轨，且昨日带宽处于此前60日较低水平。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "boll_squeeze_confirm",
+    "technicalLabel": "布林收口后突破",
+    "conditions": [
+      "二次突破形态成立",
+      "昨日带宽不超过截至昨日60日中位数",
+      "昨收不高于昨上轨且今收越过昨上轨",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "收口没有方向保证；向上突破也可能迅速跌回通道。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_boll_breakout_resonance:shape",
+      "boll_squeeze_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "breakout",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "breakoutPeriod": 20
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：OBV计算及运用",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/111"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "涨停后二次突破",
+      "OBV与价格双新高"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。",
+    "id": "limit_obv_breakout_resonance",
+    "name": "二次突破与OBV量价共振",
+    "detail": "涨停后二次突破，同时收盘与OBV均严格突破此前20日最高值。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "obv_price_confirm",
+    "technicalLabel": "OBV与价格双新高",
+    "conditions": [
+      "二次突破形态成立",
+      "收盘超过此前20日最高收盘",
+      "OBV超过此前20日最高值",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "OBV不是资金账户流向，量价同时新高也不排除高位换手。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_obv_breakout_resonance:shape",
+      "obv_price_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "dmiPeriod": 14,
+      "adxPeriod": 6,
+      "adxThreshold": 20
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：DMI",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/77"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "MA10回踩或重新收复",
+      "正向动能与ADX强化"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。",
+    "id": "limit_dmi_reclaim_resonance",
+    "name": "均线承接与DMI强化共振",
+    "detail": "涨停后回踩或收复MA10，同时PDI占优、ADX至少20且继续上升。",
+    "shapeLabel": "MA10回踩或重新收复",
+    "technicalId": "dmi_strength_confirm",
+    "technicalLabel": "正向动能与ADX强化",
+    "conditions": [
+      "MA10回踩或MA10反转成立",
+      "PDI严格高于MDI",
+      "ADX至少20且高于昨日",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "DMI方向强度可能滞后于价格，承接失败时趋势确认不能替代止损。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_dmi_reclaim_resonance:shape",
+      "dmi_strength_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rsvPeriod": 9,
+      "kPeriod": 3,
+      "dPeriod": 3,
+      "maxK": 80
+    },
+    "sources": [
+      {
+        "title": "通达信公式系统：REF/CROSS/MA/EMA/HHV/LLV",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺股民学校：KDJ及缺陷",
+        "url": "https://search.10jqka.com.cn/school/article-detail/id/3475"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "涨停后缩量阳线修复",
+      "KDJ金叉与价格回升"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开指标解释构建的自定义组合；固定条件不代表通达信或同花顺官方推荐，未经收益优越性验证。现有五日诊断不能替代2–6周持有验证。",
+    "id": "limit_kdj_dryup_resonance",
+    "name": "地量修复与KDJ金叉共振",
+    "detail": "涨停后缩量阳线修复，同时K上穿D、K不超过80并收盘上涨。",
+    "shapeLabel": "涨停后缩量阳线修复",
+    "technicalId": "kdj_rebound_confirm",
+    "technicalLabel": "KDJ金叉与价格回升",
+    "conditions": [
+      "缩量阳线修复成立",
+      "昨日K不高于D且今日K高于D",
+      "K不超过80且收盘高于昨日",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "KDJ在趋势中可能钝化，地量也可能意味着参与资金不足。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_kdj_dryup_resonance:shape",
+      "kdj_rebound_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "rsiPeriod": 14,
+      "rsiThreshold": 50,
+      "maxRsi": 75
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "MA10回踩",
+      "RSI中位上方回升"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_rsi_pullback_resonance",
+    "name": "回踩与RSI强弱修复",
+    "detail": "MA10回踩成立，同时RSI14>50且≤75，且高于昨日。",
+    "shapeLabel": "MA10回踩",
+    "technicalId": "rsi_strength_confirm",
+    "technicalLabel": "RSI中位上方回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA10回踩成立",
+      "RSI14>50且≤75，且高于昨日",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_rsi_pullback_resonance:shape",
+      "rsi_strength_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "breakout",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "cciPeriod": 14,
+      "cciThreshold": 100
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "涨停后二次突破",
+      "CCI新上穿100"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_cci_breakout_resonance",
+    "name": "二次突破与CCI强势上穿",
+    "detail": "涨停后二次突破成立，同时昨日CCI14≤100且今日>100。",
+    "shapeLabel": "涨停后二次突破",
+    "technicalId": "cci_strength_confirm",
+    "technicalLabel": "CCI新上穿100",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "涨停后二次突破成立",
+      "昨日CCI14≤100且今日>100",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_cci_breakout_resonance:shape",
+      "cci_strength_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "pullback",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "mfiPeriod": 14,
+      "mfiThreshold": 50,
+      "maxMfi": 80
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "MA10回踩",
+      "MFI中位上方回升"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_mfi_pullback_resonance",
+    "name": "回踩与MFI量价修复",
+    "detail": "MA10回踩成立，同时MFI14>50且≤80，且高于昨日；仅为量价代理。",
+    "shapeLabel": "MA10回踩",
+    "technicalId": "mfi_strength_confirm",
+    "technicalLabel": "MFI中位上方回升",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA10回踩成立",
+      "MFI14>50且≤80，且高于昨日；仅为量价代理",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_mfi_pullback_resonance:shape",
+      "mfi_strength_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.2.0",
+    "family": "repair",
+    "parameters": {
+      "marketCalendarLookback": 80,
+      "recentLimitSessions": 15,
+      "maFast": 5,
+      "maMiddle": 10,
+      "maTrend": 20,
+      "maLong": 60,
+      "maxMa20ExtensionPercent": 10,
+      "cciPeriod": 14,
+      "cciThreshold": 100,
+      "rocPeriod": 12
+    },
+    "sources": [
+      {
+        "title": "通达信公式函数定义（MA/SMA/REF/HHV）",
+        "url": "https://help.tdx.com.cn/gspt/docs/markdown/redword/functionlist.html"
+      },
+      {
+        "title": "同花顺官方技术因子公式",
+        "url": "https://quant.10jqka.com.cn/view/dataplatform/detail/285"
+      }
+    ],
+    "componentNames": [
+      "近期涨停上升趋势",
+      "MA10失而复得",
+      "CCI与ROC同步强化"
+    ],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "80日同日完整指数日历",
+      "近期涨停事件与常规板块限价；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST、*ST与退市整理，含北交所）逐只按不复权日线识别涨停与形态；上市不足120个交易日或近期停牌的股票不参与",
+    "evidenceLevel": "自定义技术规则候选，排序分不是收益概率",
+    "adaptationNote": "依据公开平台指标定义构建的自定义组合，不是平台官方推荐。固定参数未经收益优越性验证；五日诊断不能替代2–6周持有验证。",
+    "id": "limit_cci_roc_resonance",
+    "name": "均线收复与偏离动能双确认",
+    "detail": "MA10失而复得成立，同时CCI14>100且回升；ROC12>0且回升。",
+    "shapeLabel": "MA10失而复得",
+    "technicalId": "cci_roc_dual_confirm",
+    "technicalLabel": "CCI与ROC同步强化",
+    "conditions": [
+      "非ST，近15日收盘涨停、80日日历完整且上升趋势成立",
+      "MA10失而复得成立",
+      "CCI14>100且回升；ROC12>0且回升",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "指标可产生假确认；多条件不会自动带来更高胜率，须经真实样本外和成本约束检验。",
+    "type": "composite",
+    "components": [
+      "recent_limit_trend_gate",
+      "limit_cci_roc_resonance:shape",
+      "cci_roc_dual_confirm"
+    ],
+    "voteRule": "近期涨停趋势共同门槛、涨停后形态、技术确认三项同时成立；不以多数票替代必要条件",
+    "overheatGate": true,
+    "retired": true
+  },
+  {
+    "version": "1.1.0",
+    "family": "pullback",
+    "parameters": {
+      "recentLimitMinAge": 2,
+      "recentLimitMaxAge": 15,
+      "relativeShortPeriod": 20,
+      "relativeLongPeriod": 60,
+      "maTrend": 20,
+      "maLong": 60,
+      "maSlopeSessions": 5,
+      "highLookback": 60,
+      "maxDistanceFromHighPercent": 10,
+      "maxMa20ExtensionPercent": 10,
+      "trueRangePeriod": 14,
+      "maxAtrExtension": 2,
+      "amountPeriod": 20,
+      "minMedianAmount": 200000000
+    },
+    "sources": [
+      {
+        "title": "AQR：Fact, Fiction and Momentum Investing（2014）",
+        "url": "https://www.aqr.com/insights/research/journal-article/fact-fiction-and-momentum-investing?aqrPDF=1"
+      },
+      {
+        "title": "Shi、Zhou：Time series momentum and contrarian effects in the Chinese stock market（2017）",
+        "url": "https://arxiv.org/abs/1702.07374"
+      }
+    ],
+    "componentNames": [],
+    "dataRequirements": [
+      "120个完整股票交易日及正有限成交量/额",
+      "同日对齐的80日中证全指",
+      "公开原始日线与常规涨停规则；缺完整历史公司行为证明"
+    ],
+    "scope": "全市场A股（剔除ST，含北交所）逐只判定；不是全市场横截面排名",
+    "evidenceLevel": "有研究思路来源的自定义技术候选，未证明收益优越性",
+    "adaptationNote": "仅借鉴相对动量研究思路，不是论文复刻。固定阈值为预先指定的工程假设，未证明本套短线规则或参数收益更优；原始/复权与公司行为证据不足时仅作技术候选。",
+    "id": "relative_strength_pullback",
+    "type": "base",
+    "name": "涨停池相对强势回踩",
+    "detail": "近期涨停后MA10回踩，20及60日收益均跑赢中证全指，并约束趋势、波动偏离与成交容量。",
+    "conditions": [
+      "涨停后2至15日MA10回踩且支撑有效",
+      "20及60日收益均跑赢同日中证全指；指数不低于MA60",
+      "Close>MA20>MA60且MA20五日上升；距60日收盘高点不超过10%",
+      "MA20偏离不超过10%且不超过2倍14日平均TR；20日成交额中位数至少2亿元；当日非一价",
+      "过热指标（收盘高位/当日涨超3.5%/高于MA20超12%/量比超1.4/近60日涨停≥3次/近60日涨超40%）不超过1项"
+    ],
+    "risk": "相对强势在急速反转时仍会失效，容量和波动门槛不能证明次日可成交或保证收益。",
+    "overheatGate": true,
+    "retired": true
+  }
+]

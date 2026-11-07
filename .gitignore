@@ -17,12 +17,14 @@ release-builder/
 backups/
 .workbuddy/
 deliverables/
-artifacts/
+artifacts/*
+!artifacts/.gitkeep
 
 # 密钥（纵深防御，即使误放也不会进仓库）
 .env
 .env.*
 *.local
+/config/fuyao-seed.json
 
 # 日志
 *.log
@@ -33,5 +35,5 @@ Thumbs.db
 *.swp
 *.swo
 
-__pycache__/
-*.pyc
+# 本地开发过程、临时报告及源码快照
+.superpowers/

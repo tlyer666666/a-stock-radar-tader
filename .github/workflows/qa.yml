@@ -10,7 +10,94 @@ permissions:
   contents: read
 
 jobs:
-  verify:
+  # Fast, hermetic checks run on every supported desktop platform. The suite is pure
+  # Node (no display, no browser), so it is the cheapest place to catch platform-specific
+  # path/file/encoding regressions.
+  hermetic:
+    name: Hermetic checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      # 部分单测会用真实 Electron 运行时验证网络传输，需要先下载 Electron 二进制。
+      - name: Install Electron runtime
+        run: pnpm ensure:electron
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck application and review entry
+        run: pnpm typecheck && pnpm typecheck:review
+      - name: Hermetic tests with coverage floors
+        run: pnpm test:coverage
+
+  # D-07（第二轮审核）：渲染层套件长期没有进入任何 CI 门禁，只在本地/发布前手动跑，
+  # 于是文案与布局改动（持仓总览副标题、持仓行高、趋势表窄视口阈值、复盘档案的
+  # preview 隔离键、SectorView 原生表格语义与北交所分页）陆续把它们跑红也没人发现 ——
+  # 也就是「套件腐化」。这里单独用一个 Linux 作业把它们固定进每次 push/PR：
+  #   pnpm qa:stability:ui   -> qa/stability-ui.test.cjs
+  #   pnpm qa:ui-remediation -> qa/ui-remediation.test.cjs
+  #   pnpm qa:sector:ui      -> qa/sector-panel.test.cjs
+  #   pnpm qa:workflow       -> qa/workspace-v145.test.cjs
+  #   pnpm qa:fullstack:ui   -> 10 个渲染层文件（research-workspace / six-audit /
+  #                             sector-gainers / beijing-workspace 等，见该脚本的 --test 列表）
+  # 五组都用 playwright-core 驱动本机 Chromium/Chrome（headless），
+  # 因此先按 release.yml 的做法探测浏览器并把路径写进 QA_CHROMIUM_PATH。
+  browser:
+    name: Browser regression suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.16.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Locate Chrome for browser regression tests
+        shell: bash
+        run: |
+          for candidate in /usr/bin/google-chrome /usr/bin/google-chrome-stable /opt/google/chrome/chrome "$(command -v google-chrome || true)" "$(command -v google-chrome-stable || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              echo "QA_CHROMIUM_PATH=$candidate" >> "$GITHUB_ENV"
+              echo "Using Chrome at $candidate"
+              exit 0
+            fi
+          done
+          echo "Chrome is required for browser regression tests" >&2
+          exit 1
+      - name: Stability browser suite (qa:stability:ui)
+        run: pnpm qa:stability:ui
+      - name: UI remediation browser suite (qa:ui-remediation)
+        run: pnpm qa:ui-remediation
+      - name: Sector panel browser suite (qa:sector:ui)
+        run: pnpm qa:sector:ui
+      - name: Workspace workflow browser suite (qa:workflow)
+        run: pnpm qa:workflow
+      # 这 10 个渲染层用例长期只在本地跑（qa:fullstack:ui），是 1.5.x 期间腐化最集中的一组。
+      - name: Full-stack renderer suites (qa:fullstack:ui)
+        run: pnpm qa:fullstack:ui
+
+  packaged:
+    name: Packaged desktop E2E
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -28,10 +115,6 @@ jobs:
         run: pnpm ensure:electron
       - name: Audit critical dependency vulnerabilities
         run: pnpm audit --audit-level critical
-      - name: Typecheck application and review entry
-        run: pnpm typecheck && pnpm typecheck:review
-      - name: Run hermetic tests
-        run: pnpm test
       - name: Build packaged application
         run: pnpm build
       - name: Build independent review module

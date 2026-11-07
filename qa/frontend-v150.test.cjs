@@ -8,8 +8,8 @@ const {views,createPreview,openView,theme,geometry} = require('./frontend-v150.c
 
 const output = path.resolve(__dirname,'../artifacts/frontend-v150/after');
 const actions = {
-  'trend-screener': {name:'扫描全 A 股'}, signals:{name:'重新推演复核'}, sectors:{name:'刷新目录'},
-  dashboard:{name:'刷新涨停池'}, watchlist:{name:'观察池下一页'}, favorites:{name:'设置条件'},
+  'trend-screener': {name:'扫描全 A 股'}, signals:{name:'重新选股'}, sectors:{name:'刷新目录'},
+  dashboard:{name:'刷新涨停池'}, beijing:{name:'刷新北交所行情'}, watchlist:{name:/^全部十日/}, favorites:{name:'设置条件'},
   holdings:{name:'保存持仓'}, review:{name:'重新计算'}, compare:{name:'刷新全部分析'},
   backtest:{name:'从所选日期开始回测'}, news:{name:'立即刷新'}, settings:{name:'保存设置'}
 };
@@ -47,13 +47,15 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
     });
   }
 
-  for(const width of [1024,1280,1480,1920]) test(`${width}px: all twelve pages navigate, respect viewport and expose primary actions in both themes`,async()=>withPage(width,async page=>{
+  for(const width of [1024,1280,1480,1920]) test(`${width}px: all workspace pages navigate, respect viewport and expose primary actions in both themes`,async()=>withPage(width,async page=>{
     const failures=[];
     for(const appearance of ['light','dark']) {
       await theme(page,appearance);
       for(const [id,label]of views) {
         await openView(page,id,label);
         if(id==='sectors') {
+          // 1.6.43：板块目录默认收起，先展开。
+          if(!(await page.locator('.sector-legacy-details').evaluate(el=>el.open))) await page.locator('.sector-legacy-details > summary').click();
           await page.locator('.sector-explorer-entry').first().click();
           await page.locator('.sector-explorer-detail').waitFor();
         }
@@ -66,6 +68,10 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
         await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
         const measured=await geometry(page);
         const record={id,label,theme:appearance,width,...measured};
+        if(id==='signals') {
+          record.headingSize=await page.locator('.main h1').first().evaluate(el=>getComputedStyle(el).fontSize);
+          if(record.headingSize!=='18px') failures.push(`${id}/${appearance}: research heading ${record.headingSize}, expected 18px`);
+        }
         if(measured.active!==id||measured.textLength<30) failures.push(`${id}/${appearance}: expected loaded page`);
         for(const root of measured.roots) {
           if(root.scrollWidth>root.width+2||root.left< -2||root.right>width+2) failures.push(`${id}/${appearance}: viewport overflow ${JSON.stringify(root)}`);
@@ -99,6 +105,7 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
 
   test('settings, portfolio mode, monitor editor and news tabs remain reachable',async()=>withPage(1280,async page=>{
     await openView(page,'sectors','板块强度');
+    if(!(await page.locator('.sector-legacy-details').evaluate(el=>el.open))) await page.locator('.sector-legacy-details > summary').click();
     const sectorStock=page.getByRole('combobox',{name:'股票名称或代码'});
     await sectorStock.fill('贵州');
     await page.getByRole('option',{name:/贵州茅台/}).waitFor();
@@ -140,7 +147,7 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
     const count=await page.locator('.realtime-news-card').count();
     const newsQuery=page.getByPlaceholder('搜索股票、板块、事件关键词');
     await newsQuery.fill('不存在的界面检查关键词');
-    await page.getByRole('heading',{name:'当前范围暂无匹配资讯',exact:true}).waitFor();
+    await page.getByRole('heading',{name:/暂无匹配资讯/}).waitFor();
     assert.equal(await page.locator('.realtime-news-card').count(),0);
     await newsQuery.fill('');
     await page.locator('.realtime-news-card').first().waitFor();
@@ -149,7 +156,7 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
     assert.match(await page.getByRole('button',{name:'正向',exact:true}).getAttribute('class'),/active/);
     assert.equal(await page.locator('.realtime-news-card:not(.positive)').count(),0);
     await openView(page,'settings','数据源设置');
-    const token=page.getByPlaceholder('从同花顺超级命令或账号详情获取');
+    const token=page.getByLabel('同花顺 QuantAPI Refresh Token 可选');
     await token.fill('QA-DRAFT-NOT-A-REAL-TOKEN');
     for(const [id,label]of [['monitoring','监控与提醒'],['execution','执行参数'],['strategies','策略组合'],['sources','行情连接']]) {
       const category=page.getByRole('navigation',{name:'设置分类'}).getByRole('button',{name:label,exact:true});

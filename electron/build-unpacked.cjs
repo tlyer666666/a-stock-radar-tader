@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { execFileSync } = require('node:child_process');
 const {
   ENTRY_EXECUTABLE,
   acquireArtifactLock,
@@ -156,6 +157,18 @@ function buildUnpacked(options = {}) {
       const productExecutablePath = path.join(stageRoot, ENTRY_EXECUTABLE);
       fsImpl.renameSync(executablePath, productExecutablePath);
 
+      // D2-10（第二轮审核）：这里是「Windows 产物没有 asar」的唯一来源，属于有意为之，
+      // 不要为了和 mac/linux 对齐而在这里打包 asar：
+      //   1) Windows 的正式发布链就是 unpacked：electron/build-platform.cjs 的
+      //      buildWindowsZip() 直接调用 internal:build:unpacked，再把 release/win-unpacked
+      //      整个目录压成 Portable.zip —— 也就是说用户拿到的 Windows 包本来就是展开布局。
+      //   2) 打包后的冒烟与交付校验都按目录读取：qa/packaged-app.cjs 直接启动
+      //      release/win-unpacked/<product>.exe，electron/deploy-formal.cjs 与
+      //      build-platform.cjs 也以该目录为源；qa/delivery-verification.cjs 的
+      //      readPackagedPackageJson() 明确同时支持 asar（mac/linux，见 package.json 的
+      //      build.asar=true）与 unpacked resources/app（Windows）两种布局。
+      //   3) 改为 asar 会同时牵动上面这条发布链与冒烟脚本，属于打包高风险改动；
+      //      本轮只补文档说明，不动打包行为。
       const appRoot = path.join(stageRoot, "resources", "app");
       fsImpl.mkdirSync(appRoot, { recursive: true });
       for (const name of ["dist", "electron", "assets"]) {
@@ -165,6 +178,8 @@ function buildUnpacked(options = {}) {
       }
       const configRoot = path.join(projectRoot, "config");
       if (fsImpl.existsSync(configRoot)) copyTree(configRoot, path.join(appRoot, "config"), fsImpl);
+      // 与 package.json build.files 一致：凭据种子文件绝不进安装包。
+      fsImpl.rmSync(path.join(appRoot, "config", "fuyao-seed.json"), { force: true });
       fsImpl.copyFileSync(packagePath, path.join(appRoot, "package.json"));
 
       for (const name of fsImpl.readdirSync(path.join(appRoot, "electron"))) {
@@ -172,12 +187,18 @@ function buildUnpacked(options = {}) {
           name.endsWith(".test.cjs") ||
           name === "build-unpacked.cjs" ||
           name === "build-platform.cjs" ||
-          name === "deploy-formal.cjs"
+          name === "deploy-formal.cjs" ||
+          name === "after-pack-fuses.cjs" ||
+          name === "deploy-single-app.cjs" ||
+          name === "build-runtime-fuses.cjs"
         ) {
           fsImpl.rmSync(path.join(appRoot, "electron", name), { force: true });
         }
       }
 
+      const harden = options.hardenRuntime || (binary => execFileSync(process.execPath,
+        [path.join(__dirname, 'build-runtime-fuses.cjs'), binary, 'win32'], { stdio: 'pipe' }));
+      harden(productExecutablePath);
       writeBuildManifest(stageRoot, packageJson.version, fsImpl);
       validateRunnableAppTree(stageRoot, {
         fsImpl,
@@ -213,7 +234,7 @@ function buildUnpacked(options = {}) {
           installationStarted = true;
           fsImpl.rmSync(outputRoot, { recursive: true, force: true });
           if (fsImpl.existsSync(outputRoot)) {
-            throw new Error(`Unable to clear the previous build after verified backup: ${outputRoot}`);
+            throw new Error(`Unable to clear the previous build after verified backup: ${outputRoot}`, { cause: renamePreviousError });
           }
         }
         movedPrevious = true;

@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { boardMetric, buildConsecutiveBoardGroups, type BoardStock, type BoardSort } from './consecutiveBoardGroups';
-import './watch-ladder.css';
 export default function ConsecutiveBoardLadder({ rows, onOpen }: { rows: BoardStock[]; onOpen: (stock: BoardStock) => void }) {
   const [sort, setSort] = useState<BoardSort>({ key: 'firstSeal', direction: 'asc' });
   const ladder = useMemo(() => buildConsecutiveBoardGroups(rows, sort), [rows, sort]);

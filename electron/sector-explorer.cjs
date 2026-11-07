@@ -1,7 +1,13 @@
 'use strict';
+const { shanghaiDateTime } = require('./market-time-rules.cjs');
 const { createHash } = require('node:crypto');
 const { fetchArrayBufferWithPolicy } = require('./http-client.cjs');
 const { BoundedCache } = require('./bounded-cache.cjs');
+const { parseThsConceptSection } = require('./ths-quote.cjs');
+const { getHexinToken } = require('./ths-hexin-v.cjs');
+// 同花顺未登录时板块成分页只开放前 5 页（每页 20 只）；第 6 页起跳转登录页。
+const ANONYMOUS_PAGE_LIMIT = 5;
+const QUOTES_TTL_MS = 60000;
 const clone = value => JSON.parse(JSON.stringify(value));
 const clean = value => String(value ?? '').replace(/<[^>]*>/g, '').replace(/&nbsp;|&#160;/gi, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Math.min(Number(n), 0x10ffff))).trim();
 const validCode = code => /^(?:00[0-3]\d{3}|30[012]\d{3}|60[0135]\d{3}|68[89]\d{3}|(?:43|83|87|88)\d{4}|920\d{3})$/.test(code);
@@ -68,7 +74,8 @@ function parseCatalog(html, kind) {
 function parseQuotePage(html, entry, expectedPage = 1) {
     const attr = id => { const tag = [...html.matchAll(/<input\b[^>]*>/gi)].find(m => new RegExp(`\\bid=["']${id}["']`).test(m[0])); return tag?.[0].match(/\bvalue=["']([^"']*)["']/)?.[1]; };
     const stem = entry.kind === 'industry' ? 'thshy' : 'gn';
-    if (attr('baseUrl') !== `${stem}/detail` || attr('requestQuery') !== `code/${entry.code}`)
+    const requestQuery = String(attr('requestQuery') || '');
+    if (attr('baseUrl') !== `${stem}/detail` || !(requestQuery === `code/${entry.code}` || requestQuery.startsWith(`code/${entry.code}/`)))
         throw new Error('来源页面板块身份不匹配');
     const table = [...html.matchAll(/<table\b[^>]*>([\s\S]*?)<\/table>/gi)].find(m => /m-pager-table/.test(m[0]));
     if (!table || !/代码/.test(table[1]) || !/现价/.test(table[1]) || !/涨跌幅/.test(table[1]))
@@ -183,18 +190,29 @@ function check(signal) {
         throw signal.reason || abortError();
 }
 async function defaultFetchHtml(url, { signal }) {
-    const buffer = await fetchArrayBufferWithPolicy(url, {
-        signal
-    }, {
-        timeoutMs: 12000, retries: 0, minimumGapMs: 200, headers: {
-            'User-Agent': 'Mozilla/5.0', 'Accept': 'text/html'
-        }
+    const headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html', 'Accept-Language': 'zh-CN,zh;q=0.9', 'Referer': 'https://q.10jqka.com.cn/'
+    };
+    const token = getHexinToken();
+    if (token) headers.Cookie = `v=${token}`;
+    const buffer = await fetchArrayBufferWithPolicy(url, { signal }, {
+        timeoutMs: 12000, retries: 1, minimumGapMs: 200, maxResponseBytes: 5e6, headers
     });
     if (buffer.byteLength > 5e6)
         throw new Error('来源页面过大');
     return new TextDecoder('gb18030').decode(buffer);
 }
-function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, maxPages = 30,
+/** 指数日线 → 近 30 根收盘、5 日 / 20 日涨幅（不足时为 null）。 */
+function summarizeTrend(rows) {
+    const usable = (Array.isArray(rows) ? rows : []).filter(r => /^\d{4}-\d{2}-\d{2}$/.test(String(r?.date || '')) && Number(r?.close) > 0)
+        .sort((a, b) => a.date.localeCompare(b.date));
+    if (usable.length < 2) return null;
+    const last = usable.at(-1).close;
+    const change = n => usable.length > n ? Number(((last / usable.at(-1 - n).close - 1) * 100).toFixed(2)) : null;
+    return { asOf: usable.at(-1).date, change5: change(5), change20: change(20), closes: usable.slice(-30).map(r => ({ date: r.date, close: r.close })) };
+}
+function createSectorExplorer({ fetchHtml = defaultFetchHtml, loadIndustryQuotes = null, loadIndexHistory = null, loadFullMembers = null, now = Date.now, maxPages = 30,
     maxRequests = 32, maxCacheEntries = 128, maxCacheBytes = 8 * 1024 * 1024, timeoutMs = 180000 } = {}) {
     const bounded = (value, fallback, max) => Number.isFinite(Number(value)) && Number(value) > 0 ? Math.min(max, Math.floor(Number(value))) : fallback;
     maxRequests = bounded(maxRequests, 32, 32);
@@ -288,7 +306,7 @@ function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, ma
         }
     }
     function generation(key, signal) { const g = { signal }; generations.set(key, g); return g; }
-    function hit(key, force) { const c = cache.get(key); return !force && c && now() - c.at < (c.value.status === 'partial' ? 45000 : key === 'catalog' ? 900000 : 90000) ? clone(c.value) : null; }
+    function hit(key, force) { const c = cache.get(key); return !force && c && now() - c.at < (key === 'quotes' ? QUOTES_TTL_MS : c.value.status === 'partial' ? 45000 : key === 'catalog' ? 900000 : 90000) ? clone(c.value) : null; }
     function put(key, value, g) {
         if (generations.get(key) === g && value.status !== 'unavailable' && value.status !== 'stale')
             cache.set(key, {
@@ -353,11 +371,69 @@ function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, ma
             return clone(result);
         });
     }
+    // 板块行情快照（目录列表上的涨幅 / 净流入 / 领涨股）。与目录分开缓存：目录一刻钟不变，行情每分钟刷新。
+    let latestQuotes = null;
+    async function quotes(options = {}) {
+        return request(options, async (signal) => {
+            const cached = hit('quotes', options.forceRefresh);
+            if (cached) return cached;
+            const g = generation('quotes', signal), fetchedAt = new Date(now()).toISOString(), sources = [], warnings = [], map = {};
+            await Promise.all([
+                (async () => {
+                    const url = 'https://q.10jqka.com.cn/gn/';
+                    try {
+                        const rows = parseThsConceptSection(await physical(url, signal));
+                        if (!rows.length) throw new Error('未识别到概念行情字段');
+                        for (const row of rows) {
+                            if (!/^\d{6}$/.test(row.cid)) continue;
+                            map[`ths:concept:${row.cid}`] = { changePct: row.changePct, netInflow: row.netInflow === null ? null : row.netInflow * 1e8, indexCode: row.platecode, leaderName: '', leaderChangePct: null, companyCount: null };
+                        }
+                        sources.push({ name: '同花顺概念行情', url, status: 'ready', message: `${rows.length} 个概念` });
+                    } catch (e) {
+                        check(signal);
+                        sources.push({ name: '同花顺概念行情', url, status: 'unavailable', message: e.message });
+                        warnings.push(`概念行情不可用：${e.message}`);
+                    }
+                })(),
+                (async () => {
+                    if (typeof loadIndustryQuotes !== 'function') return;
+                    const url = 'https://data.10jqka.com.cn/funds/hyzjl/';
+                    try {
+                        const rows = await loadIndustryQuotes({ signal });
+                        check(signal);
+                        let count = 0;
+                        for (const row of Array.isArray(rows) ? rows : []) {
+                            if (!/^\d{6}$/.test(String(row?.code || ''))) continue;
+                            count++;
+                            map[`ths:industry:${row.code}`] = { changePct: Number.isFinite(row.changePct) ? row.changePct : null, netInflow: Number.isFinite(row.netInflow) ? row.netInflow : null, indexCode: row.code,
+                                leaderName: String(row.leaderName || ''), leaderChangePct: Number.isFinite(row.leaderChangePct) ? row.leaderChangePct : null, companyCount: Number.isFinite(row.companyCount) ? row.companyCount : null };
+                        }
+                        if (!count) throw new Error('未取得行业行情');
+                        sources.push({ name: '同花顺行业资金流', url, status: 'ready', message: `${count} 个行业` });
+                    } catch (e) {
+                        check(signal);
+                        sources.push({ name: '同花顺行业资金流', url, status: 'unavailable', message: e.message });
+                        warnings.push(`行业行情不可用：${e.message}`);
+                    }
+                })()
+            ]);
+            check(signal);
+            const count = Object.keys(map).length;
+            if (!count) {
+                const old = stale('quotes', warnings.join('；'));
+                if (old) return old;
+            }
+            const result = { status: count ? (warnings.length ? 'partial' : 'ready') : 'unavailable', fetchedAt, quotes: map, sources, warnings };
+            if (count && generations.get('quotes') === g) latestQuotes = result;
+            put('quotes', result, g);
+            return clone(result);
+        });
+    }
     function base(entry) { return {
-        status: 'unavailable', entry, fetchedAt: new Date(now()).toISOString(), asOf: null, reportDate: null, members: [], coverage: emptyCoverage('源页股票；已剔除 ST 和非普通 A 股'), metrics: null, sources: [], warnings: [], evidence: [], relatedTerms: []
+        status: 'unavailable', entry, fetchedAt: new Date(now()).toISOString(), asOf: null, reportDate: null, members: [], coverage: emptyCoverage('源页股票；已剔除 ST 和非普通 A 股'), metrics: null, quote: null, trend: null, sources: [], warnings: [], evidence: [], relatedTerms: []
     }; }
     function classificationResult(parsed, entry, fetchedAt) {
-        const result = base(entry), future = parsed.reportDate && parsed.reportDate > fetchedAt.slice(0, 10);
+        const result = base(entry), future = parsed.reportDate && parsed.reportDate > shanghaiDateTime(fetchedAt).slice(0, 10);
         Object.assign(result, {
             fetchedAt, status: 'partial', members: parsed.members, reportDate: future ? null : parsed.reportDate, coverage: {
                 ...emptyCoverage(parsed.pathOnly ? '官方路径上级；源页未提供本级完整成分' : '报告期同行财务对比名单；非实时完整指数成分'), loaded: parsed.members.length, total: parsed.declared, declared: parsed.declared, excluded: parsed.excluded, invalid: parsed.invalid, pagesLoaded: 1, pagesTotal: 1
@@ -432,9 +508,11 @@ function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, ma
                     const first = parseQuotePage(html, entry, 1), all = [...first.members];
                     let excluded = first.excluded, invalid = first.invalid, pagesLoaded = 1, failed = false;
                     result.metrics = first.metrics;
-                    for (let p = 2; p <= Math.min(first.pagesTotal, maxPages); p++) {
+                    // 翻页用普通页面路径 /detail/code/{code}/page/N/：带 /ajax/1/ 的路径需要登录令牌（实测被拒）。
+                    const pageLimit = Math.min(first.pagesTotal, maxPages, ANONYMOUS_PAGE_LIMIT);
+                    for (let p = 2; p <= pageLimit; p++) {
                         check(signal);
-                        const stem = entry.kind === 'industry' ? 'thshy' : 'gn', url = `https://q.10jqka.com.cn/${stem}/detail/field/199112/order/desc/page/${p}/ajax/1/code/${entry.code}/`;
+                        const stem = entry.kind === 'industry' ? 'thshy' : 'gn', url = `https://q.10jqka.com.cn/${stem}/detail/code/${entry.code}/page/${p}/`;
                         try {
                             const next = parseQuotePage(await physical(url, signal), entry, p);
                             if (next.pagesTotal !== first.pagesTotal)
@@ -451,14 +529,49 @@ function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, ma
                             break;
                         }
                     }
+                    // 未登录只能翻 5 页：配置了同花顺扶摇 Key 时，用扶摇的板块成分接口 + 行情快照补齐完整成分。
+                    let fullSource = null;
+                    if (first.pagesTotal > pageLimit && typeof loadFullMembers === 'function') {
+                        const indexCode = entry.kind === 'industry' ? entry.code : latestQuotes?.quotes?.[entry.id]?.indexCode;
+                        if (/^\d{6}$/.test(String(indexCode || ''))) {
+                            try {
+                                const full = await loadFullMembers(`${indexCode}.TI`, { signal });
+                                const kept = (Array.isArray(full) ? full : []).filter(m => validCode(String(m?.code || '')) && m.name && !riskName(String(m.name)));
+                                if (kept.length > all.length) {
+                                    excluded = (Array.isArray(full) ? full.length : 0) - kept.length;
+                                    invalid = 0;
+                                    all.length = 0;
+                                    all.push(...kept.map(m => ({ ...security(m.code, m.name), latest: m.latest > 0 ? m.latest : null, changePercent: Number.isFinite(m.changePercent) ? m.changePercent : null, amount: Number.isFinite(m.amount) && m.amount >= 0 ? m.amount : null, turnover: null })));
+                                    fullSource = '同花顺扶摇板块成分 + 行情快照';
+                                }
+                            }
+                            catch (e) {
+                                check(signal);
+                                result.warnings.push(`同花顺扶摇完整成分不可用：${e.message}`);
+                            }
+                        }
+                    }
                     const unique = uniqueMembers(all);
                     invalid += unique.conflicts;
-                    const complete = !failed && pagesLoaded === first.pagesTotal && invalid === 0 && unique.duplicates === 0;
+                    const complete = fullSource ? unique.duplicates === 0 : !failed && pagesLoaded === first.pagesTotal && invalid === 0 && unique.duplicates === 0;
                     Object.assign(result, {
                         status: complete ? 'ready' : 'partial', members: unique.members, coverage: {
-                            loaded: unique.members.length, total: complete ? unique.members.length + excluded : null, failed: first.pagesTotal - pagesLoaded, declared: null, excluded, invalid, pagesLoaded, pagesTotal: first.pagesTotal, complete, scope: '源页成分分页；ST/非 A 股剔除后覆盖'
-                        }, warnings: [...result.warnings, '源页未给出行情日期，抓取时间不代表行情时间；不从分页样本推算整体强度。', ...(unique.duplicates ? ['分页存在重复或冲突，不能确认完整覆盖。'] : []), ...(pagesLoaded < first.pagesTotal && !failed ? [`最多读取 ${maxPages} 页，仍有未获取页面。`] : [])]
+                            loaded: unique.members.length, total: complete ? unique.members.length + excluded : null, failed: fullSource ? 0 : first.pagesTotal - pagesLoaded, declared: null, excluded, invalid, pagesLoaded, pagesTotal: first.pagesTotal, complete, scope: fullSource ? `${fullSource}；ST/非 A 股剔除后覆盖；换手率扶摇快照未提供` : '源页成分分页；ST/非 A 股剔除后覆盖'
+                        }, warnings: [...result.warnings, '源页未给出行情日期，抓取时间不代表行情时间；不从分页样本推算整体强度。', ...(unique.duplicates ? ['分页存在重复或冲突，不能确认完整覆盖。'] : []), ...(!fullSource && pagesLoaded < first.pagesTotal && !failed ? [first.pagesTotal > ANONYMOUS_PAGE_LIMIT ? `同花顺未登录只开放前 ${ANONYMOUS_PAGE_LIMIT} 页（${ANONYMOUS_PAGE_LIMIT * 20} 只），该板块共 ${first.pagesTotal} 页、约 ${first.pagesTotal * 20} 只；涨跌家数以源页统计为准。` : `最多读取 ${maxPages} 页，仍有未获取页面。`] : [])]
                     });
+                    result.coverage.anonymousLimit = !fullSource && first.pagesTotal > ANONYMOUS_PAGE_LIMIT ? { pages: ANONYMOUS_PAGE_LIMIT, approxTotal: first.pagesTotal * 20 } : null;
+                    // 板块指数走势（近 30 日、5/20 日涨幅）与最新行情快照；取不到不影响成分。
+                    const quote = latestQuotes?.quotes?.[entry.id] || null;
+                    result.quote = quote;
+                    const indexCode = entry.kind === 'industry' ? entry.code : quote?.indexCode;
+                    if (typeof loadIndexHistory === 'function' && /^\d{6}$/.test(String(indexCode || ''))) {
+                        try {
+                            result.trend = summarizeTrend(await loadIndexHistory(indexCode, { signal }));
+                        } catch (e) {
+                            check(signal);
+                            result.warnings.push(`板块指数走势不可用：${e.message}`);
+                        }
+                    }
                 }
                 result.sources = [{
                         name: entry.kind === 'classification' ? '同花顺 F10 行业地位' : '同花顺公开板块页面', url: entry.sourceUrl, status: result.status, message: result.coverage.scope
@@ -491,7 +604,7 @@ function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, ma
             return disposal;
         },
         getDiagnostics() { return { active, queued: queue.length, requests: controllers.size, generations: generations.size, cache: cache.getDiagnostics(), entries: entries.getDiagnostics(), disposed }; },
-        getSectorCatalog: catalog, getSectorDetail: detail, getSectorClassifications: classifications, async cancelSectorRequest(id) {
+        getSectorCatalog: catalog, getSectorDetail: detail, getSectorQuotes: quotes, getSectorClassifications: classifications, async cancelSectorRequest(id) {
             const c = requests.get(id);
             if (c)
                 c.abort();
@@ -503,5 +616,5 @@ function createSectorExplorer({ fetchHtml = defaultFetchHtml, now = Date.now, ma
     };
 }
 module.exports = {
-    createSectorExplorer, parseCatalog, parseQuotePage, parseClassifications
+    createSectorExplorer, parseCatalog, parseQuotePage, parseClassifications, summarizeTrend, ANONYMOUS_PAGE_LIMIT
 };

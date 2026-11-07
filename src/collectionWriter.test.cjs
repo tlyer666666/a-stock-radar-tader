@@ -18,3 +18,11 @@ test('failed collection persistence preserves existing state and does not block 
  const failed=write(items=>items.filter(x=>x!=='A'));const later=write(items=>[...items,'C']);
  await assert.rejects(failed,/disk/);await later;assert.deepEqual(state,['A','B','C']);
 });
+test('an unchanged collection is neither persisted nor re-accepted',async()=>{
+ let state=['A','B'],writes=0,accepts=0;
+ const write=createCollectionWriter({read:()=>state,persist:async items=>{writes++;return items;},accept:items=>{accepts++;state=items;}});
+ assert.equal(await write(items=>[...items]),state);
+ assert.equal(await write(items=>items),state);
+ assert.equal(writes,0);assert.equal(accepts,0);
+ await write(items=>[...items,'C']);assert.equal(writes,1);assert.deepEqual(state,['A','B','C']);
+});

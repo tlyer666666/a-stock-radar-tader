@@ -14,7 +14,7 @@ function loadFile(name, append = '', globals = {}, requires = {}) {
   const filename = path.join(__dirname, name), module = { exports: {} }, realRequire = createRequire(filename);
   vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\n' + append, { module, exports: module.exports,
     require: id => Object.hasOwn(requires, id) ? requires[id] : realRequire(id), __dirname, __filename: filename,
-    process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, Buffer,
+    process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, Headers, Response, ReadableStream, Buffer,
     setTimeout, clearTimeout, setImmediate, queueMicrotask, fetch: () => { throw new Error('Unexpected external fetch'); }, ...globals }, { filename });
   return module.exports;
 }
@@ -32,7 +32,13 @@ function service({ fetch, requires = {}, append = '' } = {}) {
     './http-client.cjs': network,
     './news-service.cjs': { getNewsFeed() { throw new Error('Unexpected news'); }, resetNewsCache() {}, shutdownNewsService: async () => {}, classifyEvent() {} },
     './data-federation.cjs': { tencentQuote() { throw new Error('Unexpected external Tencent quote'); }, collectAuxiliarySources() {}, buildQuoteConsensus() {}, shutdownDataFederation: async () => {} },
-    'node:child_process': { execFile() { throw new Error('Unexpected curl fallback'); } }, ...requires
+    'node:child_process': { execFile() { throw new Error('Unexpected curl fallback'); } },
+    // 这些用例验证东方财富/腾讯应急链的取消语义；同花顺主源在这里视为不支持，直接进入应急链。
+    './ths-free-market.cjs': { ...require('./ths-free-market.cjs'), thsFreeSupports: () => false,
+      thsFreeQuote: async () => { throw Object.assign(new Error('ths offline fixture'), { code: 'THS_FREE_UNSUPPORTED' }); },
+      thsFreeDailyHistory: async () => { throw Object.assign(new Error('ths offline fixture'), { code: 'THS_FREE_UNSUPPORTED' }); },
+      thsFreeKline: async () => { throw Object.assign(new Error('ths offline fixture'), { code: 'THS_FREE_UNSUPPORTED' }); } },
+    ...requires
   });
 }
 
@@ -87,7 +93,7 @@ test('total producer deadline cancels Retry-After backoff without a second fetch
   let requests = 0, curl = 0;
   const factory = require('./service-runtime.cjs');
   const s = service({ fetch: async () => { requests++; return { ok: false, status: 503, headers: new Headers({ 'retry-after': '1' }), body: new ReadableStream({ start(controller) { controller.close(); } }) }; },
-    requires: { './service-runtime.cjs': { ...factory, createServiceRuntime: options => factory.createServiceRuntime({ ...options, jobOptions: { operationTimeouts: { scan: 200 } } }) },
+    requires: { './service-runtime.cjs': { ...factory, createServiceRuntime: options => factory.createServiceRuntime({ ...options, jobOptions: { operationTimeouts: { scan: 200, selection: 200 } } }) },
       'node:child_process': { execFile() { curl++; throw new Error('Unexpected fallback after cancellation'); } } } });
   s.probe.setScanToCachedHistory(); t.after(() => s.shutdownServiceResources());
   const pending = s.scanStrategySignals({}, { owner: 'deadline', requestId: 'deadline' });
@@ -170,4 +176,144 @@ test('standalone curl outside any job remains in shutdown ownership until a real
   let complete = false; const shutdown = s.shutdownServiceResources().then(() => { complete = true; });
   await delay(30); assert.equal(closed, false); assert.equal(complete, false);
   await shutdown; await rejection; assert.equal(closed, true); assert.equal(complete, true);
+});
+
+test('selection adapter cancellation retains every slow physical market request until drained', {timeout:5000},async t=>{
+ const physical=deferred(),entered=deferred();let count=0;const start=()=>{if(++count===2)entered.resolve();};
+ const actual=require('./strategy-selection-service.cjs');
+ const s=service({requires:{
+  './strategy-selection-service.cjs':{...actual,createStrategySelectionService:deps=>actual.createStrategySelectionService({...deps,now:()=>new Date('2026-10-21T02:00:00Z')})},
+  './trend-screener-adapter.cjs':{createTrendMarketData:()=>({
+   fetchUniversePage:async({filter})=>filter==='m:1+t:2'?{total:1,rows:[{code:'600001',name:'样本',secid:'1.600001',industry:'电子'}]}:{total:0,rows:[]},
+   fetchBenchmark:()=>{start();return physical.promise;},
+   fetchHistory:(_security,_basis,{signal})=>{start();return new Promise((_resolve,reject)=>{if(signal.aborted)reject(signal.reason);else signal.addEventListener('abort',()=>reject(signal.reason),{once:true});});}
+  })}
+ },append:`topicPoolForDate=async date=>({date,provider:'fixture',sourceDateVerified:true,pool:date==='2026-10-20'?[{code:'600001',name:'样本'}]:[]});`});
+ const pending=s.scanStrategySignals({}, {owner:'selection-drain',requestId:'selection-drain'});
+ t.after(async()=>{physical.resolve([]);await Promise.allSettled([pending]);await s.shutdownServiceResources();});
+ await entered.promise;
+ const rejected=assert.rejects(pending,{code:'JOB_CANCELLED'});s.cancelServiceJob({owner:'selection-drain',requestId:'selection-drain'});await rejected;
+ let drained=false;pending.drained.then(()=>{drained=true;});await tick();await tick();
+ assert.equal(drained,false,'a caller cancellation must not release ownership of an unfinished benchmark request');
+ physical.resolve([]);await pending.drained;assert.equal(s.getServiceDiagnostics().jobs.active,0);
+});
+
+for (const mode of ['cancel', 'timeout']) test(`sector ${mode} aborts the real composed industry transport without starting another page`, { timeout: 3000 }, async t => {
+  const actualExplorer = require('./sector-explorer.cjs'), entered = deferred();
+  let calls = 0, signal, bodyCancelled = false;
+  const s = service({
+    fetch: async (url, options) => {
+      assert.match(url, /data\.10jqka\.com\.cn\/funds\/hyzjl\//);
+      calls++; signal = options.signal;
+      const body = new ReadableStream({
+        start(controller) { controller.enqueue(Buffer.from('<tr><td>1</td><td>Industry</td><td>100</td><td>1</td><td>2</td><td>1</td><td>1</td><td>10</td></tr>')); },
+        cancel() { bodyCancelled = true; }
+      });
+      entered.resolve();
+      return new Response(body);
+    },
+    requires: { './sector-explorer.cjs': { createSectorExplorer: options => actualExplorer.createSectorExplorer({ ...options, fetchHtml: async () => '' }) } }
+  });
+  t.after(() => s.shutdownServiceResources());
+  const pending = s.getSectorQuotes({ requestId: `industry-${mode}`, timeoutMs: mode === 'timeout' ? 50 : 1000 });
+  const rejected = assert.rejects(pending, mode === 'timeout' ? { code: 'JOB_TIMEOUT' } : { name: 'AbortError' });
+  await entered.promise;
+  await tick(); // Let the independent concept branch finish before cancellation.
+  if (mode === 'cancel') assert.equal((await s.cancelSectorRequest(`industry-${mode}`)).cancelled, true);
+  await rejected;
+  await tick();
+  assert.equal(signal.aborted, true);
+  assert.equal(bodyCancelled, true);
+  assert.equal(calls, 1);
+});
+
+test('cancelled THS text keeps producer ownership until its original HTTP request drains', { timeout: 3000 }, async t => {
+  const entered = deferred(), physical = deferred();
+  const network = loadFile('http-client.cjs', '', { fetch: async () => {
+    entered.resolve(); await physical.promise;
+    return new Response('callback({"data":"20251024,1,1,1,1,1,1"})');
+  } });
+  const ths = loadFile('ths-quote.cjs', '', {}, { './http-client.cjs': network });
+  const runtime = require('./service-runtime.cjs').createServiceRuntime();
+  const pending = runtime.run('single', 'ths-drain', { owner: 'ths-drain', requestId: 'ths-drain' }, () =>
+    ths.fetchThsDailyHistory(network.fetchWithPolicy, '881121', { signal: runtime.signal() }));
+  const rejected = assert.rejects(pending, { code: 'JOB_CANCELLED' });
+  t.after(async () => { physical.resolve(); await Promise.allSettled([pending]); await runtime.shutdown(); });
+  await entered.promise;
+  runtime.cancel({ owner: 'ths-drain', requestId: 'ths-drain' });
+  await rejected;
+  let drained = false;
+  pending.drained.then(() => { drained = true; });
+  await tick();
+  assert.equal(network.getHttpDiagnostics().active, 1);
+  assert.equal(drained, false, 'logical cancellation must not release unfinished HTTP work');
+  assert.equal(runtime.getDiagnostics().jobs.active, 1);
+  physical.resolve();
+  await pending.drained;
+  assert.equal(network.getHttpDiagnostics().active, 0);
+  assert.equal(runtime.getDiagnostics().jobs.active, 0);
+});
+
+test('sector index cancellation outside producer context remains in module drain ownership', { timeout: 3000 }, async t => {
+  const entered = deferred(), physical = deferred();
+  const network = loadFile('http-client.cjs', '', { fetch: async () => {
+    entered.resolve(); await physical.promise;
+    return new Response('callback({"data":"20251024,1,1,1,1,1,1"})');
+  } });
+  const ths = loadFile('ths-quote.cjs', '', {}, { './http-client.cjs': network });
+  const headers = ['序号', '代码', '名称', '现价', '涨跌幅', '涨跌', '涨速', '换手', '量比', '振幅', '成交额', '流通股', '流通市值', '市盈率'];
+  const detail = `<input id="baseUrl" value="thshy/detail"><input id="requestQuery" value="code/881121"><table class="m-pager-table"><tr>${headers.map(value => `<th>${value}</th>`).join('')}</tr><tr>${['1', '600000', 'Fixture', '10', '1', '1', '1', '1', '1', '1', '100', '100', '100', '10'].map(value => `<td>${value}</td>`).join('')}</tr></table><span class="page_info">1/1</span>`;
+  const explorer = require('./sector-explorer.cjs').createSectorExplorer({
+    fetchHtml: async url => url.includes('/detail/') ? detail : '<a href="https://q.10jqka.com.cn/thshy/detail/code/881121/">Fixture</a>',
+    loadIndexHistory: (code, { signal }) => ths.fetchThsDailyHistory(network.fetchWithPolicy, code, { signal })
+  });
+  t.after(async () => { physical.resolve(); await explorer.dispose(); await ths.drainThsQuoteRequests?.(); });
+  const catalog = await explorer.getSectorCatalog();
+  const pending = explorer.getSectorDetail({ id: catalog.entries[0].id, requestId: 'sector-index-drain' });
+  const rejected = assert.rejects(pending, { name: 'AbortError' });
+  await entered.promise;
+  await explorer.cancelSectorRequest('sector-index-drain');
+  await rejected;
+  await explorer.dispose();
+  let drained = false;
+  const draining = Promise.resolve(ths.drainThsQuoteRequests?.()).then(() => { drained = true; });
+  await tick();
+  assert.equal(network.getHttpDiagnostics().active, 1);
+  assert.equal(drained, false, 'module drain must retain index work after explorer logical disposal');
+  physical.resolve();
+  await draining;
+  assert.equal(network.getHttpDiagnostics().active, 0);
+});
+
+for (const kind of ['index text', 'fund flow']) test(`THS ${kind} retains physical drain after headers when body cancellation is delayed`, { timeout: 3000 }, async t => {
+  const entered = deferred(), physical = deferred();
+  let bodyController, cancelling = false;
+  const network = loadFile('http-client.cjs', '', { fetch: async () => new Response(new ReadableStream({
+    start(controller) { bodyController = controller; controller.enqueue(Buffer.from('partial body')); entered.resolve(); },
+    cancel() { cancelling = true; return physical.promise; }
+  })) });
+  const ths = loadFile('ths-quote.cjs', '', {}, { './http-client.cjs': network });
+  const runtime = require('./service-runtime.cjs').createServiceRuntime();
+  const release = () => { if (!cancelling) { try { bodyController?.close(); } catch { /* Already closed. */ } } physical.resolve(); };
+  const pending = runtime.run('single', `ths-body-${kind}`, { owner: 'ths-body', requestId: kind }, () => kind === 'index text'
+    ? ths.fetchThsDailyHistory(network.fetchWithPolicy, '881121', { signal: runtime.signal() })
+    : ths.fetchThsFundFlow(network.fetchWithPolicy, 'industry', { signal: runtime.signal() }));
+  const rejected = assert.rejects(pending, { code: 'JOB_CANCELLED' });
+  t.after(async () => { release(); await Promise.allSettled([pending]); await ths.drainThsQuoteRequests(); await runtime.shutdown(); });
+  await entered.promise;
+  await tick(); // Ensure the Response has returned and its body reader is active.
+  runtime.cancel({ owner: 'ths-body', requestId: kind });
+  await rejected;
+  let jobDrained = false, moduleDrained = false;
+  pending.drained.then(() => { jobDrained = true; });
+  const draining = ths.drainThsQuoteRequests().then(() => { moduleDrained = true; });
+  await tick();
+  assert.equal(network.getHttpDiagnostics().active, 1);
+  assert.equal(jobDrained, false, 'headers must not transfer unfinished source ownership to a logical race');
+  assert.equal(moduleDrained, false);
+  assert.equal(runtime.getDiagnostics().jobs.active, 1);
+  release();
+  await Promise.all([pending.drained, draining]);
+  assert.equal(network.getHttpDiagnostics().active, 0);
+  assert.equal(runtime.getDiagnostics().jobs.active, 0);
 });

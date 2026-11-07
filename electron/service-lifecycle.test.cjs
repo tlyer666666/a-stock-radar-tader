@@ -14,7 +14,7 @@ function load(name, append = '', globals = {}, requires = {}) {
   vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\n' + append, {
     module, exports: module.exports, require: id => requires[id] || realRequire(id),
     __dirname, __filename: filename, process, console, URL, DOMException,
-    AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout,
+    AbortController, AbortSignal, TextDecoder, Headers, setTimeout, clearTimeout,
     setImmediate, queueMicrotask, Buffer, fetch: async () => { throw new Error('Unexpected network'); }, ...globals
   }, { filename });
   return module.exports;
@@ -60,22 +60,26 @@ test('sector stale fallback releases single-flight and expires before the next r
   let clock = 1_000_000, calls = 0;
   class FakeDate extends Date { static now() { return clock; } }
   const s = load('services.cjs', 'module.exports.probe = { sectorStrengthCache, setLoader(fn) { loadSectorStrength = fn; } };', { Date: FakeDate });
-  s.probe.sectorStrengthCache.set('银行', { value: { name: 'old' }, expiresAt: clock - 1, staleUntil: clock + 100 });
   s.probe.setLoader(async () => { calls++; return null; });
-  assert.equal((await s.sectorStrength('银行')).partial, true);
+  assert.equal(await s.sectorStrength('银行'), null);
+  s.probe.setLoader(async () => { calls++; return { name: 'old' }; });
+  assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).name, 'old');
+  s.probe.setLoader(async () => { calls++; return null; });
+  assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).partial, true);
   clock += 31 * 60 * 1000;
   s.probe.setLoader(async () => { calls++; return { name: 'recovered' }; });
   assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).name, 'recovered');
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
 });
 
 test('sector thrown failure releases stale fallback so recovered data can load', async () => {
   const s = load('services.cjs', 'module.exports.probe = { sectorStrengthCache, setLoader(fn) { loadSectorStrength = fn; } };');
-  s.probe.sectorStrengthCache.set('银行', { value: { name: 'old' }, expiresAt: 0, staleUntil: Date.now() + 10000 });
+  s.probe.setLoader(async () => ({ name: 'old' }));
+  assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).name, 'old');
   s.probe.setLoader(async () => { throw new Error('offline'); });
-  assert.equal((await s.sectorStrength('银行')).partial, true);
+  assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).partial, true);
   s.probe.setLoader(async () => ({ name: 'recovered' }));
-  assert.equal((await s.sectorStrength('银行')).name, 'recovered');
+  assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).name, 'recovered');
 });
 
 test('news cold callers share source work and reset prevents an older completion replacing fresh news', async () => {
@@ -229,7 +233,7 @@ test('news and auxiliary provider shutdown cancels their own active HTTP calls',
   }
 });
 
-test('cancelled curl fallback retains its transport slot until the real subprocess closes', { skip: process.platform === 'win32' }, async () => {
+test('cancelled curl fallback retains its transport slot until the real subprocess closes', async () => {
   const childProcess = require('node:child_process');
   const transport = require('./http-client.cjs');
   const ready = deferred(), closed = deferred();

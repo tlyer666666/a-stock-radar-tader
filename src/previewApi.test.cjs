@@ -69,6 +69,12 @@ test("preview API supplies coherent data for search, analysis, and review pages"
   assert.equal(legacyNamedSnapshot.meta.dataDate, snapshot.meta.dataDate);
   assert.ok(Number.isFinite(Date.parse(legacyNamedSnapshot.meta.fetchedAt)));
   assert.deepEqual(JSON.parse(JSON.stringify(snapshot)), snapshot);
+
+  const failedBoards = await api.getPreviousLimitUpFailedBoardSnapshot();
+  assert.equal(failedBoards.failedBoardDays.length, 5);
+  assert.equal(failedBoards.failedBoardDays[0].date, failedBoards.currentDate);
+  assert.ok(failedBoards.failedBoardDays.every((day) => day.status === "ready" && day.rows.length === 1));
+  assert.ok(failedBoards.failedBoardDays.every((day) => day.rows.every((row) => /^\d{6}$/.test(row.code))));
 });
 
 test("preview settings preserve the mandatory risk veto", async () => {
@@ -106,18 +112,31 @@ test('preview exposes the same versioned combinations without publishing invente
   const api = createPreviewApi();
   const catalog = require('../config/strategy-signal-combinations.json');
   const definitions = await api.getStrategyDefinitions();
-  assert.equal(definitions.length, 32);
+  assert.equal(definitions.length, require("../electron/strategy-signal-engine.cjs").ALL_STRATEGY_DEFINITIONS.length);
   const report = await api.scanStrategySignals();
-  assert.equal(report.compositeStrategyCount, 18);
-  assert.match(report.multipleTestingWarning, /32套策略（14套基础、18套组合/);
+  // 与桌面一致：目录含已下线策略（retired），选股只跑在用策略。
+  const live = definitions.filter(item => !item.retired);
+  assert.equal(report.compositeStrategyCount, live.filter(item => item.type === 'composite').length);
+  assert.equal(report.mode, 'selection');
+  assert.equal(report.strategies.filter(item => !item.custom).length, live.length);
+  assert.equal(live.length, require("../electron/strategy-signal-engine.cjs").STRATEGY_DEFINITIONS.length);
+  assert.ok(report.strategies.some(item => item.custom && item.id === 'cs_preview01'), 'preview includes the demo custom strategy');
+  assert.equal('optimizedPortfolio' in report, false);
   for (const entry of catalog) {
     const definition = definitions.find(item => item.id === entry.id);
     assert.equal(definition?.version, entry.version);
     assert.deepEqual(definition.parameters, entry.parameters);
-    const audited = report.auditedStrategies.find(item => item.id === entry.id);
-    assert.equal(audited.publicationAccepted, false);
-    assert.equal(audited.validation.sampleCount, 0);
-    assert.equal(audited.validation.winRate5, null);
+    const audited = report.strategies.find(item => item.id === entry.id);
+    if (definition.retired) { assert.equal(audited, undefined, `${entry.id} is retired from selection`); continue; }
+    assert.equal("validation" in audited, false);
+    assert.equal("publicationAccepted" in audited, false);
     assert.equal(audited.stocks.length, 0);
   }
+});
+
+test('browser strategy metadata stays identical to the current Electron rule definitions', async()=>{
+  const expected=require('../electron/strategy-signal-engine.cjs').ALL_STRATEGY_DEFINITIONS;
+  const actual=await createPreviewApi().getStrategyDefinitions();
+  assert.equal(actual.length,expected.length);
+  for(const definition of expected){const item=actual.find(x=>x.id===definition.id);assert.equal(item.name,definition.name);assert.equal(item.version,definition.version);assert.equal(item.family,definition.family);}
 });

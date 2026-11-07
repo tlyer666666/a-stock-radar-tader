@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
+import React from 'react'; import {createRoot} from 'react-dom/client';
+import {createPreviewApi} from '/src/previewApi.ts';
+
+const mode = new URLSearchParams(location.search).get('mode') || 'app';
+if(mode==='standalone') { await import('/src/styles/review-index.css'); document.body.className='terminal-shell'; document.body.dataset.standaloneReview=''; } else await import('/src/styles/index.css');
+const api = createPreviewApi(); window.stockApi = api; window.fixture = { calls: [], reviewDegraded: false, ready: false };
+const originalSettings = api.getSettings.bind(api);
+api.getSettings = async () => ({...await originalSettings(), theme:'light', newsVoiceEnabled:false});
+const search=api.search.bind(api); api.search=async q=>{window.fixture.calls.push({kind:'search',q}); return search(q);};
+const analyze=api.analyze.bind(api); api.analyze=async security=>{window.fixture.calls.push({kind:'analyze',code:security.code}); return analyze(security);};
+const review=api.getProfessionalReview.bind(api);
+api.getProfessionalReview=async()=>window.fixture.reviewDegraded ? {date:'2026-10-19',indices:[{code:'test', name:'缺字段指数'}],scenarios:[{id:'test',name:'缺条件'}]} : await review();
+delete api.openProfessionalReviewWindow;
+if(mode==='standalone') {const {default:Boundary}=await import('/src/AppErrorBoundary.tsx'); const Crash=()=>{throw new Error('隔离复盘故障演示');};createRoot(document.getElementById('root')).render(React.createElement(Boundary,null,React.createElement(Crash)));}
+else if(mode==='review') {const {default:View}=await import('/src/ProfessionalReview.tsx'); createRoot(document.getElementById('root')).render(React.createElement(View));}
+else if(mode==='sector') {const {SectorView:View}=await import('/src/features/sectors/SectorView.tsx'); const row={name:'审计板块', constituents:[{code:'600001',name:'缺值样本',changePct:null, mainNetInflow:null}]}; api.analyzeSector=async()=>{window.fixture.calls.push({kind:'sectorAnalyze'});return row;}; createRoot(document.getElementById('root')).render(React.createElement(View,{ rows:[row],loading:false,loadError:'',onRefresh:()=>true,onOpenStock:()=>{} }));}
+else if(mode==='failed') {const {default:View}=await import('/src/PreviousLimitUpFailedBoards.tsx'); const get=api.getPreviousLimitUpFailedBoardSnapshot.bind(api);api.getPreviousLimitUpFailedBoardSnapshot=async(...a)=>{const v=await get(...a);return {...v, rows:v.rows.map(r=>({...r,industry:null})),failedBoardDays:v.failedBoardDays.map(d=>({...d,rows:d.rows.map(r=>({...r,industry:null}))}))};};createRoot(document.getElementById('root')).render(React.createElement(View,{live:false,cachedSnapshot:null,onSnapshot:()=>{},onOpen:()=>{},onAdd:()=>{},isFavorite:()=>false}));}
+else { const {default:App}=await import('/src/App.tsx'); createRoot(document.getElementById('root')).render(React.createElement(App)); }
+await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+window.fixture.ready=true;
+</script></body></html>

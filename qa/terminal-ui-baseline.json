@@ -3,8 +3,8 @@
   "createdAt": "2026-09-30T09:49:51.832Z",
   "sourceRoot": "deliverables/ui-v1-baseline/src",
   "scope": "Runtime Chinese strings/template fragments plus all-language JSXText, JSX expression literals and visible JSX attributes (title, alt, placeholder, aria-label/description/valuetext/roledescription, label, value) in src/**/*.tsx and src/**/*.ts. Excludes type-only nodes, declarations, tests and comments. Duplicates retained; JSX whitespace normalized; dynamic expressions and runtime visibility require separate QA.",
-  "totalOccurrences": 4002,
-  "uniqueTexts": 2888,
+  "totalOccurrences": 4000,
+  "uniqueTexts": 2886,
   "files": [
     {
       "file": "App.tsx",
@@ -9667,18 +9667,6 @@
       "file": "App.tsx",
       "line": 8245,
       "kind": "StringLiteral"
-    },
-    {
-      "text": "已取得 ",
-      "file": "App.tsx",
-      "line": 8245,
-      "kind": "TemplateHead"
-    },
-    {
-      "text": " 条有效报价",
-      "file": "App.tsx",
-      "line": 8245,
-      "kind": "LastTemplateToken"
     },
     {
       "text": " 只",
@@ -24092,5 +24080,10 @@
       "line": 111,
       "kind": "StringLiteral"
     }
+  ],
+  "maintenanceNotes": [
+    "2026-10-22 第三轮整改 D2-11：删除 App.tsx:8245 的持仓总览旧副标题模板片段「已取得 」与「 条有效报价」。",
+    "现行文案为「本轮有效报价 N/M 条；汇总仅覆盖本轮有效报价的持仓」（src/features/collections/CollectionViews.tsx），App.tsx 亦已拆分，本基线保留的行号与 sha256 均属旧快照。",
+    "全仓无测试或脚本引用本文件（仅 qa/terminal-ui-copy-report.json 把上一个 checkout 的绝对路径记作报告字段），故按「无引用即删除陈旧条目」处理；totalOccurrences / uniqueTexts 同步各减 2。"
   ]
 }

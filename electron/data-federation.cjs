@@ -43,6 +43,23 @@ function formatTencentTime(value) {
   return `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}T${digits.slice(8, 10)}:${digits.slice(10, 12)}:${digits.slice(12, 14)}+08:00`;
 }
 
+// E-03 残留：腾讯原始字段的"没有这个观测值"（null / undefined / 空串 / 非有限数）
+// 必须保持 null。旧实现直接用 Number(...)：空串 → 0、"-" → NaN，
+// 于是"未知的昨收 / 涨停价 / 成交额"在下游变成 0 元参与比较（0 元昨收会让涨跌幅恒为无穷大，
+// 0 元涨停价会让"是否涨停"恒真）。
+function optionalNumber(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" && !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+// 带单位换算的版本：只有原值存在时才乘倍率，缺失仍是 null（不会 0 * 1e8 = 0）。
+function scaledNumber(value, factor) {
+  const parsed = optionalNumber(value);
+  return parsed === null ? null : parsed * factor;
+}
+
 function requestPolicy(options = {}, timeoutMs = 5000) {
   const method = String(options?.method || "GET").toUpperCase();
   return {
@@ -79,15 +96,31 @@ async function tencentQuote(security) {
     : 2;
   const tradeSummary = String(fields[35] || "").split("/");
   const rawAmount = Number(tradeSummary[2]);
-  const monitorValues = {
-    latest: fields[3],
-    changePct: fields[32],
-    turnover: fields[38],
-    amount: Number.isFinite(rawAmount) && rawAmount > 0 ? tradeSummary[2] : fields[37]
+  // 成交额优先级保持原样：先看 tradeSummary[2]（元），缺失时才回退 fields[37]（万元 × 10000）。
+  const summaryAmount = Number.isFinite(rawAmount) && rawAmount > 0 ? rawAmount : null;
+  const parsed = {
+    preClose: optionalNumber(fields[4]),
+    open: optionalNumber(fields[5]),
+    high: optionalNumber(fields[33]),
+    low: optionalNumber(fields[34]),
+    volume: scaledNumber(fields[36], 100),
+    amount: summaryAmount !== null ? summaryAmount : scaledNumber(fields[37], 10000),
+    turnover: optionalNumber(fields[38]),
+    volumeRatio: optionalNumber(fields[49]),
+    amplitude: optionalNumber(fields[43]),
+    totalMarketCap: scaledNumber(fields[44], 1e8),
+    floatMarketCap: scaledNumber(fields[45], 1e8),
+    limitUp: optionalNumber(fields[47]),
+    limitDown: optionalNumber(fields[48]),
+    change: optionalNumber(fields[31]),
+    changePct: optionalNumber(fields[32])
   };
-  const missingFields = Object.entries(monitorValues)
-    .filter(([, value]) => value == null || !String(value).trim() || !Number.isFinite(Number(value)))
+  // E-03：missingFields 覆盖全部价格/量能字段（以前只有 latest/changePct/turnover/amount 四项，
+  // 下游无从得知 high/low/open/preClose/limitUp/limitDown 已经不成立）。
+  const missingFields = Object.entries(parsed)
+    .filter(([, value]) => value === null)
     .map(([field]) => field);
+  // latest 是报价链的准入门槛，继续保持 fail-closed：无有效最新价直接抛错让链条接力。
   if (!Number.isFinite(latest) || latest <= 0) throw new Error("未返回有效行情");
   return {
     id: "tencent",
@@ -101,24 +134,7 @@ async function tencentQuote(security) {
     securityCode: String(fields[2] || security.code),
     pricePrecision,
     latest,
-    preClose: Number(fields[4]),
-    open: Number(fields[5]),
-    high: Number(fields[33]),
-    low: Number(fields[34]),
-    volume: Number(fields[36]) * 100,
-    amount:
-      Number.isFinite(rawAmount) && rawAmount > 0
-        ? rawAmount
-        : Number(fields[37]) * 10000,
-    turnover: Number(fields[38]),
-    volumeRatio: Number(fields[49]),
-    amplitude: Number(fields[43]),
-    totalMarketCap: Number(fields[44]) * 1e8,
-    floatMarketCap: Number(fields[45]) * 1e8,
-    limitUp: Number(fields[47]),
-    limitDown: Number(fields[48]),
-    change: Number(fields[31]),
-    changePct: Number(fields[32]),
+    ...parsed,
     updatedAt: formatTencentTime(fields[30]),
     missingFields,
     latencyMs: Date.now() - startedAt,

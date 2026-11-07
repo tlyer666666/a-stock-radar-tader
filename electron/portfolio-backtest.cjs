@@ -1,10 +1,13 @@
 "use strict";
 
-const DEFAULT_ANNUAL_TRADING_DAYS = 252;
+const { isOpeningLimitUpEntry, isClosingLimitDownExit } = require("./price-limit-rules.cjs");
+const { intervalPriceBasisIssue, boardOrderRule } = require("./quant-history-safety.cjs");
 
-function finite(value) {
-  return Number.isFinite(Number(value));
-}
+const { DEFAULT_COSTS, roundTripBps, fees } = require("./backtest-costs.cjs");
+const DEFAULT_ANNUAL_TRADING_DAYS = 252;
+// C-05：允许调用方 netReturn 与历史行情自算毛收益的最大偏离（百分点）。
+// 超出即说明上游样本的收益口径不可复现，但本函数仍按既定口径计收益，只做标记。
+const MAX_NET_RETURN_GROSS_GAP_PERCENT = 15;
 
 function round(value, digits = 4) {
   if (value === null || value === undefined || value === "") return null;
@@ -59,10 +62,10 @@ function normalizeHistory(code, rawRows) {
     if (!isIsoDate(date)) {
       throw new TypeError(`股票 ${code} 历史行情第 ${index + 1} 行日期无效`);
     }
-    if (!(open > 0) || !(close > 0)) {
+    if (!Number.isFinite(open) || !Number.isFinite(close) || !(open > 0) || !(close > 0)) {
       throw new TypeError(`股票 ${code} ${date} 的开盘价或收盘价无效`);
     }
-    return { date, open, close };
+    return { ...raw, date, open, close };
   }).sort((left, right) => left.date.localeCompare(right.date));
   for (let index = 1; index < rows.length; index += 1) {
     if (rows[index].date === rows[index - 1].date) {
@@ -83,71 +86,75 @@ function normalizeHistories(historiesByCode) {
   return histories;
 }
 
-function normalizeSample(raw, index, histories, nextMarketDate) {
+function normalizeSample(raw, index, histories, nextMarketDate, cutoffDate, costModel) {
   const code = normalizeCode(raw?.code);
   if (!code) throw new TypeError(`samples[${index}] 缺少6位股票代码`);
   const history = histories.get(code);
   if (!history) throw new TypeError(`samples[${index}] 的股票 ${code} 缺少历史行情`);
   const signalDate = String(raw?.signalDate || raw?.date || "").slice(0, 10);
   const entryDate = String(raw?.entryDate || "").slice(0, 10);
-  const exitDate = String(raw?.exitDate || "").slice(0, 10);
-  if (!isIsoDate(signalDate) || !isIsoDate(entryDate) || !isIsoDate(exitDate)) {
+  const requestedExitDate = String(raw?.exitDate || "").slice(0, 10);
+  const explicitPending = ["pending", "unresolved"].includes(raw?.status) && !requestedExitDate;
+  if (!isIsoDate(signalDate) || !isIsoDate(entryDate) || (!explicitPending && !isIsoDate(requestedExitDate))) {
     throw new TypeError(`samples[${index}] 的 signalDate/entryDate/exitDate 无效`);
   }
   const signalRow = history.byDate.get(signalDate);
   const entryRow = history.byDate.get(entryDate);
-  const exitRow = history.byDate.get(exitDate);
-  if (!signalRow) {
-    throw new TypeError(`samples[${index}] 的信号日 ${signalDate} 不在 ${code} 历史行情中`);
-  }
-  if (!entryRow) {
-    throw new TypeError(`samples[${index}] 的入场日 ${entryDate} 不在 ${code} 历史行情中`);
-  }
-  if (!exitRow) {
-    throw new TypeError(`samples[${index}] 的退出日 ${exitDate} 不在 ${code} 历史行情中`);
-  }
+  if (!signalRow || !entryRow) throw new TypeError(`samples[${index}] 的信号日或入场日不在 ${code} 历史行情中`);
   const expectedEntry = history.rows[signalRow.index + 1]?.date || "";
   if (entryDate !== expectedEntry) {
-    throw new TypeError(
-      `samples[${index}] 的入场日必须是信号日后的首个交易日（应为 ${expectedEntry || "无可用交易日"}）`
-    );
+    throw new TypeError(`samples[${index}] 的入场日必须是信号日后的首个交易日（应为 ${expectedEntry || "无可用交易日"}）`);
   }
-  if (exitRow.index <= entryRow.index) {
-    throw new TypeError(`samples[${index}] 的退出日必须晚于入场日`);
+  const observationEnd = history.rows.findLastIndex(row => row.date <= cutoffDate);
+  let exitRow = requestedExitDate && requestedExitDate <= cutoffDate ? history.byDate.get(requestedExitDate) : null;
+  if (!explicitPending && requestedExitDate <= cutoffDate && !exitRow) {
+    throw new TypeError(`samples[${index}] 的退出日 ${requestedExitDate} 不在 ${code} 历史行情中`);
   }
-  const netReturn = Number(raw?.netReturn);
-  if (!Number.isFinite(netReturn) || netReturn < -100) {
+  if (exitRow && exitRow.index <= entryRow.index) throw new TypeError(`samples[${index}] 的退出日必须晚于入场日`);
+  const rawNet = raw?.netReturn;
+  const callerNetReturn = rawNet === null || rawNet === undefined || rawNet === "" ? null : Number(rawNet);
+  if (!explicitPending && (!Number.isFinite(callerNetReturn) || callerNetReturn < -100)) {
     throw new TypeError(`samples[${index}] 缺少有效 netReturn（百分比）`);
   }
+  const sampleBps = raw?.roundTripCostBps == null ? null : Number(raw.roundTripCostBps);
+  if (sampleBps !== null && (!Number.isFinite(sampleBps) || sampleBps < 0 || sampleBps > 2000)) throw new TypeError("无效样本成本");
+  const flatBps = sampleBps ?? roundTripBps();
+  // Standalone snapshots may specify a fixed all-in rate. An account run supplies its explicit cost model.
+  const entryCostRate = costModel
+    ? (costModel.commissionBps + costModel.slippageBps + costModel.transferFeeBps) / 10000
+    : flatBps / 20000;
+  let executionRejection = null;
+  if (isOpeningLimitUpEntry(signalRow.close, entryRow, code, code)) executionRejection = "opening_limit_up";
+  if (!(Number(entryRow.volume) > 0)) executionRejection = "suspended_or_no_liquidity";
+  while (exitRow && (!(Number(exitRow.volume) > 0) || isClosingLimitDownExit(history.rows[exitRow.index - 1]?.close, exitRow, code, code))) {
+    const next = history.rows[exitRow.index + 1];
+    exitRow = next && next.date <= cutoffDate ? history.byDate.get(next.date) : null;
+  }
+  const priceBasisIssue = intervalPriceBasisIssue(history.rows, entryRow.index, exitRow?.index ?? observationEnd, code, code);
+  // Entry eligibility is decided without knowing whether a later exit completes.
+  // An unresolved held price basis freezes valuation from that date; it never
+  // releases the cash/slot that the position had already reserved.
+  if (priceBasisIssue) exitRow = null;
+  const grossReturn = exitRow ? (exitRow.close / entryRow.open - 1) * 100 : null;
+  const exitShifted = exitRow && exitRow.date !== requestedExitDate;
+  const netReturnGrossGap = exitRow && !exitShifted ? callerNetReturn - grossReturn : null;
+  const netReturnInconsistent = netReturnGrossGap !== null && Math.abs(netReturnGrossGap) > MAX_NET_RETURN_GROSS_GAP_PERCENT;
   const strategyId = String(raw?.strategyId || "selected_strategy");
-  const sampleId = String(
-    raw?.sampleId || raw?.id ||
-    `${strategyId}:${code}:${signalDate}:${entryDate}:${exitDate}`
-  );
+  const sampleId = String(raw?.sampleId || raw?.id || `${strategyId}:${code}:${signalDate}:${entryDate}`);
   const priority = [raw?.priority, raw?.signalStrength, raw?.score]
-    .filter((value) => value !== null && value !== undefined && value !== "")
-    .map(Number)
-    .find(Number.isFinite) ?? 0;
-  const strategyIds = Array.isArray(raw?.strategyIds)
-    ? [...new Set(raw.strategyIds.map(String).filter(Boolean))].sort()
-    : [strategyId];
+    .filter(value => value !== null && value !== undefined && value !== "").map(Number).find(Number.isFinite) ?? 0;
+  const strategyIds = Array.isArray(raw?.strategyIds) ? [...new Set(raw.strategyIds.map(String).filter(Boolean))].sort() : [strategyId];
   return {
-    sampleId,
-    code,
-    name: String(raw?.name || code),
-    strategyId,
-    strategyIds,
-    signalDate,
-    entryDate,
-    exitDate,
-    entryPrice: entryRow.open,
-    exitPrice: exitRow.close,
-    historicalGrossReturn: ((exitRow.close / entryRow.open) - 1) * 100,
-    netReturn,
-    priority,
-    holdingTradingDays: exitRow.index - entryRow.index + 1,
+    sampleId, code, name: String(raw?.name || code), strategyId, strategyIds, signalDate, entryDate, requestedExitDate,
+    exitDate: exitRow?.date || "", executionRejection, priceBasisIssue,
+    reason: priceBasisIssue ? "corporate_action_unresolved" : exitRow ? "" : "pending_exit_horizon",
+    entryCostRate,
+    entryPrice: entryRow.open, exitPrice: exitRow?.close ?? null, historicalGrossReturn: grossReturn,
+    callerNetReturn: exitRow && !exitShifted ? round(callerNetReturn, 4) : null,
+    netReturnGrossGap: netReturnGrossGap === null ? null : round(netReturnGrossGap, 4), netReturnInconsistent, priority,
+    holdingTradingDays: Math.max(0, (exitRow?.index ?? observationEnd) - entryRow.index + 1),
     expectedMarketEntryDate: nextMarketDate.get(signalDate) || "",
-    duplicateKey: `${code}:${signalDate}:${entryDate}:${exitDate}`
+    duplicateKey: `${code}:${signalDate}:${entryDate}`
   };
 }
 
@@ -248,6 +255,11 @@ function simulateStrategyPortfolio(
     throw new TypeError("maxPositionPercent 必须大于0且不超过100");
   }
 
+  const costModel = options.costModel ? { ...DEFAULT_COSTS, ...options.costModel } : null;
+  if (costModel && Object.entries(costModel).some(([key, value]) => !(key in DEFAULT_COSTS) || !Number.isFinite(value) || value < 0 || (key.endsWith("Bps") && value > 1000))) throw new TypeError("无效组合交易成本模型");
+  const sideCost = (value, side, position) => costModel
+    ? fees(value, side, costModel).total + value * costModel.slippageBps / 10000
+    : value * position.entryCostRate;
   const histories = normalizeHistories(historiesByCode);
   const benchmarkRows = normalizeBenchmarkRows(benchmarkHistory);
   const fallbackCalendar = [...new Set(
@@ -307,9 +319,17 @@ function simulateStrategyPortfolio(
       profitFactor: null,
       averageTradeReturnPercent: null,
       tradeCount: 0,
+      enteredCount: 0,
+      openPositionCount: 0,
+      endingCash: round(startingCapital, 2),
+      endingMarketValue: 0,
+      unrealizedPnl: 0,
+      realizedPnl: 0,
+      valuationComplete: true,
       winningTrades: 0,
       losingTrades: 0,
       rejectedSignalCount: 0,
+      netReturnInconsistentCount: 0,
       capacityRejected: 0,
       overlapRejected: 0,
       duplicateRejected: 0,
@@ -354,8 +374,8 @@ function simulateStrategyPortfolio(
       methodology: {
         signalTiming: "信号只决定次一市场交易日开盘候选，不使用其后的行情排序",
         entry: "信号日后的首个市场交易日开盘入场；停牌或缺失该日K线则拒绝",
-        sizing: "按开盘前现金/空闲席位与单股仓位上限孰低确定目标金额，再向下取A股整手；当日退出持仓仍占用席位",
-        exit: "固定退出日收盘按样本 netReturn 结算",
+        sizing: "按开盘前现金/空闲席位与单股仓位上限孰低确定目标金额，按板块最小申报及递增数量向下取整；当日退出持仓仍占用席位",
+        exit: "到期后首个可成交收盘结算；停牌或跌停顺延，超出窗口保持未结算",
         exitPrecision: "exitDate 沿用上游样本口径；未把个股第N根K线宣称为精确的第N个市场交易日",
         markToMarket: "未退出持仓按当日历史收盘价盯市，停牌日沿用最近收盘价",
         eventOrder: "开盘处理新入场，收盘处理退出；当日退出所得次日才可再用",
@@ -367,7 +387,9 @@ function simulateStrategyPortfolio(
       equityCurve,
       contributions: [],
       trades: [],
-      rejections: []
+      holdings: [],
+      rejections: [],
+      netReturnInconsistencies: []
     };
   }
   if (!masterCalendar.length || !fullCalendar.length) {
@@ -377,13 +399,35 @@ function simulateStrategyPortfolio(
     masterCalendar.map((date, index) => [date, masterCalendar[index + 1] || ""])
   );
   const ordered = samples
-    .map((sample, index) => normalizeSample(sample, index, histories, nextMarketDate))
+    .map((sample, index) => normalizeSample(sample, index, histories, nextMarketDate, fullCalendar.at(-1), costModel))
     .sort(compareSignals);
   const duplicateKeys = new Set();
   for (const sample of ordered) {
     sample.duplicate = duplicateKeys.has(sample.duplicateKey);
     duplicateKeys.add(sample.duplicateKey);
   }
+  // C-05：调用方 netReturn 与历史行情自算毛收益不一致的样本单独登记。
+  // 不进 rejections，避免污染 rejectedSignalCount/容量类计数——这些样本照常参与撮合。
+  const netReturnInconsistencies = ordered
+    .filter((sample) => sample.netReturnInconsistent)
+    .map((sample) => ({
+      sampleId: sample.sampleId,
+      code: sample.code,
+      name: sample.name,
+      strategyId: sample.strategyId,
+      strategyIds: [...sample.strategyIds],
+      signalDate: sample.signalDate,
+      entryDate: sample.entryDate,
+      exitDate: sample.exitDate,
+      reason: "net_return_inconsistent",
+      reasonText: "调用方 netReturn 与按历史行情自算的毛收益相差超过 " +
+        MAX_NET_RETURN_GROSS_GAP_PERCENT +
+        " 个百分点，账户按实际入场、退出价格及费用结算",
+      netReturn: sample.callerNetReturn,
+      historicalGrossReturn: round(sample.historicalGrossReturn, 4),
+      gapPercent: sample.netReturnGrossGap,
+      thresholdPercent: MAX_NET_RETURN_GROSS_GAP_PERCENT
+    }));
 
   const entryGroups = new Map();
   for (const sample of ordered) {
@@ -394,7 +438,7 @@ function simulateStrategyPortfolio(
   const firstDate = fullCalendar[0];
   const lastDate = fullCalendar.at(-1);
   const outsideRange = ordered.find(
-    (sample) => sample.entryDate < firstDate || sample.exitDate > lastDate
+    (sample) => !sample.executionRejection && (sample.entryDate < firstDate || sample.entryDate > lastDate)
   );
   if (outsideRange) {
     throw new TypeError(
@@ -412,6 +456,7 @@ function simulateStrategyPortfolio(
   const equityCurve = [];
   const trades = [];
   const rejections = [];
+  let valuationComplete = true;
 
   for (const date of calendar) {
     const candidates = (entryGroups.get(date) || []).sort(compareSignals);
@@ -425,6 +470,11 @@ function simulateStrategyPortfolio(
     let openedToday = 0;
     for (const sample of candidates) {
       const state = { activePositions: active.size, availableCash: cash };
+      if (sample.executionRejection) {
+        rejections.push(rejectionFor(sample, sample.executionRejection,
+          sample.executionRejection === "corporate_action_unresolved" ? "价格基准变化缺少可核验的除权结算数据，收益不可结算" : "停牌、封板或退出超出区间，无法按样本撮合", state));
+        continue;
+      }
       if (
         !sample.expectedMarketEntryDate ||
         sample.entryDate !== sample.expectedMarketEntryDate
@@ -473,20 +523,24 @@ function simulateStrategyPortfolio(
         ));
         continue;
       }
-      const shares = Math.floor(
-        allocationPerFreeSlot / sample.entryPrice / lotSize
-      ) * lotSize;
-      if (shares < lotSize) {
+      const rule = boardOrderRule(sample.code, lotSize);
+      let shares = Math.floor(
+        allocationPerFreeSlot / (sample.entryPrice * (1 + sample.entryCostRate)) / rule.step
+      ) * rule.step;
+      // The fixed minimum commission can exceed the percentage estimate for small orders.
+      while (shares >= rule.minimum && shares * sample.entryPrice + sideCost(shares * sample.entryPrice, "buy", sample) > allocationPerFreeSlot + 1e-8) shares -= rule.step;
+      if (shares < rule.minimum) {
         rejections.push(rejectionFor(
           sample,
           "insufficient_lot",
-          `目标仓位不足买入一手（${lotSize}股）`,
+          `目标仓位不足最小申报数量（${rule.minimum}股，递增${rule.step}股）`,
           state
         ));
         continue;
       }
       const allocation = shares * sample.entryPrice;
-      if (cash + 1e-8 < allocation) {
+      const entryCost = sideCost(allocation, "buy", sample);
+      if (cash + 1e-8 < allocation + entryCost) {
         rejections.push(rejectionFor(
           sample,
           "insufficient_cash",
@@ -495,12 +549,15 @@ function simulateStrategyPortfolio(
         ));
         continue;
       }
-      cash -= allocation;
+      cash -= allocation + entryCost;
       active.set(sample.code, {
         ...sample,
         allocation,
+        entryCost,
         shares,
-        lastMarkPrice: sample.entryPrice
+        lastMarkPrice: sample.entryPrice,
+        markDate: sample.entryDate,
+        valuationComplete: true
       });
       openedToday += 1;
       maxPositionsObserved = Math.max(maxPositionsObserved, active.size);
@@ -512,8 +569,10 @@ function simulateStrategyPortfolio(
         left.code.localeCompare(right.code) || left.sampleId.localeCompare(right.sampleId)
       );
     for (const position of closing) {
-      const pnl = position.allocation * position.netReturn / 100;
-      const proceeds = position.allocation + pnl;
+      const exitValue = position.shares * position.exitPrice;
+      const exitCost = sideCost(exitValue, "sell", position);
+      const proceeds = exitValue - exitCost;
+      const pnl = proceeds - position.allocation - position.entryCost;
       cash += proceeds;
       active.delete(position.code);
       trades.push({
@@ -529,18 +588,29 @@ function simulateStrategyPortfolio(
         entryPrice: round(position.entryPrice, 4),
         exitPrice: round(position.exitPrice, 4),
         allocation: round(position.allocation, 2),
+        entryCost: round(position.entryCost, 2),
         shares: round(position.shares, 6),
         historicalGrossReturnPercent: round(position.historicalGrossReturn, 4),
-        netReturnPercent: round(position.netReturn, 4),
+        exitCost: round(exitCost, 2),
+        netReturnPercent: round(pnl / (position.allocation + position.entryCost) * 100, 4),
         pnl: round(pnl, 2),
         proceeds: round(proceeds, 2)
       });
     }
 
     let marketValue = 0;
+    let staleMarks = 0;
     for (const position of active.values()) {
       const row = histories.get(position.code)?.byDate.get(date);
-      if (row?.close > 0) position.lastMarkPrice = row.close;
+      const unsafe = position.priceBasisIssue && date >= position.priceBasisIssue.date;
+      if (!unsafe && row?.close > 0) {
+        position.lastMarkPrice = row.close;
+        position.markDate = date;
+      } else {
+        staleMarks += 1;
+        position.valuationComplete = false;
+        valuationComplete = false;
+      }
       marketValue += position.shares * position.lastMarkPrice;
     }
     const equity = cash + marketValue;
@@ -558,6 +628,8 @@ function simulateStrategyPortfolio(
       cash: round(cash, 2),
       marketValue: round(marketValue, 2),
       openPositions: active.size,
+      staleMarks,
+      valuationComplete,
       openedToday,
       closedToday: closing.length,
       rejectedToday: candidates.length - openedToday,
@@ -567,9 +639,11 @@ function simulateStrategyPortfolio(
     previousEquity = equity;
   }
 
-  if (active.size) {
-    throw new Error("组合回测结束时仍有未结算持仓，请检查退出日期");
-  }
+  const holdings = [...active.values()].map(position => {
+    const marketValue = position.shares * position.lastMarkPrice;
+    return { ...position, marketValue: round(marketValue, 2),
+      unrealizedPnl: round(marketValue - position.allocation - position.entryCost, 2) };
+  });
   trades.sort((left, right) =>
     left.entryDate.localeCompare(right.entryDate) ||
     left.code.localeCompare(right.code) ||
@@ -581,7 +655,9 @@ function simulateStrategyPortfolio(
     left.sampleId.localeCompare(right.sampleId)
   );
 
-  const endingCapital = cash;
+  const endingMarketValue = holdings.reduce((sum, position) => sum + position.shares * position.lastMarkPrice, 0);
+  const unrealizedPnl = holdings.reduce((sum, position) => sum + position.shares * position.lastMarkPrice - position.allocation - position.entryCost, 0);
+  const endingCapital = cash + endingMarketValue;
   const totalReturnPercent = ((endingCapital / startingCapital) - 1) * 100;
   const tradingDays = equityCurve.length;
   const annualizedReturnPercent = endingCapital > 0 && tradingDays > 0
@@ -609,7 +685,12 @@ function simulateStrategyPortfolio(
     (sum, trade) => sum + Math.abs(Number(trade.pnl)),
     0
   );
+  // F-01: grossLoss === 0 且 grossProfit > 0 时，盈亏比在数学上是无穷大。
+  // 之前一律给 null，前端渲染成 "--"，用户会误以为是「数据缺失」，
+  // 而同样的情形在模拟交易链路里显示 "∞"。这里保留 null（IPC 不能传 Infinity），
+  // 但额外给出明确标记，让前端能渲染成 "∞" 而不是 "--"。
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : null;
+  const profitFactorInfinite = grossLoss <= 0 && grossProfit > 0;
   const benchmarkReturnPercent = benchmarkReturn(
     benchmarkRows,
     firstDate,
@@ -648,6 +729,13 @@ function simulateStrategyPortfolio(
   const metrics = {
     startingCapital: round(startingCapital, 2),
     endingCapital: round(endingCapital, 2),
+    endingCash: round(cash, 2),
+    endingMarketValue: round(endingMarketValue, 2),
+    unrealizedPnl: round(unrealizedPnl, 2),
+    realizedPnl: round(trades.reduce((sum, trade) => sum + trade.pnl, 0), 2),
+    enteredCount: trades.length + holdings.length,
+    openPositionCount: holdings.length,
+    valuationComplete,
     totalReturnPercent: round(totalReturnPercent, 4),
     annualizedReturnPercent: round(annualizedReturnPercent, 4),
     maxDrawdownPercent: round(maximumDrawdown, 4),
@@ -661,6 +749,7 @@ function simulateStrategyPortfolio(
       : null,
     profitLossRatio: round(profitLossRatio, 4),
     profitFactor: round(profitFactor, 4),
+    profitFactorInfinite,
     averageTradeReturnPercent: round(average(
       trades.map((trade) => Number(trade.netReturnPercent))
     ), 4),
@@ -668,6 +757,7 @@ function simulateStrategyPortfolio(
     winningTrades: winningTrades.length,
     losingTrades: losingTrades.length,
     rejectedSignalCount: rejections.length,
+    netReturnInconsistentCount: netReturnInconsistencies.length,
     capacityRejected: rejections.filter((item) => item.reason === "capacity_limit").length,
     overlapRejected: rejections.filter((item) => item.reason === "same_stock_overlap").length,
     duplicateRejected: rejections.filter((item) => item.reason === "duplicate_signal").length,
@@ -688,10 +778,15 @@ function simulateStrategyPortfolio(
 
   const validationReasons = [
     benchmarkRows.length
-      ? "退出仍沿用上游样本固定 exitDate 与 netReturn；若需精确市场日持有期，应由上游按主交易日历重建样本。"
+      ? "退出日沿用上游计划，无法成交则顺延。净收益按实际买卖价格、数量及逐边费用结算。"
       : "未提供基准交易日历，已使用个股历史日期并集，仅可作诊断。",
     metrics.securityCount < 30
       ? `股票篮子仅 ${metrics.securityCount} 只，少于30只，不能标记为已验证组合。`
+      : "",
+    holdings.length ? `期末仍持有${holdings.length}只股票，继续计入资金、席位和市值；胜率及完成交易只统计已退出部分，未实现盈亏未扣未来卖出成本。` : "",
+    !valuationComplete ? "持仓行情缺失或价格基准待核，已冻结最后可靠估值；权益证据不完整。" : "",
+    netReturnInconsistencies.length
+      ? `${netReturnInconsistencies.length} 笔样本的 netReturn 与自算毛收益相差超过 ${MAX_NET_RETURN_GROSS_GAP_PERCENT} 个百分点，已标记待核，账面盈亏以历史价格与资金流水为准。`
       : ""
   ].filter(Boolean);
   return {
@@ -717,9 +812,9 @@ function simulateStrategyPortfolio(
     methodology: {
       signalTiming: "信号只决定次一市场交易日开盘候选，不使用其后的行情排序",
       entry: "信号日后的首个市场交易日开盘入场；停牌或缺失该日K线则拒绝",
-      sizing: "按开盘前现金/空闲席位与单股仓位上限孰低确定目标金额，再向下取A股整手；当日退出持仓仍占用席位",
-      exit: "固定退出日收盘按样本 netReturn 结算",
-      costs: "sample.netReturn 已含双边成本，组合层不重复扣费",
+      sizing: "按开盘前现金/空闲席位与单股仓位上限孰低确定目标金额，按板块最小申报及递增数量向下取整；当日退出持仓仍占用席位",
+      exit: "到期后首个可成交收盘结算；停牌或跌停顺延，超出窗口保持未结算",
+      costs: "账户按历史成交额逐边结算费用与滑点，调用方 netReturn 仅用于差异核对",
       exitPrecision: "exitDate 沿用上游样本口径；未把个股第N根K线宣称为精确的第N个市场交易日",
       calendar: benchmarkRows.length
         ? "使用 benchmarkHistory 作为主市场交易日历"
@@ -733,7 +828,9 @@ function simulateStrategyPortfolio(
     equityCurve,
     contributions,
     trades,
-    rejections
+    holdings,
+    rejections,
+    netReturnInconsistencies
   };
 }
 

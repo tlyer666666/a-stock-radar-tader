@@ -23,11 +23,12 @@ before(() => {
 });
 after(() => { restore?.(); global.window = oldWindow; if (oldCss) require.extensions['.css'] = oldCss; else delete require.extensions['.css']; });
 const state = () => ({ initialCapital: 100000, cash: 99000, openPositions: [{ id: 'p', code: '600001', name: '合成', shares: 100,
-  entryPrice: 10, latestPrice: 10, stopPrice: 8, takePrice: 20, holdingBars: 0, highWaterMark: 10, openedAt: '2026-01-05T02:00:00Z' }], closedPositions: [] });
-const quote = (latest, dates = []) => ({ security: { code: '600001' }, quote: { latest }, history: dates.map(date => ({ date })) });
+  quoteName: '合成', quoteDate: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' }), quotePreClose: 10, quoteVolume: 10000,
+  entryPrice: 10, latestPrice: 10, stopPrice: 9.5, takePrice: 20, holdingBars: 0, highWaterMark: 10, openedAt: '2026-01-05T02:00:00Z' }], closedPositions: [] });
+const quote = (latest, dates = []) => ({ security: { code: '600001', name: '合成' }, quote: { latest, preClose: 10, volume: 10000, high: latest, low: latest }, history: dates.map(date => ({ date })), updatedAt: new Date().toISOString() });
 test('disabled trailing stop keeps position; fixed stop and take profit still close it', () => {
   assert.equal(advance(state(), quote(10), settings).state.openPositions.length, 1);
-  assert.equal(advance(state(), quote(7), settings).state.closedPositions[0].closeReason, 'SL');
+  assert.equal(advance(state(), quote(9.01), settings).state.closedPositions[0].closeReason, 'SL');
   assert.equal(advance(state(), quote(21), settings).state.closedPositions[0].closeReason, 'TP');
 });
 test('ordinary quotes retain price and peak so later retracement closes exactly once', () => {
@@ -76,7 +77,7 @@ test('legacy migration waits for history instead of counting old bars twice afte
 });
 test('portfolio kill switch settles each stock at its own latest price with original fees and slippage', () => {
   const portfolio = state(); portfolio.initialCapital = 5000; portfolio.cash = 2000;
-  portfolio.openPositions.push({ ...portfolio.openPositions[0], id:'p2', code:'600002', entryPrice:20, latestPrice:20, highWaterMark:20, stopPrice:15, takePrice:30 });
+  portfolio.openPositions.push({ ...portfolio.openPositions[0], id:'p2', code:'600002', quoteName:'合成二', entryPrice:20, latestPrice:20, highWaterMark:20, stopPrice:15, takePrice:30 });
   const safe = { ...settings, maxPortfolioRiskPercent:10 };
   const baseline = normalize(portfolio);
   const expected = baseline.openPositions.map(p => settle(p, p.latestPrice, 'KILL_SWITCH', '2026-01-05', safe));

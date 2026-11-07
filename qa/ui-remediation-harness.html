@@ -1,0 +1,26 @@
+<!doctype html><html><head><meta charset="UTF-8"></head><body><div id="root"></div><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import App from '/src/App.tsx';
+import '/src/styles/index.css';
+import { createPreviewApi } from '/src/previewApi.ts';
+const api = createPreviewApi();
+window.fixtureCalls = [];
+const securities = Array.from({ length: 25 }, (_, index) => ({ code: String(600100 + index), name: `UI样本${String(index).padStart(3, '0')}`, secid: `1.${600100 + index}`, industry: '虚构行业', assetType: 'stock' }));
+const discover = api.discoverLimitUps.bind(api);
+api.discoverLimitUps = async () => ({ ...await discover(), rows: securities.map((item, index) => ({ ...item, latest: 10 + index, changePct: 10 + index / 100, consecutiveBoards: index % 5 + 1, turnover: index / 2, amount: index * 1e8, firstSealTime: '09:31:20', openBoardCount: index % 3, sealedAmount: 3e7, sealFloatRatio: .008, limitReason: '虚构测试原因' })), dataDate: '2026-10-19', count: securities.length });
+api.getLimitUpPoolSnapshot = api.discoverLimitUps;
+api.getHoldings = async () => [{ ...securities[0], shares: 100, costPrice: 1500 }, { ...securities[1], shares: 200, costPrice: 220 }];
+api.getWatchlist = async () => [];
+const settings = api.getSettings.bind(api);
+api.getSettings = async () => ({ ...await settings(), theme: 'light', newsVoiceEnabled: false });
+api.getQuoteSnapshot = async security => ({ security, quote: { latest: security.code === '600100' ? 87.62 : 77.5, preClose: security.code === '600100' ? 87.9 : 77.22, changePct: security.code === '600100' ? -.36 : .36 } });
+const analyze = api.analyze.bind(api);
+api.analyze = async security => { window.fixtureCalls.push({ kind: 'open', code: security.code }); const value = await analyze(security); return { ...value, security, analysis: { ...value.analysis, ma5: 123.45, ma10: 122.44, ma20: 121.33, avwap: 120.22 } }; };
+window.fixtureSignalCount = 45;
+api.getStrategyDefinitions = async () => [{ id: 'ui-sample', name: 'UI复核策略', type: 'base' }];
+api.scanStrategySignals = async () => ({ generatedAt: new Date().toISOString(), source: '隔离UI验收数据', auditedStrategies: [{ id: 'ui-sample', name: 'UI复核策略', validation: { accepted: false, publicationAccepted: false, status: 'INSUFFICIENT', sampleCount: 20, minimumSamples: 120 }, stocks: Array.from({ length: window.fixtureSignalCount }, (_, i) => ({ ...securities[i % securities.length], code: String(600100 + i), name: `信号样本${String(i).padStart(3, '0')}`, latest: 10, changePct: 1, riskVetoStatus: 'passed', reasons: ['虚构规则命中'], signalScore: 70 })) }] });
+if (new URLSearchParams(location.search).get('compare') === '1') localStorage.setItem('a-stock-radar:compare-selection', JSON.stringify(securities.slice(0, 6)));
+window.stockApi = api;
+createRoot(document.getElementById('root')).render(React.createElement(App));
+</script></body></html>

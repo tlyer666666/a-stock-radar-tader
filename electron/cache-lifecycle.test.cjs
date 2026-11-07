@@ -123,7 +123,7 @@ test('negative cache results expire even when their completed value is null', ()
 
 function searchFixture() {
   return load('services.cjs', `module.exports.probe = {
-    setLoader(fn) { fetchJson = fn; }
+    setLoader(fn) { fetchJson = fn; thsSearchSuggestions = async () => []; }
   };`);
 }
 
@@ -143,6 +143,8 @@ test('concurrent equivalent security searches share one producer and keep comple
   const first = s.searchSecurities('浦发银行');
   const second = s.searchSecurities('  浦发银行  ');
   try {
+    // 同花顺搜索先返回空（测试替身），之后才走东方财富；等它到达东方财富这一步。
+    for (let i = 0; i < 20 && !requests; i++) await new Promise(resolve => setImmediate(resolve));
     assert.equal(requests, 1);
     gate.resolve();
     const [a, b] = await Promise.all([first, second]);

@@ -1,0 +1,804 @@
+/*
+ * components.css —— 组件层：通用组件视觉规范
+ * 负责专项：D（组件视觉风格）
+ * 规范出处：《前端重设计方案/_协同工作区/设计基座与分工简报.md》§3/§4/§6/§8；
+ *          配套规格文档：《专项D-组件视觉.md》（组件清单/规格表/语义色规则/风险登记）。
+ *
+ * 【覆盖范围】按钮（主/次/幽灵/危险/行内/分段/文本）、输入与选择、表格、
+ *          面板与卡片、徽标与状态点、弹层（建议/下拉/浮层）。
+ *          滚动条 / 选区 / :focus-visible 全局规则归专项 E（base.css），本文件不涉及。
+ *
+ * 【级联与覆盖策略】（详见专项文档 §1.3）
+ * 1) styles/index.css 由 main.tsx / review-entry.tsx 在末位 import，晚于 styles.css
+ *    与其余全局 css —— 对 styles.css 域规则用「同特异性、靠后加载」覆盖即可；
+ * 2) 视图级 css（trend-screener / portfolio-backtest / review / terminal-* 等）经组件
+ *    模块 import，可能晚于本文件 —— 对其覆盖一律加 `html` 前缀提升特异性；
+ * 3) styles.css 存在 `[data-theme="light"] .x`（特异性 0,2,0）前缀规则 —— 凡覆盖
+ *    这类类，必须同时书写 `[data-theme="light"]` 前缀变体，保证双主题成立；
+ * 4) 元素级基线（button/input/select/textarea/table）特异性 (0,0,1)，仅对
+ *    「无类规则的裸元素」生效，是防破坏的兜底，不会覆盖任何既有类规则；
+ * 5) 全文禁用 !important；仅动视觉属性（色/边线/圆角/阴影/过渡），不改
+ *    display/尺寸/定位等硬布局属性（个别内距微调已在专项文档 §5 登记簿列明）。
+ *
+ * 【令牌】全部取自 tokens.css（唯一真源）；不引入任何字面色值。
+ */
+
+/* ============================================================
+ * §1 控件元素基线（兜底层，特异性最低）
+ * ============================================================ */
+
+/* 按钮基线：统一指针、圆角与过渡；字体继承沿用 styles.css 既有规则。
+   不设背景/边框/内距——避免给幽灵类按钮意外加框。 */
+button {
+  color: inherit;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+/* 输入族文字色继承；盒模型基线只给 select/textarea —— 裸 input 绝大多数
+   被容器包裹（.search-box/.member-toolbar/.trend-input-field 等，容器负责
+   底色与边线），对其加边线会出现双框，故不设（取舍详见专项文档 §3.1）。 */
+input,
+select,
+textarea {
+  color: inherit;
+}
+
+/* select 基线：仅对无类规则的裸 select 生效（.backtest-select、
+   .trend-strategy-select select、.stock-monitor-editor select 等均有更高特异性规则）。 */
+select {
+  background-color: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2xs) var(--space-sm); /* 尺寸微调：原生 select 高度约 +4px，登记于专项文档 §5 */
+}
+
+/* textarea 基线：当前仅 ProfessionalReview 一处 textarea，无既有样式，安全兜底。 */
+textarea {
+  background-color: var(--surface-2);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  padding: var(--space-sm) var(--space-md);
+  line-height: var(--lh-normal);
+}
+
+/* 焦点面（容器级 :focus-within 见 §4；此处为独立 select/textarea 的焦点环，
+   outline 既有规则归专项 E，本文件不写 outline）。 */
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* ============================================================
+ * §2 表格元素基线（真 table；div 伪表格见 §5）
+ * ============================================================ */
+
+table {
+  border-collapse: collapse;
+}
+
+/* 裸 th/td 的面相兜底：已有类规则（.backtest-trade-table th、
+   .watch-stock-table th、.sector-explorer th 等）特异性更高，不受影响。 */
+th,
+td {
+  padding: var(--space-sm) var(--space-md); /* 尺寸微调：登记于专项文档 §5 */
+}
+
+td {
+  border-bottom: 1px solid var(--line-1);
+}
+
+/* 表头面相：surface-3 底 + ink-2 前景（sticky 定位预期由各视图自持，本层不设 position）。 */
+thead th {
+  background-color: var(--surface-3);
+  color: var(--ink-2);
+}
+
+/* 行 hover：仅真 table 的 tbody 行；div 行表格的 hover 在 §5 按类补齐。 */
+tbody tr {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+tbody tr:hover {
+  background-color: var(--hover-bg);
+}
+
+/* 行选中（前瞻规则）：当前代码库尚无行级选中类/属性命中此处（已 grep 核对，
+   仅 .suggestions option 与 role=tab 使用 aria-selected，不匹配本选择器）。
+   规格按简报 §3 定为软底 + 左侧 2px --accent 指示条（box-shadow inset 实现）。 */
+:where(tbody tr)[aria-selected="true"],
+:where(.table .tr, .pbt-tr, .strategy-stock-row)[aria-selected="true"] {
+  background-color: var(--selected-bg);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ============================================================
+ * §3 按钮语义体系 —— styles.css 域（同特异性，靠后加载覆盖）
+ * ============================================================ */
+
+/* ---- 3.1 主操作（.primary-btn：「刷新涨停池」「扫描全 A 股」等） ---- */
+/* 覆盖既有渐变填充 → --accent 平涂，收敛阴影；hover 的 filter: brightness
+   一并关闭，避免与令牌 hover 色叠加。 */
+.primary-btn {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  color: var(--ink-on-accent);
+  box-shadow: var(--shadow-1);
+}
+
+.primary-btn:hover:not(:disabled) {
+  border-color: var(--accent-hover);
+  background-color: var(--accent-hover);
+  filter: none;
+}
+
+.primary-btn:active:not(:disabled) {
+  border-color: var(--accent-active);
+  background-color: var(--accent-active);
+}
+
+/* ---- 3.2 次操作（.secondary-btn） ---- */
+.secondary-btn {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.secondary-btn:hover:not(:disabled) {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+.secondary-btn:active:not(:disabled) {
+  background-color: var(--pressed-bg);
+}
+
+/* 亮色变体：压过 styles.css [data-theme="light"] .secondary-btn 的白底。 */
+[data-theme="light"] .secondary-btn {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+/* ---- 3.3 幽灵（.ghost-btn，与 .secondary-btn 组合使用） ---- */
+/* 同特异性靠后声明压过 .secondary-btn 的实底 → 透明底无边框。 */
+.ghost-btn {
+  border-color: transparent;
+  background-color: transparent;
+}
+
+.ghost-btn:hover:not(:disabled) {
+  border-color: transparent;
+  background-color: var(--hover-bg);
+}
+
+/* ---- 3.4 危险（.danger-btn，实际组合为 .secondary-btn.ghost-btn.danger-btn） ----
+   ⚠ styles.css .danger-btn 的 border-color 带 !important（rgba(255,83,101,…)），
+   本文件禁用 !important 无法覆盖边线 —— 仅覆盖文字/底色，边线待 F 阶段改写
+   既有值（登记于专项文档 §6 风险 R-01）。 */
+.danger-btn {
+  color: var(--danger);
+  background-color: var(--danger-soft);
+}
+
+.danger-btn:hover:not(:disabled) {
+  color: var(--danger);
+  background-color: var(--danger-soft);
+}
+
+/* ---- 3.5 统一禁用态（压过 .paper-trade-btn:disabled 的灰渐变） ---- */
+.primary-btn:disabled,
+.secondary-btn:disabled,
+.paper-trade-btn:disabled,
+.paper-trade-btn[disabled] {
+  border-color: var(--line-2);
+  background-color: var(--surface-3);
+  color: var(--ink-3);
+  box-shadow: none;
+}
+
+/* ---- 3.6 待执行琥珀变体（.paper-trade-btn--wait，组合 .primary-btn） ---- */
+.paper-trade-btn--wait {
+  border-color: var(--warn);
+  background-color: var(--warn);
+  color: var(--ink-on-accent);
+}
+
+.paper-trade-btn--wait:hover:not(:disabled) {
+  filter: none;
+}
+
+/* ---- 3.7 顶栏图标钮 / 实时开关 ---- */
+.icon-button,
+.live-toggle {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.icon-button:hover:not(:disabled),
+.live-toggle:hover:not(:disabled) {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+[data-theme="light"] .icon-button,
+[data-theme="light"] .live-toggle {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+}
+
+/* 语音开启态：--accent 软底描边（原 rgba(226,75,95,…) 与 --accent 同源，令牌化）。 */
+.icon-button.voice-on {
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 实时状态点：经 --green/--yellow 兼容别名自动随主题（红=活跃，琥珀=降级）。 */
+.live-toggle span {
+  background-color: var(--ink-4);
+}
+
+.live-toggle.on span {
+  background-color: var(--accent);
+}
+
+/* ---- 3.8 主题分段控件（.theme-switch） ---- */
+.theme-switch {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+}
+
+.theme-switch button {
+  border-radius: var(--radius-xs);
+  color: var(--ink-2);
+}
+
+.theme-switch button:hover {
+  color: var(--ink-1);
+  background-color: var(--hover-bg);
+}
+
+/* 激活段：覆盖渐变 → --accent 平涂。 */
+.theme-switch button.active {
+  color: var(--ink-on-accent);
+  background-color: var(--accent);
+  box-shadow: var(--shadow-1);
+}
+
+[data-theme="light"] .theme-switch {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+}
+
+[data-theme="light"] .theme-switch button:hover {
+  color: var(--ink-1);
+  background-color: var(--hover-bg);
+}
+
+[data-theme="light"] .theme-switch button.active {
+  color: var(--ink-on-accent);
+  background-color: var(--accent);
+}
+
+/* ---- 3.9 策略快捷下拉触发钮（.strategy-quick-trigger） ---- */
+.strategy-quick-trigger {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.strategy-quick-trigger:hover,
+.strategy-quick.open .strategy-quick-trigger {
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+  color: var(--ink-1);
+}
+
+[data-theme="light"] .strategy-quick-trigger {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+[data-theme="light"] .strategy-quick.open .strategy-quick-trigger,
+[data-theme="light"] .strategy-quick-trigger:hover {
+  color: var(--accent);
+}
+
+/* ---- 3.10 表格行内小按钮（.table-action：「分析」「监控」等） ---- */
+.table-action {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+  min-height: 24px;
+}
+
+.table-action:hover:not(:disabled) {
+  border-color: var(--accent);
+  background-color: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---- 3.11 各视图工具条按钮（styles.css 域的次操作） ---- */
+.timeframe-tabs button {
+  color: var(--ink-2);
+}
+
+.timeframe-tabs button:hover {
+  color: var(--ink-1);
+  background-color: var(--hover-bg);
+}
+
+.indicator-selector button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.indicator-selector button:hover {
+  border-color: var(--accent);
+  color: var(--ink-1);
+}
+
+.strategy-presets button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.strategy-presets button:hover {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+.strategy-option-grid button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.strategy-option-grid button:hover {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+.sector-quick-search button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.sector-quick-search button:hover {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+.member-toolbar button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.member-toolbar button:hover {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+.sector-query-result > button {
+  border-color: var(--line-2);
+  background-color: transparent;
+  color: var(--ink-2);
+}
+
+.sector-query-result > button:hover {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+.limit-pool-tools > button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.limit-pool-tools > button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ---- 3.12 下拉菜单选项行（建议/快捷菜单内部的 button 行） ---- */
+.suggestions button:hover {
+  background-color: var(--hover-bg);
+}
+
+.strategy-quick-menu > button {
+  border-radius: var(--radius-sm);
+  color: var(--ink-1);
+}
+
+.strategy-quick-menu > button:hover {
+  background-color: var(--hover-bg);
+}
+
+.strategy-quick-menu > button.active {
+  background-color: var(--selected-bg);
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+[data-theme="light"] .strategy-quick-menu > button {
+  color: var(--ink-1);
+}
+
+/* ============================================================
+ * §4 输入与选择（容器面相 + 焦点环）
+ * ============================================================ */
+
+/* ---- 4.1 全局搜索框 ---- */
+.search-box {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+}
+
+.search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.search-box input {
+  color: var(--ink-1);
+}
+
+.search-box input::placeholder {
+  color: var(--ink-3);
+}
+
+[data-theme="light"] .search-box {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+}
+
+[data-theme="light"] .search-box input {
+  color: var(--ink-1);
+}
+
+[data-theme="light"] .search-box input::placeholder {
+  color: var(--ink-3);
+}
+
+/* ---- 4.2 回测证券搜索（focus-within 环由蓝 → --accent；invalid 用 --danger） ---- */
+.backtest-security-search {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+}
+
+.backtest-security-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.backtest-security-search.invalid {
+  border-color: var(--danger);
+}
+
+/* ---- 4.3 回测下拉（.backtest-select） ---- */
+.backtest-select {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-1);
+}
+
+.backtest-select:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+/* ---- 4.4 裸输入文字令牌化（容器内嵌 input，无焦点环——容器负责） ---- */
+.member-toolbar input {
+  color: var(--ink-1);
+}
+
+[data-theme="light"] .member-toolbar input {
+  color: var(--ink-1);
+}
+
+.news-filters input {
+  color: var(--ink-1);
+}
+
+[data-theme="light"] .news-filters input {
+  color: var(--ink-1);
+}
+
+/* ---- 4.5 持仓录入表单输入（styles.css 域令牌化） ---- */
+.holdings-entry-form input {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-1);
+}
+
+.holdings-entry-form input:focus {
+  border-color: var(--accent);
+}
+
+/* ============================================================
+ * §5 表格（div 伪表格与 styles.css 域真表格的面相令牌化）
+ * ============================================================ */
+
+/* ---- 5.1 .table 伪表格（涨停监控/纸面持仓等通用行列） ---- */
+.table .th {
+  color: var(--ink-2);
+}
+
+.table .tr {
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+
+.table .tr:hover {
+  background-color: var(--hover-bg);
+}
+
+/* ---- 5.2 回测成交明细表（styles.css 域真表格） ---- */
+.backtest-trade-table th,
+.backtest-trade-table td {
+  border-bottom-color: var(--line-1);
+}
+
+.backtest-trade-table th {
+  background-color: var(--surface-3);
+  color: var(--ink-2);
+}
+
+.backtest-trade-table td {
+  color: var(--ink-1);
+}
+
+/* ---- 5.3 发现列表表头（styles.css 域 sticky 表头字面色 → 令牌） ---- */
+.discover-table .th {
+  background-color: var(--surface-3);
+}
+
+[data-theme="light"] .discover-table .th {
+  background-color: var(--surface-3);
+}
+
+/* ---- 5.4 纸面持仓表格容器 ---- */
+.paper-position-table {
+  border-color: var(--line-1);
+  background-color: var(--surface-1);
+}
+
+/* ============================================================
+ * §6 面板 / 卡片
+ * ============================================================ */
+
+/* ---- 6.1 通用面板 .panel：surface-1 平涂 + 发丝线 + --radius-lg + --shadow-1
+   （去掉既有 145deg 渐变与深投影；数据面板 hover 不浮起，本层不写 hover）。 */
+.panel {
+  border-color: var(--line-1);
+  background-color: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+[data-theme="light"] .panel {
+  border-color: var(--line-1);
+  background-color: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+
+/* ---- 6.2 面板标题角标（.panel-title > span） ---- */
+.panel-title > span {
+  color: var(--ink-3);
+}
+
+/* ---- 6.3 回测面板族（styles.css 域） ---- */
+.backtest-setup-panel,
+.backtest-result-panel,
+.backtest-summary-card,
+.backtest-diagnostics {
+  border-color: var(--line-1);
+  background-color: var(--surface-1);
+}
+
+.backtest-primary-field {
+  border-color: var(--up-border);
+  background-color: var(--accent-soft);
+}
+
+/* ============================================================
+ * §7 弹层（建议列表 / 下拉菜单 / 浮层）
+ * ============================================================ */
+
+.suggestions,
+.strategy-quick-menu,
+.sector-suggestions {
+  border-color: var(--line-2);
+  background-color: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+}
+
+.backtest-security-suggestions {
+  border-color: var(--line-2);
+  background-color: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+}
+
+[data-theme="light"] .suggestions,
+[data-theme="light"] .strategy-quick-menu,
+[data-theme="light"] .sector-suggestions {
+  border-color: var(--line-2);
+  background-color: var(--surface-1);
+  box-shadow: var(--shadow-3);
+}
+
+/* ============================================================
+ * §8 徽标与状态点
+ * ============================================================ */
+
+/* ---- 8.1 市场标识徽标（.market-pill：沪 → info 软底；深(sz) 保留既有紫色，
+   紫色令牌缺位，提案登记于专项文档 §6，本层不覆盖 sz 变体）。 ---- */
+.market-pill {
+  color: var(--info);
+  background-color: var(--info-soft);
+  border-color: var(--info-soft);
+}
+
+/* ---- 8.2 侧栏计数徽标（.nav-item em） ---- */
+.nav-item em {
+  color: var(--accent);
+  background-color: var(--accent-soft);
+}
+
+/* ---- 8.3 策略类型徽标（.strategy-type-badge）：中性软底；composite → warn 对 ---- */
+.strategy-type-badge {
+  border-color: var(--line-2);
+  color: var(--ink-2);
+  background-color: var(--flat-soft);
+}
+
+.strategy-type-badge.composite {
+  border-color: var(--warn);
+  color: var(--warn);
+  background-color: var(--warn-soft);
+}
+
+/* ---- 8.4 连接状态点：跟随 --green/--yellow 兼容别名自动取新令牌值，
+   此处仅补降级态的中性面 ---- */
+.live-dot.paused {
+  background-color: var(--ink-4);
+}
+
+.live-dot.degraded {
+  background-color: var(--warn);
+}
+
+/* ============================================================
+ * §9 视图 css 域覆盖（html 前缀提升特异性——视图 css 可能晚于本文件加载）
+ * ============================================================ */
+
+/* ---- 9.1 复盘工作台（review.css，--rv-* 局部变量体系） ---- */
+/* 主操作钮（复盘头部）→ --accent 语义 */
+html .review-heading-actions > button {
+  border-color: var(--accent);
+  background-color: var(--accent);
+  color: var(--ink-on-accent);
+}
+
+html .review-heading-actions > button:hover:not(:disabled) {
+  background-color: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* 复盘标签页：激活段 → --accent 软底前景（原为渐变实底） */
+html .review-tabs button {
+  color: var(--ink-2);
+}
+
+html .review-tabs button:hover {
+  color: var(--ink-1);
+  background-color: var(--hover-bg);
+}
+
+html[data-theme="light"] .review-tabs button:hover {
+  color: var(--ink-1);
+  background-color: var(--hover-bg);
+}
+
+html .review-tabs button.active {
+  color: var(--accent);
+  background-color: var(--accent-soft);
+  box-shadow: var(--shadow-1);
+}
+
+html[data-theme="light"] .review-tabs button.active {
+  color: var(--accent);
+  background-color: var(--accent-soft);
+}
+
+/* 复盘建议弹层 */
+html .review-suggestions {
+  border-color: var(--line-2);
+  background-color: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+}
+
+/* ---- 9.2 回测工作台（portfolio-backtest.css / pbt-*） ---- */
+/* 信号分页 / 展开钮：中性次操作，hover 去绿改中性（原 rgba(57,185,128,…) 硬编码） */
+html .pbt-signal-toggle,
+html .pbt-signal-pagination button {
+  border-color: var(--line-2);
+  background-color: var(--surface-2);
+  color: var(--ink-2);
+}
+
+html .pbt-signal-toggle:hover,
+html .pbt-signal-pagination button:not(:disabled):hover {
+  border-color: var(--line-3);
+  background-color: var(--hover-bg);
+  color: var(--ink-1);
+}
+
+/* 证券建议弹层（styles.css 定义、视觉随 view，稳妥起见同样 html 前缀加固） */
+html .pbt-stock-suggestions {
+  border-color: var(--line-2);
+  background-color: var(--surface-1);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-3);
+}
+
+/* ---- 9.3 趋势筛选（trend-screener.css，--trend-* 局部变量体系） ----
+   ⚠ 色彩不动：--trend-accent 引用 --terminal-accent（独立终端主题），
+   统一 accent 属 F 阶段映射；本层仅统一「形」——圆角与过渡令牌化。 */
+html .trend-btn {
+  border-radius: var(--radius-sm);
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+
+html .trend-btn.trend-btn-accent {
+  border-radius: var(--radius-sm);
+}
+
+html .trend-filters > button {
+  border-radius: var(--radius-xs);
+}
+
+html .trend-text-button {
+  transition: color var(--dur-fast) var(--ease-out);
+}
+
+/* ============================================================
+ * §10 登记备注（详见《专项D-组件视觉.md》）
+ * 1) .danger-btn 的 border-color 被既有 !important 占据，本层仅覆盖文字/底色（R-01）；
+ * 2) input 不设全局盒模型基线的原因与替代方案（R-02）；
+ * 3) 行选中类名缺位，§2 前瞻规则待组件接入 aria-selected（R-03）；
+ * 4) .market-pill.sz 紫色、trend/pbt 的 --terminal-accent 蓝 accent 待令牌提案与 F 映射（R-04/05）；
+ * 5) select/textarea 基线与裸 th/td 内距属尺寸微调，已登记（R-06）。
+ * ============================================================ */

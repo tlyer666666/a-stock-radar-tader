@@ -1,5 +1,4 @@
 import {
-  Activity,
   BarChart3,
   ChevronRight,
   CircleAlert,
@@ -15,6 +14,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
 import { nullableNumber } from "./numericValue";
 import { isUsableSecurityCollection, uniqueSecurities } from "./securitySelection";
+import { whenVisible } from "./visiblePolling";
+import { createNumberFormatters, fmtMoney } from "./domain/formatters";
+import { formatShanghaiTime } from "./dateUtils";
 
 type ComparePayload = {
   security: Security;
@@ -37,35 +39,15 @@ let compareSelectionCache: Security[] = [];
 let compareResultsCache: Record<string, CompareResult> = {};
 let compareSelectionInitialized = false;
 
-const number = (value: unknown, fallback = 0) => {
-  const parsed = nullableNumber(value);
-  return parsed === null ? fallback : parsed;
-};
-
-const fmt = (value: unknown, digits = 2) => {
-  const parsed = nullableNumber(value);
-  return parsed === null ? "--" : parsed.toFixed(digits);
-};
-
-const pct = (value: unknown, digits = 2) => {
-  const parsed = nullableNumber(value);
-  return parsed !== null
-    ? `${parsed >= 0 ? "+" : ""}${parsed.toFixed(digits)}%`
-    : "--";
-};
-
-const unit = (value: unknown, digits: number, suffix: string) => {
-  const parsed = nullableNumber(value);
-  return parsed === null ? "--" : `${parsed.toFixed(digits)}${suffix}`;
-};
-
-const money = (value: unknown) => {
-  const parsed = nullableNumber(value);
-  if (parsed === null) return "--";
-  if (Math.abs(parsed) >= 1e8) return `${(parsed / 1e8).toFixed(2)}亿`;
-  if (Math.abs(parsed) >= 1e4) return `${(parsed / 1e4).toFixed(0)}万`;
-  return parsed.toFixed(0);
-};
+// R-01 / S-07：改用 domain/formatters 的统一工厂，只声明本模块口径。
+// B-03：金额不再保留本模块私有口径（原「亿 2 位 / 万 0 位、无空格」），改为直接调用
+// domain/formatters 的 fmtMoney —— 与涨停池 / 持仓 / 板块 / 炸板观察同一套换算，
+// 同一笔成交额在任何页面都是「120.00 万 / 1.23 亿」。
+const { number, fmt, pct, unit, money } = createNumberFormatters(nullableNumber, {
+  fmtDigits: 2,
+  pctDigits: 2,
+  money: fmtMoney
+});
 
 const providerLabel = (value: unknown) => {
   const provider = String(value || "").toLowerCase();
@@ -124,7 +106,7 @@ function MetricCell({
   children: React.ReactNode;
   tone?: "up" | "down" | "good" | "risk" | "";
 }) {
-  return <div className={`compare-cell ${tone}`}>{children}</div>;
+  return <div role="cell" className={`compare-cell ${tone}`}>{children}</div>;
 }
 
 export default function MultiStockCompareView({
@@ -147,7 +129,9 @@ export default function MultiStockCompareView({
   const [remoteCandidates, setRemoteCandidates] = useState<Security[]>([]);
   const [remoteQuery, setRemoteQuery] = useState("");
   const [composing, setComposing] = useState(false);
-  const [searching, setSearching] = useState(false);
+  const [searchState, setSearchState] = useState<"idle" | "pending" | "ready" | "empty" | "error">("idle");
+  const [searchError, setSearchError] = useState("");
+  const [searchRetryToken, setSearchRetryToken] = useState(0);
   const [reloadToken, setReloadToken] = useState(0);
   const previousReloadToken = useRef(reloadToken);
   const initializedSelection = useRef(
@@ -218,69 +202,54 @@ export default function MultiStockCompareView({
       return next;
     });
     if (!targets.length) return;
-    Promise.allSettled(
-      targets.map(async (security) => {
-        try {
-          return {
-            code: security.code,
-            payload: await window.stockApi.analyze(security)
-          };
-        } catch (analysisError) {
-          const [snapshot, chart] = await Promise.all([
-            window.stockApi.getQuoteSnapshot(security),
-            window.stockApi.getChart(security, "101", {
-              range: "3m",
-              limit: 90,
-              adjustment: "front"
-            })
-          ]);
-          const history = chart?.rows || [];
-          return {
-            code: security.code,
-            payload: {
-              security: snapshot?.security || security,
-              quote: snapshot?.quote || {},
-              history,
-              analysis: {
-                trendLabel: "深度策略暂不可用",
-                risks: [
-                  analysisError instanceof Error
-                    ? analysisError.message
-                    : "该股票当前仅返回行情与日线数据"
-                ]
-              },
-              sector: null,
-              actualProvider:
-                snapshot?.actualProvider || snapshot?.provider || chart?.source || "行情源",
-              updatedAt: snapshot?.updatedAt || new Date().toISOString()
-            }
-          };
-        }
-      })
-    ).then((settled) => {
+    const publish = (code: string, result: CompareResult) => {
       if (requestId !== analysisRequestId.current) return;
-      setResults((current) => {
-        const next = { ...current };
-        settled.forEach((item, index) => {
-          const security = targets[index];
-          if (!security) return;
-          if (item.status === "fulfilled") {
-            next[security.code] = {
-              loading: false,
-              error: "",
-              payload: item.value.payload
-            };
-          } else {
-            next[security.code] = {
-              loading: false,
-              error: item.reason instanceof Error ? item.reason.message : String(item.reason),
-              payload: null
-            };
-          }
-        });
-        return next;
-      });
-    });
+      setResults((current) => requestId === analysisRequestId.current
+        ? { ...current, [code]: result }
+        : current);
+    };
+    const analyzeSecurity = async (security: Security): Promise<ComparePayload> => {
+      try {
+        return await window.stockApi.analyze(security);
+      } catch (analysisError) {
+        const [snapshot, chart] = await Promise.all([
+          window.stockApi.getQuoteSnapshot(security),
+          window.stockApi.getChart(security, "101", {
+            range: "3m",
+            limit: 90,
+            adjustment: "front"
+          })
+        ]);
+        const history = chart?.rows || [];
+        return {
+          security: snapshot?.security || security,
+          quote: snapshot?.quote || {},
+          history,
+          analysis: {
+            trendLabel: "深度策略暂不可用",
+            risks: [
+              analysisError instanceof Error
+                ? analysisError.message
+                : "该股票当前仅返回行情与日线数据"
+            ]
+          },
+          sector: null,
+          actualProvider:
+            snapshot?.actualProvider || snapshot?.provider || chart?.source || "行情源",
+          updatedAt: snapshot?.updatedAt || new Date().toISOString()
+        };
+      }
+    };
+    for (const security of targets) {
+      void analyzeSecurity(security).then(
+        (payload) => publish(security.code, { loading: false, error: "", payload }),
+        (error) => publish(security.code, {
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+          payload: null
+        })
+      );
+    }
     return () => {
       if (requestId === analysisRequestId.current) {
         analysisRequestId.current += 1;
@@ -295,44 +264,35 @@ export default function MultiStockCompareView({
     let active = true;
     let busy = false;
     const refreshQuotes = async () => {
-      if (busy || document.hidden) return;
+      if (busy) return;
       busy = true;
       try {
-        const rows = await Promise.allSettled(
-          selected.map(async (security) => ({
-            code: security.code,
-            snapshot: await window.stockApi.getQuoteSnapshot(security)
-          }))
-        );
-        if (!active) return;
-        setResults((current) => {
-          const next = { ...current };
-          rows.forEach((row) => {
-            if (row.status !== "fulfilled") return;
-            const existing = next[row.value.code];
-            if (!existing?.payload) return;
-            next[row.value.code] = {
-              ...existing,
-              payload: {
-                ...existing.payload,
-                quote: {
-                  ...existing.payload.quote,
-                  ...(row.value.snapshot?.quote || {})
-                },
-                actualProvider:
-                  row.value.snapshot?.actualProvider || existing.payload.actualProvider,
-                updatedAt:
-                  row.value.snapshot?.updatedAt || new Date().toISOString()
+        await Promise.allSettled(selected.map(async (security) => {
+          const snapshot = await window.stockApi.getQuoteSnapshot(security);
+          if (!active) return;
+          setResults((current) => {
+            const existing = current[security.code];
+            if (!active || !existing?.payload) return current;
+            return {
+              ...current,
+              [security.code]: {
+                ...existing,
+                payload: {
+                  ...existing.payload,
+                  quote: { ...existing.payload.quote, ...(snapshot?.quote || {}) },
+                  actualProvider: snapshot?.actualProvider || existing.payload.actualProvider,
+                  updatedAt: snapshot?.updatedAt || new Date().toISOString()
+                }
               }
             };
           });
-          return next;
-        });
+        }));
       } finally {
         busy = false;
       }
     };
-    const timer = window.setInterval(refreshQuotes, 15_000);
+    const refreshQuotesWhenVisible = whenVisible(refreshQuotes);
+    const timer = window.setInterval(refreshQuotesWhenVisible, 15_000);
     return () => {
       active = false;
       window.clearInterval(timer);
@@ -343,36 +303,41 @@ export default function MultiStockCompareView({
     const requestId = ++searchRequestId.current;
     window.clearTimeout(searchTimer.current);
     const normalized = query.trim();
+    setRemoteQuery(normalized);
+    setRemoteCandidates([]);
+    setSearchError("");
     if (!normalized || composing) {
-      setRemoteCandidates([]);
-      setSearching(false);
+      setSearchState("idle");
       return;
     }
+    // Pending includes the debounce delay, so an empty list is never presented
+    // as a completed no-match result while the remote request is still pending.
+    setSearchState("pending");
     searchTimer.current = window.setTimeout(async () => {
-      setSearching(true);
       try {
         const rows = await window.stockApi.search(normalized);
         if (requestId === searchRequestId.current) {
-          setRemoteQuery(normalized);
-          setRemoteCandidates(
-            uniqueSecurities(
-              (Array.isArray(rows) ? rows : []).filter(
-                (item: any) => !item?.assetType || item.assetType === "stock"
-              )
-            ).slice(0, 12)
-          );
+          const candidates = uniqueSecurities(
+            (Array.isArray(rows) ? rows : []).filter(
+              (item: any) => !item?.assetType || item.assetType === "stock"
+            )
+          ).slice(0, 12);
+          setRemoteCandidates(candidates);
+          setSearchState(candidates.length ? "ready" : "empty");
         }
-      } catch {
-        if (requestId === searchRequestId.current) setRemoteCandidates([]);
-      } finally {
-        if (requestId === searchRequestId.current) setSearching(false);
+      } catch (error) {
+        if (requestId === searchRequestId.current) {
+          setRemoteCandidates([]);
+          setSearchError(error instanceof Error ? error.message : "暂时无法连接搜索服务");
+          setSearchState("error");
+        }
       }
     }, 220);
     return () => {
       window.clearTimeout(searchTimer.current);
       if (requestId === searchRequestId.current) searchRequestId.current += 1;
     };
-  }, [query, composing]);
+  }, [query, composing, searchRetryToken]);
 
   const filteredCandidates = useMemo(() => {
     if (composing) return [];
@@ -413,11 +378,15 @@ export default function MultiStockCompareView({
     {
       label: "最新行情",
       render: (payload) => {
-        const up = number(payload.quote?.changePct) >= 0;
+        // E-01：0 / 缺失 / 非数的最新价不是“真的 0 元”，不得格式化成 0.00 并染成涨红。
+        const latest = nullableNumber(payload.quote?.latest);
+        const changePercent = nullableNumber(payload.quote?.changePct);
+        const priceAvailable = latest !== null && latest > 0;
+        const tone = !priceAvailable || changePercent === null ? "" : changePercent >= 0 ? "up" : "down";
         return (
           <div className="compare-primary-value">
-            <b>{fmt(payload.quote?.latest)}</b>
-            <span className={up ? "up" : "down"}>{pct(payload.quote?.changePct)}</span>
+            <b>{priceAvailable ? fmt(latest) : "--"}</b>
+            <span className={tone}>{priceAvailable ? pct(changePercent) : "--"}</span>
           </div>
         );
       }
@@ -466,10 +435,8 @@ export default function MultiStockCompareView({
       render: (payload) => (
         <span>
           {payload.analysis?.trendLabel || "--"}
-          <small>
-            MA5 {fmt(payload.analysis?.ma5)} · MA10 {fmt(payload.analysis?.ma10)} ·
-            MA20 {fmt(payload.analysis?.ma20)}
-          </small>
+          <small className="compare-essential-metric">MA5 {fmt(payload.analysis?.ma5)} · MA10 {fmt(payload.analysis?.ma10)}</small>
+          <small className="compare-essential-metric">MA20 {fmt(payload.analysis?.ma20)}</small>
         </span>
       )
     },
@@ -488,9 +455,8 @@ export default function MultiStockCompareView({
       render: (payload) => (
         <span>
           距支撑 {pct(payload.analysis?.supportDistance, 1)}
-          <small>
-            关键位 {fmt(payload.analysis?.limitEvent?.low)} · AVWAP {fmt(payload.analysis?.avwap)}
-          </small>
+          <small className="compare-essential-metric">关键位 {fmt(payload.analysis?.limitEvent?.low)}</small>
+          <small className="compare-essential-metric">AVWAP {fmt(payload.analysis?.avwap)}</small>
         </span>
       )
     },
@@ -512,7 +478,8 @@ export default function MultiStockCompareView({
           <span>
             样本 {fmt(edge.sampleCount, 0)} · 5日胜率 {unit(edge.winRate5, 1, "%")}
             <small>
-              平均 {pct(edge.average5, 2)} · 最差回撤 {pct(edge.worstMdd5, 1)}
+              {/* B-08：历史边界统一「两位小数 + 显式正负号」，不再与 1 位小数混排。 */}
+              平均 {pct(edge.average5, 2)} · 最差回撤 {pct(edge.worstMdd5, 2)}
             </small>
           </span>
         );
@@ -542,13 +509,13 @@ export default function MultiStockCompareView({
         </div>
         <label className="compare-toolbar-search">
           <Search size={16} />
-          <input aria-label="搜索对比股票" value={query}
-            onChange={(event) => { searchRequestId.current += 1; setRemoteCandidates([]); setSearching(false); setQuery(event.target.value); }}
-            onCompositionStart={() => { searchRequestId.current += 1; window.clearTimeout(searchTimer.current); setRemoteCandidates([]); setSearching(false); setComposing(true); }}
+          <input aria-label="搜索对比股票" aria-controls={query || !selected.length ? "compare-search-results" : undefined} aria-describedby="compare-search-status" value={query}
+            onChange={(event) => { searchRequestId.current += 1; setRemoteCandidates([]); setSearchError(""); setSearchState(event.target.value.trim() ? "pending" : "idle"); setQuery(event.target.value); }}
+            onCompositionStart={() => { searchRequestId.current += 1; window.clearTimeout(searchTimer.current); setRemoteCandidates([]); setSearchState("idle"); setComposing(true); }}
             onCompositionEnd={() => setComposing(false)}
             onKeyDown={(event) => { if (event.key === "Enter" && (composing || event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault(); }}
             placeholder="输入名称/代码，或从候选池添加" />
-          {searching && <LoaderCircle className="spin" size={14} />}
+          {searchState === "pending" && <LoaderCircle className="spin" size={14} aria-hidden="true" />}
         </label>
         <div className="heading-actions">
           <button
@@ -579,8 +546,18 @@ export default function MultiStockCompareView({
           ))}
           {!selected.length && <span className="compare-empty-tip">请至少添加 1 只股票</span>}
         </div>
+        <div id="compare-search-status" role={searchState === "error" ? "alert" : "status"} aria-atomic="true">
+          {composing ? "正在输入，完成后搜索。" : !query.trim() ? "" :
+            searchState === "pending" ? "正在搜索远程股票，本地匹配可先选择。" :
+            searchState === "error" ? `远程搜索失败：${searchError}。${filteredCandidates.length ? "本地匹配仍可选择。" : "请重试或更换搜索词。"}` :
+            searchState === "empty" ? (filteredCandidates.length ? "远程未找到更多匹配，本地匹配仍可选择。" : "未找到匹配股票，请尝试其他名称或代码。") :
+            searchState === "ready" ? `找到 ${filteredCandidates.length} 只匹配股票。` : ""}
+        </div>
+        {searchState === "error" && query.trim() && !composing && (
+          <button className="secondary-btn" type="button" onClick={() => { setSearchState("pending"); setSearchRetryToken(value => value + 1); }}>重试远程搜索</button>
+        )}
         {(query || !selected.length) && (
-          <div className="compare-candidate-list">
+          <div id="compare-search-results" className="compare-candidate-list" role="region" aria-label="股票搜索结果" aria-busy={searchState === "pending"}>
             {filteredCandidates.map((security: any) => {
               const active = selected.some((item) => item.code === security.code);
               return (
@@ -601,22 +578,25 @@ export default function MultiStockCompareView({
 
       {!!selected.length && (
         <div className="compare-matrix-scroll" role="region" aria-label="多股指标对比" tabIndex={0}>
-        <section className="panel compare-matrix" style={columnsStyle}>
-          <div className="compare-header-row">
-            <div className="compare-metric-label">指标</div>
+        <section className="panel compare-matrix" style={columnsStyle} role="table" aria-label="多股指标对比表" aria-colcount={selected.length + 1} aria-rowcount={rows.length + 1}>
+          <div className="compare-header-row" role="row">
+            <div className="compare-metric-label" role="columnheader">指标</div>
             {selected.map((security) => {
               const result = resultFor(security);
               const quote = result?.payload?.quote;
-              const up = number(quote?.changePct) >= 0;
+              const latest = nullableNumber(quote?.latest);
+              const changePercent = nullableNumber(quote?.changePct);
+              // 无有效价格或涨跌幅缺失时不给方向箭头，避免用红色箭头冒充“上涨”。
+              const up = latest !== null && latest > 0 && changePercent !== null ? changePercent >= 0 : null;
               return (
-                <div className="compare-stock-head" key={security.code}>
+                <div className="compare-stock-head" role="columnheader" key={security.code}>
                   <button onClick={() => onOpen(result?.payload?.security || security)}>
                     <span>{security.name}<small>{security.code}</small></span>
                     {result?.loading ? (
                       <LoaderCircle className="spin" size={17} />
                     ) : result?.error ? (
                       <CircleAlert size={17} />
-                    ) : up ? (
+                    ) : up === null ? null : up ? (
                       <TrendingUp size={17} />
                     ) : (
                       <TrendingDown size={17} />
@@ -625,17 +605,16 @@ export default function MultiStockCompareView({
                   </button>
                   <small>
                     {providerLabel(result?.payload?.actualProvider)} ·{" "}
-                    {result?.payload?.updatedAt
-                      ? new Date(result.payload.updatedAt).toLocaleTimeString("zh-CN", { hour12: false })
-                      : "--"}
+                    {/* B-04：行情时间始终按北京时间显示（跨时区机器不再跟随系统时区）。 */}
+                    {formatShanghaiTime(result?.payload?.updatedAt)}
                   </small>
                 </div>
               );
             })}
           </div>
           {rows.map((row) => (
-            <div className="compare-metric-row" key={row.label}>
-              <div className="compare-metric-label">{row.label}</div>
+            <div className="compare-metric-row" role="row" key={row.label}>
+              <div className="compare-metric-label" role="rowheader">{row.label}</div>
               {selected.map((security) => {
                 const result = resultFor(security);
                 if (result?.loading && !result.payload) {
@@ -664,14 +643,6 @@ export default function MultiStockCompareView({
         </div>
       )}
 
-      <details className="compare-workspace-method">
-        <summary>对比范围与数据口径</summary>
-        <p>最多同时复核 6 只股票；添加和删除会自动记住，下次启动继续显示。</p>
-      <div className="compare-boundary-note">
-        <Activity size={16} />
-        同列结果来自各股票真实行情与独立策略分析；缺失历史样本显示为“--”，不会以 0 分代替。
-      </div>
-      </details>
     </div>
   );
 }

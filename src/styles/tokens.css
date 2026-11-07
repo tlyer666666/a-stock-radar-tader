@@ -1,0 +1,321 @@
+/*
+ * tokens.css —— 设计令牌（唯一真源）
+ * 规范出处：前端重设计方案/_协同工作区/设计基座与分工简报.md §4
+ * 三层架构：L1 语义令牌（随主题切换）→ L2 兼容别名与层别名（向后兼容）→ 全局非颜色令牌
+ * 本文件由总控维护；色彩专项 agent 的增补须写入本文件并同步简报。
+ */
+
+/* ============================================================
+ * 深色主题（默认）
+ * ============================================================ */
+:root {
+  color-scheme: dark;
+
+  /* —— 表面 —— */
+  --page: #101419;
+  --surface-1: #171D24;
+  --surface-2: #1E2630;
+  --surface-3: #26313D;
+  --sidebar: #12181F;
+  --topbar: rgba(18, 24, 31, .96);
+  --overlay: rgba(3, 8, 14, .76);
+
+  /* —— 文本 —— */
+  --ink-1: #E8EDF3;
+  --ink-2: #BCC6D1;
+  --ink-3: #94A1AF;
+  --ink-4: #718091;
+  /* VC-01 修复：深色主题的彩底是浅色（--accent #6B8AFD / --accent-hover #88A1FF /
+     --danger #FF796D / --up #FF6070 / --down #36C98C），白字压上去只有 2.12–3.14:1，
+     远低于 WCAG AA 4.5:1。改为深色文字后实测 6.07–8.99:1，全部达标。
+     注意：--action-fill 深色是 #3E5BC0（深蓝），它自己配白字才是 6.07:1，
+     所以它不走这个 token（见 action-fill 相关规则用的是独立前景色）。 */
+  --ink-on-accent: #0B1016;
+  --ink-on-action: #FFFFFF;
+  --action-fill: #3E5BC0;
+  --action-fill-hover: #4563CC;
+  --action-fill-active: #324EA9;
+  --high-board-bg: #B51F3A;
+  --navigation-indicator: var(--accent);
+  --table-stripe: var(--surface-2);
+  --terminal-row-h: 28px;
+
+  /* —— 线与状态面 —— */
+  --line-1: rgba(169, 185, 204, .12);
+  --line-2: #303B48;
+  --line-3: #435365;
+  --hover-bg: rgba(169, 185, 204, .07);
+  --pressed-bg: rgba(169, 185, 204, .12);
+  --selected-bg: rgba(107, 138, 253, .14);
+  --selected-bg-strong: rgba(107, 138, 253, .22);
+
+  /* —— 涨跌与状态（A股语义：红涨绿跌） —— */
+  --up: #FF6070;
+  --up-strong: #FF8590;
+  --up-soft: rgba(255, 96, 112, .14);
+  --up-border: rgba(255, 96, 112, .38);
+  --down: #36C98C;
+  --down-strong: #62D9A6;
+  --down-soft: rgba(54, 201, 140, .13);
+  --down-border: rgba(54, 201, 140, .34);
+  --down-deep: #172820;
+  --on-up: #FFFFFF;
+  --flat: #A7B2BF;
+  --flat-soft: rgba(167, 178, 191, .14);
+  --warn: #F0B45A;
+  --warn-soft: rgba(240, 180, 90, .14);
+  --warn-border: rgba(240, 180, 90, .36);
+  --danger: #FF796D;
+  --danger-soft: rgba(255, 121, 109, .14);
+  --danger-border: rgba(255, 121, 109, .38);
+  --info: #82B7FF;
+  --info-soft: rgba(130, 183, 255, .13);
+  --info-border: rgba(130, 183, 255, .32);
+
+  /* —— 品牌与强调 —— */
+  --accent: #6B8AFD;
+  --accent-hover: #88A1FF;
+  --accent-active: #5574E8;
+  --accent-soft: rgba(107, 138, 253, .16);
+  --accent-2: #82B7FF;
+
+  /* —— 阴影 / 聚焦 / 滚动条 —— */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .40);
+  --shadow-2: 0 4px 14px rgba(0, 0, 0, .46);
+  --shadow-3: 0 14px 36px rgba(0, 0, 0, .58);
+  --focus-ring: 0 0 0 1px var(--page), 0 0 0 3px rgba(107, 138, 253, .62);
+  --skeleton-base: rgba(169, 185, 204, .07);
+  --skeleton-shine: rgba(169, 185, 204, .14);
+  --control-h: 32px;
+  --control-h-sm: 28px;
+  --scrollbar-thumb: rgba(169, 185, 204, .22);
+  --scrollbar-thumb-hover: rgba(169, 185, 204, .38);
+
+  /* —— 图表序列色 —— */
+  --chart-1: #FF6070;
+  --chart-2: #36C98C;
+  --chart-3: #F0B45A;
+  --chart-4: #82B7FF;
+  --chart-5: #C79CF0;
+  --chart-6: #5FCFD6;
+  --chart-grid: rgba(169, 185, 204, .12);
+
+  /* ============================================================
+   * 兼容别名（旧变量名 → 新语义；双主题各自声明以压过旧字面值）
+   * --red 映射 var(--danger)：专项B 审计 89 处用点，74% 为危险/品牌语义
+   * （涨/品牌的 var(--red) 用点由色彩落地阶段逐点改写为 --up/--accent）
+   * --text 为 styles.css 历史变量，现统一指向 --ink-1
+   * ============================================================ */
+  --bg: var(--page);
+  --panel: var(--surface-1);
+  --panel-2: var(--surface-2);
+  --panel-3: var(--surface-3);
+  --line: var(--line-1);
+  --muted: var(--ink-2);
+  --text: var(--ink-1);
+  --green: var(--up);          /* 历史遗留：--green 实为「涨红」 */
+  --green-soft: var(--up-soft);
+  --red: var(--danger);
+  --fall: var(--down);
+  --yellow: var(--warn);
+
+  /* ============================================================
+   * Terminal shell 层别名（跨主题解析到同一语义令牌）
+   * 原分散定义于 terminal-ui.css / terminal-layout.css，收归真源
+   * ============================================================ */
+  --terminal-bg: var(--page);
+  --terminal-sidebar: var(--sidebar);
+  --terminal-panel: var(--surface-1);
+  --terminal-elevated: var(--surface-2);
+  --terminal-soft: var(--surface-2);
+  --terminal-line: var(--line-2);
+  --terminal-text: var(--ink-1);
+  --terminal-muted: var(--ink-2);
+  --terminal-accent: var(--accent);
+  --terminal-accent-soft: var(--accent-soft);
+  --terminal-action: var(--accent);
+  --terminal-rise: var(--up);
+  --terminal-fall: var(--down);
+  --terminal-warning: var(--warn);
+
+  /* ============================================================
+   * 全局非颜色令牌（双主题一致）
+   * ============================================================ */
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", Menlo, Consolas, monospace;
+  --ui-font: var(--font-sans);
+
+  --fs-2xs: 11px;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-md: 15px;
+  --fs-lg: 16px;
+  --fs-terminal-heading: 18px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+  --fs-3xl: 28px;
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-normal: 1.55;
+
+  --space-3xs: 2px;
+  --space-2xs: 4px;
+  --space-xs: 6px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 20px;
+  --space-2xl: 24px;
+  --space-3xl: 32px;
+  --space-4xl: 48px;
+  /* 非标紧凑间距：terminal 系历史特征值，保留但不鼓励新增 */
+  --space-xxs: 5px;
+
+  --radius-2xs: 2px;
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-full: 999px;
+
+  --sidebar-w: 220px;
+  --sidebar-w-compact: 64px;
+  --topbar-h: 52px;
+  --titlebar-h: 40px;
+  --statusbar-h: 24px;
+  --content-pad: 18px;
+  --card-gap: 14px;
+  --form-max-w: 920px;
+
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+  --dur-slower: 320ms;
+  --ease-out: cubic-bezier(.22, .61, .25, 1);
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --ease-spring: cubic-bezier(.34, 1.4, .44, 1);
+
+  --z-sticky: 100;
+  --z-pop: 300;
+  --z-modal: 500;
+  --z-toast: 600;
+}
+
+/* ============================================================
+ * 亮色主题（:root[data-theme="light"]）
+ * 仅覆盖语义令牌与层别名；别名须在此重复声明以压过 styles.css 旧字面值
+ * ============================================================ */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink-on-action: #FFFFFF;
+  --action-fill: #2563EB;
+  --action-fill-hover: #1D4ED8;
+  --action-fill-active: #1E40AF;
+  --high-board-bg: #A51B2F;
+  --navigation-indicator: var(--accent);
+
+  --page: #F1F4F7;
+  --surface-1: #FFFFFF;
+  --surface-2: #F8FAFC;
+  --surface-3: #EDF1F5;
+  --sidebar: #F8FAFC;
+  --topbar: rgba(248, 250, 252, .96);
+  --overlay: rgba(15, 23, 42, .42);
+
+  --ink-1: #1E293B;
+  --ink-2: #475569;
+  --ink-3: #64748B;
+  --ink-4: #8492A6;
+  --ink-on-accent: #FFFFFF;
+
+  --line-1: rgba(71, 85, 105, .12);
+  --line-2: rgba(71, 85, 105, .18);
+  --line-3: rgba(71, 85, 105, .30);
+  --hover-bg: rgba(71, 85, 105, .05);
+  --pressed-bg: rgba(71, 85, 105, .09);
+  --selected-bg: rgba(37, 99, 235, .09);
+  --selected-bg-strong: rgba(37, 99, 235, .15);
+
+  --up: #C42339;
+  --up-strong: #A51B2F;
+  --up-soft: rgba(196, 35, 57, .09);
+  --up-border: rgba(196, 35, 57, .30);
+  --down: #097049;
+  --down-strong: #065A3A;
+  --down-soft: rgba(9, 112, 73, .09);
+  --down-border: rgba(9, 112, 73, .30);
+  --down-deep: #E2F1EA;
+  --on-up: #FFFFFF;
+  --flat: #7E8BA3;
+  --flat-soft: rgba(126, 139, 163, .14);
+  --warn: #965009;
+  --warn-soft: rgba(150, 80, 9, .10);
+  --warn-border: rgba(150, 80, 9, .30);
+  --danger: #B8321F;
+  --danger-soft: rgba(184, 50, 31, .09);
+  --danger-border: rgba(184, 50, 31, .30);
+  --info: #2558B8;
+  --info-soft: rgba(37, 88, 184, .09);
+  --info-border: rgba(37, 88, 184, .28);
+
+  --accent: #2563EB;
+  --accent-hover: #1D4ED8;
+  --accent-active: #1E40AF;
+  --accent-soft: rgba(37, 99, 235, .10);
+  --accent-2: #1D4ED8;
+
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, .06);
+  --shadow-2: 0 1px 3px rgba(16, 24, 40, .07), 0 4px 12px rgba(16, 24, 40, .10);
+  --shadow-3: 0 16px 40px rgba(16, 24, 40, .16);
+  --focus-ring: 0 0 0 1px var(--page), 0 0 0 3px rgba(37, 99, 235, .45);
+  --skeleton-base: rgba(71, 85, 105, .06);
+  --skeleton-shine: rgba(71, 85, 105, .11);
+  --scrollbar-thumb: rgba(71, 85, 105, .22);
+  --scrollbar-thumb-hover: rgba(71, 85, 105, .36);
+
+  --chart-1: #C42339;
+  --chart-2: #097049;
+  --chart-3: #C78012;
+  --chart-4: #2563EB;
+  --chart-5: #7A45B5;
+  --chart-6: #0C7480;
+  --chart-grid: rgba(71, 85, 105, .12);
+
+  /* 兼容别名（引用语义令牌，随主题自动取值；重复声明为压过 styles.css 的字面覆盖） */
+  --bg: var(--page);
+  --panel: var(--surface-1);
+  --panel-2: var(--surface-2);
+  --panel-3: var(--surface-3);
+  --line: var(--line-1);
+  --muted: var(--ink-2);
+  --text: var(--ink-1);
+  --green: var(--up);
+  --green-soft: var(--up-soft);
+  --red: var(--danger);
+  --fall: var(--down);
+  --yellow: var(--warn);
+
+  /* Terminal shell 层别名亮色声明（值引用语义令牌，随主题自动取值） */
+  --terminal-bg: var(--page);
+  --terminal-sidebar: var(--sidebar);
+  --terminal-panel: var(--surface-1);
+  --terminal-elevated: var(--surface-2);
+  --terminal-soft: var(--surface-2);
+  --terminal-line: var(--line-2);
+  --terminal-text: var(--ink-1);
+  --terminal-muted: var(--ink-2);
+  --terminal-accent: var(--accent);
+  --terminal-accent-soft: var(--accent-soft);
+  --terminal-action: var(--accent);
+  --terminal-rise: var(--up);
+  --terminal-fall: var(--down);
+  --terminal-warning: var(--warn);
+}

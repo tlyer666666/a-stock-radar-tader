@@ -1,3 +1,4 @@
+import { isClosedArchive } from "./features/paper-simulation/paperClosedHistory";
 // Storage documents must be usable before choosing the primary over its backup.
 // These guards preserve legacy numeric strings without coercing objects or arrays.
 const record = (value: unknown): value is Record<string, any> => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -5,7 +6,7 @@ const numeric = (value: unknown): boolean => (typeof value === "number" || (type
 const code = (value: unknown): boolean => typeof value === "string" && /^\d{6}$/.test(value);
 const collection = (value: unknown, usable: (row: unknown) => boolean): boolean => Array.isArray(value) && (value.length === 0 || value.some(usable));
 
-export function isExecutionLogRow(value: unknown): boolean {
+function isExecutionLogRow(value: unknown): boolean {
   return record(value) && ["BACKTEST_CURRENT", "BACKTEST_HISTORY", "PAPER_TRADE"].includes(value.source)
     && ["APPROVED", "BLOCKED", "REJECTED", "CONFIRM_REQUIRED"].includes(value.result);
 }
@@ -26,5 +27,6 @@ export function isPaperState(value: unknown): boolean {
   const position = (item: unknown): boolean => record(item) && code(item.code)
     && numeric(item.shares) && Number(item.shares) >= 100 && Number(item.shares) <= 1e7
     && Number(item.shares) % 100 === 0 && numeric(item.entryPrice) && Number(item.entryPrice) > 0;
+  if (value.closedArchive !== undefined && !isClosedArchive(value.closedArchive)) return false;
   return [value.openPositions, value.closedPositions].every(rows => Array.isArray(rows) && rows.every(position));
 }

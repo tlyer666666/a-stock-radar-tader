@@ -1,16 +1,23 @@
-"""Deliver version 1.5.3 without replacing any earlier desktop artifact."""
+"""Deliver the audited desktop build without replacing any earlier artifact."""
+import json
 from pathlib import Path
 from runpy import run_path
 
+REPO = Path(__file__).resolve().parents[1]
+VERSION = json.loads((REPO / 'package.json').read_text(encoding='utf-8'))['version']
+
 PROFILE = {
-    'version': '1.5.3',
-    'checks': 'artifacts/five-round-audit-20261001',
-    'destination': '~/Desktop/a股/五轮审计版1.5.3',
+    'version': VERSION,
+    'checks': f'artifacts/five-round-audit-{VERSION.replace(".", "")}',
+    'destination': f'~/Desktop/a股/五轮审计版{VERSION}',
     'report': '三方五轮全链路审计报告.docx',
-    'preservation': {'expected_sha': '80ef5c2533fa541af0a02a6d443ec3b7275d21b47147e2cfe55c67dd34263fcb', 'expected_count': 1601},
+    'preservation': {
+        'expected_sha': '80ef5c2533fa541af0a02a6d443ec3b7275d21b47147e2cfe55c67dd34263fcb',
+        'expected_count': 1601,
+    },
     'fiveRoundsRequired': True,
-    'evidenceSelection': 'artifacts/five-round-audit-20261001/evidence-selection.json',
-    'readme': '''A股雷达趋势版 1.5.3
+    'evidenceSelection': f'artifacts/five-round-audit-{VERSION.replace(".", "")}/evidence-selection.json',
+    'readme': f'''A股雷达趋势版 {VERSION}
 
 双击本目录的 A股雷达趋势版.app。旧版本及此前成品继续保留。
 各版本沿用同一本机资料，请先正常退出正在使用的版本，再打开另一版本。

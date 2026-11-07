@@ -1,26 +1,27 @@
-export type TrendBoardId = "main" | "growth" | "star" | "beijing";
-export type TrendLibraryId = "macd-zero-cross-v1" | "boll-squeeze-breakout-v1" | "dmi-trend-strength-v1" | "obv-volume-breakout-v1" | "kdj-trend-cross-v1" | "ma-pullback-resume-v1" | "rsi-midline-recovery-v1" | "cci-strength-breakout-v1" | "roc-zero-recovery-v1" | "emv-zero-recovery-v1" | "mfi-midline-recovery-v1" | "donchian-55-breakout-v1";
+type TrendBoardId = "main" | "growth" | "star" | "beijing";
+export type TrendLibraryId = "macd-zero-cross-v1" | "boll-squeeze-breakout-v1" | "dmi-trend-strength-v1" | "obv-volume-breakout-v1" | "kdj-trend-cross-v1" | "ma-pullback-resume-v1" | "rsi-midline-recovery-v1" | "cci-strength-breakout-v1" | "roc-zero-recovery-v1" | "emv-zero-recovery-v1" | "mfi-midline-recovery-v1" | "donchian-55-breakout-v1" | "ma-golden-cross-v1" | "turtle-20-breakout-v1" | "new-high-120-v1" | "ma-bull-alignment-v1";
 export type TrendStrategyId = "classic-v1" | "quality-v2" | TrendLibraryId;
 export type TrendQualityConfig = { maxExtensionAtr: number; minCloseLocation: number; maxVolumeRatio: number };
 export type TrendStrategySnapshot = { id: TrendStrategyId; version: string; configHash: string; config: Record<string, number> };
 export type TrendStrategySelection = { strategyId?: TrendStrategyId; config?: Record<string, number> };
 export type TrendScanRequest = (TrendStrategySelection & { strategies?: never; forceRefresh?: boolean }) | { strategies: TrendStrategySelection[]; strategyId?: never; config?: never; forceRefresh?: boolean };
-export type TrendStrategyStats = { strategy: TrendStrategySnapshot; processed: number; candidateCount: number; excluded: number; unavailable: number; failed: number; coverageComplete: boolean };
+type TrendStrategyStats = { strategy: TrendStrategySnapshot; processed: number; candidateCount: number; excluded: number; unavailable: number; failed: number; coverageComplete: boolean };
 export type TrendCandidate = {
   security: { code: string; name: string; secid: string; industry?: string; assetType?: "stock" };
   board: TrendBoardId;
   asOf: string;
-  limitDate: string;
-  daysSinceLimit: number;
+  /** 经典技术策略库不要求近期涨停：没有有效近期涨停时为 null。 */
+  limitDate: string | null;
+  daysSinceLimit: number | null;
   patterns: ("A" | "B")[];
   stage: "signal" | "watch";
-  limitEvidence: "official" | "calculated";
+  limitEvidence?: "official" | "calculated";
   evidence: { label: string; passed: boolean; value: string; rule: string }[];
   metrics: {
-    close: number; ma20: number; ma60: number; avgAmount20: number;
+    close: number; ma20: number; ma60: number; avgAmount20: number; medianAmount20?: number;
     deviationPercent: number; relativeStrength20: number | null; atr14: number;
   };
-  plan: null | { stop: number; minEntry?: number; maxEntry: number; maxRiskPercent: number; holdingDays: string };
+  plan: null | { entryType?: "breakout" | "close-confirmation"; stop: number; minEntry?: number; maxEntry: number; maxRiskPercent: number; holdingDays: string };
   strategy?: TrendStrategySnapshot;
   primaryPattern?: "A" | "B" | null;
   quality?: { atr14Previous: number; extensionAtr: number; closeLocation: number; volumeRatio: number; volumeMedian20: number; ma60Rising: boolean; relativeStrengthPositive: boolean; holdingMa20Count: number; stopDistanceAtr: number };
@@ -28,7 +29,11 @@ export type TrendCandidate = {
   technical?: { indicators: Record<string, number> };
   warnings: string[];
 };
+export type TrendScanCursor = { candidateEpoch: string; jobId: string; candidateRevision: number };
+export type TrendScanSnapshot = Omit<TrendScanStatus, "candidates"> & { candidates?: TrendCandidate[] };
 export type TrendScanStatus = {
+  candidateEpoch?: string;
+  candidateRevision?: number;
   jobId: string;
   phase: "idle" | "loading-universe" | "scanning" | "completed" | "cancelled" | "failed";
   startedAt: string;
@@ -42,6 +47,7 @@ export type TrendScanStatus = {
   failed: number;
   coverageComplete: boolean;
   marketGate: "open" | "blocked" | "unknown";
+  freshness?: { state: "current" | "stale" | "unknown"; expectedDate: string | null; actualDate: string | null; reason: string };
   boards: { id: string; label: string; expected: number | null; loaded: number; complete: boolean; error?: string }[];
   candidates: TrendCandidate[];
   errors: { code?: string; stage: string; message: string }[];
@@ -56,6 +62,26 @@ export type TrendScanStatus = {
   diagnostics?: {
     sources: { stage: "universe" | "benchmark" | "raw" | "adjusted"; source: string; status: "ok" | "error"; successes: number; failures: number; latestDate: string | null; detail: string; crossCheckedRows: number }[];
     funnel: { universeEligible: number; rawValidated: number; recentLimitPassed: number; trendPassed: number; technicalTriggered: number; riskPassed: number };
+    limitRequired?: boolean;
     reasons: { stage: string; reason: string; count: number }[];
   };
+};
+
+export type TrendExecutionCheck = {
+  checkedAt: string;
+  signalDate: string;
+  executionDate: string | null;
+  expectedSignalDate: string | null;
+  state: "ready" | "blocked" | "unknown" | "expired";
+  reasons: string[];
+  latest: number | null;
+  upperLimit: number | null;
+  lowerLimit: number | null;
+  suspended: boolean | null;
+  priceDate: string | null;
+  source: string;
+  minimumBuyQuantity: number;
+  quantityStep: number;
+  validUntil?: string;
+  quoteAt?: string;
 };

@@ -18,3 +18,41 @@ test('compact detail keeps incomplete coverage and date visible while explanatio
   assert.match(h, /行情日期/);
   assert.doesNotMatch(h, /<details[^>]*open|名单不构成选股信号|不能用于确认今日板块强弱/);
 });
+
+test('board list sorts by live change or inflow and keeps boards without quotes after them', () => {
+  const e = (id, kind = 'industry') => ({ id, code: id, name: id, kind, level: null, path: [], classification: '', sourceUrl: '' });
+  const entries = [e('a'), e('b'), e('f10', 'classification'), e('c', 'concept')];
+  const quotes = { a: { changePct: 1.2, netInflow: -1e8 }, b: { changePct: 3.4, netInflow: 2e8 }, c: { changePct: -0.5, netInflow: 5e8 } };
+  assert.deepEqual(view.sortSectorEntries(entries, quotes, 'change-desc').map(x => x.id), ['b', 'a', 'c', 'f10']);
+  assert.deepEqual(view.sortSectorEntries(entries, quotes, 'change-asc').map(x => x.id), ['c', 'a', 'b', 'f10']);
+  assert.deepEqual(view.sortSectorEntries(entries, quotes, 'inflow-desc').map(x => x.id), ['c', 'b', 'a', 'f10']);
+  assert.deepEqual(view.sortSectorEntries(entries, quotes, 'name').map(x => x.id), ['a', 'b', 'f10', 'c']);
+  assert.deepEqual(view.sortSectorEntries(entries, undefined, 'change-desc').map(x => x.id), ['a', 'b', 'f10', 'c'], 'without quotes the directory order is kept');
+});
+
+test('member columns sort with unknown values last', () => {
+  const m = (code, changePercent, amount) => ({ code, name: code, secid: `0.${code}`, latest: 10, changePercent, amount, turnover: null });
+  const rows = [m('000001', 1, null), m('000002', null, 5), m('000003', 4, 2)];
+  assert.deepEqual(view.sortSectorMembers(rows, { key: 'changePercent', desc: true }).map(x => x.code), ['000003', '000001', '000002']);
+  assert.deepEqual(view.sortSectorMembers(rows, { key: 'amount', desc: false }).map(x => x.code), ['000003', '000002', '000001']);
+  assert.deepEqual(view.sortSectorMembers(rows, { key: 'source', desc: true }).map(x => x.code), ['000001', '000002', '000003']);
+});
+
+test('board detail shows inflow, leader, the index trend and the anonymous member limit', () => {
+  const board = { ...detail, status: 'partial', entry: { ...detail.entry, kind: 'industry', id: 'ths:industry:881270', name: '元件' },
+    metrics: { changePercent: -0.72, amount: 81616000000, rising: 24, falling: 39 },
+    coverage: { ...detail.coverage, loaded: 100, complete: false, anonymousLimit: { pages: 5, approxTotal: 140 } },
+    trend: { asOf: '2026-10-21', change5: 2.15, change20: -3.4, closes: Array.from({ length: 30 }, (_, i) => ({ date: `d${i}`, close: 100 + Math.sin(i) })) } };
+  const h = renderToStaticMarkup(React.createElement(view.SectorExplorerDetailView, { detail: board, onOpenStock: () => {},
+    quote: { changePct: -0.72, netInflow: -3.2e8, indexCode: '881270', leaderName: '鹏鼎控股', leaderChangePct: 4.1, companyCount: 63 } }));
+  assert.match(h, /主力净流入/);
+  assert.match(h, /−3\.20 亿/);
+  assert.match(h, /鹏鼎控股/);
+  assert.match(h, /\+4\.10%/);
+  assert.match(h, /近 5 日/);
+  assert.match(h, /\+2\.15%/);
+  assert.match(h, /-3\.40%/);
+  assert.match(h, /<svg[^>]*sector-explorer-sparkline/);
+  assert.match(h, /同花顺未登录只开放前 100 只（共约 140 只）/);
+  assert.match(h, /aria-sort/);
+});

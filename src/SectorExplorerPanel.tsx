@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, ChevronRight, Layers3, RefreshCw, Search, X } from 'lucide-react';
-import type { SectorExplorerApi, SectorExplorerCatalog, SectorExplorerDetail, SectorExplorerEntry, SectorExplorerMember } from './sectorExplorerTypes';
+import type { SectorExplorerApi, SectorExplorerCatalog, SectorExplorerDetail, SectorExplorerEntry, SectorExplorerMember, SectorExplorerQuote, SectorExplorerQuotes, SectorExplorerTrend } from './sectorExplorerTypes';
 import { eligibleSignalTestStocks } from './signalTestRequest';
-import './sector-explorer.css';
+import { whenVisible } from './visiblePolling';
 type Filter = 'all' | SectorExplorerEntry['kind'];
 const tabs: {
     id: Filter;
@@ -11,7 +11,56 @@ const tabs: {
 const statusName = { ready: '已获取', partial: '部分资料', unavailable: '来源不可用', stale: '旧资料' };
 const numberText = (value: number | null, suffix = '') => value !== null && Number.isFinite(value) ? `${value.toFixed(2)}${suffix}` : '—';
 const amountText = (value: number | null) => value === null ? '—' : value >= 1e8 ? `${(value / 1e8).toFixed(2)} 亿` : `${(value / 1e4).toFixed(2)} 万`;
-const localTime = (value: string) => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '未提供';
+const signedPercent = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) ? '—' : `${value > 0 ? '+' : ''}${value.toFixed(2)}%`;
+const toneOf = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) || value === 0 ? '' : value > 0 ? 'rise' : 'fall';
+const flowText = (value: number | null | undefined) => {
+    if (value === null || value === undefined || !Number.isFinite(value)) return '—';
+    const abs = Math.abs(value);
+    const text = abs >= 1e8 ? `${(abs / 1e8).toFixed(2)} 亿` : `${(abs / 1e4).toFixed(0)} 万`;
+    return `${value > 0 ? '+' : value < 0 ? '−' : ''}${text}`;
+};
+export type SectorSort = 'change-desc' | 'change-asc' | 'inflow-desc' | 'name';
+const sortOptions: { id: SectorSort; label: string }[] = [
+    { id: 'change-desc', label: '涨幅从高到低' }, { id: 'change-asc', label: '跌幅从大到小' }, { id: 'inflow-desc', label: '净流入从多到少' }, { id: 'name', label: '按类别与名称' }
+];
+/** 按行情排序；没有行情的板块（如 F10 行业分类）保持原顺序排在后面。 */
+export function sortSectorEntries(entries: SectorExplorerEntry[], quotes: Record<string, SectorExplorerQuote> | undefined, sort: SectorSort) {
+    if (sort === 'name' || !quotes) return entries;
+    const value = (entry: SectorExplorerEntry) => {
+        const quote = quotes[entry.id];
+        const raw = sort === 'inflow-desc' ? quote?.netInflow : quote?.changePct;
+        return raw === null || raw === undefined || !Number.isFinite(raw) ? null : raw;
+    };
+    const indexed = entries.map((entry, index) => ({ entry, index, value: value(entry) }));
+    return indexed.sort((a, b) => {
+        if (a.value === null && b.value === null) return a.index - b.index;
+        if (a.value === null) return 1;
+        if (b.value === null) return -1;
+        return (sort === 'change-asc' ? a.value - b.value : b.value - a.value) || a.index - b.index;
+    }).map(item => item.entry);
+}
+type MemberSort = { key: 'source' | 'latest' | 'changePercent' | 'amount' | 'turnover'; desc: boolean };
+export function sortSectorMembers(rows: SectorExplorerMember[], sort: MemberSort) {
+    if (sort.key === 'source') return rows;
+    const key = sort.key;
+    return rows.map((row, index) => ({ row, index })).sort((a, b) => {
+        const left = a.row[key], right = b.row[key];
+        if (left === null && right === null) return a.index - b.index;
+        if (left === null) return 1;
+        if (right === null) return -1;
+        return (sort.desc ? right - left : left - right) || a.index - b.index;
+    }).map(item => item.row);
+}
+function TrendSparkline({ trend }: { trend: SectorExplorerTrend }) {
+    const closes = trend.closes.map(point => point.close);
+    if (closes.length < 2) return null;
+    const min = Math.min(...closes), max = Math.max(...closes), span = max - min || 1;
+    const width = 180, height = 40;
+    const points = closes.map((close, index) => `${(index / (closes.length - 1) * width).toFixed(1)},${(height - 2 - (close - min) / span * (height - 4)).toFixed(1)}`).join(' ');
+    const tone = toneOf(closes.at(-1)! - closes[0]!);
+    return <svg className={`sector-explorer-sparkline ${tone}`} viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={`近 ${closes.length} 个交易日板块指数走势`}><polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/></svg>;
+}
+const localTime = (value: string) => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: "Asia/Shanghai" }) : '未提供';
 function openSource(url: string) { if (typeof window !== 'undefined')
     void window.stockApi?.openExternal(url); }
 function toSecurity(member: SectorExplorerMember): Security { return { code: member.code, name: member.name, secid: member.secid, thscode: `${member.code}.${member.secid.startsWith('1.') ? 'SH' : /^[489]/.test(member.code) ? 'BJ' : 'SZ'}`, assetType: 'stock' }; }
@@ -21,25 +70,42 @@ export function filterSectorEntries(entries: SectorExplorerEntry[], query: strin
     return entries.filter(entry => entry.kind !== 'research' && (kind === 'all' || entry.kind === kind) && `${entry.name} ${entry.path.join(' ')} ${entry.code}`.toLowerCase().includes(needle))
         .sort((a, b) => order[a.kind] - order[b.kind] || (a.level ?? 0) - (b.level ?? 0) || a.name.localeCompare(b.name, 'zh-CN') || a.id.localeCompare(b.id));
 }
-export function SectorExplorerDetailView({ detail, onOpenStock, onClassifications }: {
+export function SectorExplorerDetailView({ detail, onOpenStock, onClassifications, quote }: {
     detail: SectorExplorerDetail;
     onOpenStock: (stock: Security) => void;
     onClassifications?: (code: string) => void;
+    quote?: SectorExplorerQuote | null;
 }) {
     const [memberQuery, setMemberQuery] = useState('');
     const [limit, setLimit] = useState(50);
-    const rows = detail.members.filter(row => `${row.code} ${row.name}`.includes(memberQuery.trim()));
+    const [memberSort, setMemberSort] = useState<MemberSort>({ key: 'source', desc: true });
+    const rows = sortSectorMembers(detail.members.filter(row => `${row.code} ${row.name}`.includes(memberQuery.trim())), memberSort);
+    const liveQuote = quote || detail.quote || null;
+    const trend = detail.trend || null;
+    const sortHeader = (key: MemberSort['key'], label: string) => {
+        const active = memberSort.key === key;
+        return <th aria-sort={active ? (memberSort.desc ? 'descending' : 'ascending') : 'none'}><button type="button" className={active ? 'active' : ''} onClick={() => { setMemberSort(current => current.key === key ? { key, desc: !current.desc } : { key, desc: true }); setLimit(50); }}>{label}{active ? (memberSort.desc ? ' ↓' : ' ↑') : ''}</button></th>;
+    };
+    const anonymousLimit = detail.coverage.anonymousLimit;
     return <div className="sector-explorer-detail">
     <div className="sector-explorer-detail-title"><div><h3>{detail.entry.name}</h3>{detail.entry.path.length > 1 && <p>{detail.entry.path.join(' › ')}</p>}</div><span className={`sector-explorer-status ${detail.status}`}>{statusName[detail.status]}</span></div>
     <div className="sector-explorer-date"><span>{detail.asOf ? `行情日期：${detail.asOf}` : '行情日期未提供'}</span>{detail.reportDate && <span>同行对比报告期：{detail.reportDate}</span>}</div>
-    {detail.metrics && <div className="sector-explorer-metrics" aria-label="源页板块快照">
-      <div><span>源页板块涨幅</span><strong className={detail.metrics.changePercent === null ? '' : detail.metrics.changePercent >= 0 ? 'rise' : 'fall'}>{numberText(detail.metrics.changePercent, '%')}</strong></div>
-      <div><span>源页成交额</span><strong>{amountText(detail.metrics.amount)}</strong></div>
-      <div><span>上涨 / 下跌家数</span><strong>{detail.metrics.rising ?? '—'} / {detail.metrics.falling ?? '—'}</strong></div>
+    {(detail.metrics || liveQuote) && <div className="sector-explorer-metrics" aria-label="源页板块快照">
+      <div><span>板块涨幅</span><strong className={toneOf(detail.metrics?.changePercent ?? liveQuote?.changePct)}>{signedPercent(detail.metrics?.changePercent ?? liveQuote?.changePct)}</strong></div>
+      {liveQuote && <div><span>主力净流入</span><strong className={toneOf(liveQuote.netInflow)}>{flowText(liveQuote.netInflow)}</strong></div>}
+      {detail.metrics && <div><span>成交额</span><strong>{amountText(detail.metrics.amount)}</strong></div>}
+      {detail.metrics && <div><span>上涨 / 下跌家数</span><strong><b className="rise">{detail.metrics.rising ?? '—'}</b> / <b className="fall">{detail.metrics.falling ?? '—'}</b></strong></div>}
+      {liveQuote?.leaderName && <div><span>领涨股</span><strong>{liveQuote.leaderName} <small className={toneOf(liveQuote.leaderChangePct)}>{signedPercent(liveQuote.leaderChangePct)}</small></strong></div>}
     </div>}
-    <div className="sector-explorer-coverage"><strong>已载入 {detail.coverage.loaded} 只</strong><span>{detail.coverage.complete ? '源页分页已取齐' : '数据不完整'}</span></div>
+    {trend && <div className="sector-explorer-trend" aria-label="板块指数走势">
+      <TrendSparkline trend={trend}/>
+      <div><span>近 5 日</span><strong className={toneOf(trend.change5)}>{signedPercent(trend.change5)}</strong></div>
+      <div><span>近 20 日</span><strong className={toneOf(trend.change20)}>{signedPercent(trend.change20)}</strong></div>
+      <small>指数日线截至 {trend.asOf}</small>
+    </div>}
+    <div className="sector-explorer-coverage"><strong>已载入 {detail.coverage.loaded} 只</strong><span>{detail.coverage.complete ? '源页分页已取齐' : anonymousLimit ? `同花顺未登录只开放前 ${anonymousLimit.pages * 20} 只（共约 ${anonymousLimit.approxTotal} 只），涨跌家数以源页统计为准` : '数据不完整'}</span></div>
     <div className="sector-explorer-member-heading"><h4>{detail.entry.kind === 'classification' ? '报告期同行名单' : detail.entry.kind === 'research' ? '代表性公司' : '已获取成分'}</h4><input aria-label="筛选成分股" placeholder="名称 / 代码" value={memberQuery} onChange={event => { setMemberQuery(event.target.value); setLimit(50); }}/></div>
-    <div className="sector-explorer-table-wrap"><table><thead><tr><th>股票</th><th>源页现价</th><th>涨跌幅</th><th>成交额</th><th>换手率</th></tr></thead><tbody>{rows.slice(0, limit).map(row => <tr key={row.code}><td><button type="button" onClick={() => onOpenStock(toSecurity(row))}><strong>{row.name}</strong><code>{row.code}</code><ChevronRight size={12}/></button>{onClassifications && <button className="sector-explorer-peer-link" type="button" onClick={() => onClassifications(row.code)} aria-label={`查看${row.name}行业分类`}>查行业</button>}</td><td>{numberText(row.latest)}</td><td className={row.changePercent === null ? '' : row.changePercent >= 0 ? 'rise' : 'fall'}>{numberText(row.changePercent, '%')}</td><td>{amountText(row.amount)}</td><td>{numberText(row.turnover, '%')}</td></tr>)}</tbody></table>{!rows.length && <p className="sector-explorer-empty">{detail.status === 'unavailable' ? '来源暂不可用，可打开源页或稍后刷新。' : '没有可显示的匹配股票。'}</p>}</div>
+    <div className="sector-explorer-table-wrap"><table><thead><tr><th>股票</th>{sortHeader('latest', '现价')}{sortHeader('changePercent', '涨跌幅')}{sortHeader('amount', '成交额')}{sortHeader('turnover', '换手率')}</tr></thead><tbody>{rows.slice(0, limit).map(row => <tr key={row.code}><td><button type="button" onClick={() => onOpenStock(toSecurity(row))}><strong>{row.name}</strong><code>{row.code}</code><ChevronRight size={12}/></button>{onClassifications && <button className="sector-explorer-peer-link" type="button" onClick={() => onClassifications(row.code)} aria-label={`查看${row.name}行业分类`}>查行业</button>}</td><td>{numberText(row.latest)}</td><td className={toneOf(row.changePercent)}>{signedPercent(row.changePercent)}</td><td>{amountText(row.amount)}</td><td>{numberText(row.turnover, '%')}</td></tr>)}</tbody></table>{!rows.length && <p className="sector-explorer-empty">{detail.status === 'unavailable' ? '来源暂不可用，可打开源页或稍后刷新。' : '没有可显示的匹配股票。'}</p>}</div>
     {rows.length > limit && <button type="button" className="sector-explorer-more" onClick={() => setLimit(value => value + 50)}>再显示 50 只（共 {rows.length} 只）</button>}
     <details className="sector-explorer-data-details"><summary>来源与覆盖</summary>
       <div className="sector-explorer-source"><button type="button" onClick={() => openSource(detail.entry.sourceUrl)}>打开原始来源 <ArrowUpRight size={14}/></button><span>抓取时间：{localTime(detail.fetchedAt)}</span></div>
@@ -51,10 +117,14 @@ export function SectorExplorerDetailView({ detail, onOpenStock, onClassification
     </details>
   </div>;
 }
-export default function SectorExplorerPanel({ onOpenStock }: {
+export default function SectorExplorerPanel({ onOpenStock, active = true }: {
     onOpenStock: (stock: Security) => void;
+    /** 面板折叠时为 false：停止每分钟的板块行情刷新。 */
+    active?: boolean;
 }) {
     const [catalog, setCatalog] = useState<SectorExplorerCatalog | null>(null);
+    const [quotes, setQuotes] = useState<SectorExplorerQuotes | null>(null);
+    const [sort, setSort] = useState<SectorSort>('change-desc');
     const [discoveredEntries, setDiscoveredEntries] = useState<SectorExplorerEntry[]>([]);
     const [detail, setDetail] = useState<SectorExplorerDetail | null>(null);
     const [query, setQuery] = useState('');
@@ -156,6 +226,28 @@ export default function SectorExplorerPanel({ onOpenStock }: {
         for (const id of [state.catalog, state.detail, state.classification])
             if (id)
                 void api.cancelSectorRequest(id).catch(() => { }); }; }, [api, loadCatalog]);
+    useEffect(() => {
+        if (!active || typeof api?.getSectorQuotes !== 'function') return;
+        let alive = true;
+        let busy = false;
+        const read = async () => {
+            if (busy) return;
+            busy = true;
+            const requestId = `sector-quotes-${Date.now()}-${++sequence.current}`;
+            try {
+                const value = await api.getSectorQuotes!({ requestId });
+                if (alive && value) setQuotes(value);
+            } catch {
+                // 行情只是目录上的附加信息；读取失败时保留上次结果，不影响目录与成分。
+            } finally {
+                busy = false;
+            }
+        };
+        const readWhenVisible = whenVisible(read);
+        readWhenVisible();
+        const timer = window.setInterval(readWhenVisible, 60_000);
+        return () => { alive = false; window.clearInterval(timer); };
+    }, [api, active]);
     const invalidateClassification = () => {
         const state = current.current;
         const id = state.classification;
@@ -249,7 +341,9 @@ export default function SectorExplorerPanel({ onOpenStock }: {
         for (const entry of catalog?.entries || []) merged.set(entry.id, entry);
         return [...merged.values()];
     }, [catalog, discoveredEntries]);
-    const filtered = useMemo(() => filterSectorEntries(entries, query, filter), [entries, query, filter]);
+    const quoteMap = quotes?.quotes;
+    const hasQuotes = Boolean(quoteMap && Object.keys(quoteMap).length);
+    const filtered = useMemo(() => sortSectorEntries(filterSectorEntries(entries, query, filter), quoteMap, sort), [entries, query, filter, quoteMap, sort]);
     const changeStockQuery = (value: string) => {
         invalidateClassification();
         stockSearchGeneration.current += 1;
@@ -289,7 +383,7 @@ export default function SectorExplorerPanel({ onOpenStock }: {
       <button type="submit" disabled={classificationBusy || composing || !stockQuery.trim()}>{classificationBusy ? '查询中…' : '查行业'}</button>
       {(stockSearchBusy || stockSearchError || (stockSearched && !stockChoices.length && !stock)) && <span role="status" className="sector-explorer-search-status">{stockSearchBusy ? '搜索中…' : stockSearchError ? `搜索失败：${stockSearchError}` : '没有匹配的 A 股股票。'}</span>}
     </form>
-</div><div className="sector-directory-list"><div className="sector-explorer-list-meta"><span>{filtered.length} 个板块</span><span>{catalog ? statusName[catalog.status] : catalogBusy ? '正在连接来源' : '尚未获取'}</span></div>{filtered.slice(0, listLimit).map(entry => <button type="button" className="sector-explorer-entry" key={entry.id} aria-pressed={selected === entry.id} onClick={() => void loadDetail(entry)}><strong>{entry.name}</strong><ChevronRight size={16}/></button>)}{!filtered.length && <div className="sector-explorer-empty">{catalogBusy ? '正在读取目录…' : filter === 'classification' && !query.trim() ? <button type="button" className="sector-explorer-lookup-prompt" onClick={() => stockInput.current?.focus()}>输入股票名称查询行业分类</button> : '没有匹配的板块。'}</div>}{filtered.length > listLimit && <button type="button" className="sector-explorer-more" onClick={() => setListLimit(value => value + 60)}>再显示 60 个</button>}</div></aside><main className="sector-explorer-content">{detailBusy ? <div className="sector-explorer-empty">正在读取成分…</div> : detail ? <><div className="sector-explorer-detail-refresh"><button type="button" onClick={() => selectedEntry && void loadDetail(selectedEntry, true)}><RefreshCw size={16}/>刷新当前资料</button></div><SectorExplorerDetailView key={detail.entry.id} detail={detail} onOpenStock={onOpenStock} onClassifications={code => { setStock(null); setStockQuery(code); void discover(code); }}/></> : <div className="sector-explorer-welcome"><Layers3 size={28}/><h3>选择板块查看成分</h3></div>}</main></div>
+</div><div className="sector-directory-list"><div className="sector-explorer-list-meta"><span>{filtered.length} 个板块</span>{hasQuotes ? <select aria-label="板块排序" value={sort} onChange={event => { setSort(event.target.value as SectorSort); setListLimit(60); }}>{sortOptions.map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select> : <span>{catalog ? statusName[catalog.status] : catalogBusy ? '正在连接来源' : '尚未获取'}</span>}</div>{hasQuotes && quotes && <div className="sector-explorer-quote-time">行情 {localTime(quotes.fetchedAt).split(' ').at(-1)} 更新 · 每分钟刷新{quotes.status !== 'ready' ? ` · ${quotes.warnings[0] || '部分来源不可用'}` : ''}</div>}{filtered.slice(0, listLimit).map(entry => { const quote = quoteMap?.[entry.id]; return <button type="button" className="sector-explorer-entry" key={entry.id} aria-pressed={selected === entry.id} onClick={() => void loadDetail(entry)}><strong>{entry.name}</strong>{quote && <span className="sector-explorer-entry-quote"><b className={toneOf(quote.changePct)}>{signedPercent(quote.changePct)}</b>{quote.netInflow !== null && <small className={toneOf(quote.netInflow)}>{flowText(quote.netInflow)}</small>}</span>}<ChevronRight size={16}/></button>; })}{!filtered.length && <div className="sector-explorer-empty">{catalogBusy ? '正在读取目录…' : filter === 'classification' && !query.trim() ? <button type="button" className="sector-explorer-lookup-prompt" onClick={() => stockInput.current?.focus()}>输入股票名称查询行业分类</button> : '没有匹配的板块。'}</div>}{filtered.length > listLimit && <button type="button" className="sector-explorer-more" onClick={() => setListLimit(value => value + 60)}>再显示 60 个</button>}</div></aside><main className="sector-explorer-content">{detailBusy ? <div className="sector-explorer-empty">正在读取成分…</div> : detail ? <><div className="sector-explorer-detail-refresh"><button type="button" onClick={() => selectedEntry && void loadDetail(selectedEntry, true)}><RefreshCw size={16}/>刷新当前资料</button></div><SectorExplorerDetailView key={detail.entry.id} detail={detail} quote={quoteMap?.[detail.entry.id] || null} onOpenStock={onOpenStock} onClassifications={code => { setStock(null); setStockQuery(code); void discover(code); }}/></> : <div className="sector-explorer-welcome"><Layers3 size={28}/><h3>选择板块查看成分</h3></div>}</main></div>
     {catalog && <details className="sector-explorer-catalog-sources"><summary>目录来源与覆盖 · {catalog.sources.filter(source => source.status === 'ready').length} / {catalog.sources.length} 来源可用 · {localTime(catalog.fetchedAt)}</summary><p className="sector-explorer-catalog-coverage">{catalog.coverage.scope} · 已载入 {catalog.coverage.loaded}{catalog.coverage.total != null ? ` / ${catalog.coverage.total}` : ' · 总数未提供'}</p>{catalog.warnings.map((warning, i) => <p key={i}>{warning}</p>)}{catalog.sources.map(source => <div key={source.url}><button type="button" onClick={() => openSource(source.url)}>{source.name}<ArrowUpRight size={12}/></button><span>{statusName[source.status]} · {source.message}</span></div>)}</details>}
   </section>;
 }

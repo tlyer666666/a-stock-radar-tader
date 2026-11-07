@@ -83,12 +83,16 @@ const marketSchema = fields({
 export type ReviewRecord = {
   id: string; type: "market" | "stock"; title: string; date: string;
   score: number; verdict: string; note: string; createdAt: string; snapshot: any;
+  /** 保存时的 AI 复盘结论（可选，1.6.39 起）。 */
+  ai?: { headline: string; cycle?: string; posture?: string; focus?: string[]; model?: string; generatedAt?: string } | undefined;
 };
+const aiSummary = fields({ ...textFields("headline", "cycle", "posture", "model", "generatedAt"), focus: strings }, ["headline"]);
 
 export function isReviewRecord(value: unknown): value is ReviewRecord {
   if (!record(value) || !["market", "stock"].includes(String(value.type))) return false;
   if (![value.id, value.title, value.date, value.verdict, value.createdAt].every(text)) return false;
   if (value.note !== undefined && !text(value.note)) return false;
   if (value.score !== undefined && !numeric(value.score)) return false;
+  if (value.ai !== undefined && !aiSummary(value.ai)) return false;
   return (value.type === "stock" ? validStockSnapshot : marketSchema)(value.snapshot);
 }

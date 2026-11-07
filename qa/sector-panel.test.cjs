@@ -11,7 +11,7 @@ describe('sector stock lookup with actual React and offline provider boundaries'
       import React from 'react';
       import { createRoot } from 'react-dom/client';
       import SectorExplorerPanel from '/src/SectorExplorerPanel.tsx';
-      import '/src/workbench.css';
+      import '/src/styles/index.css';
       window.calls=[]; window.fixture=${JSON.stringify(fixture)};
       window.stock={code:'300964',name:'本川智能',secid:'0.300964',assetType:'stock'};
       window.catalog={status:'ready',entries:[window.fixture.entry],fetchedAt:window.fixture.fetchedAt,asOf:null,sources:[],warnings:[],coverage:{...window.fixture.coverage,loaded:1,complete:true}};

@@ -3,35 +3,27 @@
 const { parentPort, workerData } = require("node:worker_threads");
 const {
   buildSelectedStrategyPortfolioReplay,
-  buildSelectedStrategyReplay,
-  STRATEGY_DEFINITIONS
+  buildSelectedStrategyReplayBundle
 } = require("./strategy-signal-engine.cjs");
 const { simulateStrategyPortfolio } = require("./portfolio-backtest.cjs");
 
 try {
   if (workerData?.task === "single-stock-replay") {
     const { strategyIds, security, history, benchmarkHistory, replayOptions } = workerData;
-    const replay = buildSelectedStrategyReplay(strategyIds, security, history, benchmarkHistory, replayOptions);
-    const definitions = new Map(STRATEGY_DEFINITIONS.map(item => [item.id, item]));
-    const replaysById = {};
-    if (strategyIds.length > 1) {
-      for (const id of strategyIds) {
-        replaysById[id] = buildSelectedStrategyReplay([id], security, history, benchmarkHistory, {
-          ...replayOptions, strategyId: id, strategyName: String(definitions.get(id)?.name || id), minimumVotes: 1
-        });
-      }
-    }
-    parentPort.postMessage({ ok: true, value: { replay, replaysById } });
+    const result = buildSelectedStrategyReplayBundle(strategyIds, security, history, benchmarkHistory, replayOptions);
+    parentPort.postMessage({ ok: true, value: result });
   } else {
     const replay = buildSelectedStrategyPortfolioReplay(
       workerData?.strategyIds,
       workerData?.securities,
       workerData?.historiesByCode,
       workerData?.benchmarkHistory,
-      workerData?.replayOptions
+      { ...workerData?.replayOptions,
+        signalFrom: workerData?.portfolioOptions?.rangeFrom || workerData?.replayOptions?.signalFrom,
+        signalTo: workerData?.portfolioOptions?.rangeTo || workerData?.replayOptions?.signalTo }
     );
     const portfolio = simulateStrategyPortfolio(
-      replay.samples,
+      [...replay.samples, ...replay.pendingSignals.filter(signal => signal.entryDate)],
       workerData?.historiesByCode,
       workerData?.benchmarkHistory,
       workerData?.portfolioOptions

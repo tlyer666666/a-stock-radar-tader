@@ -61,7 +61,7 @@ test("versioned strategy facade and shared prefilter are available", () => {
 test("configuration is canonical, versioned, detached and strictly validated", () => {
   const defaultConfig = strategy.normalizeTrendStrategy({ strategyId: "quality-v2" });
   assert.equal(defaultConfig.id, "quality-v2");
-  assert.equal(defaultConfig.version, "2.0.0");
+  assert.equal(defaultConfig.version, "2.1.0");
   assert.deepEqual(defaultConfig.config, { maxExtensionAtr: 2, minCloseLocation: 0.7, maxVolumeRatio: 3 });
   assert.match(defaultConfig.configHash, /^[a-f0-9]{64}$/);
   assert.deepEqual(strategy.normalizeTrendStrategy({ strategyId: "quality-v2", config: {
@@ -293,4 +293,48 @@ test("raw prefilter keeps all valid classic candidates and rejects only necessar
   assert.equal(prefilterTrendStock(missing).kind, "unavailable");
   const malformed = fixture(); malformed.rawRows[100].amount = NaN;
   assert.equal(prefilterTrendStock(malformed).kind, "unavailable");
+});
+
+
+test("quality uses the same 250-session dates and values for unequal histories", () => {
+  const full = fixture(), expected = quality(full);
+  for (const key of ["rawRows", "adjustedRows"]) {
+    const input = fixture(); input[key] = input[key].slice(-250);
+    assert.deepEqual(quality(input), expected);
+  }
+});
+
+test("a new limit does not erase an oldest supported triggered quality setup", () => {
+  const input = fixture(); input.rawRows[269].upperLimit = input.rawRows[269].close;
+  const classic = strategy.evaluateTrendStrategy(input).candidate;
+  assert.equal(classic.limitDate, input.asOf); assert.equal(classic.stage, "watch");
+  const actual = quality(input).candidate;
+  assert.equal(actual.limitDate, input.rawRows[264].date);
+  assert.equal(actual.daysSinceLimit, 5); assert.equal(actual.stage, "signal");
+  assert.equal(actual.plan.entryType, "breakout");
+  assert.equal(actual.plan.stop, 15.8); assert.equal(actual.primaryPattern, "A");
+});
+
+test("active anchor skips broken support and falls back to the most recent valid watch", () => {
+  const input = fixture();
+  input.rawRows[269].upperLimit = input.rawRows[269].close;
+  change(input, 265, { close: 15.7, open: 15.7, low: 15.5 });
+  const actual = quality(input).candidate;
+  assert.equal(actual.limitDate, input.asOf); assert.equal(actual.stage, "watch");
+  assert.equal(actual.plan, null);
+});
+
+
+test("active anchors prefer the oldest supported A/B trigger and ignore expired setups", () => {
+  const input = fixture();
+  input.rawRows[260].upperLimit = input.rawRows[260].close;
+  change(input, 260, { low: 14.9 });
+  input.rawRows[269].upperLimit = input.rawRows[269].close;
+  const actual = quality(input).candidate;
+  assert.equal(actual.limitDate, input.rawRows[260].date);
+  assert.equal(actual.daysSinceLimit, 9); assert.equal(actual.stage, "signal");
+  assert.equal(strategy.evaluateTrendStrategy(input).candidate.limitDate, input.asOf);
+  const expired = fixture(); expired.rawRows[264].noPriceLimit = true;
+  expired.rawRows[254].upperLimit = expired.rawRows[254].close;
+  assert.equal(quality(expired).kind, "excluded", "15-session anchor at age15 is expired");
 });

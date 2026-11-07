@@ -44,3 +44,33 @@ test('queued abort and queue deadline remove work without releasing an active le
   assert.equal(gate.getDiagnostics().active, 1); assert.equal(gate.getDiagnostics().pending, 0);
   release(); assert.equal(gate.getDiagnostics().active, 0);
 });
+
+test('an expired queued request cannot start before its delayed timeout callback runs', async () => {
+  let time = 0;
+  const gate = admission({ maxConcurrent: 1, now: () => time });
+  const release = await gate.acquire('https://active.test');
+  const outcome = gate.acquire('https://expired.test', { queueTimeoutMs: 10 })
+    .then(releaseExpired => { releaseExpired(); return 'started'; }, error => error.code);
+  time = 11;
+  release();
+  assert.equal(await outcome, 'QUEUE_TIMEOUT');
+  (await gate.acquire('https://recovered.test'))();
+  assert.equal(gate.getDiagnostics().active, 0);
+  assert.equal(gate.getDiagnostics().pending, 0);
+  assert.equal(gate.getDiagnostics().admitted, 2);
+  assert.equal(gate.getDiagnostics().queueTimeouts, 1);
+});
+
+test('a backwards wall-clock change cannot stall zero-gap request admission', async t => {
+  let wall = 1000;
+  t.mock.method(Date, 'now', () => wall);
+  const gate = admission({ maxConcurrent: 1 });
+  (await gate.acquire('https://clock.test'))();
+  wall = 0;
+  const controller = new AbortController(); let admitted = false;
+  const outcome = gate.acquire('https://clock.test', { signal: controller.signal })
+    .then(release => { admitted = true; release(); }, () => {});
+  try { await Promise.resolve(); assert.equal(admitted, true); }
+  finally { controller.abort(); await outcome; }
+  assert.equal(gate.getDiagnostics().pending, 0);
+});

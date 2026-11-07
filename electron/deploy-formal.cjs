@@ -127,7 +127,7 @@ function validateBuildManifest(root, fsImpl = fs) {
   try {
     parsed = JSON.parse(fsImpl.readFileSync(manifestPath, "utf8"));
   } catch (error) {
-    throw new Error(`Build manifest is invalid: ${error?.message || error}`);
+    throw new Error(`Build manifest is invalid: ${error?.message || error}`, { cause: error });
   }
   if (
     parsed?.schemaVersion !== 1 ||
@@ -164,7 +164,7 @@ function validateRunnableAppTree(root, options = {}) {
   try {
     packageJson = JSON.parse(fsImpl.readFileSync(required[1], "utf8"));
   } catch (error) {
-    throw new Error(`Packaged package.json is invalid: ${error?.message || error}`);
+    throw new Error(`Packaged package.json is invalid: ${error?.message || error}`, { cause: error });
   }
   let manifest = null;
   if (options.requireManifest === true || fsImpl.existsSync(path.join(root, BUILD_MANIFEST))) {
@@ -226,7 +226,8 @@ function acquireArtifactLock(projectRoot, options = {}) {
         : ageMs < staleMs;
       if (ownerAlive) {
         throw new Error(
-          `Another build or deployment is already running${ownerPid ? ` (PID ${ownerPid})` : ""}`
+          `Another build or deployment is already running${ownerPid ? ` (PID ${ownerPid})` : ""}`,
+          { cause: error }
         );
       }
       fsImpl.unlinkSync(lockPath);
@@ -364,7 +365,8 @@ function recoverArtifactOrphans(options) {
         }
         throw new Error(
           `Failed to recover previous artifact: ${error?.message || error}` +
-          (recoveryErrors.length ? `; ${recoveryErrors.join("; ")}` : "")
+          (recoveryErrors.length ? `; ${recoveryErrors.join("; ")}` : ""),
+          { cause: error }
         );
       }
       if (brokenRoot) removeTreeBestEffort(brokenRoot, warnings, fsImpl);
@@ -566,7 +568,7 @@ function deployFormal(options = {}) {
           installationStarted = true;
           fsImpl.rmSync(formalRoot, { recursive: true, force: true });
           if (fsImpl.existsSync(formalRoot)) {
-            throw new Error(`Unable to clear the previous formal tree after verified backup: ${formalRoot}`);
+            throw new Error(`Unable to clear the previous formal tree after verified backup: ${formalRoot}`, { cause: renamePreviousError });
           }
         }
         movedPrevious = true;

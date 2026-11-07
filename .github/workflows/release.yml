@@ -61,6 +61,17 @@ jobs:
           $browser = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $browser) { throw "Chrome is required for release browser tests" }
           "QA_CHROMIUM_PATH=$browser" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      # D-07（第二轮审核）：这 4 组浏览器套件既不在 qa.yml，也不在 package.json 的
+      # verify:release 里，长期只能靠人工发现回归。发布门禁补回这 4 步，
+      # 与 qa.yml 的 browser 作业保持一致（Chrome 路径已由上一步写入 QA_CHROMIUM_PATH）。
+      - name: Stability browser suite
+        run: pnpm qa:stability:ui
+      - name: UI remediation browser suite
+        run: pnpm qa:ui-remediation
+      - name: Sector panel browser suite
+        run: pnpm qa:sector:ui
+      - name: Workspace workflow browser suite
+        run: pnpm qa:workflow
       - name: Audit all high dependencies and verify application, review module and packaged runtime
         env:
           PACKAGED_E2E_VISIBLE: "1"
@@ -125,7 +136,7 @@ jobs:
           chmod +x release-builder/*.AppImage
           release-builder/*.AppImage --appimage-extract >/dev/null
           test -x squashfs-root/AppRun
-          node -e "const fs=require('fs'); const p=JSON.parse(fs.readFileSync('squashfs-root/resources/app/package.json','utf8')); if(p.version!==require('./package.json').version) throw new Error('Embedded AppImage version mismatch')"
+          node -e "const {readPackagedPackageJson}=require('./qa/delivery-verification.cjs'); const p=readPackagedPackageJson('squashfs-root'); const v=require('./package.json').version; if(p.version!==v) throw new Error('Embedded AppImage version mismatch: '+p.version+' != '+v)"
       - name: Verify macOS application bundle contents
         if: matrix.platform == 'mac'
         shell: bash
@@ -133,7 +144,17 @@ jobs:
           mkdir -p release-builder/macos-smoke
           unzip -q release-builder/*.zip -d release-builder/macos-smoke
           test -x release-builder/macos-smoke/*.app/Contents/MacOS/*
-          node -e "const fs=require('fs'),path=require('path'); const app=fs.readdirSync('release-builder/macos-smoke').find(x=>x.endsWith('.app')); const p=JSON.parse(fs.readFileSync(path.join('release-builder/macos-smoke',app,'Contents','Resources','app','package.json'),'utf8')); if(p.version!==require('./package.json').version) throw new Error('Embedded macOS version mismatch')"
+          node -e "const fs=require('fs'),path=require('path'); const {readPackagedPackageJson}=require('./qa/delivery-verification.cjs'); const app=fs.readdirSync('release-builder/macos-smoke').find(x=>x.endsWith('.app')); const p=readPackagedPackageJson(path.join('release-builder/macos-smoke',app)); const v=require('./package.json').version; if(p.version!==v) throw new Error('Embedded macOS version mismatch: '+p.version+' != '+v)"
+          for app in release-builder/macos-smoke/*.app; do
+            # 先核验上传的压缩包原样解出的内容：熔断位必须关闭（不经过重签名）。
+            for exe in "$app"/Contents/MacOS/*; do node electron/build-runtime-fuses.cjs "$exe" --verify; done
+            # 再在副本上补 ad-hoc 签名，核验 asar 完整性、版本一致和包封条。
+            copy="release-builder/macos-smoke/verify-copy.app"
+            rm -rf "$copy"; ditto "$app" "$copy"
+            codesign --force --deep --sign - "$copy"
+            node qa/verify-mac-delivery.cjs "$copy"
+            rm -rf "$copy"
+          done
       - name: Upload native package
         uses: actions/upload-artifact@v4
         with:

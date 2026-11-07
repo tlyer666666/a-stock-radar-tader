@@ -82,7 +82,7 @@ test("engine composite metadata is preserved in both full audit contracts", () =
   }
 });
 
-test("strategy scan cannot weaken the minimum historical validation settings", () => {
+test("current selection limits history work while preserving legacy replay risk settings", () => {
   const options = strategySignalOptions({
     lookbackDays: 180,
     maxUniverse: 9999,
@@ -95,7 +95,7 @@ test("strategy scan cannot weaken the minimum historical validation settings", (
     walkForwardFolds: 2
   });
 
-  assert.equal(options.historyBars, 720);
+  assert.equal(options.historyBars, 320);
   assert.equal(options.provider, "ths");
   assert.equal(options.fallbackEnabled, true);
   assert.equal(options.multiSourceEnabled, true);
@@ -315,7 +315,11 @@ test("unaccepted strategies remain auditable but are not published", () => {
   assert.equal(report.processed, 1);
   assert.equal(report.failed, 2);
   assert.equal(report.qualifiedCount, 0);
-  assert.equal(report.strategies.length, 0);
+  // 未通过历史复核的策略仍按规则返回命中股票（标注未验证），不再整页隐藏。
+  assert.equal(report.strategies.length, 1);
+  assert.equal(report.strategies[0].publicationAccepted, false);
+  assert.equal(report.strategies[0].stocks.length, 1);
+  assert.equal(report.strategies[0].stocks[0].validationPassed, false);
   assert.equal(report.publishedStrategyCount, 0);
   assert.equal(report.rejectedStrategyCount, 1);
   assert.equal(report.strategyAudit.length, 1);
@@ -329,7 +333,7 @@ test("unaccepted strategies remain auditable but are not published", () => {
   assert.equal(report.strategyAudit[0].currentMatchCount, 1);
   assert.ok(report.strategyAudit[0].failureReasons.length >= 1);
   assert.match(report.methodology, /次一交易日开盘价/);
-  assert.match(report.warning, /被拦截/);
+  assert.match(report.warning, /已按所属策略列出/);
   assert.equal(report.currentCandidateSize, 1);
   assert.equal(report.validationUniverseSize, 1);
   assert.equal(report.universeDefinition.independentValidationUniverse, false);
@@ -481,9 +485,18 @@ test("only accepted strategies with auditable windows and benchmark evidence are
     }
   );
 
-  assert.deepEqual(report.strategies.map((item) => item.id), ["accepted"]);
-  assert.equal(report.strategies[0].stocks.length, 1);
-  assert.equal(report.strategies[0].stocks[0].validationPassed, true);
+  // 命中股票全部返回；发布状态仍严格区分通过与否。
+  assert.deepEqual(report.strategies.map((item) => item.id), ["accepted", "rejected"]);
+  const acceptedGroup = report.strategies.find((item) => item.id === "accepted");
+  const rejectedGroup = report.strategies.find((item) => item.id === "rejected");
+  assert.equal(acceptedGroup.stocks.length, 1);
+  assert.equal(acceptedGroup.stocks[0].validationPassed, true);
+  assert.equal(rejectedGroup.publicationAccepted, false);
+  assert.equal(rejectedGroup.stocks[0].validationPassed, false);
+  assert.deepEqual(
+    report.strategies.filter((item) => item.publicationAccepted === true).map((item) => item.id),
+    ["accepted"]
+  );
   assert.equal(report.strategyAudit.length, 2);
   assert.equal(report.auditedStrategies.length, 2);
   assert.equal(
@@ -658,13 +671,19 @@ test("composite strategies use the identical publication gate and preserve compo
     }
   );
 
+  // 组合策略同样返回命中股票；只有通过统一发布门槛的才算已发布。
   assert.deepEqual(report.strategies.map((item) => item.id), [
-    "composite_valid"
+    "composite_valid",
+    "composite_weak"
   ]);
   assert.equal(report.baseStrategyCount, 0);
   assert.equal(report.compositeStrategyCount, 2);
   assert.equal(report.publishedCompositeCount, 1);
   assert.equal(report.publishedBaseCount, 0);
+  assert.equal(
+    report.strategies.find((item) => item.id === "composite_weak").publicationAccepted,
+    false
+  );
   assert.equal(report.auditedStrategies[0].id, "composite_valid");
   assert.equal(report.auditedStrategies[1].id, "composite_weak");
   assert.deepEqual(report.strategies[0].components, [
@@ -855,4 +874,43 @@ test('late ordinary scan cannot overwrite a newer forced scan cache',async()=>{
     assert.equal(fresh.value.revision,2);
     const after=api.scanStrategySignals();assert.equal((await after).revision,2);await after.drained;
   } finally {releaseNormal?.();await normal?.drained;await api.shutdownServiceResources();}
+});
+
+test('strategy scan reads only completed candidate histories and runs pure selection in its worker', async () => {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const filename = path.join(__dirname, 'services.cjs'), isolated = { exports: {} }, calls = [];
+  const dates = require('./trend-trading-calendar.cjs').createTradingCalendar().sessionsThrough('2026-10-20',140);
+  const rows = dates.map(date => ({ date, open: 10, high: 10.1, low: 9.9, close: 10, volume: 100000, amount: 300000000, turnover: 2 }));
+  rows[139] = { ...rows[139], open: 10.1, high: 11, low: 10, close: 11, turnover: null };
+  const source = fs.readFileSync(filename, 'utf8') + `
+    topicPoolForDate = async date => ({date,provider:'fixture',pool:date==='2026-10-20'?[{code:'600001',name:'选股样本',tradingDaysSince:0,limitDate:date}]:[]});
+    broadAStockValidationUniverse = async () => { throw Error('selection must not request validation universe'); };
+    eastHistory = async security => { historyCalls.push(security.code); return fixtureRows; };
+  `;
+  const actualRequire=require('node:module').createRequire(filename);
+  const controlledRequire=name=>{
+    const value=actualRequire(name);
+    if(name==='./trend-screener-adapter.cjs')return {createTrendMarketData:()=>({fetchBenchmark:async()=>{calls.push('000985');return rows;},fetchHistory:async security=>{calls.push(security.code);return {rows,source:'fixture-raw'};},
+      prepareHistories:async()=>({requested:0,received:0}),
+      fetchUniversePage:async({filter})=>filter==='m:1+t:2'?{total:2,rows:[{code:'600001',name:'选股样本',secid:'1.600001',industry:'电子'},{code:'600002',name:'ST样本',secid:'1.600002',industry:'电子'}]}:{total:0,rows:[]}})};
+    return name==='./strategy-selection-service.cjs'?{...value,createStrategySelectionService:deps=>value.createStrategySelectionService({...deps,now:()=>new Date('2026-10-21T02:00:00Z')})}:value;
+  };
+  vm.runInNewContext(source, { module: isolated, exports: isolated.exports, __dirname, __filename: filename, require: controlledRequire, process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, queueMicrotask, Buffer, historyCalls: calls, fixtureRows: rows, fetch: async () => { throw Error('network prohibited'); } }, { filename });
+  const api = isolated.exports;
+  try {
+    // 夹具是横盘后的首板，只命中（已下线的）低位首板等规则：按 id 明确指定完整策略库来检查选股流程。
+    const allIds = require('./strategy-signal-engine.cjs').ALL_STRATEGY_DEFINITIONS.map(definition => definition.id);
+    const report = await api.scanStrategySignals({ strategyIds: allIds });
+    assert.equal(report.mode, 'selection');
+    assert.equal(report.processed, 1);
+    assert.equal(report.asOfDate,'2026-10-20');
+    assert.deepEqual(calls.sort(), ['000985', '600001']);
+    assert.equal(report.strategies.length, allIds.length);
+    assert.ok(report.strategies.some(group => group.stocks.length > 0));
+    assert.ok(report.strategies.every(group => !('validation' in group)));
+    assert.equal('auditedStrategies' in report, false);
+    for (const stock of report.strategies.flatMap(group => group.stocks)) {
+      assert.equal(stock.amount, 300000000); assert.equal(stock.turnover, null); assert.ok(stock.changePct > 9);
+    }
+  } finally { await api.shutdownServiceResources(); }
 });

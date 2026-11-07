@@ -1,5 +1,7 @@
 import signalCombinationCatalog from "../config/strategy-signal-combinations.json";
+import signalStrategyCatalog from "../config/strategy-signal-catalog.json";
 import { createTrendPreviewStatus, createConfiguredTrendPreviewStatus } from "./trendScreenerPreview";
+import { CUSTOM_CATALOG, validateCustomStrategy, type CustomStrategy } from "./features/strategy-selection/customStrategyModel";
 
 const previewShanghaiDate = (date = new Date()) => new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
@@ -7,6 +9,17 @@ const previewShanghaiDate = (date = new Date()) => new Intl.DateTimeFormat("en-C
   month: "2-digit",
   day: "2-digit"
 }).format(date);
+
+const previewTradingDates = (count = 5) => {
+  const dates: string[] = [];
+  const cursor = new Date(`${previewShanghaiDate()}T12:00:00+08:00`);
+  while (dates.length < count) {
+    const weekday = cursor.getUTCDay();
+    if (weekday !== 0 && weekday !== 6) dates.push(previewShanghaiDate(cursor));
+    cursor.setUTCDate(cursor.getUTCDate() - 1);
+  }
+  return dates;
+};
 
 const previewSecurities: Security[] = [
   {
@@ -35,49 +48,38 @@ const previewSecurities: Security[] = [
   }
 ];
 
-const previewVerifiedStrategies = [
-  ["low_first_board", "低位首板", "近60日无重复涨停，板前位置不过热。", "base"],
-  ["platform_breakout", "平台突破首板", "窄幅平台上沿被首板突破。", "base"],
-  ["vcp_compression", "涨停后VCP压缩", "涨停后量价同步收缩并守住支撑。", "base"],
-  ["second_breakout", "涨停后二次突破", "整理后放量突破前高。", "base"],
-  ["weak_to_strong", "弱转强修复", "低开回收或重新站回涨停收盘价。", "base"],
-  ["trend_first_board", "多头趋势首板", "均线多头排列中的首板。", "base"],
-  ["low_volume_first_board", "缩量控盘首板", "量能受控且位于MA20上方的首板。", "base"],
-  ["limit_gap_hold", "涨停后缺口守卫", "涨停缺口未回补且支撑有效。", "base"],
-  ["limit_ma10_pullback", "涨停后MA10回踩", "缩量回踩MA10后收回。", "base"],
-  ["volume_dryup_rebound", "涨停后地量反包", "地量整理后阳线修复。", "base"],
-  ["double_limit_relay", "双涨停N形接力", "两次非连续涨停构成N形结构。", "base"],
-  ["high_tight_flag", "涨停后高位窄旗", "涨停后高位窄幅缩量整理。", "base"],
-  ["ma_reclaim_after_limit", "涨停后均线反转", "涨停回落后重新站回MA10。", "base"],
-  ["long_lower_shadow_limit", "长下影涨停封板", "分歧下探后收于涨停。", "base"],
-  ["first_board_quality_resonance", "首板质量共振", "低位首板与至少一项质量因子共振。", "composite"],
-  ["post_limit_contraction_resonance", "涨停后缩量共振", "VCP与窄旗或地量修复共振。", "composite"],
-  ["breakout_repair_resonance", "突破修复共振", "二次突破与修复信号共振。", "composite"],
-  ["n_relay_resonance", "N形接力共振", "双涨停N形与封板质量共振。", "composite"]
-].map(([id, name, detail, type]) => ({
-  id,
-  name,
-  detail,
-  type,
-  conditions: [],
-  risk: "历史信号仅用于研究复核，不代表未来收益。",
-  components: [],
-  voteRule: "单策略逐日命中"
-}));
-
-const previewExtraCombinations = signalCombinationCatalog.map(entry => ({
-  ...entry, type: "composite" as const,
-  components: ["recent_limit_trend_gate", `${entry.id}:shape`, entry.technicalId],
-  componentNames: ["近期涨停上升趋势", entry.shapeLabel, entry.technicalLabel],
-  voteRule: "共同趋势门槛、涨停后形态与技术确认全部成立"
-}));
-const previewExtraIds = new Set(previewExtraCombinations.map(entry => entry.id));
+const previewVerifiedStrategies = signalStrategyCatalog;
+// 浏览器预览：自定义策略只保存在本页内存中，刷新即恢复为一套演示策略。
+let previewCustomStrategies: CustomStrategy[] = [{
+  id: "cs_preview01", name: "稳健趋势（由设置迁移）", description: "浏览器预览演示：由设置页自主策略组合迁移。", universe: "limit_pool",
+  conditions: ["support", "avwap", "trend", "contraction", "sector", "sectorLadder"].map(id => ({ ref: `factor:${id}`, required: id === "trend" })),
+  requiredAnyGroups: [], minMatchPercent: 70, filters: {}, origin: "legacy-settings", revision: 1, createdAt: null, updatedAt: null
+}];
+let previewCustomSequence = 1;
+const savePreviewCustom = (input: CustomStrategy) => {
+  const issues = validateCustomStrategy(input, previewVerifiedStrategies as any, previewCustomStrategies);
+  if (issues.length) throw new Error(issues[0]!.message);
+  const now = new Date().toISOString();
+  const existing = input.id ? previewCustomStrategies.find(item => item.id === input.id) : undefined;
+  const strategy: CustomStrategy = existing
+    ? { ...structuredClone(input), name: input.name.trim(), revision: (existing.revision || 1) + 1, createdAt: existing.createdAt || now, updatedAt: now }
+    : { ...structuredClone(input), name: input.name.trim(), id: `cs_preview${String(++previewCustomSequence).padStart(2, "0")}`, revision: 1, createdAt: now, updatedAt: now };
+  previewCustomStrategies = existing ? previewCustomStrategies.map(item => item.id === strategy.id ? strategy : item) : [...previewCustomStrategies, strategy];
+  return { strategy, strategies: structuredClone(previewCustomStrategies) };
+};
+const previewExtraIds = new Set([...signalCombinationCatalog.map(entry => entry.id), "relative_strength_pullback"]);
 
 const defaultPreviewSettings: Settings = {
   riskProfile: "balanced",
   provider: "ths",
   refreshToken: "",
   tushareToken: "",
+  fuyaoApiKey: "",
+  aiBaseUrl: "",
+  aiModel: "",
+  aiApiKey: "",
+  aiRankInstructions: "",
+  aiSummaryInstructions: "",
   multiSourceEnabled: true,
   fallbackEnabled: true,
   quoteRefreshSeconds: 5,
@@ -198,6 +200,8 @@ const buildPreviewPayload = (input: Security | string) => {
     changePct: Number((change / previousBar.close * 100).toFixed(2)),
     turnover: latestBar.turnover,
     amount: latestBar.amount,
+    volume: latestBar.volume,
+    volumeUnit: "lots",
     volumeRatio: 0.78,
     amplitude: Number(
       (((latestBar.high - latestBar.low) / previousBar.close) * 100).toFixed(2)
@@ -536,6 +540,27 @@ const buildPreviewProfessionalReview = () => {
   };
 };
 
+// 浏览器预览不连扶摇：一份标明“演示”的同结构数据，便于检查涨停生态版面。
+function buildPreviewLimitEcology(): any {
+      const demo = (code: string, name: string) => ({ code, name, thscode: `${code}.${/^6/.test(code) ? "SH" : "SZ"}` });
+      return {
+        available: true, source: "演示数据（浏览器预览不连接同花顺扶摇）", fetchedAt: new Date().toISOString(), sealRate: 0.68,
+        limitUp: { count: 52, maxBoards: 5, boardCounts: [{ level: 1, label: "首板", count: 38 }, { level: 2, label: "2板", count: 8 }, { level: 3, label: "3板", count: 4 }, { level: 4, label: "4板", count: 1 }, { level: 5, label: "5板以上", count: 1 }],
+          reasons: [{ reason: "演示题材A", count: 9, stocks: [{ ...demo("600001", "演示一"), boards: 2 }] }, { reason: "演示题材B", count: 6, stocks: [{ ...demo("000002", "演示二"), boards: 1 }] }],
+          leaders: [{ ...demo("600003", "演示三"), boards: 5, boardsText: "5连板", reason: "演示题材A", sealMoney: 3.2e8, limitUpTime: "09:31" }, { ...demo("000004", "演示四"), boards: 3, boardsText: "3连板", reason: "演示题材B", sealMoney: 1.1e8, limitUpTime: "10:02" }] },
+        limitBreak: { count: 24, top: [] }, limitDown: { count: 6, top: [] },
+        ladder: { days: [{ date: "2026-10-22", tiers: [{ level: 5, label: "5板", stocks: [{ ...demo("600003", "演示三"), boards: 5, nextDay: null }] }, { level: 3, label: "3板", stocks: [{ ...demo("000004", "演示四"), boards: 3, nextDay: null }] }] }] },
+        hot: [1, 2, 3, 4, 5, 6].map((rank) => ({ ...demo(`60000${rank}`, `热股${rank}`), rank, heat: 100 - rank, rankChange: rank % 2 ? 3 : -2 })),
+        hotLists: Object.fromEntries((["hour", "day"] as const).map((period) => [period, Object.fromEntries((["hot", "skyrocket"] as const).map((kind) => [kind,
+          [1, 2, 3, 4, 5, 6].map((rank) => ({ ...demo(`60000${rank}`, `${period === "hour" ? "1小时" : "24小时"}${kind === "hot" ? "热股" : "飙升"}${rank}`), rank,
+            heat: (100 - rank) * 1e4, heatText: `${100 - rank}.0万`, rankChange: rank % 2 ? 3 : -2, latest: 10 + rank, changePct: rank % 2 ? 3.2 : -1.1 }))]))])),
+        skyrocket: [{ ...demo("000007", "飙升一"), rank: 1, heat: 90, rankChange: 120 }],
+        dragonTiger: { date: "2026-10-22", count: 58, topNet: [{ ...demo("600008", "龙虎一"), changePct: 10.01, net: 2.3e8, orgNet: 1.1e8, hotMoneyNet: 0.6e8, reason: "日涨幅偏离值达7%" }], desks: [{ name: "演示营业部", buying: 1e8, stocks: [{ ...demo("600008", "龙虎一"), net: 0.5e8 }] }] },
+        anomalies: [{ ...demo("600003", "演示三"), tag: "涨停", content: "演示：公司公告与题材共振，早盘快速封板。", keywords: ["演示题材A", "公告"] }],
+        warnings: []
+      };
+}
+
 export function createPreviewApi(): Window["stockApi"] {
   let trendState = createTrendPreviewStatus();
   return {
@@ -560,13 +585,25 @@ export function createPreviewApi(): Window["stockApi"] {
     async getDataFederation(security) {
       return buildPreviewPayload(security).dataFederation;
     },
+    async getMarketSourceHealth() {
+      const checkedAt = new Date().toISOString();
+      const entry = (id: string, name: string, kind: string): MarketSourceHealthEntry => ({
+        id, name, kind, status: "ok", consecutiveFailures: 0, retryAt: null, lastOkAt: checkedAt, lastFailAt: null,
+        lastError: "", lastLatencyMs: 120, successCount: 1, failureCount: 0
+      });
+      return {
+        checkedAt,
+        quotes: [entry("ths_free", "同花顺免费行情", "预览数据"), entry("eastmoney", "东方财富行情", "预览数据"), entry("tencent", "腾讯行情", "预览数据")],
+        history: [entry("eastmoney_history", "东方财富日线", "预览数据"), entry("ths_free_history", "同花顺免费日线", "预览数据"), entry("tencent_history", "腾讯日线", "预览数据")]
+      };
+    },
     async getChart(security, interval, options = {}) {
       const requestedLimit = Number(options.limit);
       const visibleLimit = Number.isFinite(requestedLimit)
         ? Math.max(20, Math.min(3000, Math.round(requestedLimit)))
         : 260;
       const resolved = resolveSecurity(security);
-      const rows = buildPreviewHistory(resolved, visibleLimit);
+      const rows = String(interval) === "1" || String(interval) === "time" ? buildPreviewMinutes(resolved) : buildPreviewHistory(resolved, visibleLimit);
       const adjustment =
         options.adjustment === "none" || Number(options.adjustment) === 0
           ? "不复权"
@@ -611,6 +648,103 @@ export function createPreviewApi(): Window["stockApi"] {
     async getLimitUpPoolSnapshot(options = {}) {
       return this.discoverLimitUps(options);
     },
+    async getPreviousLimitUpFailedBoardSnapshot(_options = {}) {
+      const dates = previewTradingDates(5);
+      const currentDate = dates[0] || previewShanghaiDate();
+      const previousDate = dates[1] || currentDate;
+      const fetchedAt = new Date().toISOString();
+      const source = (requestedDate: string) => ({
+        providers: ["preview"],
+        requestedDate,
+        sourceTradingDate: requestedDate,
+        sourceLatestDate: currentDate,
+        fetchedAt
+      });
+      const failedBoardDays: FailedBoardDaySnapshot[] = dates.map((date, index) => ({
+        date,
+        status: "ready",
+        source: {
+          providers: ["preview"],
+          requestedDate: date,
+          sourceLatestDate: currentDate,
+          fetchedAt
+        },
+        error: null,
+        rows: [{
+          code: ["600001", "000002", "300750", "688008", "430047"][index] || "600001",
+          name: `炸板演示 ${date}（虚构）`,
+          industry: ["示例行业", "示例制造", "示例科技", "示例医药", "示例材料"][index] || "示例行业",
+          consecutiveBoards: index % 3 + 1,
+          firstSealTime: "09:38:12",
+          lastSealTime: "13:42:06",
+          openBoardCount: index + 1,
+          latest: 10 + index * 2.5,
+          changePct: -1.6 + index * 1.1,
+          amount: 260_000_000 + index * 90_000_000,
+          turnover: 2.1 + index * 0.45
+        }]
+      }));
+      return {
+        status: "ready" as const,
+        previousDate,
+        currentDate,
+        failedBoardDays,
+        rows: [
+          {
+            code: "600001",
+            name: "示例甲（虚构）",
+            industry: "示例行业",
+            previous: {
+              consecutiveBoards: 1,
+              firstSealTime: "09:25:00",
+              lastSealTime: "09:25:00",
+              openBoardCount: 0,
+              boardType: "一字板",
+              isOneWordBoard: true
+            },
+            today: {
+              latest: 168.35,
+              changePct: 4.12,
+              amount: 3_050_000_000,
+              turnover: 2.33,
+              firstSealTime: "09:34:12",
+              lastSealTime: "14:52:18",
+              openBoardCount: 2
+            }
+          },
+          {
+            code: "000002",
+            name: "示例乙（虚构）",
+            industry: "示例行业",
+            previous: {
+              consecutiveBoards: 2,
+              firstSealTime: "10:06:31",
+              lastSealTime: "10:18:42",
+              openBoardCount: 1,
+              boardType: "换手板",
+              isOneWordBoard: false
+            },
+            today: {
+              latest: 236.8,
+              changePct: 5.76,
+              amount: 5_240_000_000,
+              turnover: 3.18,
+              firstSealTime: "13:48:05",
+              lastSealTime: "14:31:22",
+              openBoardCount: 3
+            }
+          }
+        ],
+        sources: {
+          previousLimitUp: source(previousDate),
+          todayFailed: source(currentDate)
+        },
+        errors: { previousLimitUp: null, todayFailed: null },
+        checkedAt: fetchedAt,
+        isPreview: true,
+        previewLabel: "浏览器预览 · 模拟行情"
+      };
+    },
     async discoverRecentLimitUps(days = 10, _options = {}) {
       const { rows } = await this.discoverLimitUps();
       return rows.map((item, index) => ({
@@ -637,6 +771,19 @@ export function createPreviewApi(): Window["stockApi"] {
         { name: "大消费", score: 68, limitUps: 3, memberCount: 31, state: "温和修复", returns: { r1: 0.8, r3: 1.9, r5: 2.7 }, benchmarkReturns: { r1: 0.4, r3: 1.1, r5: 1.8 }, allMarketReturns: { r1: 0.3, r3: 0.9, r5: 1.5 }, breadth: 0.57, memberAverageReturn: 0.9, relativeReturn: 0.6, amountHeat: 1.04, persistence: 0.6, memberAverageTurnover: 3.5, leadershipQualityScore: 65, advancingAmountShare: 0.59, positiveInflowRatio: 0.52, top5AmountShare: 0.48, medianMemberReturn: 0.62, returnDispersion: 2.08, dataCoveragePercent: 91, constituents }
       ];
     },
+    async getSectorStrengthBoard() {
+      const industries = await this.getLimitUpSectorBoard();
+      const concept = (name: string, changePct: number, netInflow: number, stocks: string[], index: number): SectorConceptRow => ({ kind: "concept", id: `ths:concept:30${index}`, code: `30${index}`, conceptCid: `30${index}`, indexCode: `8850${index}`,
+        name, changePct, netInflow, memberCount: null, leaderName: "", limitUps: stocks.length, limitUpStocks: stocks.map((stockName, stockIndex) => ({ code: `60000${stockIndex}`, name: stockName, boards: 1 })) });
+      return {
+        fetchedAt: new Date().toISOString(),
+        industries,
+        concepts: [concept("固态电池", 3.1, 8.2e8, ["演示甲", "演示乙", "演示丙"], 1), concept("机器人概念", 1.8, 2.4e8, ["演示丁"], 2), concept("演示概念", -0.6, -1.1e8, [], 3)],
+        themes: [{ reason: "固态电池", count: 3, stocks: [{ code: "600000", name: "演示甲", boards: 2 }, { code: "600001", name: "演示乙", boards: 1 }], concept: { name: "固态电池", code: "301", conceptCid: "301" } },
+          { reason: "业绩增长", count: 2, stocks: [{ code: "600002", name: "演示丙", boards: 1 }] }],
+        limitUpTotal: 48, conceptLimitUpSource: "演示数据", warnings: ["浏览器预览为演示数据。"]
+      };
+    },
     async searchSectors(query) {
       const keyword = String(query || "").trim();
       const rows = await this.getLimitUpSectorBoard();
@@ -647,17 +794,13 @@ export function createPreviewApi(): Window["stockApi"] {
         ? query
         : String(query?.name || query?.query || "预览概念");
       return {
-        root: name,
-        source: "preview",
-        nodes: [
-          { id: "root", name, level: 0 },
-          { id: "upstream", name: `${name}上游`, level: 1 },
-          { id: "downstream", name: `${name}下游`, level: 1 }
-        ],
-        edges: [
-          { source: "upstream", target: "root" },
-          { source: "root", target: "downstream" }
-        ]
+        name,
+        query: name,
+        source: "DEMO 虚构产业链演示",
+        thsStatus: "预览演示",
+        message: "以下为虚构细分结构，用于演示交互；请在桌面版核对真实成分。",
+        stockCount: 12,
+        groups: ["上游", "中游", "下游"].map((role, index) => ({ name: role, segments: [{ name: `${name}${role}`, role, description: "虚构演示细分", stockCount: 3 + index, overlapRatio: (3 + index) / 12, thsQuery: `${name}${role}` }] }))
       };
     },
     async getSectorCatalog() {
@@ -668,7 +811,36 @@ export function createPreviewApi(): Window["stockApi"] {
     async getSectorClassifications() { throw new Error("浏览器预览没有真实行业分类，请使用桌面版。"); },
     async getSectorDetail() { throw new Error("浏览器预览没有真实板块成分，请使用桌面版。"); },
     async cancelSectorRequest() { return { cancelled: false }; },
+    async getLimitEcology() {
+      return buildPreviewLimitEcology();
+    },
+    async getConvertibleBonds() {
+      const names: [string, string, string][] = [["113052", "演示转债A", "600001"], ["123288", "演示转债B", "300101"], ["127117", "演示转债C", "002913"], ["118077", "演示转债D", "688150"], ["128136", "演示转债E", "002001"]];
+      const members = names.map(([code, name, stockCode], index) => {
+        const sh = code.startsWith("11");
+        const latest = 108 + index * 9.7;
+        return { code, name, market: (sh ? 19 : 35) as 19 | 35, stockCode, stockName: `演示正股${index + 1}`, listingDate: "2024-01-02", expireDate: `203${index}-06-30`,
+          source: "discovered" as const, latest, preClose: latest / (1 + (index - 2) * 0.006), changePct: Number(((index - 2) * 0.6).toFixed(2)), amount: (index + 1) * 1.2e8,
+          volume: (index + 1) * 1e6, turnover: 2 + index, amplitude: 1.1, high: latest * 1.01, low: latest * 0.99, quoteAt: new Date().toISOString(), quoteStatus: "ready" as const,
+          remainingYears: 3 + index, secid: `${sh ? 1 : 0}.${code}`, thscode: `${code}.${sh ? "SH" : "SZ"}` };
+      });
+      return { source: "DEMO 虚构可转债，仅演示界面", fetchedAt: new Date().toISOString(), asOf: new Date().toISOString().slice(0, 10), members,
+        upcoming: [{ code: "127120", name: "演示新券", stockCode: "002550", stockName: "演示正股", listingDate: "", expireDate: "2032-10-27" }],
+        summary: { count: 5, quoted: 5, rising: 2, falling: 2, flat: 1, medianChangePct: 0, amount: 1.8e9 },
+        quoteCoverage: { loaded: 5, total: 5, pending: false, complete: true },
+        roster: { discoveredAt: new Date().toISOString(), feedCount: 0, discoveredCount: 5, discovering: null },
+        warnings: ["浏览器预览不连接同花顺，以下为虚构数据。"] };
+    },
+    async getSectorQuotes() {
+      return { status: "unavailable" as const, fetchedAt: new Date().toISOString(), quotes: {}, sources: [],
+        warnings: ["浏览器预览不连接同花顺板块行情。"] };
+    },
     async analyzeSector(sector) {
+      if (sector?.code === "THS:BJ" || sector?.name === "北交所") {
+        return { name: "北交所", code: "THS:BJ", boardType: "exchange", source: "preview", members: [], constituents: [],
+          memberCount: null, memberCoverage: { loaded: 0, total: null, complete: false },
+          warning: "浏览器预览不连接真实北交所行情，请在桌面版读取同花顺数据。", returns: { r1: null, r3: null, r5: null } };
+      }
       return {
         ...(sector || {}),
         source: "preview",
@@ -678,7 +850,9 @@ export function createPreviewApi(): Window["stockApi"] {
       };
     },
     async getProfessionalReview() {
-      return buildPreviewProfessionalReview();
+      const review: any = buildPreviewProfessionalReview();
+      review.fuyao = buildPreviewLimitEcology();
+      return review;
     },
     async getNewsFeed(input = {}) {
       return buildPreviewNews(input);
@@ -687,7 +861,17 @@ export function createPreviewApi(): Window["stockApi"] {
       return buildPreviewNews(input);
     },
     async getStrategyDefinitions() {
-      return [...previewVerifiedStrategies, ...previewExtraCombinations].map((item) => ({ ...item }));
+      return previewVerifiedStrategies.map((item) => ({ ...item }));
+    },
+    async listCustomStrategies() { return structuredClone(previewCustomStrategies); },
+    async saveCustomStrategy(strategy: CustomStrategy) { return savePreviewCustom(strategy); },
+    async deleteCustomStrategy(id: string) {
+      if (!previewCustomStrategies.some(item => item.id === id)) throw new Error("策略不存在或已删除");
+      previewCustomStrategies = previewCustomStrategies.filter(item => item.id !== id);
+      return { strategies: structuredClone(previewCustomStrategies) };
+    },
+    async importSettingsStrategy() {
+      return savePreviewCustom({ ...structuredClone(previewCustomStrategies[0] || {} as CustomStrategy), id: null, name: `设置导入${previewCustomSequence + 1}`, origin: "legacy-settings" });
     },
     async cancelServiceJob(_requestId) { return false; },
     async runBacktest(security, options = {}) {
@@ -1052,9 +1236,6 @@ export function createPreviewApi(): Window["stockApi"] {
       };
     },
     async scanStrategySignals(options = {}) {
-      const selected = Array.isArray(options.strategyIds)
-        ? options.strategyIds
-        : previewSettings.selectedStrategies;
       const stocks = previewSecurities.map((security, index) => {
         const payload = buildPreviewPayload(security);
         return {
@@ -1073,338 +1254,210 @@ export function createPreviewApi(): Window["stockApi"] {
           riskVetoStatus: "passed"
         };
       });
-      const baseDefinitions = [
-        { id: "low_first_board", name: "低位首板", detail: "近期无重复涨停且板前位置不过热" },
-        { id: "platform_breakout", name: "平台突破首板", detail: "窄幅平台上沿由涨停突破" },
-        { id: "vcp_compression", name: "涨停后VCP压缩", detail: "涨停后量价波动同步收缩" },
-        { id: "second_breakout", name: "涨停后二次突破", detail: "整理后放量突破前高" },
-        { id: "weak_to_strong", name: "弱转强修复", detail: "低开回收或重回涨停收盘价" },
-        { id: "trend_first_board", name: "多头趋势首板", detail: "多头均线上的温和放量首板" },
-        { id: "low_volume_first_board", name: "缩量控盘首板", detail: "量能受控且站在MA20上方" },
-        { id: "limit_gap_hold", name: "涨停后缺口守卫", detail: "涨停缺口保持完整" },
-        { id: "limit_ma10_pullback", name: "涨停后MA10回踩", detail: "缩量回踩并收回MA10" },
-        { id: "volume_dryup_rebound", name: "涨停后地量反包", detail: "地量整理后的阳线修复" },
-        { id: "double_limit_relay", name: "双涨停N形接力", detail: "两次非连续涨停构成N形" },
-        { id: "high_tight_flag", name: "涨停后高位窄旗", detail: "高位窄幅缩量整理" },
-        { id: "ma_reclaim_after_limit", name: "涨停后均线反转", detail: "回落后重新站回MA10" },
-        { id: "long_lower_shadow_limit", name: "长下影涨停封板", detail: "分歧下探后收于涨停" }
-      ].map((definition) => ({
+      // 与桌面一致：不指定策略时只跑在用策略（已下线的只在明确指定 id 时出现）。
+      const definitions = previewVerifiedStrategies as Array<(typeof previewVerifiedStrategies)[number] & { retired?: boolean }>;
+      const strategies = definitions.filter(definition => options.strategyIds?.length ? options.strategyIds.includes(definition.id) : definition.retired !== true).map((definition, index) => ({
         ...definition,
-        type: "base" as const,
-        conditions: [definition.detail],
-        risk: "基础策略仍须通过次日可交易性、量价过热与统一风险否决。"
-      }));
-      const compositeDefinitions = [
-        {
-          id: "first_board_quality_resonance",
-          type: "composite" as const,
-          name: "首板质量共振",
-          detail: "低位首板为必要条件，并由平台突破、趋势多头或缩量控盘中的至少一项再次确认。",
-          components: [
-            "low_first_board",
-            "platform_breakout",
-            "trend_first_board",
-            "low_volume_first_board"
-          ],
-          voteRule: "低位首板必须成立，另3个质量组件至少1票，总计至少2个组件同时成立",
-          conditions: ["低位首板为必要票", "平台/趋势/缩量控盘至少一票", "所有条件使用同一信号日快照"],
-          risk: "多条件共振仍无法消除次日情绪退潮风险，竞价明显转弱时不应机械追入。"
-        },
-        {
-          id: "post_limit_contraction_resonance",
-          type: "composite" as const,
-          name: "涨停后缩量共振",
-          detail: "涨停后VCP压缩为必要条件，并由高位窄旗或地量阳线修复再次确认。",
-          components: [
-            "vcp_compression",
-            "high_tight_flag",
-            "volume_dryup_rebound"
-          ],
-          voteRule: "VCP压缩必须成立，窄旗/地量反包至少1票，总计至少2个组件同时成立",
-          conditions: ["VCP量价压缩为必要票", "窄旗或地量修复至少一票", "涨停日支撑必须有效"],
-          risk: "缩量共振可能来自参与资金减少；若整理末端未出现增量承接，突破容易失败。"
-        },
-        {
-          id: "breakout_repair_resonance",
-          type: "composite" as const,
-          name: "突破修复共振",
-          detail: "涨停后二次突破为必要条件，同时出现弱转强或MA10反转修复。",
-          components: [
-            "second_breakout",
-            "weak_to_strong",
-            "ma_reclaim_after_limit"
-          ],
-          voteRule: "二次突破必须成立，弱转强/MA10反转至少1票，总计至少2个组件同时成立",
-          conditions: ["二次突破为必要票", "弱转强或MA10反转至少一票", "量能不得触发风险否决"],
-          risk: "突破和修复发生在同日时波动通常较高，尾盘回落会显著增加假突破概率。"
-        },
-        {
-          id: "n_relay_resonance",
-          type: "composite" as const,
-          name: "N形接力共振",
-          detail: "双涨停N形接力为必要条件，并由平台、趋势或长下影封板质量中的至少一项确认。",
-          components: [
-            "double_limit_relay",
-            "platform_breakout",
-            "trend_first_board",
-            "long_lower_shadow_limit"
-          ],
-          voteRule: "双涨停N形必须成立，另3个封板质量组件至少1票，总计至少2个组件同时成立",
-          conditions: ["双涨停N形为必要票", "平台/趋势/长下影至少一票", "第二板必须站上第一板"],
-          risk: "二次接力处于更高价格区间，筹码松动或板块降温会放大高位回撤。"
-        }
-      ];
-      const definitions = [...baseDefinitions, ...compositeDefinitions, ...previewExtraCombinations];
-      const previewComponentNames = new Map(
-        baseDefinitions.map((definition) => [definition.id, definition.name])
-      );
-      const acceptedCompositeIds = new Set([
-        "first_board_quality_resonance",
-        "breakout_repair_resonance"
-      ]);
-      const auditedStrategies = definitions.map((definition, index) => {
-        const composite = definition.type === "composite";
-        const newCombination = previewExtraIds.has(definition.id);
-        const accepted =
-          composite && acceptedCompositeIds.has(definition.id);
-        const insufficient =
-          !accepted &&
-          (newCombination || definition.id === "n_relay_resonance" ||
-            (!composite && index % 3 === 1));
-        const sampleCount = newCombination ? 0 : accepted ? 108 + index : insufficient ? 18 : 60 + index * 3;
-        const outOfSampleCount = newCombination ? 0 : accepted ? 31 : insufficient ? 5 : 18 + index;
-        const passRate = accepted ? 1 : insufficient ? 0 : 1 / 3;
-        const currentStocks = stocks
-          .filter((_, stockIndex) => !newCombination && stockIndex % 3 === index % 3)
-          .map((stock, stockIndex) => {
-            if (!composite) return stock;
-            const components = "components" in definition
-              ? definition.components
-              : [];
-            const secondaryIndex =
-              components.length > 1
-                ? 1 + stockIndex % (components.length - 1)
-                : 0;
-            const matchedComponents = [
-              components[0],
-              components[secondaryIndex]
-            ].filter((componentId): componentId is string => Boolean(componentId));
-            const matchedNames = matchedComponents.map(
-              (componentId) =>
-                previewComponentNames.get(componentId) || componentId
-            );
-            return {
-              ...stock,
-              matchedComponents,
-              componentMatches: Object.fromEntries(
-                components.map((componentId) => [
-                  componentId,
-                  matchedComponents.includes(componentId)
-                ])
-              ),
-              reasons: [
-                `组合共振：${matchedNames.join(" + ")}`,
-                "全部命中发生在同一信号日快照"
-              ]
-            };
-          });
-        return {
-          ...definition,
-          publicationAccepted: accepted,
-          validation: {
-            accepted,
-            publicationAccepted: accepted,
-            status: accepted ? "PASS" : insufficient ? "INSUFFICIENT" : "REVIEW",
-            grade: accepted ? "A-" : insufficient ? "D" : "C",
-            sampleCount,
-            minimumSamples: 30,
-            outOfSampleCount,
-            walkForwardPassRate: passRate,
-            winRate5: insufficient ? null : accepted ? 61.8 : 46.5,
-            average5: insufficient ? null : accepted ? 2.34 : 0.62,
-            excess5: insufficient ? null : accepted ? 1.52 : 0.31,
-            worstMdd5: insufficient ? null : accepted ? -14.8 : -26.4,
-            stabilityScore: insufficient ? null : accepted ? 82 : 48,
-            range: { from: "2023-09-01", to: "2026-07-23" },
-            inSample: {
-              sampleCount: Math.max(0, sampleCount - outOfSampleCount),
-              winRate: insufficient ? null : accepted ? 64.1 : 49.2,
-              averageReturn: insufficient ? null : accepted ? 2.68 : 0.84,
-              averageExcessReturn: insufficient ? null : accepted ? 1.71 : 0.42,
-              maxDrawdown: insufficient ? null : accepted ? -12.6 : -18.6,
-              range: { from: "2023-09-01", to: "2025-09-30" }
-            },
-            outOfSample: {
-              sampleCount: outOfSampleCount,
-              winRate: insufficient ? null : accepted ? 61.8 : 46.5,
-              averageReturn: insufficient ? null : accepted ? 2.34 : 0.62,
-              averageExcessReturn: insufficient ? null : accepted ? 1.52 : 0.31,
-              maxDrawdown: insufficient ? null : accepted ? -14.8 : -26.4,
-              benchmarkSampleCount: outOfSampleCount,
-              range: { from: "2025-10-01", to: "2026-07-23" }
-            },
-            walkForward: {
-              available: !insufficient,
-              accepted,
-              passedFolds: accepted ? 3 : insufficient ? 0 : 1,
-              passRate,
-              overfitRisk: insufficient ? "insufficient" : accepted ? "low" : "high",
-              reason: accepted
-                ? "预览连续3个走步窗口均通过"
-                : insufficient
-                  ? "预览样本不足，不能发布"
-                  : "预览走步窗口未达到发布门槛",
-              folds: insufficient
-                ? []
-                : accepted
-                  ? [
-                      { fold: 1, accepted: true },
-                      { fold: 2, accepted: true },
-                      { fold: 3, accepted: true }
-                    ]
-                  : [
-                      { fold: 1, accepted: true },
-                      { fold: 2, accepted: false },
-                      { fold: 3, accepted: false }
-                    ]
-            },
-            roundTripCostBps: 18,
-            untradeableCount: index % 4,
-            entryRule: "信号次一交易日开盘买入，持有5个交易日",
-            returnType: "扣除双边18 bps成本后的5日收益",
-            publicationFailureReasons: accepted
-              ? []
-              : [
-                  insufficient
-                    ? `预览样本不足：${sampleCount}/30`
-                    : "预览走步窗口通过率不足：33.3%/66.7%"
-                ]
-          },
-          stocks: currentStocks
-        };
-      });
-      const publishedStrategies = auditedStrategies.filter(
-        (strategy) => strategy.publicationAccepted
-      );
-      const optimizedPortfolio = {
-        id: "optimized_robust_consensus",
-        name: "稳健优选组合",
-        version: "robust-v2-preview",
-        accepted: true,
-        publicationAccepted: true,
-        minimumVotes: 2,
-        maxAllowedContainment: 0.68,
-        splitDate: "2026-01-05",
-        selectedStrategies: [
-          { id: "low_first_board", name: "低位首板", robustScore: 84.6, developmentAccepted: true },
-          { id: "second_breakout", name: "涨停后二次突破", robustScore: 80.2, developmentAccepted: true },
-          { id: "volume_dryup_rebound", name: "涨停后地量反包", robustScore: 77.8, developmentAccepted: true }
-        ],
-        dependence: [
-          { leftId: "low_first_board", rightId: "second_breakout", commonSignals: 18, containment: 0.31, jaccard: 0.18, returnCorrelation: 0.26 },
-          { leftId: "low_first_board", rightId: "volume_dryup_rebound", commonSignals: 14, containment: 0.24, jaccard: 0.13, returnCorrelation: 0.21 }
-        ],
-        validation: {
-          accepted: true,
-          sampleCount: 168,
-          outOfSampleCount: 51,
-          outOfSample: {
-            sampleCount: 51,
-            independentSignalDays: 44,
-            winRate: 62.7,
-            averageReturn: 2.08,
-            averageReturnLowerBound95: 0.73,
-            averageExcessReturn: 1.26,
-            maxDrawdown: -8.4
-          },
-          walkForward: { available: true, accepted: true, passRate: 0.75, passedFolds: 3, folds: [{}, {}, {}, {}] }
-        },
-        terminalHoldout: {
-          accepted: true,
-          sampleCount: 39,
-          minimumSamples: 36,
-          independentSignalDays: 37,
-          winRate: 61.5,
-          averageReturn: 1.74,
-          averageReturnLowerBound95: 0.42,
-          averageExcessReturn: 0.93,
-          maxDrawdown: -7.1,
-          splitDate: "2026-01-05",
-          reason: "终端留出样本通过"
-        },
-        currentRegime: { id: "balanced", label: "震荡均衡", return20: 1.2, volatility20: 1.36 },
-        currentRegimeFit: { regimeId: "balanced", regimeLabel: "震荡均衡", supported: true, reason: "当前状态历史优势达标" },
-        stocks: stocks.slice(0, 3).map((stock, index) => ({
-          ...stock,
-          signalStrength: 92 - index * 3,
-          matchedStrategyIds: index === 0
-            ? ["low_first_board", "second_breakout", "volume_dryup_rebound"]
-            : ["low_first_board", "volume_dryup_rebound"]
+        stocks: previewExtraIds.has(definition.id) ? [] : stocks.slice(0, index % 3 + 1).map(stock => ({
+          code: stock.code, name: stock.name, industry: stock.industry,
+          latest: stock.latest, changePct: stock.changePct, amount: stock.amount,
+          turnover: stock.turnover, signalDate: new Date().toISOString().slice(0, 10),
+          signalStrength: stock.signalScore
         }))
-      };
+      }));
+      const customGroups = previewCustomStrategies.map((strategy, index) => ({
+        id: strategy.id, name: strategy.name, type: "custom", custom: true, family: "custom", version: `custom-r${strategy.revision || 1}`,
+        detail: strategy.description, conditions: ["浏览器预览：条件按演示数据展示"], universeId: strategy.universe,
+        stocks: stocks.slice(0, index % 2 + 1).map(stock => ({
+          code: stock.code, name: stock.name, industry: stock.industry, latest: stock.latest, changePct: stock.changePct, amount: stock.amount,
+          turnover: stock.turnover, signalDate: new Date().toISOString().slice(0, 10), signalStrength: stock.signalScore,
+          matchRate: 83, needsConfirmation: strategy.conditions.some(item => /sector|information|marketEmotion|firstBoardQuality/.test(item.ref)),
+          pendingConditions: strategy.conditions.filter(item => /sector|information|marketEmotion|firstBoardQuality/.test(item.ref))
+            .map(item => CUSTOM_CATALOG.factors.find(factor => `factor:${factor.id}` === item.ref)?.label || item.ref)
+        }))
+      }));
+      strategies.push(...customGroups as any[]);
       return {
-        generatedAt: new Date().toISOString(),
-        source: "浏览器预览数据",
-        universeSize: stocks.length,
-        availableUniverseSize: stocks.length,
-        processed: stocks.length,
-        failed: 0,
-        candidateCount: stocks.length,
-        independentValidationUniverse: true,
-        independentValidationSampleSize: 120,
-        optimizedPortfolio,
-        currentRegime: optimizedPortfolio.currentRegime,
-        qualifiedCount: new Set(
-          publishedStrategies.flatMap((strategy) =>
-            strategy.stocks.map((stock) => stock.code)
-          )
-        ).size,
-        historyBarsRequested: 720,
-        benchmarkBars: 720,
-        publishedStrategyCount: publishedStrategies.length,
-        baseStrategyCount: baseDefinitions.length,
-        compositeStrategyCount: compositeDefinitions.length + previewExtraCombinations.length,
-        publishedBaseCount: 0,
-        publishedCompositeCount: publishedStrategies.length,
-        auditedStrategyCount: auditedStrategies.length,
-        strategiesTested: auditedStrategies.length,
-        sampleDiversity: {
-          securities: stocks.length,
-          boardCount: 3,
-          dateCohortCount: 11,
-          industryOrThemeCount: 6,
-          boardBuckets: {},
-          dateCohorts: {},
-          maximumBoardShare: 0.6,
-          maximumDateCohortShare: 0.18,
-          concentrationWarnings: ["浏览器预览不代表真实样本分布"],
-          diversified: false
-        },
-        warning: "当前为浏览器预览数据；桌面版会使用真实历史事件执行推演复核。",
-        selectionBiasWarning:
-          "预览只用于检查界面；桌面版会明确披露当前候选选择偏差与幸存者偏差。",
-        multipleTestingWarning:
-          `同时比较${definitions.length}套策略（${baseDefinitions.length}套基础、${compositeDefinitions.length + previewExtraCombinations.length}套组合共振）会增加偶然拟合风险，桌面版会提高收益与胜率发布门槛。`,
-        publicationPolicy:
-          "只有总样本、样本外、走步窗口、交易成本和基准证据全部达标的策略才发布股票。",
-        dataRange: { from: "2023-09-01", to: "2026-07-23" },
-        coverage: {
-          universeSize: stocks.length,
-          processed: stocks.length,
-          historiesUsed: stocks.length,
-          failed: 0,
-          historyBarsRequested: 720,
-          benchmarkBars: 720
-        },
-        methodology: `预览模式仅验证界面；当前策略参数 ${selected.length} 项，真实结果以桌面版为准。`,
-        auditedStrategies,
-        strategies: publishedStrategies
+        mode: "selection", generatedAt: new Date().toISOString(), sourceClass: "preview",
+        source: "浏览器演示数据", warning: "当前为演示股票列表，真实选股结果请在桌面软件中查看。",
+        universeSize: stocks.length, availableUniverseSize: stocks.length, processed: stocks.length, failed: 0,
+        universeCoverage: { boards: [], listed: stocks.length, eligible: stocks.length, excludedRisk: 0, failed: 0, requestsComplete: true, complete: true },
+        compositeStrategyCount: strategies.filter(item => item.type === "composite").length,
+        qualifiedCount: new Set(strategies.flatMap(item => item.stocks.map(stock => stock.code))).size,
+        strategies
       };
     },
+    // 浏览器预览：AI 助手用演示数据，不调用任何模型。
+    ai: (() => {
+      const profiles: AiProfileList = { activeId: "demo-a", rankIds: ["demo-a", "demo-b"], max: 8, profiles: [
+        { id: "demo-a", name: "演示 DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", hasKey: true },
+        { id: "demo-b", name: "演示 通义", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen-plus", hasKey: true }] };
+      const ratings = ["重点关注", "关注", "观望", "回避"] as const;
+      const ratingOf = (score: number) => ratings[score >= 75 ? 0 : score >= 60 ? 1 : score >= 40 ? 2 : 3]!;
+      const saved = new Map<string, { rank: AiRanking | null; summary: AiSummary | null; savedAt: string }>();
+      const remember = (asOfDate: string, patch: { rank?: AiRanking; summary?: AiSummary }) => {
+        const previous = saved.get(asOfDate) || { rank: null, summary: null, savedAt: "" };
+        saved.set(asOfDate, { ...previous, ...patch, savedAt: new Date().toISOString() });
+      };
+      const demoRank = (input: AiSelectionInput): AiRanking => {
+        const chosen = profiles.profiles.filter(item => profiles.rankIds?.includes(item.id));
+        return { asOfDate: input.asOfDate, model: chosen.map(item => item.name).join(" + "), generatedAt: new Date().toISOString(), evaluated: input.picks.length,
+          models: chosen.map(item => ({ id: item.id, name: item.name, model: item.model, ok: true, evaluated: input.picks.length })),
+          items: input.picks.map((pick, index) => {
+            const scores = chosen.map((item, modelIndex) => { const score = Math.max(20, 88 - index * 9 - modelIndex * (index === 1 ? 24 : 4)); return { id: item.id, name: item.name, score, rating: ratingOf(score) }; });
+            const score = Math.round(scores.reduce((sum, item) => sum + item.score, 0) / scores.length);
+            const spread = Math.max(...scores.map(item => item.score)) - Math.min(...scores.map(item => item.score));
+            return { code: pick.code, name: pick.name, score, rating: ratingOf(score), highlights: "演示：命中多套策略，量价配合", risks: "演示：短线涨幅较大", nextDay: "演示：观察竞价强弱与能否站稳均价", scores, spread, disagreement: spread >= 20 };
+          }) };
+      };
+      // 和桌面版一样按股票累积：只给勾选的几只打分时并进同一张榜。
+      const mergeBoard = (base: AiRanking | null, run: AiRanking): AiRanking => {
+        const fresh = new Set(run.items.map(item => item.code));
+        const items = [...run.items, ...(base?.items || []).filter(item => !fresh.has(item.code))].sort((a, b) => b.score - a.score);
+        const profileList = [...(run.profiles || []), ...(base?.profiles || []).filter(item => !fresh.has(item.code))];
+        return { ...run, items, evaluated: items.length, ...(profileList.length ? { profiles: profileList } : {}) };
+      };
+      const onlyCodes = (board: AiRanking, codes: string[]): AiRanking => {
+        const wanted = new Set(codes);
+        const items = board.items.filter(item => wanted.has(item.code));
+        return { ...board, items, evaluated: items.length, ...(board.profiles ? { profiles: board.profiles.filter(item => wanted.has(item.code)) } : {}) };
+      };
+      const demoDims: Record<string, { label: string; detail: string }> = {
+        limit: { label: "涨停强度", detail: "连板高度、近 20 日涨停次数、距最近涨停的天数" }, trend: { label: "均线趋势", detail: "均线排列、站上几条均线" },
+        macd: { label: "MACD", detail: "金叉/死叉、红绿柱" }, rsi: { label: "RSI", detail: "RSI(14) 强弱与超买超卖" }, volume: { label: "量能", detail: "量比与涨跌配合" },
+        position: { label: "位置乖离", detail: "5日线乖离率、近 20 日涨幅" }, levels: { label: "支撑压力", detail: "离支撑/压力距离、缺口" },
+        theme: { label: "题材情绪", detail: "涨停原因、市场情绪" }, news: { label: "消息公告", detail: "近 30 天公司公告：利好/利空、重大风险" }, risk: { label: "风险控制", detail: "炸板、超买、高乖离" } };
+      const demoCaps = [{ id: "overbought", label: "RSI14 超过 80 不给关注" }, { id: "chase", label: "高于 5 日线 5% 以上不追高" }, { id: "downtrend", label: "均线空头排列不给关注" }, { id: "broken", label: "近 20 日炸板 2 次以上且未连板不给关注" }, { id: "riskNotice", label: "近 30 天有重大风险公告不给关注" }];
+      const builtin: Record<string, { name: string; description: string; weights: Record<string, number>; caps: string[] }> = { auto: { name: "AI 自动编排", description: "软件先识别情境、给各策略算适配度和基础分，AI 按情境自主挑 1–3 套策略组合使用。", weights: {}, caps: ["riskNotice"] },
+        shortline: { name: "短线涨停", description: "看涨停强度、量能和题材情绪，适合打板、接力和涨停后低吸。", weights: { limit: 25, volume: 20, theme: 15, risk: 15, news: 10, position: 10, trend: 5 }, caps: ["broken", "riskNotice"] },
+        technical: { name: "技术面综合", description: "看均线排列、MACD、RSI、量能、位置乖离和支撑压力，适合趋势和波段。", weights: { trend: 25, macd: 20, rsi: 15, volume: 10, position: 10, levels: 10, news: 10 }, caps: ["overbought", "chase", "riskNotice"] },
+        breakout: { name: "突破", description: "逼近或站上近 20/60 日高点的股票，看突破是否放量。", weights: { trend: 30, volume: 30, risk: 20, news: 20 }, caps: ["overbought", "riskNotice"] },
+        limit_pullback: { name: "涨停后低吸", description: "近 10 日涨停过、之后回调的股票，看回踩位置和缩量。", weights: { levels: 30, volume: 25, limit: 25, news: 20 }, caps: ["broken", "riskNotice"] } };
+      let frameworkState: { active: AiFrameworkInfo["id"]; custom: AiCustomFramework } = { active: "auto", custom: { name: "自定义", weights: { ...builtin.technical!.weights }, caps: ["overbought", "chase"], note: "" } };
+      const describe = (id: AiFrameworkInfo["id"], item: { name: string; description: string; weights: Record<string, number>; caps: string[] }, guidance = ""): AiFrameworkInfo => ({ id, name: item.name, description: item.description, guidance,
+        dimensions: Object.entries(item.weights).map(([dim, weight]) => ({ id: dim, label: demoDims[dim]!.label, detail: demoDims[dim]!.detail, weight })), caps: demoCaps.filter(cap => item.caps.includes(cap.id)) });
+      const catalog = (): AiFrameworkCatalog => ({ active: frameworkState.active, custom: structuredClone(frameworkState.custom),
+        frameworks: [...Object.entries(builtin).map(([id, item]) => describe(id, item)), describe("custom", { ...frameworkState.custom, description: "你自己设定的维度权重和硬规则。" }, frameworkState.custom.note)],
+        dimensions: Object.entries(demoDims).map(([id, item]) => ({ id, ...item })), caps: demoCaps });
+      const currentWeights = () => frameworkState.active === "custom" ? frameworkState.custom.weights : frameworkState.active === "auto" ? builtin.breakout!.weights : builtin[frameworkState.active]?.weights || builtin.technical!.weights;
+      const withFramework = (item: AiRankItem, index: number): AiRankItem => {
+        const dims = Object.entries(currentWeights()).map(([id, weight], dimIndex) => ({ id, label: demoDims[id]!.label, weight, score: Math.max(15, 88 - index * 8 - dimIndex * 4), note: "演示：按体检数据计算" }));
+        const total = dims.reduce((sum, dim) => sum + dim.weight, 0) || 1;
+        const base = Math.round(dims.reduce((sum, dim) => sum + dim.score * dim.weight, 0) / total);
+        const score = Math.max(0, Math.min(100, base + (index % 2 ? -4 : 6)));
+        const auto = frameworkState.active === "auto";
+        const plays = auto ? (index % 2 ? [{ id: "limit_pullback", name: "涨停后低吸", weight: 100, base, fit: 80 }] : [{ id: "breakout", name: "突破", weight: 60, base, fit: 85 }, { id: "technical", name: "技术面综合", weight: 40, base, fit: 55 }]) : undefined;
+        return { ...item, score, rating: ratingOf(score), base, adjust: score - base, reason: index % 2 ? "演示：上方压力较近，略减分" : "演示：题材与量能配合，略加分",
+          framework: auto ? `AI 编排：${plays!.map(play => `${play.name}${plays!.length > 1 ? ` ${play.weight}%` : ""}`).join(" + ")}` : catalog().frameworks.find(entry => entry.id === frameworkState.active)!.name, dims, caps: [],
+          ...(auto ? { plays, situation: index % 2 ? ["涨停后回调", "回踩均线"] : ["逼近20日新高", "多头趋势", "有涨停题材"], orchestration: index % 2 ? "演示：涨停后缩量回踩，低吸为主" : "演示：放量突破叠加趋势" } : {}) };
+      };
+      let customList: AiCustomStock[] = [];
+      let customRanking: AiRanking | null = null;
+      const reviews = new Map<string, AiRanking>();
+      const demoProfile = (code: string, name: string, index: number): AiStockProfile => ({
+        code, name, industry: "演示行业", asOfDate: new Date().toISOString().slice(0, 10), latest: 20 + index, changePct: 2.1 - index, return5: 6.5 - index * 2,
+        return20: 15 - index * 4, volumeRatio: 1.4, trend: index % 2 ? "站上5/10日线，20/60日线下方" : "站上全部均线", limitUps20: index % 3, consecutiveBoards: 0, daysSinceLimit: 3 + index,
+        support: [{ label: "10日线", price: 19 + index }, { label: "20日线", price: 18 + index }], resistance: [{ label: "近20日最高", price: 23 + index }],
+        announcements: index % 2 ? [] : [{ date: new Date().toISOString().slice(0, 10), title: "演示：关于签订日常经营重大合同的公告", direction: "利好", risk: 0 }]
+      });
+      const stampNow = (asOfDate: string) => ({ asOfDate, model: "演示 DeepSeek", generatedAt: new Date().toISOString() });
+      const today = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+      let marketSaved: AiMarketReview | null = null;
+      let lookbackSaved: AiLookback | null = null;
+      const interpretSaved = new Map<string, AiInterpretation>();
+      return {
+        async marketReview() {
+          marketSaved = { ...stampNow(today()), headline: "演示：分歧中主线仍在，情绪未退潮", market: "浏览器预览不调用 AI，这里是演示文字。桌面版会引用复盘页的涨跌家数、涨停、炸板和连板数字。",
+            cycle: { phase: "分歧", reason: "演示：涨停家数回落、炸板率升高，但最高连板仍在" }, mainlines: [{ name: "演示板块", comment: "演示：前排仍有涨停，后排分化" }],
+            ladder: "演示：高度板分歧，2 板晋级率一般。", indices: "演示：指数站上 20 日线，量能略缩。",
+            nextDay: { posture: "演示：低吸前排，不追后排", focus: ["演示：主线前排的分歧转一致"], avoid: ["演示：无板块的孤立涨停"] }, risks: ["演示：高位股补跌"], confidence: "中", softwareRegime: "高位分歧",
+            mode: "skills", steps: [
+              { thought: "演示：先确认主线和梯队", calls: [{ skill: "limit_reasons", name: "涨停原因", ok: true, summary: "演示：涨停 48 家，前列原因：固态电池6、业绩增长4", args: "{}" },
+                { skill: "sector_strength", name: "板块强度", ok: true, summary: "演示：概念按涨停家数前列：固态电池、机器人", args: "{\"kind\":\"concept\",\"sortBy\":\"limitUps\"}" }] },
+              { thought: "演示：核对风险", calls: [{ skill: "broken_boards", name: "炸板与跌停", ok: true, summary: "演示：炸板 20 家，跌停 17 家，封板率 59%", args: "{}" }] },
+              { thought: "演示：信息足够", calls: [] }] };
+          return marketSaved;
+        },
+        async lookback() {
+          lookbackSaved = { ...stampNow(today()), previousDate: "2026-10-30", previousHeadline: "演示：情绪回暖", summary: "演示：方向判断基本兑现，高度判断偏乐观。",
+            verdicts: [{ claim: "演示：主线延续", result: "兑现", evidence: "演示：板块涨停 6 家" }, { claim: "演示：高度突破 5 板", result: "未兑现", evidence: "演示：最高 4 板" }, { claim: "演示：回避后排", result: "部分兑现", evidence: "演示：后排跌多涨少" }],
+            lessons: ["演示：高度判断要看晋级率"], hitRatePct: 50, judged: 3 };
+          return lookbackSaved;
+        },
+        async cachedMarketReview() { return { review: marketSaved, lookback: lookbackSaved, previousDate: "2026-10-30" }; },
+        async interpret(input: { kind: AiInterpretKind }) {
+          const value: AiInterpretation = { ...stampNow(today()), kind: input.kind, title: input.kind === "ecology" ? "涨停生态" : input.kind === "sectors" ? "板块强度" : "炸板观察",
+            headline: "演示：这里是 AI 解读的结论", points: ["演示：要点一", "演示：要点二"], risks: ["演示：风险一"], watch: ["演示：明天看前排能否回封"] };
+          interpretSaved.set(input.kind, value);
+          return value;
+        },
+        async cachedInterpret(input: { kind: AiInterpretKind }) { return interpretSaved.get(input.kind) || null; },
+        async frameworks() { return catalog(); },
+        async saveFramework(input: { active?: AiFrameworkInfo["id"]; custom?: AiCustomFramework }) {
+          frameworkState = { active: input.active || frameworkState.active, custom: input.custom ? structuredClone(input.custom) : frameworkState.custom };
+          customRanking = null; reviews.clear();
+          return catalog();
+        },
+        async customList() { return structuredClone(customList); },
+        async saveCustomList(items: AiCustomStock[]) { customList = items.slice(0, 40).map(item => ({ code: item.code, name: item.name })); return structuredClone(customList); },
+        async cachedCustom() { return customRanking ? { ...onlyCodes(customRanking, customList.map(item => item.code)), cached: true } : null; },
+        async rankCustom(input?: { force?: boolean; codes?: string[] | undefined }) {
+          const targets = input?.codes ? customList.filter(item => input.codes!.includes(item.code)) : customList;
+          const have = new Set((customRanking?.items || []).map(item => item.code));
+          const todo = input?.force || input?.codes ? targets : targets.filter(item => !have.has(item.code));
+          const profiles = todo.map(item => demoProfile(item.code, item.name, customList.indexOf(item)));
+          const ranking = demoRank({ asOfDate: profiles[0]?.asOfDate || "", picks: profiles.map(item => ({ code: item.code, name: item.name, strategies: [] })) as AiPick[], strategyCounts: [] });
+          customRanking = mergeBoard(customRanking, { ...ranking, items: ranking.items.map(item => withFramework(item, Math.max(0, customList.findIndex(row => row.code === item.code)))), profiles });
+          return { ...onlyCodes(customRanking, customList.map(item => item.code)), failed: [] };
+        },
+        async cachedReview(code: string) { return reviews.get(code) || null; },
+        async review(input: { security: { code: string; name: string } }) {
+          const profile = demoProfile(input.security.code, input.security.name, 0);
+          const ranking = demoRank({ asOfDate: profile.asOfDate, picks: [{ code: profile.code, name: profile.name, strategies: [] }] as unknown as AiPick[], strategyCounts: [] });
+          const item = { ...withFramework(ranking.items[0]!, 0), trend: "演示：站上全部均线，处于近20日区间上部", volume: "演示：量比 1.4，温和放量", keyLevels: "演示：回踩 10日线 19.00 不破可继续观察，上方 23.00 是近20日高点" };
+          const value = { ...ranking, items: [item], profile, evaluated: 1 };
+          reviews.set(profile.code, value);
+          return value;
+        },
+        async status() { return { configured: true, model: "演示（浏览器预览）", profile: "演示 DeepSeek", rankModels: profiles.profiles.filter(item => profiles.rankIds?.includes(item.id)).map(item => item.name) }; },
+        async cached(input: AiSelectionInput) { const hit = saved.get(input.asOfDate); const rank = hit?.rank ? onlyCodes(hit.rank, input.picks.map(pick => pick.code)) : null; return { rank: rank?.items.length ? { ...rank, cached: true } : null, summary: hit?.summary ? { ...hit.summary, cached: true } : null }; },
+        async history() { return [...saved.entries()].map(([asOfDate, value]) => ({ asOfDate, rankModels: value.rank ? value.rank.models?.map(item => item.model) || [] : [], hasSummary: Boolean(value.summary), savedAt: value.savedAt })).sort((a, b) => b.asOfDate.localeCompare(a.asOfDate)); },
+        async historyDay(asOfDate: string) { const hit = saved.get(asOfDate); return { asOfDate, rank: hit?.rank || null, summary: hit?.summary || null }; },
+        async rank(input: AiSelectionInput): Promise<AiRanking> {
+          const previous = saved.get(input.asOfDate)?.rank || null;
+          const have = new Set((previous?.items || []).map(item => item.code));
+          const todo = input.picks.filter(pick => input.only ? input.only.includes(pick.code) : input.force || !have.has(pick.code));
+          const ranked = demoRank({ ...input, picks: todo });
+          const board = mergeBoard(previous, { ...ranked, items: ranked.items.map(item => withFramework(item, Math.max(0, input.picks.findIndex(pick => pick.code === item.code)))) });
+          remember(input.asOfDate, { rank: board });
+          return onlyCodes(board, input.picks.map(pick => pick.code));
+        },
+        async summary(input: AiSelectionInput) {
+          const result: AiSummary = { asOfDate: input.asOfDate, model: "演示 DeepSeek", generatedAt: new Date().toISOString(), headline: "演示：情绪回暖，主线集中",
+            market: "浏览器预览不调用 AI，这里是演示文字。桌面版会根据当日涨停生态和选股结果生成总结。", themes: [{ name: "演示方向", stocks: input.picks.slice(0, 2).map(pick => pick.name) }],
+            focus: input.picks.slice(0, 2).map(pick => ({ code: pick.code, name: pick.name, reason: "演示：命中策略最多" })), risks: ["演示：高位股分歧风险"] };
+          remember(input.asOfDate, { summary: result }); return result;
+        },
+        async draftStrategy(): Promise<never> { throw new Error("浏览器预览不调用 AI，请在桌面版使用"); },
+        async test(): Promise<never> { throw new Error("浏览器预览不调用 AI，请在桌面版测试"); },
+        async profiles() { return structuredClone(profiles); },
+        async saveProfile(): Promise<never> { throw new Error("浏览器预览不保存模型配置，请在桌面版设置"); },
+        async deleteProfile(): Promise<never> { throw new Error("浏览器预览不保存模型配置，请在桌面版设置"); },
+        async activateProfile(id: string) { profiles.activeId = id; return structuredClone(profiles); },
+        async setRankModels(ids: string[]) { if (!ids.length) throw new Error("至少选择一套模型参与打分"); profiles.rankIds = ids; return structuredClone(profiles); }
+      };
+    })(),
     async getWatchlist() {
       return [...previewWatchlist];
     },
     async startTrendScan(options) { trendState = await createConfiguredTrendPreviewStatus(options); return structuredClone(trendState); },
+    async evaluateTrendResearch() { throw new Error("浏览器预览不执行历史研究，请在桌面软件中导入真实或明确标记的合成数据"); },
+    async checkTrendExecution({ signalDate }) { return {
+      checkedAt: new Date().toISOString(), signalDate, executionDate: null, expectedSignalDate: null,
+      state: "unknown", reasons: ["浏览器演示不提供可执行交易状态，请在桌面软件核对真实数据"],
+      latest: null, upperLimit: null, lowerLimit: null, suspended: null, priceDate: null,
+      source: "preview", minimumBuyQuantity: 100, quantityStep: 100
+    }; },
     async getTrendScan() { return structuredClone(trendState); },
     async cancelTrendScan() { return structuredClone(trendState); },
     async saveWatchlist(items) {
@@ -1453,4 +1506,24 @@ export function createPreviewApi(): Window["stockApi"] {
       return `${__APP_VERSION__}-preview`;
     }
   };
+}
+
+/** 预览用 1 分钟线：前一交易日尾盘 + 当日全天，只用于界面检查。 */
+function buildPreviewMinutes(security: { code?: string }) {
+  const seed = Number(String(security?.code || "600000").slice(-3)) || 7;
+  const base = 20 + (seed % 50);
+  const rows: Array<{ date: string; open: number; high: number; low: number; close: number; volume: number; volumeUnit: string; amount: number }> = [];
+  const push = (date: string, minute: number, price: number, volume: number) => {
+    const time = `${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`;
+    rows.push({ date: `${date} ${time}`, open: price, high: price * 1.001, low: price * 0.999, close: Number(price.toFixed(2)), volume, volumeUnit: "lots", amount: Math.round(price * volume * 100) });
+  };
+  for (let minute = 14 * 60 + 41; minute <= 15 * 60; minute += 1) push("2026-10-27", minute, base, 800);
+  let price = base, index = 0;
+  for (const [start, end] of [[9 * 60 + 30, 11 * 60 + 30], [13 * 60 + 1, 15 * 60]] as const) {
+    for (let minute = start; minute <= end; minute += 1, index += 1) {
+      price = base * (1 + 0.02 * Math.sin(index / 30 + seed) + 0.012 * Math.sin(index / 7));
+      push("2026-10-28", minute, price, 400 + Math.round(600 * Math.abs(Math.sin(index / 5 + seed))) + (index < 10 ? 3000 : 0));
+    }
+  }
+  return rows;
 }

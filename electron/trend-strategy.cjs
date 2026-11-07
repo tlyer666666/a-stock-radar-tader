@@ -1,19 +1,23 @@
 "use strict";
 
 const { createHash } = require("node:crypto");
-const { evaluateTrendStock, rankTrendCandidates, trendMath } = require("./trend-screener-engine.cjs");
+const { evaluateTrendStock, evaluateTrendBase, rankTrendCandidates, trendMath } = require("./trend-screener-engine.cjs");
 const library = require("../config/trend-strategy-library.json");
 const { prepareTrendLibrary, evaluatePreparedTrendLibrary } = require("./trend-library-engine.cjs");
 const libraryById = new Map(library.map(item => [item.id, item]));
-const { prepareRows, prepareBenchmarkRows, maAt, atr14, mean, ceilCents, floorCents } = trendMath;
-const DEFAULTS = Object.freeze({ maxExtensionAtr: 2, minCloseLocation: 0.7, maxVolumeRatio: 3 });
+const { prepareAlignedTrendSeries, maAt, atr14, mean, ceilCents, floorCents } = trendMath;
+const QUALITY_PRESETS = Object.freeze({
+  robust: Object.freeze(require("../config/trend-quality-robust.json")),
+  balanced: Object.freeze(require("../config/trend-quality-balanced.json"))
+});
+const DEFAULTS = QUALITY_PRESETS.robust;
 const BOUNDS = Object.freeze({ maxExtensionAtr: [0.5, 5], minCloseLocation: [0.5, 0.95], maxVolumeRatio: [1.2, 6] });
 const plain = (value) => value !== null && typeof value === "object" && !Array.isArray(value) &&
   [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const finite = (value) => typeof value === "number" && Number.isFinite(value);
 
 function normalizeTrendStrategy(options = {}) {
-  if (!plain(options) || Object.keys(options).some(key => !["strategyId", "config"].includes(key))) {
+  if (!plain(options) || Object.keys(options).some(key => !["strategyId", "config", "preset"].includes(key))) {
     throw new TypeError("策略选项仅允许 strategyId 和 config");
   }
   const id = options.strategyId === undefined ? "classic-v1" : options.strategyId;
@@ -21,7 +25,8 @@ function normalizeTrendStrategy(options = {}) {
   if (!["classic-v1", "quality-v2"].includes(id) && !libraryEntry) throw new TypeError("未知趋势策略 ID");
   const input = options.config === undefined ? {} : options.config;
   if (!plain(input)) throw new TypeError("策略配置必须是参数对象");
-  const defaults = libraryEntry ? libraryEntry.parameters : DEFAULTS;
+  if (options.preset !== undefined && (id !== "quality-v2" || !Object.hasOwn(QUALITY_PRESETS, options.preset))) throw new TypeError("质量预设须为 robust 或 balanced，且仅适用 quality-v2");
+  const defaults = libraryEntry ? libraryEntry.parameters : QUALITY_PRESETS[options.preset || "robust"];
   const allowed = libraryEntry ? Object.keys(defaults) : id === "quality-v2" ? Object.keys(DEFAULTS) : [];
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new TypeError("策略配置包含未知参数");
   const config = {};
@@ -37,7 +42,7 @@ function normalizeTrendStrategy(options = {}) {
     }
     config[key] = value;
   }
-  const version = libraryEntry ? libraryEntry.version : id === "classic-v1" ? "1.0.0" : "2.0.0";
+  const version = libraryEntry ? libraryEntry.version : id === "classic-v1" ? "1.0.0" : "2.1.0";
   const configHash = createHash("sha256").update(JSON.stringify({ id, version, config })).digest("hex");
   return { id, version, configHash, config };
 }
@@ -57,10 +62,16 @@ function evaluateTrendStrategyBatch(input, optionsArray) {
   if (!Array.isArray(optionsArray)) throw new TypeError("批量策略选项须为数组");
   const strategies = optionsArray.map(normalizeTrendStrategy);
   if (!strategies.length) return [];
-  const result = evaluateTrendStock(input);
-  const prepared = strategies.some(strategy => libraryById.has(strategy.id)) ? prepareTrendLibrary(input, result) : null;
+  const needsClassic = strategies.some(strategy => strategy.id === "classic-v1");
+  const needsActive = strategies.some(strategy => strategy.id === "quality-v2");
+  const needsLibrary = strategies.some(strategy => libraryById.has(strategy.id));
+  const classic = needsClassic ? evaluateTrendStock(input) : null;
+  const active = needsActive ? evaluateTrendStock(input, { anchorPolicy: "active" }) : null;
+  // 经典技术策略库不要求近期涨停：用不含涨停条件的趋势底座。
+  const prepared = needsLibrary ? prepareTrendLibrary(input, evaluateTrendBase(input)) : null;
   return strategies.map(strategy => libraryById.has(strategy.id)
-    ? evaluatePreparedTrendLibrary(prepared, strategy) : evaluateClassicOrQuality(input, strategy, result));
+    ? evaluatePreparedTrendLibrary(prepared, strategy) : evaluateClassicOrQuality(input, strategy,
+      strategy.id === "classic-v1" ? classic : active));
 }
 
 function evaluateClassicOrQuality(input, strategy, result) {
@@ -68,16 +79,11 @@ function evaluateClassicOrQuality(input, strategy, result) {
   const original = result.candidate;
   if (strategy.id === "classic-v1") return { ...result, candidate: { ...original, strategy } };
 
-  // The classic validator has already established positive aligned histories.
-  // Rebuild only as-of prices; a future bar cannot influence any quality gate.
-  const raw = prepareRows(input.rawRows, input.asOf, true);
-  const adjusted = prepareRows(input.adjustedRows, input.asOf, false);
-  const factor = raw.at(-1).close / adjusted.at(-1).close;
+  const prepared = prepareAlignedTrendSeries(input);
+  if (prepared.kind !== "prepared") return prepared;
+  const { raw, adjusted, prices, factor, benchmark: alignedBenchmark } = prepared;
   const aligned21 = raw.slice(-21).every((row, offset) =>
     Math.abs((row.close / adjusted[adjusted.length - 21 + offset].close) / factor - 1) <= 0.002);
-  const prices = adjusted.map((row, i) => ({ ...row,
-    open: row.open * factor, high: row.high * factor, low: row.low * factor, close: row.close * factor,
-    volume: raw[i].volume, amount: raw[i].amount }));
   const last = prices.length - 1;
   const today = prices[last];
   const ma20 = maAt(prices, last, 20);
@@ -103,8 +109,7 @@ function evaluateClassicOrQuality(input, strategy, result) {
   const stop = original.plan?.stop ?? ceilCents(Math.max(prices[t0].low, patternLow - 0.5 * atr14(prices)));
   const stopDistanceAtr = atrKnown ? (today.close - stop) / previousAtr : 0;
   const ma60Rising = ma60 >= maAt(prices, last - 5, 60);
-  const benchmark = Array.isArray(input.benchmarkRows) && input.benchmarkRows.length
-    ? prepareBenchmarkRows(input.benchmarkRows, input.asOf) : [];
+  const benchmark = alignedBenchmark || [];
   const benchmarkStart = benchmark.find(row => row.date === prices[last - 20].date);
   const benchmarkEnd = benchmark.find(row => row.date === today.date);
   // Display rounding must not turn a positive (or negative) excess return into
@@ -144,7 +149,7 @@ function evaluateClassicOrQuality(input, strategy, result) {
     detail("止损波动距离", atrKnown && stopDistanceAtr >= 0.5, atrKnown ? stopDistanceAtr.toFixed(4) : "无法计算", "信号收盘至原冻结止损至少0.5倍昨日ATR14"),
     detail("质量版入场区间", entryValid, entryValid ? `${minEntry.toFixed(2)}–${maxEntry.toFixed(2)}` : "无有效区间", "S<最低入场≤最高入场；最低入场至少突破位+0.01，最高入场不超过原Pmax及C+0.5昨日ATR")
   ];
-  const plan = signal ? { ...original.plan, minEntry, maxEntry,
+  const plan = signal ? { ...original.plan, entryType: "breakout", minEntry, maxEntry,
     maxRiskPercent: Number(((maxEntry - stop) / maxEntry * 100).toFixed(2)) } : null;
   return { ...result, reason: signal ? "质量趋势波段信号" : "质量趋势波段观察", candidate: {
     ...original, strategy, primaryPattern,

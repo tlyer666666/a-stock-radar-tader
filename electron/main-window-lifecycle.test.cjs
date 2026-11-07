@@ -12,6 +12,7 @@ function visit(node) {
   ts.forEachChild(node, visit);
 }
 visit(createWindow);
+const showOrCreateMainWindow = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "showOrCreateMainWindow");
 function closeWindow(platform, tray, quitting = false) {
   const result = { prevented: false, hidden: false, trayCalls: 0 };
   const callback = vm.runInNewContext(`(${closeCallback})`, {
@@ -45,6 +46,25 @@ test("partial tray setup failure destroys the allocated native tray", () => {
   assert.equal(destroyed, 1);
 });
 
+test("window restoration contains constructor failures and requests orderly shutdown", () => {
+  const failure = new Error("synthetic BrowserWindow failure");
+  const logs = [];
+  const context = {
+    isQuitting: false,
+    app: { isReady: () => true },
+    focusMainWindow: () => false,
+    createWindow: () => { throw failure; },
+    runtimeErrorLog: (...args) => logs.push(args),
+    requestExplicitQuit: () => { context.isQuitting = true; }
+  };
+  const restore = vm.runInNewContext(`(${showOrCreateMainWindow.getText(ast)})`, context);
+  assert.equal(restore(), false);
+  assert.equal(context.isQuitting, true);
+  assert.equal(logs.length, 1);
+  assert.equal(logs[0][0], "window-restore-failed");
+  assert.equal(logs[0][1], failure);
+});
+
 test("window theme loads before any protected service credentials are requested", () => {
   const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node)
     && ["createWindow", "defaultSettings", "normalizeSettings", "clampNumber"].includes(node.name?.text));
@@ -67,4 +87,23 @@ test("window theme loads before any protected service credentials are requested"
     assert.equal(selectedTheme,expected);
     assert.equal(windowOptions.show,true);
   }
+});
+
+
+test("unresponsive prompt is deduplicated, dismissed on recovery and only reloads after an explicit choice", async () => {
+  const { EventEmitter } = require("node:events");
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === "observeWindowResponsiveness");
+  const win = new EventEmitter(); let reloads = 0;
+  win.webContents = { reload: () => { reloads++; } }; win.isDestroyed = () => false;
+  const prompts = [];
+  const watch = vm.runInNewContext(`(${declaration.getText(ast)})`, {
+    AbortController, isQuitting: false, runtimeErrorLog: () => {},
+    dialog:{showMessageBox: (_, opts) => new Promise(resolve => prompts.push({opts, resolve}))}
+  });
+  watch(win); win.emit("unresponsive"); win.emit("unresponsive"); await Promise.resolve();
+  assert.equal(prompts.length, 1); win.emit("responsive");
+  assert.equal(prompts[0].opts.signal.aborted,true);
+  prompts[0].resolve({response:1}); await new Promise(resolve => setImmediate(resolve)); assert.equal(reloads,0);
+  win.emit("unresponsive"); await Promise.resolve(); prompts[1].resolve({response:1});
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(reloads,1);
 });

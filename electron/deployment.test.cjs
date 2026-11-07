@@ -372,7 +372,7 @@ test("a staging copy failure preserves the last good unpacked build", () => {
       }
     });
     assert.throws(
-      () => buildUnpacked({
+      () => buildUnpacked({ hardenRuntime: () => {},
         projectRoot: root,
         electronDist,
         minimumExecutableBytes: 1,
@@ -404,7 +404,7 @@ test("a successful staged build has a complete self-verifying manifest", () => {
     );
     write(path.join(root, "release", "builder-debug.yml"), "obsolete metadata");
     write(path.join(root, "release", "A股雷达-old-setup.exe"), "obsolete installer");
-    const result = buildUnpacked({
+    const result = buildUnpacked({ hardenRuntime: () => {},
       projectRoot: root,
       electronDist,
       minimumExecutableBytes: 1,
@@ -462,7 +462,7 @@ test("an atomic build publication failure restores the previous complete build",
       }
     });
     assert.throws(
-      () => buildUnpacked({
+      () => buildUnpacked({ hardenRuntime: () => {},
         projectRoot: root,
         electronDist,
         minimumExecutableBytes: 1,
@@ -509,7 +509,7 @@ test("build falls back to a verified copy when Windows cannot rename the previou
       }
     });
 
-    const result = buildUnpacked({
+    const result = buildUnpacked({ hardenRuntime: () => {},
       projectRoot: root,
       electronDist,
       minimumExecutableBytes: 1,
@@ -539,4 +539,17 @@ test("the retired v0.6.8 migration is a non-destructive hard-stop stub", () => {
   assert.match(source, /永久停用/);
   assert.match(source, /\bthrow\b/i);
   assert.doesNotMatch(source, /\b(?:Remove-Item|Copy-Item|Move-Item|CreateShortcut)\b/i);
+});
+
+
+test('Windows hardening happens before the manifest and a fuse failure cannot publish a build',()=>{
+ const root=temporaryRoot('build-fuses');
+ try{
+  const electronDist=createBuildInputs(root);let calls=0;
+  write(path.join(root,'electron','after-pack-fuses.cjs'),'// dev hook');
+  assert.throws(()=>buildUnpacked({projectRoot:root,electronDist,minimumExecutableBytes:1,hardenRuntime(binary){
+   calls++;assert.equal(fs.existsSync(binary),true);assert.equal(fs.existsSync(path.join(path.dirname(binary),BUILD_MANIFEST)),false);throw Error('fuse failure');
+  }}),/fuse failure/);
+  assert.equal(calls,1);assert.equal(fs.existsSync(path.join(root,'release','win-unpacked')),false);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

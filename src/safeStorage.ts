@@ -33,23 +33,25 @@ export const loadSafeLocalJson = <T>(key: string, fallback: T, validate = sameSt
 
 export const saveSafeLocalJson = (key: string, value: unknown, validate = sameStoredShape(value)): boolean => {
   try {
+    if (!validate(value)) return false;
     const serialized = JSON.stringify(value);
-    if (typeof serialized !== "string" || !parseStoredValue(serialized, validate).ok) return false;
+    if (typeof serialized !== "string") return false;
     const backupKey = `${key}${LAST_GOOD_SUFFIX}`;
     const primary = window.localStorage.getItem(key);
     const primaryIsValid = parseStoredValue(primary, validate).ok;
     const backupIsValid = parseStoredValue(window.localStorage.getItem(backupKey), validate).ok;
-
-    if (primaryIsValid && primary !== null) {
-      window.localStorage.setItem(backupKey, primary);
+    try { window.localStorage.setItem(key, serialized); }
+    catch (error) {
+      // Reclaim only a redundant backup. A sole recoverable backup is retained
+      // until a new primary has committed successfully.
+      if (!(error instanceof DOMException && error.name === "QuotaExceededError") || !primaryIsValid) throw error;
+      window.localStorage.removeItem(backupKey);
+      window.localStorage.setItem(key, serialized);
     }
-    // The primary write is the commit point. A failed save must never become
-    // a different configuration on reload through an uncommitted backup.
-    window.localStorage.setItem(key, serialized);
-    if (!primaryIsValid && !backupIsValid) {
-      try { window.localStorage.setItem(backupKey, serialized); }
-      catch { /* The primary is already committed; a backup quota failure is optional. */ }
-    }
+    try {
+      if (primaryIsValid && primary !== null) window.localStorage.setItem(backupKey, primary);
+      else if (!backupIsValid) window.localStorage.setItem(backupKey, serialized);
+    } catch { /* Backup allocation cannot invalidate a successful primary commit. */ }
     return true;
   } catch {
     return false;

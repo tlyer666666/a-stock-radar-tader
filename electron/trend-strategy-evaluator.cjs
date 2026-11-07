@@ -3,10 +3,11 @@
 const { createHash } = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const { evaluateTrendStrategy, normalizeTrendStrategy } = require("./trend-strategy.cjs");
+const { simulateSharedAccount, normalizeAccount } = require("./trend-research-account.cjs");
 const STRATEGY_LIBRARY = require("../config/trend-strategy-library.json");
 
-const DEFAULT_EXECUTION = Object.freeze({ notional: 100000, commissionBps: 3,
-  minCommission: 5, sellTaxBps: 5, transferFeeBps: 0, slippageBps: 5 });
+const { DEFAULT_COSTS, fees } = require("./backtest-costs.cjs");
+const DEFAULT_EXECUTION = Object.freeze({ notional: 100000, ...DEFAULT_COSTS });
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const round = (value, digits = 6) => Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
 const money = value => Math.round((value + Number.EPSILON) * 100) / 100;
@@ -27,24 +28,27 @@ function rowsThrough(rows, to, label, calendar, raw = false) {
   if (rows.some(row => !iso(row?.date))) throw new TypeError(`${label} has an invalid date`);
   // Values dated after the evaluation cutoff are never validated or consumed.
   const selected = rows.filter(row => row.date <= to).map(row => ({ ...row })).sort((a, b) => a.date.localeCompare(b.date));
-  if (new Set(selected.map(row => row.date)).size !== selected.length) throw new TypeError(`${label} has duplicate dates`);
+  const duplicate = selected.find((row, index) => index && row.date === selected[index - 1].date);
+  if (duplicate) throw Object.assign(new TypeError(`${label} has duplicate dates`), { date: duplicate.date });
   for (const row of selected) {
-    if (!calendar.has(row.date) || !["open", "high", "low", "close"].every(key => finite(row[key]) && row[key] > 0) ||
-      row.low > Math.min(row.open, row.close) || row.high < Math.max(row.open, row.close) ||
-      !finite(row.volume) || row.volume < 0 || !finite(row.amount) || row.amount < 0) {
-      throw new TypeError(`${label} ${row.date} has invalid OHLCV/amount/calendar data`);
-    }
-    if (raw) {
-      for (const key of ["upperLimit", "lowerLimit"]) if (row[key] !== undefined && (!finite(row[key]) || row[key] <= 0)) throw new TypeError(`${label} invalid ${key}`);
-      for (const key of ["isST", "noPriceLimit", "suspended"]) if (row[key] !== undefined && typeof row[key] !== "boolean") throw new TypeError(`${label} invalid ${key}`);
-      if (row.upperLimit !== undefined && row.lowerLimit !== undefined && row.upperLimit < row.lowerLimit) throw new TypeError(`${label} inconsistent price limits`);
-      if (row.noPriceLimit !== true) {
-        for (const key of ["open", "high", "low", "close"]) {
-          if (finite(row.upperLimit) && row[key] > row.upperLimit + .005) throw new TypeError(`${label} ${row.date} ${key} exceeds upperLimit`);
-          if (finite(row.lowerLimit) && row[key] < row.lowerLimit - .005) throw new TypeError(`${label} ${row.date} ${key} is below lowerLimit`);
+    try {
+      if (!calendar.has(row.date) || !["open", "high", "low", "close"].every(key => finite(row[key]) && row[key] > 0) ||
+        row.low > Math.min(row.open, row.close) || row.high < Math.max(row.open, row.close) ||
+        !finite(row.volume) || row.volume < 0 || !finite(row.amount) || row.amount < 0) {
+        throw new TypeError(`${label} ${row.date} has invalid OHLCV/amount/calendar data`);
+      }
+      if (raw) {
+        for (const key of ["upperLimit", "lowerLimit"]) if (row[key] !== undefined && (!finite(row[key]) || row[key] <= 0)) throw new TypeError(`${label} invalid ${key}`);
+        for (const key of ["isST", "noPriceLimit", "suspended"]) if (row[key] !== undefined && typeof row[key] !== "boolean") throw new TypeError(`${label} invalid ${key}`);
+        if (row.upperLimit !== undefined && row.lowerLimit !== undefined && row.upperLimit < row.lowerLimit) throw new TypeError(`${label} inconsistent price limits`);
+        if (row.noPriceLimit !== true) {
+          for (const key of ["open", "high", "low", "close"]) {
+            if (finite(row.upperLimit) && row[key] > row.upperLimit + .005) throw new TypeError(`${label} ${row.date} ${key} exceeds upperLimit`);
+            if (finite(row.lowerLimit) && row[key] < row.lowerLimit - .005) throw new TypeError(`${label} ${row.date} ${key} is below lowerLimit`);
+          }
         }
       }
-    }
+    } catch (error) { error.date = row.date; throw error; }
   }
   return selected;
 }
@@ -72,32 +76,61 @@ function prepareDataset(dataset, to) {
   const benchmarkRows = rowsThrough(dataset.benchmarkRows, to, "benchmarkRows", calendarSet);
   if (!Array.isArray(dataset.securities) || !dataset.securities.length) throw new TypeError("dataset.securities must be nonempty");
   const codes = new Set();
+  const dataErrors = [];
   const securities = dataset.securities.map((item, index) => {
     const security = { ...item.security };
     if (!/^\d{6}$/.test(security.code) || !security.name || !security.secid || codes.has(security.code)) throw new TypeError(`Invalid or duplicate securities[${index}].security`);
     codes.add(security.code);
-    const rawRows = rowsThrough(item.rawRows, to, `${security.code}.rawRows`, calendarSet, true);
-    const adjustedRows = rowsThrough(item.adjustedRows, to, `${security.code}.adjustedRows`, calendarSet);
-    const states = item.statusHistory === undefined ? [] : item.statusHistory;
-    if (!Array.isArray(states) || states.some(state => !iso(state?.date))) throw new TypeError(`${security.code}.statusHistory invalid dates`);
-    const statusHistory = states.filter(state => state.date <= to).map(state => ({ ...state })).sort((a, b) => a.date.localeCompare(b.date));
-    if (new Set(statusHistory.map(state => state.date)).size !== statusHistory.length) throw new TypeError(`${security.code}.statusHistory duplicate date`);
-    for (const state of statusHistory) {
-      if (typeof state.name !== "string" || !state.name || typeof state.isST !== "boolean" || typeof state.listed !== "boolean") throw new TypeError(`${security.code}.statusHistory requires historical name/isST/listed`);
-      for (const key of ["minimumBuyQuantity", "quantityStep"]) if (state[key] !== undefined && (!Number.isSafeInteger(state[key]) || state[key] < 1)) throw new TypeError(`${security.code}.statusHistory invalid ${key}`);
+    const readStock = cutoff => {
+      const rawRows = rowsThrough(item.rawRows, cutoff, `${security.code}.rawRows`, calendarSet, true);
+      const adjustedRows = rowsThrough(item.adjustedRows, cutoff, `${security.code}.adjustedRows`, calendarSet);
+      const states = item.statusHistory === undefined ? [] : item.statusHistory;
+      if (!Array.isArray(states) || states.some(state => !iso(state?.date))) throw new TypeError(`${security.code}.statusHistory invalid dates`);
+      const statusHistory = states.filter(state => state.date <= cutoff).map(state => ({ ...state })).sort((a, b) => a.date.localeCompare(b.date));
+      const duplicate = statusHistory.find((state, index) => index && state.date === statusHistory[index - 1].date);
+      if (duplicate) throw Object.assign(new TypeError(`${security.code}.statusHistory duplicate date`), { date: duplicate.date });
+      for (const state of statusHistory) {
+        try {
+          if (state.industry !== undefined && (typeof state.industry !== "string" || !state.industry.trim())) throw new TypeError(`${security.code}.statusHistory invalid industry`);
+          if (typeof state.name !== "string" || !state.name || typeof state.isST !== "boolean" || typeof state.listed !== "boolean") throw new TypeError(`${security.code}.statusHistory requires historical name/isST/listed`);
+          for (const key of ["minimumBuyQuantity", "quantityStep"]) if (state[key] !== undefined && (!Number.isSafeInteger(state[key]) || state[key] < 1)) throw new TypeError(`${security.code}.statusHistory invalid ${key}`);
+        } catch (error) { error.date = state.date; throw error; }
+      }
+      // A historical ST interval must remain visible to the classic event-window veto,
+      // even when today's security name or an imported bar flag says otherwise.
+      let stateIndex = -1;
+      for (const row of rawRows) {
+        while (statusHistory[stateIndex + 1]?.date <= row.date) stateIndex++;
+        if (stateIndex >= 0) row.isST = row.isST === true || statusHistory[stateIndex].isST;
+      }
+      return { security, rawRows, adjustedRows, statusHistory,
+        priceLimitsVerified: dataset.sourceClass === "synthetic" || dataset.priceLimitEvidence === "official",
+        rawByDate: new Map(rawRows.map(row => [row.date, row])), adjustedByDate: new Map(adjustedRows.map(row => [row.date, row])) };
+    };
+    let cutoff = to; let invalidFrom = null; let invalidReason = null;
+    for (;;) {
+      try {
+        const stock = readStock(cutoff);
+        if (invalidFrom) {
+          stock.invalidFrom = invalidFrom;
+          dataErrors.push({ code: security.code, date: invalidFrom, reason: invalidReason });
+        }
+        return stock;
+      } catch (error) {
+        // Dated defects quarantine this stock from that date onward, preserving
+        // every validated earlier prefix. Unknown-date corruption has no safe prefix.
+        invalidFrom = iso(error.date) ? error.date : calendar[0]; invalidReason = error.message;
+        const previous = calendar.filter(date => date < invalidFrom).at(-1);
+        if (!previous || previous >= cutoff) {
+          dataErrors.push({ code: security.code, date: invalidFrom, reason: invalidReason });
+          return { security, rawRows: [], adjustedRows: [], statusHistory: [], invalidFrom,
+            priceLimitsVerified: false, rawByDate: new Map(), adjustedByDate: new Map() };
+        }
+        cutoff = previous;
+      }
     }
-    // A historical ST interval must remain visible to the classic event-window veto,
-    // even when today's security name or an imported bar flag says otherwise.
-    let stateIndex = -1;
-    for (const row of rawRows) {
-      while (statusHistory[stateIndex + 1]?.date <= row.date) stateIndex++;
-      if (stateIndex >= 0) row.isST = row.isST === true || statusHistory[stateIndex].isST;
-    }
-    return { security, rawRows, adjustedRows, statusHistory,
-      priceLimitsVerified: dataset.sourceClass === "synthetic" || dataset.priceLimitEvidence === "official",
-      rawByDate: new Map(rawRows.map(row => [row.date, row])), adjustedByDate: new Map(adjustedRows.map(row => [row.date, row])) };
-  }).sort((a, b) => a.security.code.localeCompare(b.security.code));
-  return { calendar, benchmarkRows, securities };
+  }).filter(Boolean).sort((a, b) => a.security.code.localeCompare(b.security.code));
+  return { calendar, benchmarkRows, securities, dataErrors };
 }
 
 function stateAt(stock, date) {
@@ -134,13 +167,6 @@ function tradability(row, side) {
 function fillPrice(open, side, bps) {
   const slipped = open * (1 + (side === "buy" ? 1 : -1) * bps / 10000);
   return side === "buy" ? Math.ceil((slipped - 1e-9) * 100) / 100 : Math.floor((slipped + 1e-9) * 100) / 100;
-}
-
-function fees(value, side, execution) {
-  const commission = money(Math.max(execution.minCommission, value * execution.commissionBps / 10000));
-  const transfer = money(value * execution.transferFeeBps / 10000);
-  const tax = side === "sell" ? money(value * execution.sellTaxBps / 10000) : 0;
-  return { commission, transfer, tax, total: money(commission + transfer + tax) };
 }
 
 function quantities(stock, date) {
@@ -243,11 +269,11 @@ function summarize(samples) {
     distinctSecurities: new Set(samples.map(sample => sample.code)).size };
 }
 
-function evaluatePeriod(prepared, from, to, options, execution) {
+function evaluatePeriod(prepared, from, to, options, execution, account) {
   const calendar = prepared.calendar.filter(date => date <= to);
   const lookback = STRATEGY_LIBRARY.find(entry => entry.id === options.strategyId)?.marketCalendarLookback ?? 65;
   const benchmarkDates = new Set(prepared.benchmarkRows.map(row => row.date));
-  const samples = []; const coverage = { evaluations: 0, candidates: 0, watch: 0, excluded: 0, unavailable: 0, reasons: {} };
+  const samples = []; const accountSamples = []; const coverage = { evaluations: 0, candidates: 0, watch: 0, excluded: 0, unavailable: 0, reasons: {} };
   for (let index = 0; index < calendar.length; index++) {
     const asOf = calendar[index]; if (asOf < from) continue;
     // Stock and benchmark can share the same missing pages. Their mutual alignment
@@ -259,8 +285,12 @@ function evaluatePeriod(prepared, from, to, options, execution) {
       coverage.evaluations++;
       const identity = identityAt(stock, asOf);
       const calendarGap = benchmarkGap || recentSessions.some(date => !stock.rawByDate.has(date) || !stock.adjustedByDate.has(date));
-      const outcome = identity.listed === false ? { kind: "excluded", reason: "Not listed at signal date" } :
-        calendarGap ? { kind: "unavailable", reason: "market_calendar_gap" } : evaluateTrendStrategy({ security: identity,
+      const alignedSessions = options.strategyId === "classic-v1" ? [] : calendar.slice(Math.max(0, index - 249), index + 1);
+      const alignedGap = alignedSessions.some(date => !stock.rawByDate.has(date) || !stock.adjustedByDate.has(date));
+      const outcome = stock.invalidFrom && asOf >= stock.invalidFrom ? { kind: "unavailable", reason: "invalid_security_data" } :
+        identity.listed === false ? { kind: "excluded", reason: "Not listed at signal date" } :
+        calendarGap ? { kind: "unavailable", reason: "market_calendar_gap" } :
+        alignedGap ? { kind: "unavailable", reason: "aligned_market_calendar_gap" } : evaluateTrendStrategy({ security: identity,
         rawRows: stock.rawRows.filter(row => row.date <= asOf), adjustedRows: stock.adjustedRows.filter(row => row.date <= asOf), benchmarkRows, asOf }, options);
       if (outcome.kind !== "candidate") {
         coverage[outcome.kind === "excluded" ? "excluded" : "unavailable"]++;
@@ -270,40 +300,46 @@ function evaluatePeriod(prepared, from, to, options, execution) {
       coverage.candidates++;
       if (outcome.candidate.stage !== "signal" || !outcome.candidate.plan) { coverage.watch++; continue; }
       samples.push(evaluateSample(stock, outcome.candidate, index, calendar, execution));
+      accountSamples.push(evaluateSample(stock, outcome.candidate, index, calendar, { ...execution, notional: account.initialCash }));
     }
   }
-  return { range: { from, to }, metrics: summarize(samples), coverage, samples };
+  return { range: { from, to }, metrics: summarize(samples), coverage, samples,
+    sharedAccount: simulateSharedAccount({ samples: accountSamples, calendar: calendar.filter(date => date >= from), securities: prepared.securities, execution, config: account, dataErrors: prepared.dataErrors }) };
 }
 
-function evaluateTrendStrategies({ dataset, from, to, splitDate, advancedStrategyId = "quality-v2", advancedConfig, execution: executionInput } = {}) {
+function evaluateTrendStrategies({ dataset, from, to, splitDate, advancedStrategyId = "quality-v2", advancedConfig, execution: executionInput, account: accountInput } = {}) {
   const started = performance.now();
   if (!iso(from) || !iso(to) || from > to || !iso(splitDate) || splitDate < from || splitDate > to) throw new TypeError("from/to/splitDate must be ordered ISO dates (from <= splitDate <= to)");
   const execution = normalizeExecution(executionInput);
+  const account = normalizeAccount(accountInput);
   const baselineOptions = { strategyId: "classic-v1" };
   const advancedOptions = { strategyId: advancedStrategyId, ...(advancedConfig === undefined ? {} : { config: advancedConfig }) };
   const baselineStrategy = normalizeTrendStrategy(baselineOptions);
   const advancedStrategy = normalizeTrendStrategy(advancedOptions);
   const prepared = prepareDataset(dataset, to);
   const developmentTo = prepared.calendar.filter(date => date < splitDate).at(-1) || null;
+  const developmentPrepared = developmentTo && developmentTo >= from ? prepareDataset(dataset, developmentTo) : null;
   const run = (options, strategy) => ({ strategy,
-    ...evaluatePeriod(prepared, splitDate, to, options, execution),
-    development: developmentTo && developmentTo >= from ? evaluatePeriod(prepared, from, developmentTo, options, execution) :
+    ...evaluatePeriod(prepared, splitDate, to, options, execution, account),
+    development: developmentTo && developmentTo >= from ? evaluatePeriod(developmentPrepared, from, developmentTo, options, execution, account) :
       { range: { from, to: developmentTo }, metrics: summarize([]), coverage: { evaluations: 0, candidates: 0, watch: 0, excluded: 0, unavailable: 0, reasons: {} }, samples: [] } });
   const baseline = run(baselineOptions, baselineStrategy); const advanced = run(advancedOptions, advancedStrategy);
-  const limitations = ["独立信号交易样本，同股信号允许重叠；没有共享资金账户、仓位容量或组合收益。",
+  const limitations = ["独立信号统计保留同股重叠；另附sharedAccount共享资金、同股去重、行业/仓位/风险约束的账户撮合。",
     "闭合样本收益均值不含未平仓或未解决样本；须同时检查删失、拒绝及未解决数量，不能据均值认定策略优越。",
     "日线开盘撮合为保守模型，未模拟真实排队、成交深度、公告或账户权限；费率与滑点为用户配置假设。",
     "开发区和测试区独立截止，参数未在本评估器拟合；反复查看测试结果后调参会使留出区失效。"];
+  if (prepared.dataErrors.length) limitations.push("存在单股输入异常，已隔离并计入不可用覆盖；证券池评估不完整。请查看dataErrors。");
   if (dataset.sourceClass === "synthetic") limitations.push("合成证券与工作日日历仅验证软件机制，所有收益均无真实投资证据含义。");
   if (dataset.universeMode !== "point-in-time") limitations.push("证券池不是历史时点全市场成分，存在选择偏差或幸存者偏差。");
   if (dataset.historicalStatusComplete !== true || prepared.securities.some(stock => !stock.statusHistory.length)) limitations.push("历史证券状态、行业或交易规则未完整证明，当前证券名称和交易单位可能不适用于历史。");
   if (dataset.sourceClass === "real" && dataset.priceLimitEvidence !== "official") limitations.push("真实数据未声明官方历史限价来源，信号不产生可成交收益；推算限价不能替代历史特殊交易规则。");
   if ([baseline, advanced].some(result => result.metrics.unresolved || result.development.metrics.unresolved)) limitations.push("存在无法核验限价、缺行情或公司行为的样本，收益不完整，不能作为可成交回测验证。");
-  return { schemaVersion: 1, scope: "independent-signal-cohorts", range: { from, to, splitDate, developmentTo }, execution,
+  return { dataErrors: prepared.dataErrors, schemaVersion: 1, scope: "independent-signal-cohorts", range: { from, to, splitDate, developmentTo }, execution,
     provenance: { sourceClass: dataset.sourceClass, source: dataset.source, universeMode: dataset.universeMode,
       priceLimitEvidence: dataset.priceLimitEvidence ?? "unknown",
-      dataHash: digest({ sourceClass: dataset.sourceClass, source: dataset.source, universeMode: dataset.universeMode, calendar: prepared.calendar,
-        benchmarkRows: prepared.benchmarkRows, securities: prepared.securities.map(({ rawByDate, adjustedByDate, ...stock }) => stock) }) },
+      dataHash: digest({ sourceClass: dataset.sourceClass, source: dataset.source, universeMode: dataset.universeMode,
+        priceLimitEvidence: dataset.priceLimitEvidence ?? "unknown", historicalStatusComplete: dataset.historicalStatusComplete === true, dataErrors: prepared.dataErrors, calendar: prepared.calendar,
+        benchmarkRows: prepared.benchmarkRows, securities: prepared.securities.map(({ rawByDate: _rawByDate, adjustedByDate: _adjustedByDate, ...stock }) => stock) }) },
     qualification: { status: dataset.sourceClass === "synthetic" ? "SYNTHETIC_MECHANICS_ONLY" : "REAL_DIAGNOSTIC",
       returnSuperiorityVerified: false, limitations },
     methodology: { timing: "收盘信号仅使用截至当日数据；下一市场日开盘，开盘涨停不买、跌停延迟退出。",
@@ -320,4 +356,4 @@ function evaluateTrendStrategies({ dataset, from, to, splitDate, advancedStrateg
       nodeVersion: process.version, platform: process.platform } };
 }
 
-module.exports = { evaluateTrendStrategies };
+module.exports = { evaluateTrendStrategies, normalizeExecution };

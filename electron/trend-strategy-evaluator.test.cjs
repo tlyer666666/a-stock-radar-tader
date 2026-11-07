@@ -163,7 +163,11 @@ test("raw OHLC crossing a provided price limit rejects the input unless limits a
     [{ open: 20, high: 20 }, "upperLimit"]
   ]) {
     const data = fixture(); setBar(data, 270, fields);
-    assert.throws(() => run(data, { to: data.calendar[270] }), new RegExp(bound));
+    const invalid = run(data, { to: data.calendar[270] });
+    assert.match(invalid.dataErrors[0].reason, new RegExp(bound));
+    assert.equal(invalid.baseline.metrics.signals, 1);
+    assert.equal(invalid.baseline.samples[0].status, "unresolved");
+    assert.equal(invalid.baseline.samples[0].reason, "missing_entry_bar");
     setBar(data, 270, { noPriceLimit: true });
     assert.doesNotThrow(() => run(data, { to: data.calendar[270] }));
   }
@@ -341,4 +345,84 @@ test("offline CLI accepts an explicit advanced strategy and rejects an unknown s
     assert.equal(invalid.status, 1);
     assert.equal(fs.existsSync(output), false);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("report keeps independent cohorts and adds a shared account with unresolved coverage", () => {
+  const report = run(fixture());
+  assert.ok(report.baseline.samples.length > 0);
+  assert.ok(report.baseline.sharedAccount);
+  assert.ok(Array.isArray(report.baseline.sharedAccount.rejections));
+  assert.equal(report.baseline.sharedAccount.qualification.returnSuperiorityVerified, false);
+  assert.equal(report.baseline.sharedAccount.equityCurve.at(-1).date, report.range.to);
+});
+
+
+test("one malformed security is isolated and healthy stock still produces research samples", () => {
+  const data = fixture(); const bad = structuredClone(data.securities[0]);
+  bad.security.code = "600002"; bad.security.secid = "1.600002";
+  bad.rawRows[270].close = -1; data.securities.push(bad);
+  const report = run(data);
+  assert.equal(report.dataErrors.length, 1);
+  assert.equal(report.dataErrors[0].code, "600002");
+  assert.ok(report.baseline.samples.length > 0);
+  assert.ok(report.baseline.coverage.reasons.invalid_security_data > 0);
+});
+
+test("shared account sizes from shared cash even when independent nominal cannot buy one lot", () => {
+  const report = run(fixture(), { execution: { notional: 1, slippageBps: 0 } });
+  assert.equal(report.baseline.samples[0].reason, "insufficient_notional");
+  assert.ok(report.baseline.sharedAccount.trades.length > 0);
+});
+
+test("advanced supplied calendar catches shared missing sessions inside its 250-row window", () => {
+  const data = fixture(); const missing = data.calendar[100];
+  data.benchmarkRows = data.benchmarkRows.filter(row => row.date !== missing);
+  for (const key of ["rawRows", "adjustedRows"]) data.securities[0][key] = data.securities[0][key].filter(row => row.date !== missing);
+  const report = run(data, { to: data.calendar[269] });
+  assert.equal(report.baseline.metrics.signals, 1);
+  assert.equal(report.advanced.metrics.signals, 0);
+  assert.equal(report.advanced.coverage.reasons.aligned_market_calendar_gap, 1);
+});
+
+test("provenance hashes distinguish declared historical status and limit evidence", () => {
+  const data = fixture(); data.sourceClass = "real"; data.priceLimitEvidence = "calculated";
+  const firstHash = run(data).provenance.dataHash;
+  data.priceLimitEvidence = "unknown";
+  assert.notEqual(run(data).provenance.dataHash, firstHash);
+  const secondHash = run(data).provenance.dataHash;
+  data.historicalStatusComplete = false;
+  assert.notEqual(run(data).provenance.dataHash, secondHash);
+});
+
+test("malformed later test bar cannot erase a valid development signal or its evidence", () => {
+  const data = fixture(); const options = { from: data.calendar[269], splitDate: data.calendar[272], to: data.calendar[280] };
+  const before = run(data, options);
+  data.securities[0].rawRows[280].close = -1;
+  const after = run(data, options);
+  assert.equal(before.baseline.development.metrics.signals, 1);
+  assert.deepEqual(after.baseline.development, before.baseline.development);
+  assert.deepEqual(after.advanced.development, before.advanced.development);
+  assert.equal(after.baseline.sharedAccount.metrics.completeEquityEvidence, false);
+  assert.equal(after.baseline.sharedAccount.qualification.dataCoverageComplete, false);
+  assert.equal(after.dataErrors[0].date, data.calendar[280]);
+});
+
+test("later malformed bar preserves prior same-period signal but makes held path unresolved", () => {
+  const data = fixture(); data.securities[0].rawRows[280].close = -1;
+  const report = run(data, { to: data.calendar[280] });
+  assert.equal(report.baseline.metrics.signals, 1);
+  assert.equal(report.baseline.samples[0].signalDate, data.calendar[269]);
+  assert.equal(report.baseline.samples[0].status, "unresolved");
+  assert.equal(report.baseline.coverage.reasons.invalid_security_data, 1);
+  assert.equal(report.baseline.sharedAccount.metrics.completeEquityEvidence, false);
+});
+
+test("isolated invalid security makes shared-account coverage explicitly incomplete", () => {
+  const data = fixture(); const bad = structuredClone(data.securities[0]);
+  bad.security.code = "600002"; bad.security.secid = "1.600002"; bad.rawRows = null; data.securities.push(bad);
+  const report = run(data, { to: data.calendar[270] });
+  assert.equal(report.baseline.sharedAccount.metrics.completeEquityEvidence, false);
+  assert.equal(report.baseline.sharedAccount.qualification.dataCoverageComplete, false);
+  assert.deepEqual(report.baseline.sharedAccount.qualification.dataErrors, report.dataErrors);
+  assert.ok(report.baseline.sharedAccount.qualification.limitations.some(reason => /输入异常/.test(reason)));
 });

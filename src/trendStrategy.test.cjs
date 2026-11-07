@@ -66,3 +66,8 @@ test("browser presets and preview strategy fingerprint match backend normalizati
   const first = preview.createTrendPreviewStatus(); first.candidates[0].security.name = "changed";
   assert.notEqual(preview.createTrendPreviewStatus().candidates[0].security.name, "changed");
 });
+test("default trend comparison starts with the baseline and quality model only", () => {
+  const { TREND_DEFAULT_COMPARISON_STRATEGIES, TREND_STRATEGY_CHOICES } = require("./trendStrategyConfig.ts");
+  assert.deepEqual(TREND_DEFAULT_COMPARISON_STRATEGIES, ["classic-v1", "quality-v2"]);
+  assert.ok(TREND_DEFAULT_COMPARISON_STRATEGIES.every(id => TREND_STRATEGY_CHOICES.some(choice => choice.id === id)));
+});

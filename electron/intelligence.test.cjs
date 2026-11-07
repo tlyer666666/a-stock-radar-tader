@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   decorateLimitPoolItem,
+  isRiskSecurityName,
   scoreFirstBoardQuality,
   buildSectorLadder,
   buildHistoricalStrategyStats,
@@ -24,6 +25,22 @@ test("302 historical intelligence identifies ChiNext twenty-percent limit events
   assert.equal(events(), 0);
   Object.assign(rows[79], { high: 12, close: 12 });
   assert.equal(events(), 1);
+});
+
+test("historical limit events require exact or official upper-limit evidence", () => {
+  const rows = Array.from({ length: 80 }, (_, index) => ({
+    date: new Date(Date.UTC(2024, 0, index + 1)).toISOString().slice(0, 10),
+    open: 10,
+    high: 10.1,
+    low: 9.9,
+    close: 10,
+    volume: 1000000,
+    amount: 300000000
+  }));
+  Object.assign(rows[79], { high: 10.99, close: 10.99 });
+  assert.equal(buildHistoricalStrategyStats(rows, "600001", "合成样本").totalEvents, 0);
+  Object.assign(rows[79], { high: 11.2, close: 11.2, upperLimit: 11.2 });
+  assert.equal(buildHistoricalStrategyStats(rows, "600001", "合成样本").totalEvents, 1);
 });
 
 test("A-share announcement feed filters content type and portfolio scopes", () => {
@@ -156,6 +173,72 @@ test("first-board quality never awards points to missing pool fields", () => {
   }
 });
 
+/** A complete pool row; every A2-01/A2-02 test only removes the field under test. */
+function completePoolRow(overrides = {}) {
+  return decorateLimitPoolItem({
+    c: "600001",
+    m: 1,
+    n: "测试股份",
+    p: 11000,
+    zdp: 10,
+    amount: 500_000_000,
+    ltsz: 8_000_000_000,
+    hs: 6.25,
+    lbc: 1,
+    fbt: 94518,
+    lbt: 101206,
+    fund: 160_000_000,
+    zbc: 1,
+    hybk: "测试行业",
+    ...overrides
+  }, "2026-07-27");
+}
+
+test("A2-01 a missing open-board count is null rather than a free full-marks zero", () => {
+  const missingZbc = completePoolRow({ zbc: undefined });
+  const realZero = completePoolRow({ zbc: 0 });
+  assert.equal(realZero.openBoardCount, 0);
+
+  const missingQuality = scoreFirstBoardQuality(missingZbc, { preLimitReturn20: 6.2, heldSupport: true });
+  const zeroQuality = scoreFirstBoardQuality(realZero, { preLimitReturn20: 6.2, heldSupport: true });
+
+  assert.equal(missingZbc.openBoardCount, null);
+  assert.equal(missingQuality.openBoardCount, null);
+  assert.equal(missingQuality.dataComplete, false);
+  assert.equal(missingQuality.partial, true);
+  assert.equal(missingQuality.grade, "--");
+  assert.equal(missingQuality.matched, false);
+  assert.equal(missingQuality.factors.find((factor) => factor.id === "openBoardCount")?.points, 0);
+  assert.ok(missingQuality.risks.includes("开板次数缺失"));
+
+  // 唯一差异就是 zbc：谎报成 0 次开板会白拿开板项的 18 分满分。
+  assert.equal(zeroQuality.factors.find((factor) => factor.id === "openBoardCount")?.points, 18);
+  assert.equal(zeroQuality.dataComplete, true);
+  assert.equal(zeroQuality.score - missingQuality.score, 18);
+});
+
+test("A2-02 a missing float market cap keeps seal and traded ratios null, not 0", () => {
+  const record = completePoolRow({ ltsz: undefined, fund: 160_000_000, amount: 500_000_000, zbc: 0 });
+  assert.equal(record.sealFloatRatio, null);
+  assert.equal(record.tradedFloatRatio, null);
+
+  const quality = scoreFirstBoardQuality(record, { preLimitReturn20: 6.2, heldSupport: true });
+  assert.equal(quality.dataComplete, false);
+  assert.equal(quality.grade, "--");
+  assert.equal(quality.factors.find((factor) => factor.id === "sealRatio")?.points, 0);
+  assert.equal(quality.factors.find((factor) => factor.id === "liquidity")?.points, 0);
+  assert.ok(quality.risks.includes("封单或流通市值字段缺失"));
+});
+
+test("C2-03 ST/delisting name gate is one shared predicate for every consumer", () => {
+  for (const name of ["*ST甲", "ST乙", "退市丙", "丁退", " ST 戊 "]) {
+    assert.equal(isRiskSecurityName(name), true, name);
+  }
+  for (const name of ["", "中航成飞", "宁德时代", "TCL科技"]) {
+    assert.equal(isRiskSecurityName(name), false, name);
+  }
+});
+
 test("sector ladder calculates promotion and failed-board rates from code sets", () => {
   const currentPool = [
     { code: "600001", name: "甲", consecutiveBoards: 2, firstSealRaw: 93000 },
@@ -256,12 +339,13 @@ test("historical strategy statistics only use outcomes after each evaluation nod
   const history = [];
   let close = 10;
   for (let index = 0; index < 130; index += 1) {
-    if ([35, 75, 105].includes(index)) close = Math.round(close * 1.1 * 100) / 100;
+    const isLimitUp = [35, 75, 105].includes(index);
+    if (isLimitUp) close = Math.round(close * 1.1 * 100) / 100;
     else close *= 1 + (index % 7 === 0 ? -0.004 : 0.003);
     history.push({
       date: new Date(2026, 0, index + 1).toISOString().slice(0, 10),
       open: close * 0.995,
-      high: close * 1.006,
+      high: isLimitUp ? close : close * 1.006,
       low: close * 0.992,
       close,
       volume: 100000 + (index % 5) * 2000,
@@ -345,8 +429,8 @@ test("historical returns enter on the next trading-day open", () => {
     const isEntry = [34, 36, 38, 40].includes(index);
     history.push({
       date: new Date(2026, 0, index + 1).toISOString().slice(0, 10),
-      open: isEvent ? 10.2 : isEntry ? 20 : close,
-      high: isEntry ? 20 : close * 1.01,
+      open: isEvent ? 10.2 : isEntry ? 12 : close,
+      high: isEvent ? close : isEntry ? 12 : close * 1.01,
       low: close * 0.99,
       close,
       volume: isEvent ? 200000 : 100000,
@@ -367,8 +451,62 @@ test("historical returns enter on the next trading-day open", () => {
   );
   const support = result.stats.find((item) => item.id === "support");
   assert.equal(support.n1, 4);
-  assert.ok(support.average1 < -40);
+  assert.ok(support.average1 < -8 && support.average1 > -9);
   assert.equal(support.nExcess5, 4);
   assert.ok(support.averageExcess5 < support.average5);
   assert.equal(result.benchmarkAvailable, true);
+});
+
+function localNewsService(transport) {
+  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
+  const { createRequire } = require('node:module');
+  const filename = path.join(__dirname, 'news-service.cjs'), realRequire = createRequire(filename), module = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, exports: module.exports,
+    require: id => id === './http-client.cjs' ? { fetchJsonWithPolicy: transport } : realRequire(id),
+    __dirname, __filename: filename, process, console, URL, DOMException, AbortController, AbortSignal, setTimeout, clearTimeout, Buffer });
+  return module.exports;
+}
+const newsTick = () => new Promise(resolve => setImmediate(resolve));
+const newsGate = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
+
+test('news source subscribers own cancellation separately and shutdown joins original transport drain', async () => {
+  const { createServiceRuntime } = require('./service-runtime.cjs');
+  const runtime = createServiceRuntime();
+  const physical = newsGate(); const signals = [];
+  const news = localNewsService((_url, { signal }) => {
+    signals.push(signal);
+    const result = new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    Object.defineProperty(result, 'drained', { value: physical.promise }); return result;
+  });
+  const a = new AbortController(), b = new AbortController();
+  const first = runtime.run('single', 'news-a', { signal: a.signal }, () => runtime.track(() => news.getNewsFeed({}, {})));
+  const second = runtime.run('single', 'news-b', { signal: b.signal }, () => runtime.track(() => news.getNewsFeed({}, {})));
+  const firstOutcome = first.catch(error => error), secondOutcome = second.catch(error => error);
+  await newsTick();
+  let shutdown;
+  try {
+    assert.equal(signals.length, 3, 'cold callers share the three public feed transports');
+    a.abort(new Error('first stopped')); await firstOutcome;
+    assert.equal(signals.some(signal => signal.aborted), false, 'another subscriber keeps shared feed work alive');
+    b.abort(new Error('second stopped')); await secondOutcome; await newsTick();
+    assert.equal(signals.every(signal => signal.aborted), true, 'last subscriber departure aborts actual transports');
+    let closed = false; shutdown = news.shutdownNewsService().then(() => { closed = true; });
+    await newsTick(); assert.equal(closed, false, 'logical fetch rejection does not hide raw HTTP cleanup');
+  } finally { a.abort(); b.abort(); shutdown ||= news.shutdownNewsService(); physical.resolve(); await Promise.allSettled([firstOutcome, secondOutcome, shutdown, runtime.shutdown()]); }
+});
+
+test('agent cancellation does not poison a background news consumer', async () => {
+  const { createServiceRuntime } = require('./service-runtime.cjs'); const runtime = createServiceRuntime();
+  const requests = [], signals = [];
+  const news = localNewsService((_url, { signal }) => { const gate = newsGate(); requests.push(gate); signals.push(signal); return gate.promise; });
+  const controller = new AbortController();
+  const agent = runtime.run('single', 'agent-news', { signal: controller.signal }, () => runtime.track(() => news.getNewsFeed({}, {})));
+  const stopped = agent.catch(error => error); const background = news.getNewsFeed({}, {});
+  await newsTick(); controller.abort(new Error('stopped')); await stopped;
+  try {
+    assert.equal(requests.length, 3);
+    assert.equal(signals.some(signal => signal.aborted), false);
+  } finally { for (const request of requests) request.resolve({ data: { fastNewsList: [{ code: "fixture", title: "离线资讯样本", showTime: new Date().toISOString() }], roll_data: [], list: [] } }); }
+  const feed = await background; assert.equal(feed.sourceStatus.filter(item => item.id !== 'ths').every(item => item.ok), true);
+  await Promise.all([runtime.shutdown(), news.shutdownNewsService()]);
 });
