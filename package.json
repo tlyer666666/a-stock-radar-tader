@@ -9,7 +9,7 @@
   },
   "description": "近期涨停趋势股选股、仓位计划与持仓退出复核工作台",
   "main": "electron/main.cjs",
-  "author": "Codex",
+  "author": "tlyer666666",
   "desktopName": "A-Share Quant Radar",
   "scripts": {
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
@@ -82,7 +82,7 @@
     "wait-on": "8.0.5"
   },
   "build": {
-    "appId": "com.codex.astockmonitor",
+    "appId": "com.tlyer666666.astockmonitor",
     "productName": "A股雷达",
     "afterPack": "electron/after-pack-fuses.cjs",
     "asar": true,
