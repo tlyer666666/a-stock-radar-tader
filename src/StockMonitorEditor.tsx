@@ -7,7 +7,6 @@ import {
   type StockMonitorConfig,
   type StockMonitorField
 } from "./stockMonitorRules";
-import "./stock-monitor.css";
 
 type DraftCondition = { id: string; field: StockMonitorField; operator: "gte" | "lte"; threshold: string };
 const freshCondition = (): DraftCondition => ({ id: `rule-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, field: "latest", operator: "gte", threshold: "" });

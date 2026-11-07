@@ -1,0 +1,152 @@
+/* Portfolio audit fixes: native financial tables and keyboard chart queries. */
+.portfolio-backtest-view .pbt-semantic-table-scroll {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.portfolio-backtest-view table.pbt-semantic-table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  color: var(--terminal-text);
+  font-size: var(--fs-xs);
+}
+
+.portfolio-backtest-view .pbt-semantic-table .pbt-tr {
+  display: table-row;
+  min-width: 0;
+  height: 44px;
+  padding: 0;
+}
+
+.portfolio-backtest-view .pbt-semantic-table :is(th, td) {
+  display: table-cell;
+  padding: 8px;
+  border-bottom: 1px solid var(--terminal-line);
+  vertical-align: middle;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.portfolio-backtest-view .pbt-semantic-table .pbt-table-empty {
+  display: table-cell;
+  height: 76px;
+  text-align: center;
+}
+
+.portfolio-backtest-view .pbt-account-fields .pbt-field-error {
+  color: var(--danger);
+}
+
+.portfolio-backtest-view .pbt-account-fields input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.portfolio-backtest-view .pbt-semantic-table thead th {
+  color: var(--terminal-muted);
+  background: var(--terminal-elevated);
+  font-weight: 700;
+}
+
+.portfolio-backtest-view .pbt-semantic-table caption {
+  padding: 8px;
+  color: var(--terminal-muted);
+  text-align: left;
+  white-space: normal;
+}
+
+.portfolio-backtest-view .pbt-semantic-table :is(th, td) :is(b, small) {
+  display: block;
+  font-size: var(--fs-xs);
+}
+
+.portfolio-backtest-view .pbt-semantic-table small {
+  margin-top: 3px;
+  color: var(--terminal-muted);
+}
+
+.portfolio-backtest-view table.pbt-contribution-table {
+  min-width: 590px;
+}
+
+.portfolio-backtest-view table.pbt-trade-table {
+  min-width: 920px;
+}
+
+.portfolio-backtest-view .pbt-security-action {
+  display: block;
+  width: 100%;
+  padding: 3px;
+  border: 0;
+  color: var(--terminal-text);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+}
+
+.portfolio-backtest-view .pbt-security-action:not(:disabled) {
+  cursor: pointer;
+}
+
+.portfolio-backtest-view .pbt-security-action:disabled {
+  opacity: 1;
+}
+
+.portfolio-backtest-view .pbt-semantic-table tbody tr:focus-within,
+.portfolio-backtest-view .pbt-security-action:not(:disabled):hover {
+  background: var(--accent-soft);
+}
+
+.portfolio-backtest-view .pbt-equity-tooltip {
+  position: static;
+  flex-wrap: wrap;
+  width: fit-content;
+  margin: 8px 12px;
+}
+
+.portfolio-backtest-view .pbt-equity-date-selector {
+  display: grid;
+  gap: 6px;
+  padding: 8px 12px;
+  color: var(--terminal-muted);
+  font-size: var(--fs-xs);
+}
+
+.portfolio-backtest-view .pbt-equity-date-selector input {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.portfolio-backtest-view .pbt-equity-date-selector output {
+  color: var(--terminal-text);
+}
+
+.portfolio-backtest-view .pbt-equity-daily-data {
+  padding: 8px 12px;
+  color: var(--terminal-muted);
+  font-size: var(--fs-xs);
+}
+
+.portfolio-backtest-view .pbt-equity-daily-data summary {
+  cursor: pointer;
+}
+
+.portfolio-backtest-view .pbt-equity-daily-data .pbt-semantic-table-scroll {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.portfolio-backtest-view .pbt-configuration-changed {
+  padding: 10px 12px;
+  border: 1px solid var(--terminal-line);
+  background: var(--terminal-elevated);
+  color: var(--terminal-text);
+  font-size: var(--fs-xs);
+}
+
+.portfolio-backtest-view :is(.pbt-security-action, .pbt-equity-date-selector input, .pbt-equity-daily-data summary, .pbt-semantic-table-scroll, .pbt-trade-scroll):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}

@@ -190,6 +190,8 @@ test('archive boundary accepts generated and legacy snapshots without altering h
   assert.equal(isReviewRecord(legacy),true,'omitted legacy evidence remains restorable without current-data recomputation');
   const market = require('../electron/review-service.cjs').buildProfessionalReviewSnapshot({generatedAt:'2026-10-01T08:00:00Z'});
   assert.equal(isReviewRecord(archiveRecord(market,'market')),true);
+  assert.equal(isReviewRecord({...archiveRecord(market,'market'),ai:{headline:'分歧',cycle:'分歧',posture:'低吸',focus:['机器人'],model:'deepseek-chat',generatedAt:'2026-11-03T07:00:00Z'}}),true,'records may carry the AI conclusion');
+  assert.equal(isReviewRecord({...archiveRecord(market,'market'),ai:{cycle:'分歧'}}),false,'an AI conclusion needs a headline');
   const oldMarket = structuredClone(market);delete oldMarket.decision;
   assert.equal(isReviewRecord(archiveRecord(oldMarket,'market')),true);
   assert.equal(JSON.stringify(current),before);

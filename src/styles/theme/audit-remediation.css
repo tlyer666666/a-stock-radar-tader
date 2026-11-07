@@ -1,0 +1,78 @@
+/* Explicit field contracts and accessible interaction states from the UI audit. */
+:root .terminal-shell .strategy-result-table {
+  width: 100%; min-width: 1060px; table-layout: fixed; border-collapse: separate; border-spacing: 0;
+  color: var(--ink-1); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+}
+:root .terminal-shell .strategy-result-col-0 { width: 180px; }
+:root .terminal-shell .strategy-result-col-1 { width: 112px; }
+:root .terminal-shell .strategy-result-col-2 { width: 172px; }
+:root .terminal-shell .strategy-result-col-3 { width: 110px; }
+:root .terminal-shell .strategy-result-col-4 { width: 220px; }
+:root .terminal-shell .strategy-result-col-5 { width: 250px; }
+:root .terminal-shell .strategy-result-table :is(th, td) {
+  display: table-cell; height: auto; min-width: 0; padding: var(--space-sm) 10px; border-bottom: 1px solid var(--line-1);
+  vertical-align: top; text-align: left; white-space: normal; overflow-wrap: anywhere; line-height: 1.65;
+}
+:root .terminal-shell .strategy-result-table thead th { background: var(--surface-2); color: var(--ink-2); font-weight: var(--fw-semibold); }
+:root .terminal-shell .strategy-result-table tbody th { font-weight: normal; }
+:root .terminal-shell .strategy-result-table tbody tr { background: var(--surface-1); }
+:root .terminal-shell .strategy-result-table tbody tr:nth-child(even) { background: var(--table-stripe); }
+:root .terminal-shell .strategy-result-table tbody tr:hover { background: var(--surface-3); }
+:root .terminal-shell .strategy-result-table tbody tr.clickable { cursor: pointer; }
+:root .terminal-shell .strategy-result-table :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: inherit; box-shadow: 1px 0 var(--line-2); }
+:root .terminal-shell .strategy-result-table thead th:first-child { background: var(--surface-2); z-index: 2; }
+:root .terminal-shell .strategy-security-link { display: flex; flex-wrap: wrap; align-items: baseline; gap: 5px; min-height: 28px; height: auto; padding: 0; border: 0; background: transparent; color: var(--ink-1); text-align: left; font: inherit; }
+:root .terminal-shell .strategy-security-link:hover { color: var(--accent); text-decoration: underline; }
+:root .terminal-shell .strategy-security-link small { color: var(--ink-2); font-size: var(--fs-2xs); }
+:root .terminal-shell .strategy-result-table .strategy-stock-reasons { display: block; margin-top: 3px; color: var(--ink-2); font-size: var(--fs-2xs); white-space: normal; overflow: visible; text-overflow: clip; }
+:root .terminal-shell .strategy-result-table .strategy-stock-quote :is(b, em) { display: block; font-style: normal; }
+:root .terminal-shell .strategy-result-table .strategy-stock-notes { display: table-cell; overflow: visible; -webkit-line-clamp: unset; color: var(--warn); white-space: normal; }
+:root .terminal-shell .strategy-result-table .strategy-hit-chips { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 5px; }
+:root .terminal-shell .strategy-result-table .strategy-hit-chip { display: inline-flex; max-width: 100%; min-height: 28px; height: auto; padding: 3px var(--space-xs); border: 1px solid var(--line-2); border-radius: var(--radius-xs); background: var(--surface-2); color: var(--accent); font: inherit; white-space: normal; text-align: left; line-height: 1.5; }
+:root .terminal-shell .strategy-result-table .strategy-hit-chip:hover { border-color: var(--accent); }
+
+/* Keep security identity visible while the containing business table scrolls. */
+:root .terminal-shell .puf-table { border-collapse: separate; border-spacing: 0; }
+:root .terminal-shell .puf-table :is(th, td):first-child { position: sticky; left: 0; z-index: 1; background: var(--terminal-panel); box-shadow: 1px 0 var(--line-2); }
+:root .terminal-shell .puf-table thead th:first-child { z-index: 2; background: var(--terminal-soft); }
+:root .terminal-shell .puf-table tbody tr:hover > td:first-child { background: var(--surface-2); }
+:root .terminal-shell .holdings-table { overflow: auto; isolation: isolate; }
+:root .terminal-shell .holdings-table .tr { height: auto; min-height: var(--terminal-row-h); align-items: stretch; }
+:root .terminal-shell .holdings-table .tr > span { padding: var(--space-2xs) 0; flex-wrap: wrap; white-space: normal; align-content: center; }
+:root .terminal-shell .holdings-table .tr > span:first-child { position: sticky; left: -8px; z-index: 1; padding-left: var(--space-sm); background: var(--surface-1); box-shadow: 1px 0 var(--line-2); }
+:root .terminal-shell .holdings-table .th > span:first-child { background: var(--surface-2); z-index: 2; }
+:root .terminal-shell .holdings-table .holdings-row-actions { gap: 5px; }
+
+/* The narrow news rail budgets for both the label and an unbroken count. */
+:root .terminal-shell .information-filter-rail .news-scope-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root .terminal-shell .information-filter-rail .news-scope-tabs button { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: var(--space-2xs); min-width: 0; height: auto; min-height: 36px; padding: var(--space-xs) var(--space-2xs); }
+:root .terminal-shell .news-scope-label, :root .terminal-shell .news-scope-count { white-space: nowrap; word-break: keep-all; }
+:root .terminal-shell .news-scope-count { font-size: var(--fs-2xs); font-variant-numeric: tabular-nums; }
+
+/* Native dialog owns focus containment and background modality. */
+dialog.confirm-dialog { margin: auto; width: min(520px, calc(100vw - 32px)); color: var(--ink-1); }
+dialog.confirm-dialog:not([open]) { display: none; }
+dialog.confirm-dialog::backdrop { background: var(--overlay); }
+:root .terminal-shell .display-density-control { position: relative; flex: 0 0 auto; }
+:root .terminal-shell .display-density-toggle { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; white-space: nowrap; }
+:root .terminal-shell .display-density-control > small { position: absolute; right: 0; top: 100%; z-index: var(--z-pop); width: 220px; padding: var(--space-sm); background: var(--surface-2); color: var(--warn); border: 1px solid var(--warn-border); }
+:root[data-density="comfortable"] { --terminal-row-h: 42px; --control-h-sm: 32px; }
+:root[data-density="comfortable"] .app-shell.terminal-shell :is(.watch-stock-table, .trend-result-table, .sector-explorer-table, .pbt-stock-table) :is(th, td) { font-size: var(--fs-sm); padding-top: 5px; padding-bottom: 5px; }
+:root[data-density="comfortable"] .app-shell.terminal-shell :is(.trend-text-button, .watch-stock-open, .watch-row-actions button, .limit-row-actions .table-action, .holdings-row-actions button, .strategy-security-link, .strategy-hit-chip, .puf-action-button) { min-height: 32px; height: auto; padding-top: var(--space-2xs); padding-bottom: var(--space-2xs); font-size: var(--fs-sm); }
+:root[data-density="comfortable"] .app-shell.terminal-shell :is(.limit-row-actions, .watch-row-actions, .holdings-row-actions, .strategy-hit-chips) { gap: var(--space-sm); }
+:root[data-density="comfortable"] .terminal-shell .strategy-result-table :is(th, td) { font-size: var(--fs-sm); padding-top: 10px; padding-bottom: 10px; }
+:root .terminal-shell .chart-refresh-warning { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-sm); padding: var(--space-sm) 10px; color: var(--warn); background: var(--warn-soft); border: 1px solid var(--warn-border); font-size: var(--fs-xs); }
+:root .terminal-shell .chart-refresh-warning button { margin-left: auto; }
+
+:root .terminal-shell .strategy-selection-diagnostics { padding: var(--space-md); margin-top: 10px; color: var(--ink-2); font-size: var(--fs-xs); }
+:root .terminal-shell .strategy-selection-diagnostics summary { cursor: pointer; color: var(--ink-1); font-weight: var(--fw-semibold); }
+:root .terminal-shell .strategy-selection-diagnostics > div { overflow: auto; }
+:root .terminal-shell .strategy-selection-diagnostics table { width: 100%; min-width: 580px; border-collapse: collapse; text-align: left; }
+:root .terminal-shell .strategy-selection-diagnostics :is(th, td) { padding: 7px 9px; border-bottom: 1px solid var(--line-1); vertical-align: top; }
+:root .terminal-shell .strategy-selection-diagnostics p { line-height: 1.7; }
+
+/* The compact grid retains 28px rows and provides at least a 24px click target. */
+:root .app-shell.terminal-shell :is(.limit-row-actions .table-action, .holdings-row-actions button, .watch-row-actions button, .strategy-stock-row-actions button) {
+  min-height: var(--space-2xl);
+}
+:root .terminal-shell dialog.confirm-dialog .danger-btn { background-color: var(--danger-soft); }

@@ -15,19 +15,20 @@ test("market pages preserve source totals and securities beyond page one", async
   assert.deepEqual(page.rows[0], { code: "920001", name: "示例", secid: "0.920001", industry: "工业", assetType: "stock" });
 });
 
-test("daily history keeps raw amount units and missing values missing", async () => {
+test("daily history keeps raw amount units and optional missing values missing", async () => {
   const requests = [];
   const data = createTrendMarketData({ fetchJson: async (url) => {
     requests.push(new URL(url));
     return { data: { code: "600000", klines: [
       "2026-09-29,10,11,11,9.9,1234,300000000,11,10,1,2.1",
-      "2026-09-30,11,11.2,11.4,10.9,2345,-,5,1.82,0.2,3"
+      "2026-09-30,11,11.2,11.4,10.9,2345,2626400,5,1.82,0.2,-"
     ] } };
   } });
   const raw = await data.fetchHistory({ code: "600000", secid: "1.600000" }, "none");
   const adjusted = await data.fetchHistory({ code: "600000", secid: "1.600000" }, "front");
   assert.equal(raw.rows[0].amount, 300000000);
-  assert.equal(raw.rows[1].amount, null);
+  assert.equal(raw.rows[1].amount, 2626400);
+  assert.equal(raw.rows[1].turnover, null);
   assert.equal(raw.rows[0].change, 1);
   assert.equal(raw.adjustment, "none");
   assert.equal(adjusted.adjustment, "front");
@@ -261,7 +262,7 @@ test("Sina all-A recognizes the officially listed 302 ChiNext code", async () =>
 });
 
 test("a failed full Sina universe is not refetched for every board within a scan",async()=>{
-  let pages=0;const data=createTrendMarketData({fetchJson:async url=>{
+  let pages=0;const data=createTrendMarketData({sinaPageRetryDelays:[],fetchJson:async url=>{
     const u=new URL(url);if(u.hostname.endsWith("eastmoney.com"))throw networkFailure();
     if(u.pathname.includes("StockCount"))return "2";pages++;return [];
   }});const signal=new AbortController().signal;
@@ -326,3 +327,213 @@ for (const code of ['QUEUE_FULL', 'QUEUE_TIMEOUT']) {
     assert.equal(sources[0].source, 'eastmoney', 'only the actual primary network failure is provider evidence');
   });
 }
+
+const thsRows = (base) => ["2026-10-20", "2026-10-21", "2026-10-22"].map((date, index) => ({ date, open: base + index, high: base + index + 1, low: base + index - 0.5,
+  close: base + index + 0.5, volume: 1000 + index, amount: 1e7 + index, turnover: 1.2, changePct: index ? 1 : null, change: index ? 0.1 : null, amplitude: 2 }));
+
+test("THS history retains reference prices and explicit price-basis evidence for the strategy engine", async () => {
+  const rows = thsRows(10);
+  Object.assign(rows[1], { preClose: 9.5, previousClose: 9.5, upperLimit: 10.45, lowerLimit: 8.55,
+    adjustmentFactor: 2, adjFactor: 2, corporateActionUnresolved: true, noPriceLimit: true, isST: false });
+  const data = createTrendMarketData({ historyBars: 20, fetchJson: async () => { throw Error("unexpected fallback"); },
+    ths: { quote: async () => null, history: async () => rows } });
+  const result = await data.fetchHistory({ code: "600000", secid: "1.600000" }, "none");
+  assert.equal(result.rows[1].preClose, 9.5);
+  assert.equal(result.rows[1].previousClose, 9.5);
+  assert.equal(result.rows[1].upperLimit, 10.45);
+  assert.equal(result.rows[1].lowerLimit, 8.55);
+  assert.equal(result.rows[1].adjustmentFactor, 2);
+  assert.equal(result.rows[1].adjFactor, 2);
+  assert.equal(result.rows[1].corporateActionUnresolved, true);
+  assert.equal(result.rows[1].noPriceLimit, true);
+  assert.equal(result.rows[1].isST, false);
+});
+
+test("THS free daily history is the primary source; front prices keep raw volume and amount", async () => {
+  const eastCalls = [], thsCalls = [];
+  const data = createTrendMarketData({ historyBars: 20, fetchJson: async (url) => { eastCalls.push(url); throw new Error("east must not be used"); },
+    ths: { quote: async () => ({ latest: 11 }), history: async (security, options) => {
+      thsCalls.push(`${security.code}:${options.fqt}`);
+      return options.fqt === 1 ? thsRows(5).map((row) => ({ ...row, volume: 1, amount: 1 })) : thsRows(10);
+    } } });
+  const signal = new AbortController().signal;
+  const raw = await data.fetchHistory({ code: "600000", secid: "1.600000" }, "none", { signal });
+  const front = await data.fetchHistory({ code: "600000", secid: "1.600000" }, "front", { signal });
+  assert.equal(raw.source, "ths-free");
+  assert.equal(front.source, "ths-free");
+  assert.equal(front.rows[0].close, 5.5, "front prices come from the THS front-adjusted file");
+  assert.equal(front.rows[0].amount, 1e7, "volume/amount come from the raw file, never the adjusted one");
+  assert.deepEqual(thsCalls, ["600000:0", "600000:1"], "raw history is shared between the raw and front requests");
+  assert.equal(eastCalls.length, 0);
+  assert.ok(data.getDiagnostics({ signal }).sources.some((item) => item.source === "ths-free" && item.status === "ok"));
+});
+
+test("a THS failure falls back to the emergency chain and repeated provider faults pause THS", async () => {
+  let thsCalls = 0, now = 1000;
+  const data = createTrendMarketData({ historyBars: 20, clock: () => now,
+    fetchJson: async (url) => ({ data: { code: new URL(url).searchParams.get("secid").slice(2), klines: ["2026-10-22,10,11,11,9.9,1234,300000000,11,10,1,2.1"] } }),
+    ths: { quote: async () => null, history: async () => { thsCalls += 1; throw Object.assign(new Error("HTTP 503"), { status: 503 }); } } });
+  const signal = new AbortController().signal;
+  for (const code of ["600000", "600001", "600002", "600003"]) {
+    const result = await data.fetchHistory({ code, secid: `1.${code}` }, "none", { signal });
+    assert.equal(result.source, "eastmoney");
+  }
+  assert.equal(thsCalls, 3, "after three provider faults THS is paused instead of being hit for every stock");
+  now += 61000;
+  await data.fetchHistory({ code: "600009", secid: "1.600009" }, "none", { signal });
+  assert.equal(thsCalls, 4, "THS is retried once the pause ends");
+  const ths = data.getDiagnostics({ signal }).sources.find((item) => item.source === "ths-free");
+  assert.match(ths.detail, /已改用应急源/);
+});
+
+test("an incomplete THS window for one stock does not pause THS for the others", async () => {
+  let thsCalls = 0;
+  const data = createTrendMarketData({ historyBars: 20,
+    fetchJson: async (url) => ({ data: { code: new URL(url).searchParams.get("secid").slice(2), klines: ["2026-10-22,10,11,11,9.9,1234,300000000,11,10,1,2.1"] } }),
+    ths: { quote: async () => null, history: async () => { thsCalls += 1; throw Object.assign(new Error("窗口不足"), { code: "THS_FREE_INCOMPLETE_HISTORY" }); } } });
+  const signal = new AbortController().signal;
+  for (const code of ["600000", "600001", "600002", "600003", "600004"]) await data.fetchHistory({ code, secid: `1.${code}` }, "none", { signal });
+  assert.equal(thsCalls, 5);
+});
+
+test("universe rows carry the listed close snapshot for the local daily store, and raw history reads go through the store", async () => {
+  const fetchedAt = Date.parse("2026-10-20T15:20:00+08:00");
+  const data = createTrendMarketData({ clock: () => fetchedAt, fetchJson: async url => {
+    const parsed = new URL(url);
+    if (parsed.hostname.startsWith("push2delay")) {
+      assert.match(parsed.searchParams.get("fields"), /f2,f5,f6,f8,f15,f16,f17,f18,f124/);
+      return { data: { total: 2, diff: [
+        { f12: "600001", f14: "样本", f13: 1, f100: "电子", f2: 10.5, f5: 2000, f6: 2100000, f15: 10.6, f16: 10, f17: 10.1, f18: 10, f124: 1792479603 },
+        { f12: "600002", f14: "停牌", f13: 1, f100: "电子", f2: "-", f5: "-", f6: "-", f15: "-", f16: "-", f17: "-", f18: 9, f124: 1792393200 }
+      ] } };
+    }
+    throw new Error(`unexpected ${url}`);
+  } });
+  const page = await data.fetchUniversePage({ filter: "m:1+t:2", page: 1, pageSize: 100 });
+  assert.deepEqual(page.rows[0].closeSnapshot, { latest: 10.5, open: 10.1, high: 10.6, low: 10, preClose: 10, volume: 2000, amount: 2100000,
+    quoteAt: new Date(1792479603 * 1000).toISOString(), quoteAtIsTradeTime: true, fetchedAt, source: "eastmoney-list" });
+  assert.equal(page.rows[1].closeSnapshot, undefined, "suspended rows have no snapshot");
+
+  const calls = [];
+  const stored = { rows: [{ date: "2026-10-20", open: 1, high: 1, low: 1, close: 1, volume: 1, amount: 100 }], adjustment: "none", source: "local-store" };
+  const withStore = createTrendMarketData({ fetchJson: async () => { throw new Error("network must not be used"); }, ths: null,
+    asOf: () => "2026-10-20",
+    dailyStore: { history: async (security, asOf, fetchFull, options) => { calls.push([security.code, asOf, typeof fetchFull, options.bars]); return stored; },
+      prepareDay: async (securities, asOf) => { calls.push(["prepare", securities.length, asOf]); return { requested: 1, received: 1 }; } } });
+  assert.equal(await withStore.fetchHistory({ code: "600001", secid: "1.600001" }, "none"), stored);
+  assert.deepEqual(await withStore.prepareHistories([{ code: "600001" }]), { requested: 1, received: 1 });
+  assert.deepEqual(calls, [["600001", "2026-10-20", "function", 320], ["prepare", 1, "2026-10-20"]]);
+});
+
+test("1.6.47: the universe tries push2 before push2delay, and a throttled Sina page is retried instead of failing the scan", async () => {
+  const hosts = [];
+  const east = createTrendMarketData({ fetchJson: async url => {
+    const u = new URL(url); hosts.push(u.hostname);
+    if (u.hostname === "push2.eastmoney.com") return { rc: 0, data: { total: 1, diff: [{ f12: "600000", f14: "浦发银行", f13: 1, f100: "银行" }] } };
+    throw networkFailure();
+  } });
+  const page = await east.fetchUniversePage({ filter: "m:1+t:2", page: 1, pageSize: 100 });
+  assert.equal(page.rows[0].code, "600000");
+  assert.deepEqual(hosts, ["push2.eastmoney.com"]);
+
+  const tried = [];
+  const delayed = createTrendMarketData({ fetchJson: async url => {
+    const u = new URL(url); tried.push(u.hostname);
+    if (u.hostname === "push2.eastmoney.com") return {};
+    if (u.hostname === "push2delay.eastmoney.com") throw networkFailure();
+    throw new Error("unexpected");
+  } });
+  await assert.rejects(delayed.fetchUniversePage({ filter: "m:1+t:2", page: 1, pageSize: 100 }));
+  assert.deepEqual(tried.slice(0, 2), ["push2.eastmoney.com", "push2delay.eastmoney.com"], "an empty push2 reply moves on to push2delay");
+
+  let calls = 0;
+  const sina = createTrendMarketData({ sinaPageRetryDelays: [0, 0, 0], fetchJson: async url => {
+    const u = new URL(url);
+    if (u.hostname.endsWith("eastmoney.com")) throw networkFailure();
+    if (u.pathname.includes("StockCount")) return "2";
+    calls += 1;
+    return calls < 3 ? [] : [{ code: "600000", symbol: "sh600000", name: "浦发银行" }, { code: "000001", symbol: "sz000001", name: "平安银行" }];
+  } });
+  const main = await sina.fetchUniversePage({ filter: "m:1+t:2", page: 1, pageSize: 100 });
+  assert.equal(main.source, "sina-all-a");
+  assert.deepEqual(main.rows.map(row => row.code), ["600000"]);
+  assert.equal(calls, 3, "two throttled replies, then the full page");
+});
+
+// A06: reject bad provider evidence before it can become a same-day local hit.
+const recoveryDates = require('./trend-trading-calendar.cjs').createTradingCalendar().sessionsThrough('2026-11-05', 120);
+const recoverySecurity = { code: '600001', secid: '1.600001', name: '恢复样本' };
+const recoveryRows = () => recoveryDates.map(date => ({ date, open: 10, close: 10, high: 10.2, low: 9.8, volume: 100000, amount: 100000000 }));
+const eastPayload = rows => ({ rc: 0, data: { code: '600001', klines: rows.map(row => [row.date, row.open, row.close, row.high, row.low, row.volume ?? '-', row.amount ?? '-'].join(',')) } });
+for (const [label, corrupt] of [
+  ['OHLC conflict', rows => { rows.at(-1).high = 9; }],
+  ['duplicate date', rows => { rows.at(-1).date = rows.at(-2).date; }],
+  ['missing amount', rows => { rows.at(-1).amount = null; }],
+  ['missing volume', rows => { rows.at(-1).volume = null; }],
+  ['invalid calendar date', rows => { rows.at(-1).date = '2026-02-30'; }]
+]) for (const newTask of [false, true]) test(`A06 ${label} is rejected and corrected same-day history becomes ready (${newTask ? 'new' : 'same'} task)`, async () => {
+  const { createDailyBarStore } = require('./daily-bar-store.cjs');
+  const store = createDailyBarStore({ previousSession: () => recoveryDates.at(-2) });
+  let calls = 0;
+  const data = createTrendMarketData({ dailyStore: store, asOf: () => '2026-11-05', ths: null, fetchJson: async () => {
+    const rows = recoveryRows(); if (++calls === 1) corrupt(rows); return eastPayload(rows);
+  } });
+  const signal = new AbortController().signal;
+  await assert.rejects(data.fetchHistory(recoverySecurity, 'none', { signal }), { code: 'TREND_DATA_UNAVAILABLE' });
+  const repaired = await data.fetchHistory(recoverySecurity, 'none', { signal: newTask ? new AbortController().signal : signal });
+  assert.equal(calls, 2, 'the corrected response must actually be downloaded');
+  assert.equal(repaired.rows.at(-1).high, 10.2);
+  const ready = require('./strategy-signal-engine.cjs').buildStrategySelectionReport([recoverySecurity], { '600001': repaired.rows }, recoveryRows(), {
+    selectionOnly: true, minCurrentHistoryBars: 120, asOfDate: '2026-11-05', marketDates: recoveryDates
+  });
+  assert.equal(ready.dataQuality.processed, 1);
+  assert.equal(ready.dataQuality.invalid, 0);
+  const local = await data.fetchHistory(recoverySecurity, 'none', { signal: new AbortController().signal });
+  assert.equal(local.provenance.cache, 'local');
+  assert.equal(calls, 2);
+});
+
+test('A06 failed-host evidence expires so a repaired provider is retried in the same task', async () => {
+  const { createDailyBarStore } = require('./daily-bar-store.cjs');
+  let clock = 1000, calls = 0, recovered = false;
+  const store = createDailyBarStore({ previousSession: () => recoveryDates.at(-2), now: () => clock });
+  const data = createTrendMarketData({ dailyStore: store, asOf: () => '2026-11-05', clock: () => clock, ths: null, fetchJson: async url => {
+    if (new URL(url).hostname.endsWith('eastmoney.com')) {
+      calls++; if (!recovered) throw networkFailure(); return eastPayload(recoveryRows());
+    }
+    throw Object.assign(Error('fallback offline'), { status: 503 });
+  } });
+  const signal = new AbortController().signal;
+  await assert.rejects(data.fetchHistory(recoverySecurity, 'none', { signal }));
+  recovered = true; clock += 6 * 60 * 1000;
+  const result = await data.fetchHistory(recoverySecurity, 'none', { signal });
+  assert.equal(result.rows.at(-1).date, '2026-11-05');
+  assert.equal(calls, 2);
+});
+
+test('A06 raw task cache expires so the daily store can recover a delayed tail', async () => {
+  const { createDailyBarStore } = require('./daily-bar-store.cjs');
+  let clock = 1000;
+  const store = createDailyBarStore({ previousSession: () => recoveryDates.at(-2), now: () => clock });
+  let rawCalls = 0;
+  const delayed = createTrendMarketData({ dailyStore: store, asOf: () => '2026-11-06', clock: () => clock, ths: null, fetchJson: async () => {
+    rawCalls++; const rows = recoveryRows(); if (rawCalls > 1) rows.push({ ...rows.at(-1), date: '2026-11-06' }); return eastPayload(rows);
+  } });
+  const first = await delayed.fetchHistory(recoverySecurity, 'none');
+  assert.equal(first.rows.at(-1).date, '2026-11-05');
+  clock += 4 * 60 * 1000;
+  assert.equal((await delayed.fetchHistory(recoverySecurity, 'none')).rows.at(-1).date, '2026-11-05');
+  clock += 2 * 60 * 1000;
+  assert.equal((await delayed.fetchHistory(recoverySecurity, 'none')).rows.at(-1).date, '2026-11-06');
+  assert.equal(rawCalls, 2, 'the adapter cache cannot outlive the store recovery cooldown');
+});
+
+test('A06 Eastmoney index history may omit activity but still rejects invalid OHLC', async () => {
+  let malformed = false;
+  const data = createTrendMarketData({ ths: null, fetchJson: async () => ({ data: { code: '000985', klines: [`2026-11-05,5000,5010,${malformed ? 4990 : 5020},4990,-,-`] } }) });
+  const rows = await data.fetchBenchmark();
+  assert.equal(rows[0].amount, null);
+  assert.equal(rows[0].volume, null);
+  malformed = true;
+  await assert.rejects(data.fetchBenchmark(), { code: 'TREND_DATA_UNAVAILABLE' });
+});

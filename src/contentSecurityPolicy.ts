@@ -10,4 +10,6 @@ export const cspConnectSources = (command: ViteCommand): string =>
 export const injectCspConnectSources = (
   html: string,
   command: ViteCommand
-): string => html.replace("__CSP_CONNECT_SRC__", cspConnectSources(command));
+): string => html
+  .replace("__CSP_CONNECT_SRC__", cspConnectSources(command))
+  .replace("__CSP_STYLE_SRC__", command === "build" ? "'self'" : "'self' 'unsafe-inline'");

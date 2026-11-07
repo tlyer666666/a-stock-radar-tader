@@ -21,8 +21,10 @@ class BoundedCache extends Map {
   }
   expiryOf(entry) {
     if (!entry || entry.promise || !Object.prototype.hasOwnProperty.call(entry, 'value')) return Infinity;
-    const expiry = Math.max(Number(entry.expiresAt) + this.staleTtlMs, Number(entry.staleUntil) || 0);
-    return Number.isFinite(expiry) ? expiry : Infinity;
+    const baseExpiry = Number.isFinite(Number(entry.expiresAt)) ? Number(entry.expiresAt) + this.staleTtlMs : 0;
+    const staleUntil = Number.isFinite(Number(entry.staleUntil)) ? Number(entry.staleUntil) : 0;
+    const expiry = Math.max(baseExpiry, staleUntil);
+    return expiry > 0 ? expiry : Infinity;
   }
   prune() {
     const now = this.now();
@@ -57,7 +59,15 @@ class BoundedCache extends Map {
     let bytes = 0;
     if (!value?.promise) {
       try { bytes = Buffer.byteLength(JSON.stringify([key, value]), 'utf8'); }
-      catch { this.prune(); return this; } // An unaccountable result may still return to its caller.
+      catch {
+        // E-05: 无法计量（循环引用 / getter 抛错）时不入缓存，直接返回 this。
+        // prune() 自身若再抛错，不能让它逃逸出 set —— 否则一次异常值写入会让
+        // 整个缓存永久失效且无人知晓。这里兜住并留一条诊断。
+        try { this.prune(); } catch (pruneError) {
+          if (typeof this.onPruneError === "function") this.onPruneError(pruneError);
+        }
+        return this;
+      }
       if (bytes > this.maxEntryBytes) { this.prune(); return this; }
     }
     super.set(key, value);

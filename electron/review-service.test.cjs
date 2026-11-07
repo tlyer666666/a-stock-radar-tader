@@ -1,8 +1,10 @@
+require("../qa/test-env.cjs"); // 自防御：不依赖运行器预加载，直接 node --test 本文件也禁网
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const services = require("./services.cjs");
 const {
   buildProfessionalReviewSnapshot,
+  integrateFuyaoReview,
   getProfessionalReview,
   marketSession,
   resetProfessionalReviewCache
@@ -411,4 +413,49 @@ test('review index fallback keeps Shanghai identity and unadjusted prices when t
   assert.equal(result.adjustment, '不复权');
   assert.equal(result.rows[0].amount, null, 'price-only fallback does not invent turnover evidence');
   assert.deepEqual(urls.map(url => url.hostname), ['push2his.eastmoney.com', 'web.ifzq.gtimg.cn']);
+});
+
+test("同花顺扶摇数据并入复盘本身：生态、梯队原因、证据、风险、清单和有序证据", () => {
+  const review = buildProfessionalReviewSnapshot({
+    generatedAt: "2026-07-30T15:10:00+08:00",
+    emotion: { date: "2026-07-30", limitUpCount: 10, limitDownCount: 2, previousLimitUpCount: 8, score: 60 },
+    market: { stockCount: 5300, upCount: 2600, downCount: 2500, flatCount: 200, breadth: 2600 / 5300, averageReturn: 0.1 },
+    ladderPools: { currentPool: [{ code: "600001", name: "甲", consecutiveBoards: 3 }], previousPool: [], failedPool: null, failedPoolAvailable: false },
+    sectors: [{ name: "机器人", score: 70, poolShare: 0.2 }],
+    indices: []
+  });
+  assert.ok(review.riskSignals.some((item) => /炸板池不可用/.test(item)));
+  const fuyao = {
+    available: true, sealRate: 0.5,
+    limitUp: { count: 10, maxBoards: 3, reasons: [{ reason: "机器人", count: 5, stocks: [{ code: "600001", name: "甲" }] }, { reason: "算力", count: 2, stocks: [] }],
+      leaders: [{ code: "600001", name: "甲", boards: 3, boardsText: "3连板" }], byCode: { "600001": { reason: "机器人+业绩", boardsText: "3连板", sealMoney: 2e8 } } },
+    limitBreak: { count: 10 }, limitDown: { count: 2 },
+    dragonTiger: { date: "2026-07-30", topNet: [{ code: "600002", name: "乙", net: 1e8, orgNet: 5e7 }], desks: [{ name: "某营业部" }] },
+    hot: [{ code: "600001", name: "甲" }]
+  };
+  integrateFuyaoReview(review, fuyao);
+  assert.equal(review.fuyao, fuyao, "detail cards keep the raw block");
+  assert.equal(review.ecology.sealRate, 0.5);
+  assert.equal(review.ecology.failedBoards, 10, "a missing failed-board pool is filled from THS");
+  assert.ok(!review.riskSignals.some((item) => /炸板池不可用/.test(item)));
+  assert.ok(review.riskSignals.some((item) => /封板率 50.0%/.test(item)));
+  assert.ok(review.riskSignals.some((item) => /过度集中于「机器人」/.test(item)));
+  assert.equal(review.leaders[0].thsReason, "机器人+业绩");
+  assert.ok(review.evidence.some((item) => /同花顺涨停原因最集中：机器人 5 只/.test(item)));
+  assert.ok(review.evidence.some((item) => /机构净买入：乙/.test(item)));
+  assert.match(review.nextPlan.focus[0], /题材「机器人」/);
+  assert.match(review.nextPlan.observe[0], /甲（3连板）/);
+  assert.ok(review.sources.some((item) => /扶摇/.test(item)));
+  assert.ok(review.decision.metrics.some((metric) => metric.id === "sealRate" && metric.value === 50));
+  assert.equal(review.decision.context[0].id, "ths-themes");
+  assert.ok(review.decision.evidence.some((item) => item.id === "ths-seal-rate" && item.tone === "risk"));
+  assert.ok(review.decision.steps.find((step) => step.id === "market").facts.some((fact) => /同花顺涨停题材/.test(fact)));
+});
+
+test("没有扶摇 Key 时复盘不变，只附带说明", () => {
+  const review = buildProfessionalReviewSnapshot({ generatedAt: "2026-09-30T08:00:00Z" });
+  const before = JSON.stringify(review.evidence);
+  integrateFuyaoReview(review, { available: false, reason: "未配置" });
+  assert.equal(JSON.stringify(review.evidence), before);
+  assert.equal(review.fuyao.available, false);
 });

@@ -71,14 +71,15 @@ test('total operation deadline includes queue wait and does not start expired wo
   await assert.rejects(queued, { code: 'JOB_TIMEOUT' }); await queued.drained;
   assert.equal(started, 0); gate.resolve(); await first; await first.drained; assert.equal(started, 0);
 });
-test('duplicate request ids remain reserved until physical drain and different owners are isolated', async () => {
+test('active request ids are isolated by owner and a cancelled shared subscriber may reuse its id', async () => {
   const jobs = group(), gate = deferred();
   const a = jobs.subscribe(request('id'), () => gate.promise), b = jobs.subscribe(request('id', { owner: 2 }), () => {});
   await assert.rejects(jobs.subscribe(request('id', { key: 'other' }), () => {}), { code: 'JOB_DUPLICATE_REQUEST' });
   const rejected = assert.rejects(a, { code: 'JOB_CANCELLED' }); assert.equal(jobs.cancelOwner(1), 1); await rejected;
   assert.equal(jobs.cancelOwner(1), 0);
-  await assert.rejects(jobs.subscribe(request('id'), () => {}), { code: 'JOB_DUPLICATE_REQUEST' });
+  const reused = jobs.subscribe(request('id'), () => { throw Error('must share live peer'); });
   gate.resolve('peer'); assert.equal(await b, 'peer'); await b.drained;
+  assert.equal(await reused, 'peer');
   assert.equal(await jobs.subscribe(request('id'), () => 'reused'), 'reused'); await jobs.shutdown();
 });
 test('shutdown rejects callers promptly but waits for producer and tracked resource drain', async () => {
@@ -106,12 +107,24 @@ test('physical ownership survives a producer synchronous failure and tracked rej
   physical.reject(new Error('late physical failure')); await job.drained; assert.equal(jobs.getDiagnostics().active, 0);
   assert.equal(await jobs.subscribe(request('good'), () => 'ok'), 'ok'); await jobs.shutdown();
 });
-test('request registry is bounded even when cancelled subscribers remain physically undrained', async () => {
+test('cancelled shared subscribers release registry quota while the producer remains owned', async () => {
   const jobs = group({ maxSubscribers: 2 }), gate = deferred();
   const a = jobs.subscribe(request('a'), () => gate.promise), b = jobs.subscribe(request('b'), () => {});
   const rejected = assert.rejects(a, { code: 'JOB_CANCELLED' }); jobs.cancel({ owner: 1, requestId: 'a' }); await rejected;
-  await assert.rejects(jobs.subscribe(request('c'), () => {}), { code: 'SERVICE_BUSY' });
-  assert.equal(jobs.getDiagnostics().requests, 2); gate.resolve(); await b; await a.drained; assert.equal(jobs.getDiagnostics().requests, 0);
+  assert.equal(jobs.getDiagnostics().requests, 1);
+  const c = jobs.subscribe(request('c'), () => { throw Error('must share'); });
+  assert.equal(jobs.getDiagnostics().requests, 2); gate.resolve(); await Promise.all([b,c]); await a.drained; assert.equal(jobs.getDiagnostics().requests, 0);
+});
+
+test('returned producer cannot be shared while its physical resources drain', async () => {
+  const jobs=group({maxActive:2}), physical=deferred();
+  const first=jobs.subscribe(request('first'),ctx=>{ctx.track(physical.promise);throw Error('failed producer');});
+  try {
+    await assert.rejects(first,/failed producer/);
+    const next=jobs.subscribe(request('next'),()=>42);
+    assert.equal(await next,42); await next.drained;
+    assert.equal(jobs.getDiagnostics().active,1);
+  } finally {physical.resolve();await first.drained;await jobs.shutdown();}
 });
 test('operation and key both participate in shared producer identity', async () => {
   const jobs = group(), a = deferred(), b = deferred(); let calls = 0;
@@ -147,12 +160,12 @@ test('producer rejection without an Error value remains a failure', async () => 
 });
 test('total deadline is checked when producer returns even if synchronous work delayed its timer', async () => {
   const jobs = group({ operationTimeouts: { single: 5 } });
-  const job = jobs.subscribe(request('late-result'), () => { const end = performance.now() + 15; while (performance.now() < end) {} return 'too late'; });
+  const job = jobs.subscribe(request('late-result'), () => { const end = performance.now() + 15; while (performance.now() < end) { /* spin to the deadline */ } return 'too late'; });
   await assert.rejects(job, { code: 'JOB_TIMEOUT' }); await job.drained;
 });
 test('subscriber deadline is checked at delivery when synchronous work delayed its timer', async () => {
   const jobs = group();
-  const job = jobs.subscribe(request('short', { timeoutMs: 5 }), () => { const end = performance.now() + 15; while (performance.now() < end) {} return 'too late'; });
+  const job = jobs.subscribe(request('short', { timeoutMs: 5 }), () => { const end = performance.now() + 15; while (performance.now() < end) { /* spin to the deadline */ } return 'too late'; });
   await assert.rejects(job, { code: 'JOB_TIMEOUT' }); await job.drained;
 });
 test('already-started physical promise is still registered when deadline elapsed before tracking it', async () => {

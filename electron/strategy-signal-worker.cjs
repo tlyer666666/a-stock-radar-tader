@@ -2,11 +2,12 @@
 
 const { parentPort, workerData } = require("node:worker_threads");
 const {
-  buildStrategySignalReport
+  buildStrategySignalReport, buildStrategySelectionReport
 } = require("./strategy-signal-engine.cjs");
 
 try {
-  const value = buildStrategySignalReport(
+  const build = workerData?.replay?.selectionOnly === true ? buildStrategySelectionReport : buildStrategySignalReport;
+  const value = build(
     workerData?.candidates,
     workerData?.historiesByCode,
     workerData?.benchmarkRows,

@@ -1,5 +1,5 @@
 // Consumer boundary for persisted or remotely supplied securities.
-export const isUsableSecurity = (value: unknown): value is Security => {
+const isUsableSecurity = (value: unknown): value is Security => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const row = value as Record<string, unknown>;
   if (typeof row.code !== "string" || !/^\d{6}$/.test(row.code) ||

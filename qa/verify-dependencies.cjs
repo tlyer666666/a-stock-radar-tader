@@ -15,24 +15,24 @@ function parseRootImporter(text) {
     throw new Error("Unsupported pnpm lock format; expected lockfileVersion 9.0");
   }
   const importers = text.match(/^importers:\s*\n([\s\S]*?)(?=^\S|$(?![\s\S]))/m)?.[1];
-  const root = importers?.match(/^  \.:\s*\n([\s\S]*?)(?=^  \S|$(?![\s\S]))/m)?.[1];
+  const root = importers?.match(/^ {2}\.:\s*\n([\s\S]*?)(?=^ {2}\S|$(?![\s\S]))/m)?.[1];
   if (!root) throw new Error("Missing root lock importer");
   const result = {};
   let dependency;
   for (const line of root.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    if (/^    (?:devDependencies|dependencies|optionalDependencies):\s*$/.test(line)) {
+    if (/^ {4}(?:devDependencies|dependencies|optionalDependencies):\s*$/.test(line)) {
       dependency = undefined;
       continue;
     }
-    const heading = line.match(/^      (.+):\s*$/);
+    const heading = line.match(/^ {6}(.+):\s*$/);
     if (heading) {
       dependency = unquote(heading[1]);
       if (Object.hasOwn(result, dependency)) throw new Error(`Duplicate lock dependency ${dependency}`);
       result[dependency] = {};
       continue;
     }
-    const field = line.match(/^        (specifier|version):\s*(.+)\s*$/);
+    const field = line.match(/^ {8}(specifier|version):\s*(.+)\s*$/);
     if (!dependency || !field) throw new Error(`Unsupported root lock importer line: ${line.trim()}`);
     if (Object.hasOwn(result[dependency], field[1])) throw new Error(`Duplicate lock ${field[1]}: ${dependency}`);
     const value = unquote(field[2].trim());
@@ -130,7 +130,12 @@ function run(root, { audit = false } = {}) {
   });
   if (runtimeResult.error || runtimeResult.status !== 0) throw new Error(`Cannot inspect Electron binary: ${runtimeResult.error?.message || runtimeResult.stderr || runtimeResult.status}`);
   const runtime = JSON.parse(runtimeResult.stdout.trim());
-  const report = { ...verifyVersions({ manifest, importer, installed, runtime }), audit: "not requested" };
+  const report = { ...verifyVersions({ manifest, importer, installed, runtime }),
+    networkTransport: {
+      kind: require('../electron/native-http.cjs').requiresNativeTransport(runtime.undici) ? 'node:http/https' : 'built-in fetch',
+      advisory: 'GHSA-xjj6-f33q-929c',
+      note: 'Affected embedded undici is isolated by the shared HTTP policy transport.'
+    }, audit: "not requested" };
   if (audit) {
     // Fixed arguments only. Windows needs a shell to execute pnpm.cmd.
     const auditResult = spawnSync(process.platform === "win32" ? "pnpm.cmd" : "pnpm", ["audit", "--json"], {

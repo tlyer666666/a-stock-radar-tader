@@ -1,181 +1,190 @@
+import { useSelectionQuotes } from "./features/strategy-selection/useSelectionQuotes";
+import { SelectionQuotePrice, SelectionQuoteLiquidity, SelectionQuoteControls } from "./features/strategy-selection/SelectionQuoteCells";
+import { SelectionKline } from "./features/strategy-selection/SelectionKline";
+import { Activity, Bot, Check, ChevronRight, CircleAlert, Clock3, Copy, Layers, LoaderCircle, Pencil, Plus, RefreshCw, Target, Trash2 } from "lucide-react";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ConfirmDialog, type ConfirmDialogRequest } from "./components/terminal/ConfirmDialog";
+import { CustomStrategyEditor } from "./features/strategy-selection/CustomStrategyEditor";
+import { CUSTOM_CATALOG, copyCustomStrategy, describeCustomStrategy, emptyCustomStrategy, ipcMessage, type CustomStrategy, type PatternOption } from "./features/strategy-selection/customStrategyModel";
+import { TREND_STRATEGY_CHOICES } from "./trendStrategyConfig";
+import type { TrendStrategyId } from "./trendScreenerTypes";
 import { createServiceJobScope } from "./serviceJobClient";
-import {
-  Activity,
-  CheckCircle2,
-  ChevronRight,
-  CircleAlert,
-  Clock3,
-  Database,
-  Gauge,
-  LoaderCircle,
-  RefreshCw,
-  ShieldAlert,
-  Sparkles,
-  Target,
-  TrendingUp
-} from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import SignalStockTester from "./SignalStockTester";
+import { selectionDataState, selectionSummaryDataState, type SelectionDataState } from "./strategySelectionDataState";
+import { whenVisible } from "./visiblePolling";
+import { formatShanghaiDateTime } from "./dateUtils";
+import { aiScoreMap, buildAiPicks, ratingTone, sortByAiScore } from "./features/strategy-selection/aiSelectionModel";
+import { getSelectionReport, setSelectionReport, takePendingStrategyText } from "./features/strategy-selection/selectionReportStore";
+export type { StrategyBacktestRequest } from "./features/backtest/backtestTypes";
 
-type StrategySignalStock = Security & {
-  industry?: string;
-  latest?: number;
-  changePct?: number;
-  turnover?: number;
-  amount?: number;
-  mrs?: number;
-  grade?: string;
-  score?: number;
-  signalScore?: number;
-  signalStrength?: number;
-  strategyMatchRate?: number;
-  limitDate?: string;
-  observationNode?: string;
-  reasons?: string[];
-  matchedReasons?: string[];
-  matchedComponents?: string[];
-  matchedStrategyIds?: string[];
-  componentMatches?:
-    | Record<string, boolean | number | Record<string, any>>
-    | Array<string | Record<string, any>>;
-  componentVotes?:
-    | Record<string, boolean | number | Record<string, any>>
-    | Array<string | Record<string, any>>;
-  votes?:
-    | Record<string, boolean | number | Record<string, any>>
-    | Array<string | Record<string, any>>;
-  risks?: string[];
-  riskVetoStatus?: "passed" | "failed" | "unknown" | string;
-  quote?: Record<string, any>;
-  analysis?: Record<string, any>;
+export type StrategySignalStock = Pick<Security, "code" | "name"> & {
+  secid?: string; industry?: string; latest?: number | null; changePct?: number | null;
+  turnover?: number | null; amount?: number | null; limitDate?: string; signalDate?: string; signalStrength?: number | null;
+  daysSinceLimit?: number | null; consecutiveBoards?: number | null; reasons?: string[]; executionNotes?: string[];
+  invalidationPrice?: number | null; overheatCount?: number | null;
+  matchRate?: number | null; needsConfirmation?: boolean; pendingConditions?: string[];
 };
-
-export type StrategyBacktestRequest = {
-  security?: Security;
-  securities?: Security[];
-  universeSource?: "strategy_current_matches" | "manual";
-  universeTotalCount?: number;
-  source: "single_strategy" | "optimized_portfolio";
-  strategyEngine: "verified-signal-v2";
-  strategyId: string;
-  strategyName: string;
-  strategyVersion?: string;
-  strategyIds: string[];
-  minimumVotes: number;
-};
-
-type ValidationRange = {
-  from?: string;
-  to?: string;
-};
-
-type ValidationSample = {
-  sampleCount?: number;
-  independentSignalDays?: number;
-  winRate?: number;
-  averageReturn?: number;
-  averageReturnLowerBound95?: number;
-  averageExcessReturn?: number;
-  maxDrawdown?: number;
-  benchmarkSampleCount?: number;
-  range?: ValidationRange;
-};
-
-type WalkForwardValidation = {
-  available?: boolean;
-  accepted?: boolean;
-  sampleCount?: number;
-  minimumSamples?: number;
-  initialTraining?: ValidationSample;
-  outOfSample?: ValidationSample;
-  folds?: Array<Record<string, any>>;
-  passedFolds?: number;
-  passRate?: number;
-  positiveFoldRate?: number;
-  degradationPercent?: number;
-  overfitRisk?: string;
-  reason?: string;
-};
-
-type StrategyValidation = {
-  accepted?: boolean;
-  publicationAccepted?: boolean;
-  publicationFailureReasons?: string[];
-  sampleCount?: number;
-  minimumSamples?: number;
-  outOfSampleCount?: number;
-  walkForwardPassRate?: number;
-  winRate5?: number;
-  average5?: number;
-  excess5?: number;
-  worstMdd5?: number;
-  stabilityScore?: number;
-  grade?: string;
-  status?: string;
-  reason?: string;
-  reasons?: string[];
-  range?: ValidationRange;
-  inSample?: ValidationSample;
-  outOfSample?: ValidationSample;
-  walkForward?: WalkForwardValidation;
-  roundTripCostBps?: number;
-  benchmarkSampleCount?: number;
-  untradeableCount?: number;
-  confidence?: string;
-  entryRule?: string;
-  returnType?: string;
-  validationVersion?: string;
-  regimes?: Array<ValidationSample & {
-    id?: string;
-    label?: string;
-    supported?: boolean;
-    minimumSignalDays?: number;
-  }>;
-  currentRegimeFit?: {
-    regimeId?: string;
-    regimeLabel?: string;
-    available?: boolean;
-    supported?: boolean;
-    sampleCount?: number;
-    independentSignalDays?: number;
-    averageReturn?: number;
-    averageReturnLowerBound95?: number;
-    averageExcessReturn?: number;
-    maxDrawdown?: number;
-    reason?: string;
-  };
-  thresholds?: {
-    minSamples?: number;
-    minOutOfSampleSamples?: number;
-    minIndependentSignalDays?: number;
-    minWalkForwardFoldSamples?: number;
-    minWinRate?: number;
-    minAverageReturn?: number;
-    maxDrawdown?: number;
-  };
-};
-
-type StrategySignalGroup = {
-  id: string;
-  name: string;
-  type?: "base" | "composite" | string;
-  detail?: string;
-  description?: string;
-  components?: string[];
-  voteRule?: string;
-  conditions?: string[];
-  risk?: string;
-  version?: string;
-  componentNames?: string[];
-  parameters?: Record<string, number>;
-  sources?: Array<{ title: string; url: string }>;
-  adaptationNote?: string;
-  validation?: StrategyValidation;
+export type StrategySignalGroup = {
+  id: string; name: string; type?: string; family?: string; detail?: string; components?: string[];
+  version?: string; componentNames?: string[]; parameters?: Record<string, number>;
+  sources?: Array<{ title: string; url: string }>; adaptationNote?: string;
+  conditions?: string[]; dataRequirements?: string[]; scope?: string; evidenceLevel?: string;
+  custom?: boolean; error?: string | undefined; universeId?: string | undefined; origin?: string | undefined;
+  /** 精选：按全A历史实测挑出的较强策略，排在策略库最前面。 */
+  featured?: boolean;
   stocks: StrategySignalStock[];
 };
+export type StrategySignalReport = {
+  cacheValidUntil?: number | null | undefined;
+  generatedAt?: string; asOfDate?: string | undefined; source?: string; warning?: string; universeSize?: number | undefined;
+  availableUniverseSize?: number | undefined; processed?: number | undefined; failed?: number | undefined; notes?: string[] | undefined;
+  watchlistCoverage?: { requested?: number | undefined; processed?: number | undefined; failed?: number | undefined; invalid?: number | undefined; stale?: number | undefined; missing?: number | undefined; benchmarkReady?: boolean | undefined; note?: string | undefined } | undefined;
+  selectionDiagnostics?: { failures: Array<{ stage: string; label: string; count: number; hint: string }>; sources: Array<{ stage: string; source: string; successes: number; failures: number; reason: string }> } | undefined;
+  universeCoverage?: { boards?: Array<{ label: string; expected: number | null; loaded: number; complete: boolean }> | undefined; listed?: number | undefined; eligible?: number | undefined; excludedRisk?: number | undefined; failed?: number | undefined; requestsComplete?: boolean | undefined; complete?: boolean | undefined } | undefined;
+  dataQuality?: { requested?: number | undefined; processed?: number | undefined; invalid?: number | undefined; stale?: number | undefined; missing?: number | undefined; excluded?: number | undefined;
+    benchmarkReady?: boolean | undefined; calendarState?: string | undefined; reasons: Record<string, number> } | undefined;
+  strategies: StrategySignalGroup[];
+};
+const numeric = (value: unknown) => value === null || value === undefined || String(value).trim() === "" || !Number.isFinite(Number(value)) ? null : Number(value);
+const counter = (value: unknown) => { const number = numeric(value); return number !== null && number >= 0 ? Math.floor(number) : undefined; };
+const dateOnly = (value: unknown) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) && Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value ? value : undefined;
+const textList = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+const text = (value: unknown) => typeof value === "string" && value ? value : undefined;
+const composite = (group: StrategySignalGroup) => group.type === "composite" || Boolean(group.components?.length);
+const families = [["all", "全部"], ["bottom_trend", "底部趋势"], ["youzi", "游资打法"], ["first_board", "首板"], ["relay", "接力"], ["breakout", "突破"], ["pullback", "回踩"], ["contraction", "收缩"], ["repair", "修复"]];
+const familyLabel = { ...Object.fromEntries(families), custom: "我的策略" } as Record<string, string>;
+const rememberedPages = new Map<string, number>();
+let rememberedStrategyId = "";
+let rememberedMode: "strategy" | "stock" = "strategy";
+let rememberedHideEmpty = true;
+let rememberedFeaturedOnly = true;
+
+/** 复制本列表全部股票代码（每行一个），方便粘贴到同花顺等软件的自选股。 */
+export function CopyCodesButton({ codes }: { codes: string[] }) {
+  const [state, setState] = useState<"idle" | "done" | "failed">("idle");
+  useEffect(() => { if (state === "idle") return; const timer = window.setTimeout(() => setState("idle"), 2000); return () => window.clearTimeout(timer); }, [state]);
+  if (!codes.length) return null;
+  const copy = async () => {
+    const text = codes.join("\n");
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else { const area = document.createElement("textarea"); area.value = text; document.body.appendChild(area); area.select(); const ok = document.execCommand("copy"); area.remove(); if (!ok) throw new Error("copy failed"); }
+      setState("done");
+    } catch { setState("failed"); }
+  };
+  return <button type="button" className="secondary-btn strategy-copy-codes" onClick={() => void copy()} title="复制全部股票代码（每行一个），可粘贴到同花顺等软件导入自选">
+    {state === "done" ? <Check size={15} /> : <Copy size={15} />}{state === "done" ? `已复制 ${codes.length} 只` : state === "failed" ? "复制失败" : `复制代码（${codes.length}）`}</button>;
+}
+
+// Keep only selection fields at the renderer boundary. Strategies are for picking
+// stocks: legacy audit or historical statistics in a payload are not rendered.
+export const normalizeSignalReport = (input: any): StrategySignalReport => {
+  const groups = Array.isArray(input?.strategies) ? input.strategies : Array.isArray(input?.groups) ? input.groups : Array.isArray(input?.auditedStrategies) ? input.auditedStrategies : [];
+  return {
+    generatedAt: input?.generatedAt, asOfDate: dateOnly(input?.asOfDate), source: input?.source, warning: input?.warning,
+    universeSize: numeric(input?.universeSize) ?? undefined,
+    availableUniverseSize: numeric(input?.availableUniverseSize) ?? undefined,
+    processed: numeric(input?.processed) ?? undefined, failed: numeric(input?.failed) ?? undefined,
+    notes: textList(input?.notes),
+    cacheValidUntil: input?.cacheValidUntil === null ? null : typeof input?.cacheValidUntil === "number" && Number.isFinite(new Date(input.cacheValidUntil).getTime()) && input.cacheValidUntil > 0 ? input.cacheValidUntil : undefined,
+    watchlistCoverage: input?.watchlistCoverage && typeof input.watchlistCoverage === "object" ? {
+      requested: counter(input.watchlistCoverage.requested), processed: counter(input.watchlistCoverage.processed),
+      failed: counter(input.watchlistCoverage.failed), invalid: counter(input.watchlistCoverage.invalid),
+      stale: counter(input.watchlistCoverage.stale), missing: counter(input.watchlistCoverage.missing),
+      benchmarkReady: typeof input.watchlistCoverage.benchmarkReady === "boolean" ? input.watchlistCoverage.benchmarkReady : undefined, note: text(input.watchlistCoverage.note)
+    } : undefined,
+    selectionDiagnostics: input?.selectionDiagnostics && typeof input.selectionDiagnostics === "object" ? {
+      failures: (Array.isArray(input.selectionDiagnostics.failures) ? input.selectionDiagnostics.failures : []).slice(0, 32)
+        .filter((item: any) => item && ["history", "benchmark", "limit-pool", "universe", "watchlist-history"].includes(item.stage) && (counter(item.count) ?? 0) > 0)
+        .map((item: any) => ({ stage: String(item.stage), label: String(item.label || "原因未明确").slice(0, 80), count: counter(item.count)!, hint: String(item.hint || "数据恢复后重试").slice(0, 160) })),
+      sources: (Array.isArray(input.selectionDiagnostics.sources) ? input.selectionDiagnostics.sources : []).slice(0, 16)
+        .filter((item: any) => item && typeof item.source === "string")
+        .map((item: any) => ({ stage: String(item.stage || "history"), source: item.source.slice(0, 80), successes: counter(item.successes) ?? 0, failures: counter(item.failures) ?? 0, reason: String(item.reason || "").slice(0, 80) }))
+    } : undefined,
+    universeCoverage: input?.universeCoverage && typeof input.universeCoverage === "object" ? {
+      boards: (Array.isArray(input.universeCoverage.boards) ? input.universeCoverage.boards : []).slice(0, 8)
+        .map((board: any) => ({ label: String(board?.label || "").slice(0, 20), expected: counter(board?.expected) ?? null, loaded: counter(board?.loaded) ?? 0, complete: board?.complete === true })),
+      listed: counter(input.universeCoverage.listed), eligible: counter(input.universeCoverage.eligible), excludedRisk: counter(input.universeCoverage.excludedRisk),
+      failed: counter(input.universeCoverage.failed),
+      requestsComplete: typeof input.universeCoverage.requestsComplete === "boolean" ? input.universeCoverage.requestsComplete : undefined,
+      complete: typeof input.universeCoverage.complete === "boolean" ? input.universeCoverage.complete : undefined
+    } : undefined,
+    dataQuality: input?.dataQuality && typeof input.dataQuality === "object" ? {
+      requested: counter(input.dataQuality.requested), processed: counter(input.dataQuality.processed), invalid: counter(input.dataQuality.invalid),
+      stale: counter(input.dataQuality.stale), missing: counter(input.dataQuality.missing), excluded: counter(input.dataQuality.excluded),
+      benchmarkReady: typeof input.dataQuality.benchmarkReady === "boolean" ? input.dataQuality.benchmarkReady : undefined,
+      calendarState: typeof input.dataQuality.calendarState === "string" ? input.dataQuality.calendarState : undefined,
+      reasons: Object.fromEntries(Object.entries(input.dataQuality.reasons || {}).filter(([, value]) => counter(value) !== undefined).map(([key, value]) => [key, counter(value)!]))
+    } : undefined,
+    strategies: groups.map((group: any): StrategySignalGroup => ({
+      id: String(group.id), name: String(group.name), type: group.type, family: group.family,
+      detail: String(group.detail || group.description || ""), components: group.components || [],
+      version: group.version, componentNames: group.componentNames, parameters: group.parameters,
+      sources: group.sources, adaptationNote: group.adaptationNote,
+      conditions: textList(group.conditions), dataRequirements: textList(group.dataRequirements),
+      scope: typeof group.scope === "string" ? group.scope : undefined, evidenceLevel: typeof group.evidenceLevel === "string" ? group.evidenceLevel : undefined,
+      custom: group.custom === true || group.type === "custom", error: text(group.error), universeId: text(group.universeId), origin: text(group.origin),
+      featured: group.featured === true,
+      stocks: (Array.isArray(group.stocks) ? group.stocks : []).map((stock: any): StrategySignalStock => {
+        const code = String(stock.code);
+        return {
+          code, name: String(stock.name || stock.code), industry: stock.industry,
+          secid: typeof stock.secid === "string" && /^[01]\.\d{6}$/.test(stock.secid) ? stock.secid : `${code.startsWith("6") ? "1" : "0"}.${code}`,
+          latest: numeric(stock.latest ?? stock.quote?.latest), changePct: numeric(stock.changePct ?? stock.quote?.changePct),
+          turnover: numeric(stock.turnover ?? stock.quote?.turnover), amount: numeric(stock.amount ?? stock.quote?.amount),
+          limitDate: stock.limitDate, signalDate: stock.signalDate,
+          signalStrength: numeric(stock.signalStrength ?? stock.signalScore),
+          daysSinceLimit: counter(stock.daysSinceLimit) ?? null, consecutiveBoards: counter(stock.consecutiveBoards) ?? null,
+          reasons: textList(stock.reasons), executionNotes: textList(stock.executionNotes),
+          invalidationPrice: numeric(stock.invalidationPrice), overheatCount: counter(stock.overheatCount) ?? null,
+          matchRate: numeric(stock.matchRate), needsConfirmation: stock.needsConfirmation === true, pendingConditions: textList(stock.pendingConditions)
+        };
+      }).sort((left: StrategySignalStock, right: StrategySignalStock) => (right.signalStrength ?? -1) - (left.signalStrength ?? -1) || left.code.localeCompare(right.code))
+    }))
+  };
+};
+/** 默认打开精选策略里本轮选出最多的一条；没有精选时按选出数量。 */
+export const defaultStrategyId = (groups: StrategySignalGroup[]) => [...groups].sort((a, b) => Number(b.featured === true) - Number(a.featured === true) || b.stocks.length - a.stocks.length)[0]?.id || "";
+export const filterSignalGroups = (groups: StrategySignalGroup[], query: string, sort: string, family: string, hideEmpty = false, keepId = "") => {
+  const rows = groups.filter(group => (!hideEmpty || group.stocks.length > 0 || group.id === keepId) && (family === "all" || group.family === family) && [group.name, group.detail || "", ...(group.conditions || []), ...(group.componentNames || [])].join(" ").toLowerCase().includes(query.trim().toLowerCase()));
+  if (sort === "picks") return [...rows].sort((a, b) => b.stocks.length - a.stocks.length);
+  return rows;
+};
+export const strategyStockDisplayModel = (group?: StrategySignalGroup) => ({
+  title: group?.stocks.length ? "本策略选出的股票" : "本轮未选出股票",
+  subtitle: `按既定规则选出 ${group?.stocks.length || 0} 只，按排序分降序排列（排序分越高，信号当天越不过热；不是胜率）`,
+  stocks: group?.stocks || []
+});
+
+export type StockSummaryRow = StrategySignalStock & { strategies: Array<{ id: string; name: string; family?: string | undefined; featured?: boolean | undefined }>; familyCount: number; featuredCount: number };
+/**
+ * One row per stock across all strategies; family count de-duplicates same-shape rules.
+ * 排序：命中精选策略多的在前（精选是全A实测较强的规则），再按形态家族数、策略数、排序分。
+ * 「AI 选股」的 40 只候选也按这个顺序取。
+ */
+export const summarizeStocksAcrossStrategies = (groups: StrategySignalGroup[]): StockSummaryRow[] => {
+  const byCode = new Map<string, StockSummaryRow>();
+  for (const group of groups) for (const stock of group.stocks) {
+    const row = byCode.get(stock.code) || { ...stock, strategies: [], familyCount: 0, featuredCount: 0 };
+    if ((stock.signalStrength ?? -1) > (row.signalStrength ?? -1)) Object.assign(row, { ...stock, strategies: row.strategies, familyCount: row.familyCount, featuredCount: row.featuredCount });
+    row.strategies.push({ id: group.id, name: group.name, family: group.family, featured: group.featured === true });
+    byCode.set(stock.code, row);
+  }
+  return [...byCode.values()].map(row => ({ ...row, familyCount: new Set(row.strategies.map(item => item.family || item.id)).size, featuredCount: row.strategies.filter(item => item.featured).length }))
+    .sort((a, b) => b.featuredCount - a.featuredCount || b.familyCount - a.familyCount || b.strategies.length - a.strategies.length || (b.signalStrength ?? -1) - (a.signalStrength ?? -1) || a.code.localeCompare(b.code));
+};
+
+const toSecurity = (stock: StrategySignalStock): Security => ({ code: stock.code, name: stock.name, secid: stock.secid || `${stock.code.startsWith("6") ? "1" : "0"}.${stock.code}`, assetType: "stock" });
+const invalidation = (stock: StrategySignalStock) => {
+  if (!stock.invalidationPrice) return null;
+  const distance = stock.latest ? (stock.invalidationPrice / stock.latest - 1) * 100 : null;
+  return `失效位 ${stock.invalidationPrice.toFixed(2)}${distance === null ? "" : `（较选股收盘 ${distance.toFixed(1)}%）`}`;
+};
+const stockNotes = (stock: StrategySignalStock) => [
+  ...(stock.pendingConditions?.length ? [`${stock.needsConfirmation ? "待确认" : "另需核对"}：${stock.pendingConditions.join("、")}`] : []),
+  ...(stock.executionNotes || [])];
+const limitAge = (stock: StrategySignalStock) => stock.limitDate ? `${stock.limitDate}${stock.daysSinceLimit !== null && stock.daysSinceLimit !== undefined ? ` · T+${stock.daysSinceLimit}` : ""}` : stock.signalDate || "--";
 
 export function StrategyRuleSources({ group }: { group: Pick<StrategySignalGroup, "version" | "sources" | "parameters" | "adaptationNote"> }) {
-  if (!group.sources?.length) return null;
   const labels: Record<string, string> = {
     marketCalendarLookback: "指数日期对齐", recentLimitSessions: "涨停回看", maFast: "短均线", maMiddle: "承接均线",
     maTrend: "趋势均线", maLong: "长均线", maxMa20ExtensionPercent: "MA20最大偏离(%)",
@@ -186,1603 +195,435 @@ export function StrategyRuleSources({ group }: { group: Pick<StrategySignalGroup
     minVolumeRatio: "最低量比", maxVolumeRatio: "最高量比"
   };
   return <>
-    <div className="strategy-rule-field conditions">
+    {!!group.sources?.length && <div className="strategy-rule-field conditions">
       <span>公式来源与适配 · {group.version}</span>
       <div>
         {group.sources.map(source => <button key={source.url} className="secondary-btn" type="button"
           onClick={() => void window.stockApi.openExternal(source.url)} title={source.url}>{source.title}</button>)}
         <p>{group.adaptationNote}</p>
       </div>
-    </div>
-    <div className="strategy-rule-field components">
+    </div>}
+    {!!Object.keys(group.parameters || {}).length && <div className="strategy-rule-field components">
       <span>固定参数</span>
       <div>{Object.entries(group.parameters || {}).map(([key, value]) => <em key={key}>{labels[key] || key}：{value}</em>)}</div>
-    </div>
+    </div>}
   </>;
 }
 
-type OptimizedPortfolio = {
-  id?: string;
-  name?: string;
-  version?: string;
-  accepted?: boolean;
-  engineAccepted?: boolean;
-  publicationAccepted?: boolean;
-  reason?: string;
-  publicationFailureReasons?: string[];
-  minimumVotes?: number;
-  maxAllowedContainment?: number;
-  splitDate?: string;
-  selectedStrategies?: Array<{
-    id: string;
-    name?: string;
-    robustScore?: number;
-    developmentAccepted?: boolean;
-    currentMatchCount?: number;
-  }>;
-  dependence?: Array<{
-    leftId?: string;
-    rightId?: string;
-    commonSignals?: number;
-    jaccard?: number;
-    containment?: number;
-    returnCorrelation?: number;
-  }>;
-  terminalHoldout?: ValidationSample & {
-    accepted?: boolean;
-    minimumSamples?: number;
-    splitDate?: string;
-    reason?: string;
-  };
-  validation?: StrategyValidation;
-  currentRegime?: {
-    id?: string;
-    label?: string;
-    return20?: number;
-    volatility20?: number;
-  };
-  currentRegimeFit?: StrategyValidation["currentRegimeFit"];
-  matchedStockCount?: number;
-  stocks?: StrategySignalStock[];
-};
+export function StrategySelectionRules({ group }: { group: StrategySignalGroup }) {
+  return <details className="panel signal-rule-details"><summary>选股条件</summary>
+    <div className={`strategy-rule-panel ${composite(group) ? "composite" : ""}`}>
+      <div className="strategy-rule-field conditions"><span>必要条件 · v{group.version || "版本未提供"}</span>
+        {group.conditions?.length ? <ul>{group.conditions.map((condition, index) => <li key={index}>{condition}</li>)}</ul> : <p>{group.detail || "条件说明未提供"}</p>}</div>
+      <div className="strategy-rule-field conditions"><span>数据要求</span>
+        {group.dataRequirements?.length ? <ul>{group.dataRequirements.map((requirement, index) => <li key={index}>{requirement}</li>)}</ul> : <p>按本策略必要行情窗口计算</p>}</div>
+      <div className="strategy-rule-field"><span>筛选范围</span><p>{group.scope || "全市场A股（剔除ST，含北交所）"}</p></div>
+      {group.evidenceLevel && <div className="strategy-rule-field"><span>规则属性</span><p>{group.evidenceLevel}</p></div>}
+      <StrategyRuleSources group={group} />
+    </div>
+  </details>;
+}
 
-type StrategySignalReport = {
-  generatedAt?: string;
-  source?: string;
-  sourceClass?: string;
-  universeSize?: number;
-  availableUniverseSize?: number;
-  processed?: number;
-  failed?: number;
-  candidateCount?: number;
-  qualifiedCount?: number;
-  benchmarkBars?: number;
-  historyBarsRequested?: number;
-  coverage?: Record<string, any>;
-  methodologyDetails?: Record<string, any>;
-  methodology?: string;
-  warning?: string;
-  selectionBiasWarning?: string;
-  multipleTestingWarning?: string;
-  publicationPolicy?: string;
-  independentValidationUniverse?: boolean;
-  independentValidationSampleSize?: number;
-  optimizedPortfolio?: OptimizedPortfolio | null;
-  currentRegime?: OptimizedPortfolio["currentRegime"];
-  publishedStrategyCount?: number;
-  baseStrategyCount?: number;
-  compositeStrategyCount?: number;
-  publishedBaseCount?: number;
-  publishedCompositeCount?: number;
-  strategiesTested?: number;
-  dataRange?: ValidationRange;
-  sampleDiversity?: {
-    securities?: number;
-    boardCount?: number;
-    dateCohortCount?: number;
-    industryOrThemeCount?: number;
-    boardBuckets?: Record<string, number>;
-    dateCohorts?: Record<string, number>;
-    maximumBoardShare?: number;
-    maximumDateCohortShare?: number;
-    concentrationWarnings?: string[];
-    diversified?: boolean;
-  };
-  strategies: StrategySignalGroup[];
-};
+export function StrategySelectionCoverage({ report, previous = false }: { report: StrategySignalReport; previous?: boolean }) {
+  const coverage = report.universeCoverage, quality = report.dataQuality;
+  // excluded 是已确认的资格排除；无效/陈旧/缺失日线须明确提示覆盖缺口。
+  const issues = [quality?.invalid ? `${quality.invalid} 只股票日线无效` : "",
+    quality?.stale ? `${quality.stale} 只股票日线陈旧` : "", quality?.missing ? `${quality.missing} 只股票日线缺失` : "",
+    quality?.benchmarkReady === false ? "基准行情未就绪" : "",
+    quality?.calendarState === "unknown" ? "完整交易日未知" : "", coverage?.complete === false ? "部分板块股票名单读取不完整" : "",
+    report.failed ? `${report.failed} 只股票日线读取失败` : ""].filter(Boolean);
+  const disclosures = [...(report.notes || [])].filter(Boolean);
+  const boards = coverage?.boards?.length ? coverage.boards.map(board => `${board.label} ${board.loaded}${board.complete ? "" : "（不完整）"}`).join("、") : "";
+  const updated = report.generatedAt && Number.isFinite(Date.parse(report.generatedAt)) ? new Date(report.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" }) : "未提供";
+  return <>
+    {!!issues.length && <div className="warning-banner" role="status"><CircleAlert size={17} /><span>{issues.join("；")}。异常或陈旧证券不计入本轮新命中。</span></div>}
+    <div className="strategy-method-note"><Clock3 size={16} /><span>
+      {previous ? "上轮数据日" : "数据日"}：{report.asOfDate || "未提供"}；更新时间：{updated}。
+      选股范围：全市场A股（剔除 ST、*ST 与退市整理，含北交所），共 {report.universeSize ?? "--"} 只，已完成计算 {report.processed ?? "--"} 只。
+      {boards ? `名单：${boards}。` : ""}
+      {report.watchlistCoverage && <>自选与持仓股票池：已处理 {report.watchlistCoverage.processed ?? "--"} / {report.watchlistCoverage.requested ?? "--"} 只，读取失败 {report.watchlistCoverage.failed ?? 0} 只。{report.watchlistCoverage.note || ""}</>}
+      数据：{report.source || "公开行情"}。
+      {!!disclosures.length && <span className="strategy-data-notes">数据说明：{disclosures.join(" ")}</span>}
+    </span></div>
+    {!!report.selectionDiagnostics?.failures.length && <details className="panel strategy-selection-diagnostics">
+      <summary>行情失败诊断 · {previous ? "上轮" : "本轮"}请求</summary>
+      <p>以下为本轮请求的失败分类，次数可能跨阶段重复；未明确的原因保持未知，不将失败记作策略未命中。</p>
+      <div role="region" tabIndex={0} aria-label="行情失败分类表，可横向滚动"><table>
+        <thead><tr><th scope="col">阶段</th><th scope="col">原因分类</th><th scope="col">次数</th><th scope="col">处理建议</th></tr></thead>
+        <tbody>{report.selectionDiagnostics.failures.map((item, index) => <tr key={`${item.stage}:${item.label}:${index}`}><th scope="row">{{ "limit-pool": "涨停池", universe: "全市场名单", history: "个股日线", benchmark: "基准指数", "watchlist-history": "自选与持仓日线" }[item.stage] || "行情"}</th><td>{item.label}</td><td>{item.count}</td><td>{item.hint}</td></tr>)}</tbody>
+      </table></div>
+      {!!report.selectionDiagnostics.sources.length && <ul>{report.selectionDiagnostics.sources.map((item, index) => <li key={`${item.source}:${index}`}>{item.source} · {item.stage === "benchmark" ? "基准指数" : "日线"}：成功 {item.successes} 次，失败 {item.failures} 次{item.reason ? `；最近失败分类：${item.reason}` : ""}</li>)}</ul>}
+    </details>}
+  </>;
+}
 
-type ValidationState = "verified" | "observing" | "insufficient";
+function usePage(key: string, total: number) {
+  const [requestedPage, setPage] = useState(() => rememberedPages.get(key) || 1);
+  const totalPages = Math.max(1, Math.ceil(total / 20));
+  const page = Math.min(requestedPage, totalPages);
+  // 结果变少时把页码真正收回到末页，避免之后结果变多时又跳回已失效的旧页码。
+  useEffect(() => { if (requestedPage > totalPages) { rememberedPages.set(key, totalPages); setPage(totalPages); } }, [key, requestedPage, totalPages]);
+  const go = (next: number) => { rememberedPages.set(key, next); setPage(next); };
+  return { page, totalPages, go };
+}
 
-const strategyReportCache = new Map<string, {
-  report: StrategySignalReport;
-  savedAt: number;
-}>();
-const strategyActiveIdCache = new Map<string, string>();
+function Pagination({ total, page, totalPages, go, label }: { total: number; page: number; totalPages: number; go: (page: number) => void; label: string }) {
+  return <div className="strategy-stock-pagination" aria-label={label}><span role="status" aria-live="polite">共 {total} 只 · 每页 20 只 · 第 {page} / {totalPages} 页</span><button className="secondary-btn" disabled={page === 1} onClick={() => go(page - 1)}>上一页</button><button className="secondary-btn" disabled={page === totalPages} onClick={() => go(page + 1)}>下一页</button></div>;
+}
 
-const componentFallbackNames: Record<string, string> = {
-  low_first_board: "低位首板",
-  platform_breakout: "平台突破首板",
-  trend_first_board: "多头趋势首板",
-  low_volume_first_board: "缩量控盘首板",
-  vcp_compression: "涨停后VCP压缩",
-  high_tight_flag: "涨停后高位窄旗",
-  volume_dryup_rebound: "涨停后地量反包",
-  second_breakout: "涨停后二次突破",
-  weak_to_strong: "弱转强修复",
-  ma_reclaim_after_limit: "涨停后均线反转",
-  double_limit_relay: "双涨停N形接力",
-  long_lower_shadow_limit: "长下影涨停封板",
-  limit_gap_hold: "涨停后缺口守卫",
-  limit_ma10_pullback: "涨停后MA10回踩"
-};
+const stockIdentity = (stock: StrategySignalStock, onOpen?: (security: Security) => void) => <>
+  {onOpen ? <button type="button" className="strategy-security-link" onClick={event => { event.stopPropagation(); onOpen(toSecurity(stock)); }} aria-label={`查看 ${stock.name} ${stock.code} 个股分析`}><b>{stock.name}</b><small>{stock.code}</small></button> : <><b>{stock.name}</b><small>{stock.code}</small></>}
+</>;
 
-const nullableNumber = (value: unknown) => {
-  if (value === null || value === undefined || value === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-};
+const aiBadge = (item: AiRankItem | undefined) => item ? <span className={`ai-score-badge ${ratingTone(item.rating)}`} title={[item.scores && item.scores.length > 1 ? `各模型：${item.scores.map(score => `${score.name} ${score.score}`).join("、")}` : "", item.highlights && `看点：${item.highlights}`, item.risks && `风险：${item.risks}`, item.nextDay && `次日：${item.nextDay}`].filter(Boolean).join("\n")}>AI {item.score} · {item.rating}{item.disagreement ? " · 分歧" : ""}</span> : null;
 
-const number = (value: unknown, fallback = 0) => {
-  const parsed = nullableNumber(value);
-  return parsed === null ? fallback : parsed;
-};
+const signalTableColumns = ["股票 / 命中依据", "日K走势", "行情 / 换手 / 成交额", "涨停日 / 失效位", "排序分"];
+const summaryTableColumns = ["股票", "日K走势", "行情 / 换手 / 成交额", "涨停日 / 天数", "形态家族 / 命中策略"];
 
-const fmt = (value: unknown, digits = 1) => {
-  const parsed = nullableNumber(value);
-  return parsed === null ? "--" : parsed.toFixed(digits);
-};
+/** 次日注意（1.6.47）：放在股票行下方横跨整张表，文字完整显示，不再被横向滚动截掉。 */
+function StockNotesRow({ notes, pending, colSpan, onClick }: { notes: string[]; pending?: boolean | undefined; colSpan: number; onClick?: (() => void) | undefined }) {
+  if (!notes.length) return null;
+  return <tr className={`strategy-notes-row${onClick ? " clickable" : ""}`} onClick={onClick}><td colSpan={colSpan} className={`strategy-stock-notes ${pending ? "pending" : ""}`}><b>次日注意</b>{notes.join("；")}</td></tr>;
+}
+function StrategyTableHead({ columns }: { columns: string[] }) {
+  return <><colgroup>{columns.map((label, index) => <col key={label} className={`strategy-result-col-${index}`} />)}</colgroup><thead><tr>{columns.map(label => <th key={label} scope="col">{label}</th>)}</tr></thead></>;
+}
 
-const pct = (value: unknown, digits = 1) => {
-  const parsed = nullableNumber(value);
-  return parsed !== null
-    ? `${parsed >= 0 ? "+" : ""}${parsed.toFixed(digits)}%`
-    : "--";
-};
-
-const unit = (value: unknown, digits: number, suffix: string) => {
-  const parsed = nullableNumber(value);
-  return parsed === null ? "--" : `${parsed.toFixed(digits)}${suffix}`;
-};
-
-const money = (value: unknown) => {
-  const parsed = nullableNumber(value);
-  if (parsed === null) return "--";
-  if (Math.abs(parsed) >= 1e8) return `${(parsed / 1e8).toFixed(1)}亿`;
-  if (Math.abs(parsed) >= 1e4) return `${(parsed / 1e4).toFixed(0)}万`;
-  return parsed.toFixed(0);
-};
-
-const normalizeStringList = (input: unknown) => {
-  const values = Array.isArray(input)
-    ? input
-    : typeof input === "string"
-      ? input.split(/[，,、；;\n]+/)
-      : [];
-  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))];
-};
-
-const isCompositeStrategy = (group?: Pick<StrategySignalGroup, "type" | "components">) =>
-  String(group?.type || "").toLowerCase() === "composite" ||
-  Boolean(group?.components?.length);
-
-const componentName = (
-  id: string,
-  strategyNames: ReadonlyMap<string, string>
-) => strategyNames.get(id) || componentFallbackNames[id] || id;
-
-const collectMatchedComponentTokens = (input: unknown): string[] => {
-  if (Array.isArray(input)) {
-    return input.flatMap((item) => collectMatchedComponentTokens(item));
-  }
-  if (typeof input === "string" || typeof input === "number") {
-    return [String(input)];
-  }
-  if (!input || typeof input !== "object") return [];
-  const record = input as Record<string, any>;
-  const ownId = record.id ?? record.strategyId ?? record.componentId ?? record.name;
-  if (ownId !== undefined) {
-    const rejected =
-      record.matched === false ||
-      record.passed === false ||
-      record.hit === false ||
-      record.active === false ||
-      record.vote === false ||
-      Number(record.vote) === 0;
-    return rejected ? [] : [String(ownId)];
-  }
-  return Object.entries(record).flatMap(([key, value]) => {
-    const accepted =
-      value === true ||
-      (typeof value === "number" && value > 0) ||
-      (value &&
-        typeof value === "object" &&
-        (value.matched === true ||
-          value.passed === true ||
-          value.hit === true ||
-          value.active === true ||
-          Number(value.vote) > 0));
-    return accepted ? [key] : [];
-  });
-};
-
-const matchedComponentIds = (
-  stock: StrategySignalStock,
-  group: StrategySignalGroup,
-  strategyNames: ReadonlyMap<string, string>
-) => {
-  const componentIds = group.components || [];
-  if (!componentIds.length) return [];
-  const byName = new Map(
-    componentIds.map((id) => [componentName(id, strategyNames).toLowerCase(), id])
-  );
-  const explicitTokens = [
-    stock.matchedComponents,
-    stock.matchedStrategyIds,
-    stock.componentMatches,
-    stock.componentVotes,
-    stock.votes
-  ].flatMap((value) => collectMatchedComponentTokens(value));
-  const explicitIds = explicitTokens
-    .map((token) => {
-      const normalized = String(token).trim();
-      if (componentIds.includes(normalized)) return normalized;
-      return byName.get(normalized.toLowerCase()) || "";
-    })
-    .filter(Boolean);
-  if (explicitIds.length) {
-    return componentIds.filter((id) => explicitIds.includes(id));
-  }
-  return [];
-};
-
-const normalizeRange = (input: any): ValidationRange => ({
-  from: String(input?.from || input?.start || ""),
-  to: String(input?.to || input?.end || "")
+export const StrategyStockPanel = memo(function StrategyStockPanel({ group, onOpen, dataState, live = true, quoteRefreshSeconds = 15, aiScores }: { live?: boolean; quoteRefreshSeconds?: number; group: StrategySignalGroup; onOpen?: ((security: Security) => void) | undefined; dataState?: SelectionDataState | undefined; aiScores?: Map<string, AiRankItem> | undefined }) {
+  const stocks = group.stocks;
+  const { page, totalPages, go } = usePage(`strategy:${group.id}`, stocks.length);
+  const pageStocks = stocks.slice((page - 1) * 20, page * 20);
+  const quotes = useSelectionQuotes(pageStocks.map(toSecurity), live, quoteRefreshSeconds);
+  const display = strategyStockDisplayModel(group);
+  const blocked = !stocks.length && (dataState?.state === "unavailable" || dataState?.state === "empty-universe");
+  return <section className="panel strategy-stock-panel" aria-label="策略股票候选">
+    <div className="strategy-stock-panel-title"><div><Target size={18} /><span><b>{blocked ? dataState.title : display.title}</b><small>{!stocks.length && dataState ? dataState.description : display.subtitle}{onOpen && stocks.length ? "；点击股票查看个股分析" : ""}</small></span></div><span className="strategy-stock-panel-tools"><CopyCodesButton codes={stocks.map(stock => stock.code)} /><em>{blocked ? "待完成" : `${stocks.length} 只`}</em></span></div>
+    <SelectionQuoteControls total={pageStocks.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />
+    <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="策略候选表格，可横向滚动">
+      <table className="strategy-result-table" aria-label={`${group.name}选股结果`}>
+        <StrategyTableHead columns={group.custom ? signalTableColumns.map(label => label === "排序分" ? "匹配度" : label) : signalTableColumns} />
+        {pageStocks.map(stock => { const notes = stockNotes(stock); const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined; return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
+          <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}{!!stock.reasons?.length && <small className="strategy-stock-reasons">{stock.reasons.join(" · ")}</small>}</th>
+          <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
+          <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
+          <td className="strategy-stock-limit">{limitAge(stock)}{invalidation(stock) && <small className="strategy-stock-reasons" title="依据本策略的支撑规则计算；具体失效条件见右侧“次日注意”">{invalidation(stock)}</small>}</td>
+          <td>{stock.matchRate !== null && stock.matchRate !== undefined ? <>{stock.matchRate}%<small className="strategy-stock-reasons">排序分 {stock.signalStrength ?? "--"}</small></> : <>{stock.signalStrength ?? "--"}{stock.overheatCount !== null && stock.overheatCount !== undefined && <small className="strategy-stock-reasons">过热 {stock.overheatCount} 项</small>}</>}</td>
+        </tr><StockNotesRow notes={notes} pending={stock.needsConfirmation} colSpan={5} onClick={openStock} /></tbody>; })}
+      </table>
+      {!stocks.length && <div className="strategy-stock-empty"><Target size={28} /><b>{dataState?.title || "本轮未选出股票"}</b><p>{dataState?.description || "全市场（剔除ST）中当前没有股票同时满足本策略条件。"}</p></div>}
+    </div>
+    {!!stocks.length && <Pagination total={stocks.length} page={page} totalPages={totalPages} go={go} label="策略候选分页" />}
+  </section>;
 });
 
-const normalizeSample = (input: any): ValidationSample => {
-  const raw = input || {};
-  return {
-    ...raw,
-    sampleCount: nullableNumber(raw.sampleCount) ?? undefined,
-    independentSignalDays:
-      nullableNumber(raw.independentSignalDays) ?? undefined,
-    winRate: nullableNumber(raw.winRate) ?? undefined,
-    averageReturn:
-      nullableNumber(raw.averageReturn ?? raw.averageReturnPct) ?? undefined,
-    averageReturnLowerBound95:
-      nullableNumber(raw.averageReturnLowerBound95) ?? undefined,
-    averageExcessReturn:
-      nullableNumber(raw.averageExcessReturn ?? raw.excessReturn) ?? undefined,
-    maxDrawdown:
-      nullableNumber(raw.maxDrawdown ?? raw.maxDrawdownPct) ?? undefined,
-    benchmarkSampleCount:
-      nullableNumber(raw.benchmarkSampleCount) ?? undefined,
-    range: normalizeRange(raw.range)
-  };
-};
-
-const normalizeStocks = (input: any): StrategySignalStock[] => {
-  const rows = Array.isArray(input) ? input : [];
-  const seen = new Set<string>();
-  return rows
-    .map((item) => {
-      const quote = item?.quote || {};
-      const analysis = item?.analysis || {};
-      const code = String(item?.code || item?.security?.code || quote.code || "");
-      return {
-        ...item?.security,
-        ...item,
-        code,
-        name: String(item?.name || item?.security?.name || quote.name || code),
-        secid: String(item?.secid || item?.security?.secid || ""),
-        latest: nullableNumber(item?.latest ?? quote.latest) ?? undefined,
-        changePct: nullableNumber(item?.changePct ?? quote.changePct) ?? undefined,
-        turnover: nullableNumber(item?.turnover ?? quote.turnover) ?? undefined,
-        amount: nullableNumber(item?.amount ?? quote.amount) ?? undefined,
-        industry: String(item?.industry || quote.industry || "未分类"),
-        mrs: nullableNumber(item?.mrs ?? analysis.mrs) ?? undefined,
-        grade: String(item?.grade || analysis.grade || ""),
-        score:
-          nullableNumber(
-            item?.score ?? item?.signalScore ?? item?.signalStrength ?? analysis.mrs
-          ) ?? undefined,
-        signalScore:
-          nullableNumber(
-            item?.signalScore ?? item?.signalStrength ?? item?.score ?? analysis.mrs
-          ) ?? undefined,
-        signalStrength: nullableNumber(item?.signalStrength) ?? undefined,
-        strategyMatchRate:
-          nullableNumber(item?.strategyMatchRate ?? analysis.strategyMatchRate) ??
-          undefined,
-        reasons: Array.isArray(item?.reasons)
-          ? item.reasons
-          : Array.isArray(item?.matchedReasons)
-            ? item.matchedReasons
-            : []
-      } as StrategySignalStock;
-    })
-    .filter((item) => {
-      if (!/^\d{6}$/.test(item.code) || seen.has(item.code)) return false;
-      seen.add(item.code);
-      return true;
-    });
-};
-
-const normalizeValidation = (input: any): StrategyValidation => {
-  const raw = input || {};
-  const walkForward = raw.walkForward || {};
-  const outOfSample = raw.outOfSample || {};
-  const inSample = raw.inSample || raw.training || walkForward.initialTraining || {};
-  const hasPublicationDecision =
-    typeof raw.publicationAccepted === "boolean";
-  return {
-    ...raw,
-    accepted: hasPublicationDecision
-      ? raw.publicationAccepted === true
-      : raw.accepted === true,
-    publicationAccepted:
-      hasPublicationDecision ? raw.publicationAccepted === true : undefined,
-    publicationFailureReasons: Array.isArray(raw.publicationFailureReasons)
-      ? raw.publicationFailureReasons.filter(Boolean).map(String)
-      : undefined,
-    sampleCount: nullableNumber(raw.sampleCount) ?? undefined,
-    minimumSamples:
-      nullableNumber(
-        raw.minimumSamples ??
-          raw.thresholds?.minSamples ??
-          walkForward.minimumSamples
-      ) ?? undefined,
-    outOfSampleCount:
-      nullableNumber(raw.outOfSampleCount ?? outOfSample.sampleCount) ?? undefined,
-    walkForwardPassRate:
-      nullableNumber(raw.walkForwardPassRate ?? walkForward.passRate) ?? undefined,
-    winRate5:
-      nullableNumber(raw.winRate5 ?? outOfSample.winRate ?? raw.winRate) ??
-      undefined,
-    average5:
-      nullableNumber(
-        raw.average5 ?? outOfSample.averageReturn ?? raw.averageReturn
-      ) ?? undefined,
-    excess5:
-      nullableNumber(
-        raw.excess5 ??
-          outOfSample.averageExcessReturn ??
-          raw.averageExcessReturn
-      ) ?? undefined,
-    worstMdd5:
-      nullableNumber(
-        raw.worstMdd5 ?? outOfSample.maxDrawdown ?? raw.maxDrawdown
-      ) ?? undefined,
-    stabilityScore: nullableNumber(raw.stabilityScore) ?? undefined,
-    range: normalizeRange(raw.range),
-    inSample: normalizeSample(inSample),
-    outOfSample: normalizeSample(outOfSample),
-    walkForward: {
-      ...walkForward,
-      available: walkForward.available === true,
-      accepted: walkForward.accepted === true,
-      sampleCount: nullableNumber(walkForward.sampleCount) ?? undefined,
-      minimumSamples:
-        nullableNumber(walkForward.minimumSamples) ?? undefined,
-      initialTraining: normalizeSample(walkForward.initialTraining),
-      outOfSample: normalizeSample(walkForward.outOfSample),
-      passedFolds: nullableNumber(walkForward.passedFolds) ?? undefined,
-      passRate: nullableNumber(walkForward.passRate) ?? undefined,
-      positiveFoldRate:
-        nullableNumber(walkForward.positiveFoldRate) ?? undefined,
-      degradationPercent:
-        nullableNumber(walkForward.degradationPercent) ?? undefined,
-      folds: Array.isArray(walkForward.folds) ? walkForward.folds : []
-    },
-    roundTripCostBps:
-      nullableNumber(raw.roundTripCostBps) ?? undefined,
-    benchmarkSampleCount:
-      nullableNumber(raw.benchmarkSampleCount) ?? undefined,
-    untradeableCount:
-      nullableNumber(raw.untradeableCount) ?? undefined,
-    grade: String(raw.grade || ""),
-    status: hasPublicationDecision
-      ? raw.publicationAccepted === true
-        ? "PASS"
-        : String(raw.status || "").toUpperCase().includes("INSUFFICIENT")
-          ? "INSUFFICIENT"
-          : "REVIEW"
-      : String(raw.status || ""),
-    reason: String(raw.reason || "")
-  };
-};
-
-const validationState = (
-  validation?: StrategyValidation
-): ValidationState => {
-  if (validation?.accepted === true) return "verified";
-  const status = String(validation?.status || "").toUpperCase();
-  const samples = nullableNumber(validation?.sampleCount);
-  const minimumSamples = nullableNumber(
-    validation?.minimumSamples ?? validation?.thresholds?.minSamples
-  );
-  const outOfSampleCount = nullableNumber(validation?.outOfSampleCount);
-  const walkForward = validation?.walkForward;
-  if (status.includes("INSUFFICIENT")) return "insufficient";
-  if (samples === null || (minimumSamples !== null && samples < minimumSamples)) {
-    return "insufficient";
-  }
-  if (outOfSampleCount === null || outOfSampleCount <= 0) return "insufficient";
-  if (!walkForward || walkForward.available !== true) return "insufficient";
-  return "observing";
-};
-
-const validationStateLabel = (state: ValidationState) =>
-  state === "verified"
-    ? "已验证"
-    : state === "insufficient"
-      ? "数据不足"
-      : "观察中";
-
-const ratioPercent = (value: unknown) => {
-  const parsed = nullableNumber(value);
-  if (parsed === null) return "--";
-  return unit(parsed * (Math.abs(parsed) <= 1 ? 100 : 1), 0, "%");
-};
-
-const rangeText = (range?: ValidationRange) => {
-  const from = String(range?.from || "");
-  const to = String(range?.to || "");
-  if (!from && !to) return "--";
-  if (!from || !to) return from || to;
-  return `${from} 至 ${to}`;
-};
-
-const validationReasons = (validation: StrategyValidation) => {
-  const items = [
-    ...(Array.isArray(validation.publicationFailureReasons)
-      ? validation.publicationFailureReasons
-      : []),
-    ...(Array.isArray(validation.reasons) ? validation.reasons : []),
-    ...String(validation.reason || "")
-      .split(/[；;\n]+/)
-      .map((item) => item.trim())
-      .filter(Boolean),
-    validation.walkForward?.reason || ""
-  ].filter(Boolean);
-  return [...new Set(items)];
-};
-
-const reportCoverage = (report?: StrategySignalReport | null) => {
-  const coverage = report?.coverage || {};
-  const universe = nullableNumber(
-    coverage.universeSize ??
-      report?.universeSize ??
-      coverage.candidateCount ??
-      report?.candidateCount
-  );
-  const historiesUsed = nullableNumber(
-    coverage.historiesUsed ?? coverage.processed ?? report?.processed
-  );
-  const failed = nullableNumber(coverage.failed ?? report?.failed);
-  const historyBarsRequested = nullableNumber(
-    coverage.historyBarsRequested ?? report?.historyBarsRequested
-  );
-  const benchmarkBars = nullableNumber(
-    coverage.benchmarkBars ?? report?.benchmarkBars
-  );
-  const percent =
-    universe !== null && universe > 0 && historiesUsed !== null
-      ? Math.min(100, Math.max(0, historiesUsed / universe * 100))
-      : null;
-  return {
-    universe,
-    historiesUsed,
-    failed,
-    historyBarsRequested,
-    benchmarkBars,
-    percent
-  };
-};
-
-const methodologyText = (input: unknown) => {
-  if (typeof input === "string") return input;
-  if (input && typeof input === "object") {
-    return Object.values(input)
-      .filter((item): item is string => typeof item === "string" && !!item.trim())
-      .join("；");
-  }
-  return "按历史事件回放、样本外复核、风险否决与当前行情共同筛选。";
-};
-
-export const normalizeSignalReport = (input: any): StrategySignalReport => {
-  const groupSources = [
-    ...(Array.isArray(input?.groups) ? input.groups : []),
-    ...(Array.isArray(input?.strategies) ? input.strategies : []),
-    ...(Array.isArray(input?.auditedStrategies) ? input.auditedStrategies : [])
-  ];
-  const mergedGroups = new Map<string, any>();
-  groupSources.forEach((group: any, index: number) => {
-    const id = String(group?.id || `strategy-${index + 1}`);
-    const previous = mergedGroups.get(id) || {};
-    mergedGroups.set(id, {
-      ...previous,
-      ...group,
-      id,
-      validation: {
-        ...(previous?.validation || previous?.backtest || previous?.metrics || {}),
-        ...(group?.validation || group?.backtest || group?.metrics || {})
-      }
-    });
-  });
-  const strategies = [...mergedGroups.values()].map(
-    (group: any, index: number): StrategySignalGroup => {
-      const rawValidation =
-        group?.validation || group?.backtest || group?.metrics || {};
-      const publicationAccepted =
-        typeof group?.publicationAccepted === "boolean"
-          ? group.publicationAccepted
-          : rawValidation?.publicationAccepted;
-      return {
-        id: String(group?.id || `strategy-${index + 1}`),
-        name: String(group?.name || group?.label || `策略 ${index + 1}`),
-        version: String(group?.version || ""),
-        componentNames: normalizeStringList(group?.componentNames),
-        parameters: Object.fromEntries(Object.entries(group?.parameters || {}).filter(([, value]) => typeof value === "number" && Number.isFinite(value))) as Record<string, number>,
-        sources: (Array.isArray(group?.sources) ? group.sources : []).filter((source: any) =>
-          typeof source?.title === "string" && /^https:\/\/(help\.tdx\.com\.cn|search\.10jqka\.com\.cn|quant\.10jqka\.com\.cn|www\.tradingview\.com|cn\.tradingview\.com)\//.test(String(source?.url || "")))
-          .map((source: any) => ({ title: source.title, url: source.url })),
-        adaptationNote: String(group?.adaptationNote || ""),
-        type:
-          String(group?.type || "").toLowerCase() === "composite" ||
-          normalizeStringList(group?.components).length
-            ? "composite"
-            : "base",
-        detail: String(group?.detail || group?.description || ""),
-        description: String(group?.description || group?.detail || ""),
-        components: normalizeStringList(group?.components),
-        voteRule: String(group?.voteRule || group?.vote || ""),
-        conditions: normalizeStringList(group?.conditions),
-        risk: String(group?.risk || group?.riskRule || ""),
-        validation: normalizeValidation({
-          ...rawValidation,
-          ...(typeof publicationAccepted === "boolean"
-            ? { publicationAccepted }
-            : {})
-        }),
-        stocks: normalizeStocks(group?.stocks || group?.signals || group?.candidates)
-      };
-    }
-  );
-  const acceptedQualifiedCount = strategies.reduce(
-    (sum: number, group: StrategySignalGroup) =>
-      sum + (group.validation?.accepted === true ? group.stocks.length : 0),
-    0
-  );
-  const rawOptimized = input?.optimizedPortfolio;
-  const optimizedPortfolio: OptimizedPortfolio | null =
-    rawOptimized && typeof rawOptimized === "object"
-      ? {
-          ...rawOptimized,
-          accepted:
-            typeof rawOptimized.publicationAccepted === "boolean"
-              ? rawOptimized.publicationAccepted === true
-              : rawOptimized.accepted === true,
-          publicationAccepted:
-            typeof rawOptimized.publicationAccepted === "boolean"
-              ? rawOptimized.publicationAccepted === true
-              : undefined,
-          publicationFailureReasons: normalizeStringList(
-            rawOptimized.publicationFailureReasons
-          ),
-          selectedStrategies: Array.isArray(rawOptimized.selectedStrategies)
-            ? rawOptimized.selectedStrategies
-            : [],
-          dependence: Array.isArray(rawOptimized.dependence)
-            ? rawOptimized.dependence
-            : [],
-          validation: normalizeValidation(rawOptimized.validation),
-          terminalHoldout: {
-            ...normalizeSample(rawOptimized.terminalHoldout),
-            accepted: rawOptimized?.terminalHoldout?.accepted === true,
-            minimumSamples:
-              nullableNumber(rawOptimized?.terminalHoldout?.minimumSamples) ??
-              undefined,
-            splitDate: String(rawOptimized?.terminalHoldout?.splitDate || ""),
-            reason: String(rawOptimized?.terminalHoldout?.reason || "")
-          },
-          stocks: normalizeStocks(rawOptimized.stocks)
-        }
-      : null;
-  const report = {
-    generatedAt: input?.generatedAt || input?.updatedAt,
-    source: input?.source || input?.dataSource || "本地历史推演",
-    sourceClass: input?.sourceClass,
-    universeSize:
-      nullableNumber(input?.universeSize ?? input?.poolSize) ?? undefined,
-    availableUniverseSize:
-      nullableNumber(input?.availableUniverseSize) ?? undefined,
-    processed: nullableNumber(input?.processed) ?? undefined,
-    failed: nullableNumber(input?.failed) ?? undefined,
-    candidateCount: nullableNumber(input?.candidateCount) ?? undefined,
-    qualifiedCount:
-      nullableNumber(input?.qualifiedCount) ?? acceptedQualifiedCount,
-    benchmarkBars:
-      nullableNumber(input?.benchmarkBars ?? input?.coverage?.benchmarkBars) ??
-      undefined,
-    historyBarsRequested:
-      nullableNumber(
-        input?.historyBarsRequested ?? input?.coverage?.historyBarsRequested
-      ) ?? undefined,
-    coverage:
-      input?.coverage && typeof input.coverage === "object"
-        ? input.coverage
-        : {},
-    methodologyDetails:
-      input?.methodologyDetails &&
-      typeof input.methodologyDetails === "object"
-        ? input.methodologyDetails
-        : {},
-    methodology: methodologyText(input?.methodology),
-    warning: input?.warning,
-    selectionBiasWarning: String(input?.selectionBiasWarning || ""),
-    multipleTestingWarning: String(input?.multipleTestingWarning || ""),
-    publicationPolicy: String(input?.publicationPolicy || ""),
-    independentValidationUniverse:
-      input?.independentValidationUniverse === true,
-    independentValidationSampleSize:
-      nullableNumber(input?.independentValidationSampleSize) ?? undefined,
-    optimizedPortfolio,
-    currentRegime:
-      input?.currentRegime && typeof input.currentRegime === "object"
-        ? input.currentRegime
-        : optimizedPortfolio?.currentRegime,
-    publishedStrategyCount:
-      nullableNumber(input?.publishedStrategyCount) ?? undefined,
-    baseStrategyCount:
-      nullableNumber(input?.baseStrategyCount) ??
-      strategies.filter((group) => !isCompositeStrategy(group)).length,
-    compositeStrategyCount:
-      nullableNumber(input?.compositeStrategyCount) ??
-      strategies.filter(isCompositeStrategy).length,
-    publishedBaseCount:
-      nullableNumber(input?.publishedBaseCount) ??
-      strategies.filter(
-        (group) =>
-          !isCompositeStrategy(group) && group.validation?.accepted === true
-      ).length,
-    publishedCompositeCount:
-      nullableNumber(input?.publishedCompositeCount) ??
-      strategies.filter(
-        (group) =>
-          isCompositeStrategy(group) && group.validation?.accepted === true
-      ).length,
-    strategiesTested:
-      nullableNumber(input?.strategiesTested) ?? undefined,
-    sampleDiversity:
-      input?.sampleDiversity && typeof input.sampleDiversity === "object"
-        ? input.sampleDiversity
-        : undefined,
-    dataRange: normalizeRange(input?.dataRange),
-    strategies
-  };
-  return Object.fromEntries(
-    Object.entries(report).filter(([, value]) => value !== undefined)
-  ) as StrategySignalReport;
-};
-
-function ValidationPanel({
-  group,
-  report
-}: {
-  group: StrategySignalGroup;
-  report: StrategySignalReport;
-}) {
-  const validation = group.validation || {};
-  const state = validationState(validation);
-  const reasons = validationReasons(validation);
-  const coverage = reportCoverage(report);
-  const training =
-    validation.inSample || validation.walkForward?.initialTraining || {};
-  const outOfSample =
-    validation.outOfSample || validation.walkForward?.outOfSample || {};
-  const walkForward = validation.walkForward || {};
-  const folds = Array.isArray(walkForward.folds) ? walkForward.folds : [];
-  const passedFolds = nullableNumber(walkForward.passedFolds);
-  const costBps = nullableNumber(validation.roundTripCostBps);
-  const currentRegimeFit = validation.currentRegimeFit;
-  const minimumSamples = nullableNumber(
-    validation.minimumSamples ?? validation.thresholds?.minSamples
-  );
-  const originalStatus =
-    state === "verified"
-      ? validation.grade ? `验证评级 ${validation.grade}` : "验证通过"
-      : state === "insufficient"
-        ? "样本不足"
-        : "等待复核";
-  return (
-    <div className={`strategy-validation state-${state}`}>
-      <div className="strategy-validation-head">
-        <div>
-          {state === "verified" ? (
-            <CheckCircle2 size={18} />
-          ) : state === "insufficient" ? (
-            <Database size={18} />
-          ) : (
-            <ShieldAlert size={18} />
-          )}
-          <span>{validationStateLabel(state)}</span>
-        </div>
-        <em>{originalStatus}</em>
-      </div>
-      <div className="strategy-validation-grid">
-        <div className="strategy-validation-range">
-          <span>有效历史起止</span>
-          <b>{rangeText(validation.range)}</b>
-          <small>
-            服务端回传请求窗口 {fmt(coverage.historyBarsRequested, 0)} 根日线
-          </small>
-        </div>
-        <div>
-          <span>总样本 / 最低要求</span>
-          <b>{fmt(validation.sampleCount, 0)} / {fmt(minimumSamples, 0)}</b>
-          <small>不可成交剔除 {fmt(validation.untradeableCount, 0)}</small>
-        </div>
-        <div>
-          <span>样本外样本</span>
-          <b>{fmt(validation.outOfSampleCount, 0)}</b>
-          <small>基准匹配 {fmt(outOfSample.benchmarkSampleCount ?? validation.benchmarkSampleCount, 0)}</small>
-        </div>
-        <div>
-          <span>走步窗口通过</span>
-          <b>
-            {walkForward.available === true
-              ? `${fmt(passedFolds, 0)} / ${folds.length || "--"}`
-              : "--"}
-          </b>
-          <small>通过率 {ratioPercent(validation.walkForwardPassRate)}</small>
-        </div>
-        <div>
-          <span>简化双边成本</span>
-          <b>{costBps === null ? "--" : `${fmt(costBps, 1)} bps`}</b>
-          <small>{costBps === null ? "成本字段未返回" : `佣金+滑点约 ${(costBps / 100).toFixed(3)}%，未含最低佣金与税费版本化`}</small>
-        </div>
-        <div>
-          <span>数据完整度</span>
-          <b>
-            {coverage.historiesUsed === null || coverage.universe === null
-              ? "--"
-              : `${fmt(coverage.historiesUsed, 0)} / ${fmt(coverage.universe, 0)}`}
-          </b>
-          <small>
-            {coverage.percent === null ? "覆盖率未知" : `覆盖 ${coverage.percent.toFixed(1)}%`}
-            {coverage.failed ? ` · 失败 ${coverage.failed}` : ""}
-          </small>
-        </div>
-        <div>
-          <span>基准历史</span>
-          <b>{fmt(coverage.benchmarkBars, 0)} 根</b>
-          <small>{nullableNumber(coverage.benchmarkBars) === null ? "基准字段未返回" : "中证全指不复权日线"}</small>
-        </div>
-        <div>
-          <span>稳定性 / 过拟合</span>
-          <b>{fmt(validation.stabilityScore, 0)}</b>
-          <small>
-            {walkForward.overfitRisk
-              ? `过拟合风险 ${walkForward.overfitRisk}`
-              : "过拟合字段未返回"}
-          </small>
-        </div>
-        <div>
-          <span>当前市场适配</span>
-          <b>{currentRegimeFit?.regimeLabel || "--"}</b>
-          <small>
-            {currentRegimeFit
-              ? currentRegimeFit.supported
-                ? "该状态历史优势达标"
-                : currentRegimeFit.reason || "该状态暂不发布"
-              : "市场状态证据未返回"}
-          </small>
-        </div>
-      </div>
-
-      <div className="strategy-validation-periods">
-        <div className="strategy-validation-period training">
-          <header><span>训练期</span><em>{rangeText(training.range)}</em></header>
-          <div>
-            <span><small>样本</small><b>{fmt(training.sampleCount, 0)}</b></span>
-            <span><small>胜率</small><b>{unit(training.winRate, 1, "%")}</b></span>
-            <span><small>净均收益</small><b>{pct(training.averageReturn, 2)}</b></span>
-            <span><small>95%收益下限</small><b>{pct(training.averageReturnLowerBound95, 2)}</b></span>
-            <span><small>基准超额</small><b>{pct(training.averageExcessReturn, 2)}</b></span>
-            <span><small>信号序列回撤</small><b>{pct(training.maxDrawdown, 2)}</b></span>
-          </div>
-        </div>
-        <div className="strategy-validation-period out-of-sample">
-          <header><span>样本外</span><em>{rangeText(outOfSample.range)}</em></header>
-          <div>
-            <span><small>样本</small><b>{fmt(outOfSample.sampleCount ?? validation.outOfSampleCount, 0)}</b></span>
-            <span><small>胜率</small><b>{unit(outOfSample.winRate ?? validation.winRate5, 1, "%")}</b></span>
-            <span><small>净均收益</small><b>{pct(outOfSample.averageReturn ?? validation.average5, 2)}</b></span>
-            <span><small>95%收益下限</small><b>{pct(outOfSample.averageReturnLowerBound95, 2)}</b></span>
-            <span><small>基准超额</small><b>{pct(outOfSample.averageExcessReturn ?? validation.excess5, 2)}</b></span>
-            <span><small>信号序列回撤</small><b>{pct(outOfSample.maxDrawdown ?? validation.worstMdd5, 2)}</b></span>
-          </div>
-        </div>
-      </div>
-
-      <div className={`strategy-validation-reasons state-${state}`}>
-        <b>{state === "verified" ? "通过依据" : "拒绝 / 保留原因"}</b>
-        {reasons.length ? (
-          <ul>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
-        ) : (
-          <p>
-            {state === "verified"
-              ? "总样本、时间切分样本外和走步验证均通过。"
-              : "接口未返回可核验的拒绝原因，因此不会发布为优质信号。"}
-          </p>
-        )}
-      </div>
-
-      <div className="strategy-validation-method">
-        <span>{validation.entryRule || "入场与退出规则未返回"}</span>
-        <span>{validation.returnType || "收益口径未返回"}</span>
-      </div>
+let rememberedAiSort = true;
+export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel({ groups, onOpen, onStrategy, dataState, live = true, quoteRefreshSeconds = 15, aiScores }: { live?: boolean; quoteRefreshSeconds?: number; groups: StrategySignalGroup[]; onOpen?: ((security: Security) => void) | undefined; onStrategy?: ((id: string) => void) | undefined; dataState?: SelectionDataState | undefined; aiScores?: Map<string, AiRankItem> | undefined }) {
+  const [aiSort, setAiSort] = useState(rememberedAiSort);
+  const [featuredOnly, setFeaturedOnly] = useState(rememberedFeaturedOnly);
+  const hasAi = Boolean(aiScores?.size);
+  // 默认只汇总精选策略（加上我的策略），避免较弱策略的候选把列表撑长；可切换为全部策略。
+  const hasFeatured = groups.some(group => group.featured);
+  const shownGroups = useMemo(() => featuredOnly && hasFeatured ? groups.filter(group => group.featured || group.custom) : groups, [groups, featuredOnly, hasFeatured]);
+  const baseRows = useMemo(() => summarizeStocksAcrossStrategies(shownGroups), [shownGroups]);
+  const rows = useMemo(() => hasAi && aiSort && aiScores ? sortByAiScore(baseRows, aiScores) : baseRows, [baseRows, hasAi, aiSort, aiScores]);
+  const { page, totalPages, go } = usePage("summary", rows.length);
+  const pageStocks = rows.slice((page - 1) * 20, page * 20);
+  const quotes = useSelectionQuotes(pageStocks.map(toSecurity), live, quoteRefreshSeconds);
+  return <section className="panel strategy-stock-panel strategy-stock-summary" aria-label="按股票汇总">
+    <div className="strategy-stock-panel-title"><div><Layers size={18} /><span><b>按股票汇总</b><small>{hasAi && aiSort ? "按 AI 分降序（未评估的股票排在后面）" : "命中精选策略的在前；同一形态家族的多条策略只算一类，再按命中家族数、策略数、排序分降序"}</small></span></div><span className="strategy-stock-panel-tools">{hasFeatured && <span className="strategy-scope-switch" role="group" aria-label="汇总范围"><button type="button" aria-pressed={featuredOnly} onClick={() => { rememberedFeaturedOnly = true; setFeaturedOnly(true); }}>精选策略</button><button type="button" aria-pressed={!featuredOnly} onClick={() => { rememberedFeaturedOnly = false; setFeaturedOnly(false); }}>全部策略</button></span>}{hasAi && <button type="button" className="secondary-btn ai-sort-toggle" aria-pressed={aiSort} onClick={() => { rememberedAiSort = !aiSort; setAiSort(!aiSort); }}>{aiSort ? "改按命中数排序" : "按 AI 分排序"}</button>}<CopyCodesButton codes={rows.map(stock => stock.code)} /><em>{!rows.length && dataState?.state === "unavailable" ? "待完成" : `${rows.length} 只`}</em></span></div>
+    <SelectionQuoteControls total={pageStocks.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />
+    <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="股票汇总表格，可横向滚动">
+      <table className="strategy-result-table strategy-summary-table" aria-label="各策略选股按股票汇总">
+        <StrategyTableHead columns={summaryTableColumns} />
+        {pageStocks.map(stock => { const notes = stockNotes(stock); const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined; return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
+          <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}</th>
+          <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
+          <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
+          <td>{limitAge(stock)}</td>
+          <td><small className="strategy-stock-reasons strategy-family-line">{stock.familyCount} 类：{[...new Set(stock.strategies.map(item => familyLabel[item.family || ""] || "其他"))].join("、")}</small><div className="strategy-hit-chips">{stock.strategies.slice(0, 3).map(item => onStrategy ? <button key={item.id} type="button" className="strategy-hit-chip" onClick={event => { event.stopPropagation(); onStrategy(item.id); }}>{item.name}</button> : <span key={item.id}>{item.name}</span>)}{stock.strategies.length > 3 && <small>+{stock.strategies.length - 3}</small>}</div></td>
+        </tr><StockNotesRow notes={notes} colSpan={5} onClick={openStock} /></tbody>; })}
+      </table>
+      {!rows.length && <div className="strategy-stock-empty"><Target size={28} /><b>{dataState?.title || "本轮未选出股票"}</b>{dataState && <p>{dataState.description}</p>}</div>}
     </div>
-  );
+    {!!rows.length && <Pagination total={rows.length} page={page} totalPages={totalPages} go={go} label="汇总分页" />}
+  </section>;
+});
+
+/** Custom strategy rules: the user's own conditions in plain language. */
+export function CustomStrategyRules({ strategy, group, patterns }: { strategy: CustomStrategy; group?: StrategySignalGroup | undefined; patterns: PatternOption[] }) {
+  const summary = describeCustomStrategy(strategy, patterns);
+  return <details className="panel signal-rule-details custom-rule-details" open><summary>策略条件 · 第 {strategy.revision || 1} 版</summary>
+    <div className="strategy-rule-panel">
+      <div className="strategy-rule-field conditions"><span>条件与规则</span>
+        {group?.conditions?.length ? <ul>{group.conditions.map((line, index) => <li key={index}>{line}</li>)}</ul>
+          : <ul>{summary.required.length > 0 && <li>必要条件：{summary.required.join("、")}</li>}{summary.optional.length > 0 && <li>其他条件：{summary.optional.join("、")}</li>}<li>匹配规则：全部条件（不含门槛）中至少满足 {strategy.minMatchPercent}%</li><li>风险否决：始终启用</li></ul>}</div>
+      <div className="strategy-rule-field"><span>选股范围</span><p>{summary.universe}</p></div>
+      <div className="strategy-rule-field"><span>来源</span><p>{strategy.origin === "legacy-settings" ? "由设置页“自主策略组合”迁移或导入；设置中的组合仍用于个股分析与预警" : strategy.origin === "copy" ? "复制自另一套策略" : "用户创建"}{strategy.updatedAt ? ` · 最近保存 ${new Date(strategy.updatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}` : ""}</p></div>
+    </div>
+  </details>;
 }
 
-function OptimizedPortfolioPanel({
-  portfolio,
-  onOpen,
-  onOpenBacktest
-}: {
-  portfolio: OptimizedPortfolio;
-  onOpen: (security: Security) => void;
-  onOpenBacktest: (request: StrategyBacktestRequest) => void;
-}) {
-  const passed = portfolio.publicationAccepted === true || portfolio.accepted === true;
-  const validation = portfolio.validation || {};
-  const outOfSample = validation.outOfSample || {};
-  const terminal = portfolio.terminalHoldout || {};
-  const regimeFit = portfolio.currentRegimeFit || {};
-  const failures = [
-    ...(portfolio.publicationFailureReasons || []),
-    ...(passed ? [] : [portfolio.reason || ""]),
-    ...(terminal.accepted === true ? [] : [terminal.reason || ""]),
-    ...(regimeFit.supported === true ? [] : [regimeFit.reason || ""])
-  ].filter(Boolean);
-  const maxContainment = Math.max(
-    0,
-    ...(portfolio.dependence || []).map((item) => number(item.containment))
-  );
-  const optimizedStrategyIds = (portfolio.selectedStrategies || [])
-    .map((item) => String(item.id || "").trim())
-    .filter(Boolean);
-  const openPortfolioBacktest = (security?: Security) => onOpenBacktest({
-    ...(security ? { security } : {}),
-    ...(!security && portfolio.stocks?.length
-      ? {
-          securities: portfolio.stocks,
-          universeSource: "strategy_current_matches" as const,
-          universeTotalCount: portfolio.stocks.length
-        }
-      : {}),
-    source: "optimized_portfolio",
-    strategyEngine: "verified-signal-v2",
-    strategyId: portfolio.id || "optimized_robust_consensus",
-    strategyName: portfolio.name || "稳健优选组合",
-    ...(portfolio.version ? { strategyVersion: portfolio.version } : {}),
-    strategyIds: optimizedStrategyIds,
-    minimumVotes: portfolio.minimumVotes || 2
-  });
-  return (
-    <section className={`panel optimized-strategy-panel ${passed ? "passed" : "waiting"}`}>
-      <header>
-        <div className="optimized-strategy-title">
-          <Sparkles size={22} />
-          <div>
-            <span>ROBUST OPTIMIZED CONSENSUS</span>
-            <h2>{portfolio.name || "稳健优选组合"}</h2>
-            <p>先在开发期选低重复策略，再用未参与选优的终端留出样本考试；只有当前市场状态也适配时才发布股票。</p>
-          </div>
-        </div>
-        <em className={passed ? "pass" : "wait"}>{passed ? "可发布" : "继续观察"}</em>
-      </header>
+const TrendScreenerView = lazy(() => import("./TrendScreenerView"));
+type Focus = { kind: "pattern" | "custom" | "trend"; id: string };
+let rememberedFocus: Focus | null = null;
 
-      <div className="optimized-strategy-backtest-action">
-        <button
-          className="secondary-btn"
-          onClick={() => openPortfolioBacktest()}
-          disabled={!optimizedStrategyIds.length}
-        >
-          <Target size={16} />
-          带入回测中心
-        </button>
-        <small>冻结本轮入选组件、投票门槛和本轮命中股票；回测中心可选单只、部分或全部回放。</small>
-      </div>
-
-      <div className="optimized-strategy-components">
-        {(portfolio.selectedStrategies || []).length ? (
-          portfolio.selectedStrategies?.map((strategy) => (
-            <div key={strategy.id}>
-              <span>{strategy.name || strategy.id}</span>
-              <b>{fmt(strategy.robustScore, 1)}</b>
-              <small>{strategy.developmentAccepted ? "开发期通过" : "开发期未通过"}</small>
-            </div>
-          ))
-        ) : (
-          <p>目前没有至少两套低相关且通过开发期复核的基础策略。</p>
-        )}
-      </div>
-
-      <div className="optimized-strategy-metrics">
-        <div>
-          <span>开发期共识样本</span>
-          <b>{fmt(validation.sampleCount, 0)}</b>
-          <small>样本外 {fmt(outOfSample.sampleCount, 0)} 条</small>
-        </div>
-        <div>
-          <span>样本外95%收益下限</span>
-          <b>{pct(outOfSample.averageReturnLowerBound95, 2)}</b>
-          <small>超额 {pct(outOfSample.averageExcessReturn, 2)}</small>
-        </div>
-        <div>
-          <span>终端留出考试</span>
-          <b>{terminal.accepted ? "验证通过" : "未通过"}</b>
-          <small>{fmt(terminal.sampleCount, 0)} / {fmt(terminal.minimumSamples, 0)} 条</small>
-        </div>
-        <div>
-          <span>走步通过率</span>
-          <b>{ratioPercent(validation.walkForward?.passRate)}</b>
-          <small>信号序列回撤 {pct(outOfSample.maxDrawdown, 2)}</small>
-        </div>
-        <div>
-          <span>当前市场状态</span>
-          <b>{regimeFit.regimeLabel || portfolio.currentRegime?.label || "未知"}</b>
-          <small>{regimeFit.supported ? "历史适配" : "暂不适配"}</small>
-        </div>
-        <div>
-          <span>组件最大包含率</span>
-          <b>{unit(maxContainment * 100, 1, "%")}</b>
-          <small>上限 {unit(number(portfolio.maxAllowedContainment) * 100, 0, "%")}</small>
-        </div>
-      </div>
-
-      {!passed && failures.length > 0 && (
-        <div className="optimized-strategy-failures">
-          <ShieldAlert size={17} />
-          <div>
-            <b>本轮不发布的原因</b>
-            <ul>{[...new Set(failures)].map((reason) => <li key={reason}>{reason}</li>)}</ul>
-          </div>
-        </div>
-      )}
-
-      {passed && Boolean(portfolio.stocks?.length) && (
-        <div className="optimized-strategy-stocks">
-          <div>
-            <b>本轮优选股票</b>
-            <small>至少 {portfolio.minimumVotes || 2} 套低相关策略同股同日共振</small>
-          </div>
-          <div>
-            {portfolio.stocks?.slice(0, 12).map((stock) => (
-              <article key={stock.code}>
-                <span>{stock.name}<small>{stock.code}</small></span>
-                <b>{fmt(stock.signalScore ?? stock.signalStrength, 0)}分</b>
-                <em>{(stock.matchedStrategyIds || []).length} 策略共振</em>
-                <div className="optimized-stock-actions">
-                  <button onClick={() => onOpen(stock)}>复盘</button>
-                  <button onClick={() => openPortfolioBacktest(stock)}>组合回测</button>
-                </div>
-              </article>
-            ))}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
-
-const defaultStrategyId = (strategies: StrategySignalGroup[]) =>
-  strategies.find(
-    (group) =>
-      isCompositeStrategy(group) && group.validation?.accepted === true
-  )?.id ||
-  strategies.find((group) => group.validation?.accepted === true)?.id ||
-  strategies.find(isCompositeStrategy)?.id ||
-  strategies[0]?.id ||
-  "";
-
-export default function StrategySignalsView({
-  onOpen,
-  onOpenBacktest
-}: {
-  onOpen: (security: Security) => void;
-  onOpenBacktest: (request: StrategyBacktestRequest) => void;
-}) {
-  // 个股页的 selectedStrategies 是分析因子，不是历史信号引擎的策略 ID。
-  // 策略信号页始终复核完整的版本化策略库，避免无效 ID 触发重复的 300×720 扫描。
-  const strategyKey = "verified-signal-engine-v2";
-  const selectedStrategyIds = useMemo<string[]>(() => [], []);
-  const cachedEntry = strategyReportCache.get(strategyKey);
-  const [scannedReport, setReport] = useState<StrategySignalReport | null>(
-    cachedEntry?.report || null
-  );
-  const [catalogReport, setCatalogReport] = useState<StrategySignalReport | null>(null);
-  const report = scannedReport || catalogReport;
-  const [strategyQuery, setStrategyQuery] = useState("");
-  const [qualityFilter, setQualityFilter] = useState("all");
-  const [strategySort, setStrategySort] = useState("catalog");
-  const [loading, setLoading] = useState(false);
+/**
+ * 策略选股：策略驱动的统一选股工作台。左侧策略库（我的策略 / 涨停形态 / 趋势模型），
+ * 选择策略后右侧只展示该策略选出的股票；自定义策略可新建、编辑、复制、删除，保存后立即参与选股。
+ */
+export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocus, live = true, quoteRefreshSeconds = 15 }: { live?: boolean; quoteRefreshSeconds?: number; onOpen?: ((security: Security) => void) | undefined; onOpenAiPicks?: (() => void) | undefined; initialFocus?: "trend" | undefined } = {}) {
+  const [report, setReport] = useState<StrategySignalReport | null>(() => getSelectionReport<StrategySignalReport>());
+  const [catalog, setCatalog] = useState<StrategySignalGroup[]>([]);
+  // 已下线的策略（retired）不进策略库、不参与选股；只留给「我的策略」编辑器显示已引用的条件。
+  const [retiredCatalog, setRetiredCatalog] = useState<StrategySignalGroup[]>([]);
+  const [catalogError, setCatalogError] = useState("");
+  const [activeId, setActiveId] = useState(rememberedStrategyId);
+  const [focus, setFocus] = useState<Focus | null>(() => initialFocus === "trend" ? { kind: "trend", id: TREND_STRATEGY_CHOICES[0]!.id } : rememberedFocus);
+  const [mode, setMode] = useState<"strategy" | "stock">(rememberedMode);
+  const [query, setQuery] = useState("");
+  const [sort, setSort] = useState("catalog");
+  const [family, setFamily] = useState("all");
+  const [hideEmpty, setHideEmptyState] = useState(rememberedHideEmpty);
+  const setHideEmpty = (value: boolean) => { rememberedHideEmpty = value; setHideEmptyState(value); };
+  const [loading, setLoading] = useState(true);
+  const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState("");
-  const [activeId, setActiveId] = useState(
-    strategyActiveIdCache.get(strategyKey) || ""
-  );
-  const scanJobs = useRef(createServiceJobScope());
-  const requestId = useRef(0);
-  useEffect(() => {
+  const [customStrategies, setCustomStrategies] = useState<CustomStrategy[]>([]);
+  const [customError, setCustomError] = useState("");
+  const [editor, setEditor] = useState<CustomStrategy | null>(null);
+  const [editorSession, setEditorSession] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [editorError, setEditorError] = useState("");
+  const [deleteRequest, setDeleteRequest] = useState<{ strategy: CustomStrategy; request: ConfirmDialogRequest } | null>(null);
+  const [notice, setNotice] = useState("");
+  const [aiRanking, setAiRanking] = useState<AiRanking | null>(null);
+  const [editorAiText, setEditorAiText] = useState("");
+  const jobs = useRef(createServiceJobScope());
+  const revision = useRef(0);
+  const customApi = typeof window.stockApi.listCustomStrategies === "function";
+  const loadCatalog = useCallback(() => {
     let active = true;
+    setCatalogError("");
     window.stockApi.getStrategyDefinitions().then(input => {
       if (!active) return;
-      const definitions = Array.isArray(input) ? input : input.strategies || input.definitions || [];
-      setCatalogReport(normalizeSignalReport({ strategies: definitions.map(item => ({ ...item, stocks: [], validation: { status: "INSUFFICIENT", accepted: false, publicationAccepted: false, sampleCount: 0, reason: "策略规则已加载，历史收益尚待复核。" } })), source: "本地规则目录 · 尚未生成收益验证", mode: "目录" }));
-    }).catch(() => { /* A completed scan may still supply its versioned catalog. */ });
+      const definitions: any[] = Array.isArray(input) ? input : input.strategies || input.definitions || [];
+      setCatalog(normalizeSignalReport({ strategies: definitions.filter(item => item?.retired !== true).map(item => ({ ...item, stocks: [] })) }).strategies);
+      setRetiredCatalog(normalizeSignalReport({ strategies: definitions.filter(item => item?.retired === true).map(item => ({ ...item, name: `${item.name}（已下线）`, stocks: [] })) }).strategies);
+    }).catch(reason => { if (active) setCatalogError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { active = false; };
   }, []);
-
-
-  const load = useCallback(async (force = false) => {
-    const cached = strategyReportCache.get(strategyKey);
-    // Always re-enter the main-process cache so a provider/settings change is
-    // reflected immediately. Keep the renderer copy only as a non-blocking
-    // placeholder while the provider-keyed backend result is resolved.
-    void scanJobs.current.cancelAll();
-    const currentRequest = ++requestId.current;
-    setLoading(true);
-    setError("");
-    if (!cached) setReport(null);
+  const loadCustom = useCallback(async () => {
+    if (!window.stockApi.listCustomStrategies) return;
+    try { setCustomStrategies(await window.stockApi.listCustomStrategies()); setCustomError(""); }
+    catch (reason) { setCustomError(ipcMessage(reason)); }
+  }, []);
+  useEffect(() => loadCatalog(), [loadCatalog]);
+  useEffect(() => { void loadCustom(); }, [loadCustom]);
+  // 保存/导入/删除策略的回调在 await 之后才重新选股：页面已切走时不再启动新的全市场选股。
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const load = useCallback(async (refresh = false) => {
+    void jobs.current.cancelAll();
+    const current = ++revision.current;
+    setLoading(true); setLoadStartedAt(Date.now()); setElapsedSeconds(0); setError("");
     try {
-      const next = await scanJobs.current.run(requestId => window.stockApi.scanStrategySignals({
-        requestId,
-        strategyIds: selectedStrategyIds,
-        historyBars: 720,
-        maxUniverse: 300,
-        maxStocksPerStrategy: 200,
-        minSamples: 120,
-        minOutOfSampleSamples: 36,
-        minIndependentSignalDays: 60,
-        minWalkForwardFoldSamples: 10,
-        walkForwardFolds: 4,
-        refresh: force
-      }));
-      if (requestId.current !== currentRequest) return;
-      const normalized = normalizeSignalReport(next);
-      strategyReportCache.set(strategyKey, {
-        report: normalized,
-        savedAt: Date.now()
-      });
-      setReport(normalized);
-      setActiveId((current) => {
-        const preferred = strategyActiveIdCache.get(strategyKey) || current;
-        const nextActive = normalized.strategies.some(
-          (item) => item.id === preferred
-        )
-          ? preferred
-          : defaultStrategyId(normalized.strategies);
-        strategyActiveIdCache.set(strategyKey, nextActive);
-        return nextActive;
-      });
+      const raw = await jobs.current.run(requestId => window.stockApi.scanStrategySignals({ requestId, strategyIds: [], maxUniverse: 300, refresh }));
+      if (revision.current !== current) return;
+      const next = normalizeSignalReport(raw);
+      setSelectionReport(next); setReport(next);
+      setActiveId(previous => next.strategies.some(group => group.id === previous && !group.custom) ? previous : defaultStrategyId(next.strategies.filter(group => !group.custom)));
     } catch (reason) {
-      if (requestId.current !== currentRequest) return;
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      if (requestId.current === currentRequest) setLoading(false);
-    }
-  }, [selectedStrategyIds, strategyKey]);
-
+      if (revision.current === current) setError(reason instanceof Error ? reason.message : String(reason));
+    } finally { if (revision.current === current) setLoading(false); }
+  }, []);
   useEffect(() => {
-    load(false);
-    return () => {
-      requestId.current += 1;
-      void scanJobs.current.cancelAll();
-    };
+    void load();
+    return () => { revision.current += 1; void jobs.current.cancelAll(); };
   }, [load]);
-
-  const activateStrategy = (id: string) => {
-    strategyActiveIdCache.set(strategyKey, id);
-    setActiveId(id);
+  useEffect(() => {
+    if (!loading || loadStartedAt === null) return;
+    const timer = window.setInterval(whenVisible(() => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - loadStartedAt) / 1000)))), 1000);
+    return () => window.clearInterval(timer);
+  }, [loading, loadStartedAt]);
+  const strategies = report?.strategies || catalog;
+  const patternGroups = useMemo(() => strategies.filter(group => !group.custom), [strategies]);
+  const customGroups = useMemo(() => new Map((report?.strategies || []).filter(group => group.custom).map(group => [group.id, group])), [report]);
+  const patterns = useMemo<PatternOption[]>(() => [...(catalog.length ? catalog : patternGroups), ...retiredCatalog].map(group => ({ id: group.id, name: group.name, family: group.family, detail: group.detail })), [catalog, patternGroups, retiredCatalog]);
+  const filtered = useMemo(() => filterSignalGroups(patternGroups, query, sort, family, Boolean(report) && hideEmpty, activeId), [patternGroups, query, sort, family, report, hideEmpty, activeId]);
+  // 家族下拉只列在用策略里还有的家族（游资打法等整族下线后不再出现空选项）。
+  const familyOptions = useMemo(() => { const present = new Set(patternGroups.map(group => group.family)); return families.filter(([id]) => id === "all" || present.has(id)); }, [patternGroups]);
+  useEffect(() => { if (family !== "all" && !familyOptions.some(([id]) => id === family)) setFamily("all"); }, [family, familyOptions]);
+  const filteredCustom = customStrategies.filter(item => !query.trim() || `${item.name} ${item.description}`.toLowerCase().includes(query.trim().toLowerCase()));
+  const emptyCount = report ? patternGroups.filter(group => !group.stocks.length).length : 0;
+  const active = filtered.find(group => group.id === activeId) || filtered.find(group => group.id === defaultStrategyId(filtered));
+  const previous = Boolean(report && (loading || error));
+  const uniqueCount = new Set(strategies.flatMap(group => group.stocks.map(stock => stock.code))).size;
+  const aiScores = useMemo(() => aiScoreMap(aiRanking), [aiRanking]);
+  const summaryRows = useMemo(() => summarizeStocksAcrossStrategies(strategies.filter(group => !group.error)), [strategies]);
+  // 表里的「AI 分」小标签：只读本机已保存的 AI 打分（在「AI 选股」页生成），不在这里调用模型。
+  useEffect(() => {
+    const api = window.stockApi?.ai;
+    setAiRanking(null);
+    if (!api || !report?.asOfDate || !summaryRows.length) return;
+    let active = true;
+    void api.cached({ asOfDate: report.asOfDate, picks: buildAiPicks(summaryRows), strategyCounts: [] })
+      .then(value => { if (active) setAiRanking(value.rank); }).catch(() => {});
+    return () => { active = false; };
+  }, [report?.asOfDate, summaryRows]);
+  const poolDataState = selectionDataState(report);
+  const personalDataState = selectionDataState(report, "watchlist");
+  const summaryDataState = selectionSummaryDataState(report, uniqueCount > 0);
+  const overallUnavailable = summaryDataState.state === "unavailable";
+  const focused: Focus = focus && (focus.kind !== "custom" || customStrategies.some(item => item.id === focus.id)) ? focus : { kind: "pattern", id: active?.id || "" };
+  const focusedCustom = focused.kind === "custom" ? customStrategies.find(item => item.id === focused.id) : undefined;
+  const choose = (next: Focus) => { rememberedFocus = next; setFocus(next); rememberedMode = "strategy"; setMode("strategy"); setEditor(null); setNotice(""); };
+  const activate = (id: string) => {
+    if (customStrategies.some(item => item.id === id)) { choose({ kind: "custom", id }); return; }
+    rememberedStrategyId = id; setActiveId(id); choose({ kind: "pattern", id });
+    if (!filtered.some(group => group.id === id)) { setQuery(""); setFamily("all"); setHideEmpty(false); }
   };
-
-  const compositeStrategies = useMemo(
-    () => report?.strategies.filter(isCompositeStrategy) || [],
-    [report]
-  );
-  const baseStrategies = useMemo(
-    () => report?.strategies.filter((group) => !isCompositeStrategy(group)) || [],
-    [report]
-  );
-  const strategyNames = useMemo(
-    () =>
-      new Map(
-        (report?.strategies || []).flatMap((group): Array<[string, string]> => [
-          [group.id, group.name], ...(group.components || []).map((id, index): [string, string] =>
-            [id, group.componentNames?.[index] || componentFallbackNames[id] || id])
-        ])
-      ),
-    [report]
-  );
-  const activeGroup = useMemo(() => {
-    const strategies = report?.strategies || [];
-    return (
-      strategies.find((item) => item.id === activeId) ||
-      strategies.find((item) => item.id === defaultStrategyId(strategies))
-    );
-  }, [activeId, report]);
-  const acceptedCount = report?.strategies.filter(
-    (item) => item.validation?.accepted === true
-  ).length || 0;
-  const observingCount = report?.strategies.filter(
-    (item) => validationState(item.validation) === "observing"
-  ).length || 0;
-  const insufficientCount = report?.strategies.filter(
-    (item) => validationState(item.validation) === "insufficient"
-  ).length || 0;
-  const uniqueStockCount = new Set(
-    report?.strategies.flatMap((item) =>
-      item.validation?.accepted === true
-        ? item.stocks.map((stock) => stock.code)
-        : []
-    ) || []
-  ).size;
-  const activeAccepted = activeGroup?.validation?.accepted === true;
-  const activeComposite = isCompositeStrategy(activeGroup);
-  const activeValidationState = validationState(activeGroup?.validation);
-  const activeStocks = activeAccepted ? activeGroup?.stocks || [] : [];
-  const coverage = reportCoverage(report);
-
-  const filterStrategies = (groups: StrategySignalGroup[]) => {
-    const filtered = groups.filter(group => `${group.name} ${group.detail}`.toLowerCase().includes(strategyQuery.trim().toLowerCase()) && (qualityFilter === "all" || validationState(group.validation) === qualityFilter));
-    if (strategySort === "catalog") return filtered;
-    return [...filtered].sort((a, b) => {
-      const av = nullableNumber(strategySort === "win" ? a.validation?.outOfSample?.winRate : a.validation?.stabilityScore);
-      const bv = nullableNumber(strategySort === "win" ? b.validation?.outOfSample?.winRate : b.validation?.stabilityScore);
-      return av === null ? (bv === null ? 0 : 1) : bv === null ? -1 : bv - av;
-    });
+  const switchMode = (next: "strategy" | "stock") => { rememberedMode = next; setMode(next); setEditor(null); };
+  const openEditor = (strategy: CustomStrategy, aiText = "") => { if (saving) return; setEditorSession(current => current + 1); setEditorError(""); setEditorAiText(aiText); setEditor(strategy); setNotice(""); };
+  // 从「AI 选股」页带过来的大白话描述：打开新建策略编辑器，由 AI 配好条件后用户确认保存。
+  useEffect(() => {
+    const text = takePendingStrategyText();
+    if (text && customApi) { setEditorSession(current => current + 1); setEditorAiText(text); setEditor(emptyCustomStrategy()); }
+  }, [customApi]);
+  const saveStrategy = async (strategy: CustomStrategy) => {
+    if (!window.stockApi.saveCustomStrategy) return;
+    setSaving(true); setEditorError("");
+    try {
+      const result = await window.stockApi.saveCustomStrategy(strategy);
+      setCustomStrategies(result.strategies); setEditor(null);
+      choose({ kind: "custom", id: result.strategy.id || "" });
+      setNotice(`已保存「${result.strategy.name}」，正在按新条件选股…`);
+      if (mounted.current) void load(false);
+    } catch (reason) { setEditorError(ipcMessage(reason)); }
+    finally { setSaving(false); }
   };
-  const renderStrategyTabs = (
-    groups: StrategySignalGroup[],
-    label: string,
-    kind: "composite" | "base"
-  ) => (
-    <>
-      <div className={`strategy-signal-tab-section ${kind}`}>
-        <span>{label}</span>
-        <b>{groups.length}</b>
-        <small>
-          已发布 {groups.filter((group) => group.validation?.accepted === true).length}
-        </small>
-      </div>
-      {groups.map((group) => {
-        const state = validationState(group.validation);
-        return (
-          <button
-            key={group.id}
-            className={`${activeGroup?.id === group.id ? "active" : ""} state-${state} type-${kind}`}
-            aria-pressed={activeGroup?.id === group.id}
-            onClick={() => activateStrategy(group.id)}
-          >
-            <span>
-              <span className="strategy-signal-tab-name">
-                <b>{group.name}</b>
-                <i className={`strategy-type-badge ${kind}`}>
-                  {kind === "composite" ? "组合共振" : "基础"}
-                </i>
-              </span>
-              <small className="strategy-signal-tab-audit">
-                {state === "verified"
-                  ? `发布 ${group.stocks.length} 只合格股票`
-                  : `命中 ${group.stocks.length} 条已隔离，不发布`}
-              </small>
-            </span>
-            <em>{validationStateLabel(state)}</em>
-            <ChevronRight size={15} />
-          </button>
-        );
-      })}
-    </>
-  );
-
-  return (
-    <div className="strategy-signals-view">
-      <div className="page-heading">
-        <div>
-          <h1>策略信号</h1>
-          <details className="signal-purpose-details"><summary>用途与复核口径</summary><span className="eyebrow">VERIFIED STRATEGY SIGNALS</span><p>不同策略独立选股；只有完成历史推演、样本外复核和当前风险过滤的结果才进入信号板。</p></details>
+  const importSettings = async () => {
+    if (!window.stockApi.importSettingsStrategy) return;
+    setSaving(true); setEditorError("");
+    try {
+      const result = await window.stockApi.importSettingsStrategy();
+      setCustomStrategies(result.strategies); setEditor(null);
+      choose({ kind: "custom", id: result.strategy.id || "" });
+      setNotice(`已从设置导入「${result.strategy.name}」，可继续编辑。`);
+      if (mounted.current) void load(false);
+    } catch (reason) { setEditorError(ipcMessage(reason)); }
+    finally { setSaving(false); }
+  };
+  const resolveDelete = async (confirmed: boolean) => {
+    const pending = deleteRequest; setDeleteRequest(null);
+    if (!confirmed || !pending?.strategy.id || !window.stockApi.deleteCustomStrategy) return;
+    try {
+      const result = await window.stockApi.deleteCustomStrategy(pending.strategy.id);
+      setCustomStrategies(result.strategies); setFocus(null); rememberedFocus = null;
+      setNotice(`已删除「${pending.strategy.name}」。`);
+      if (mounted.current) void load(false);
+    } catch (reason) { setCustomError(ipcMessage(reason)); }
+  };
+  const selectionStatus = (group: StrategySignalGroup | undefined, data: SelectionDataState) => {
+    if (group?.error) return "规则需修正";
+    if (!report || !group) return loading ? "选股中…" : error ? "选股未完成" : "待选股";
+    const round = previous ? "上轮" : "本轮";
+    if (group.stocks.length) return `${round}选出 ${group.stocks.length} 只股票${data.state === "partial" ? "（部分行情未齐）" : ""}`;
+    if (data.state === "unavailable") return `${round}行情暂不可用`;
+    if (data.state === "empty-universe") return `${round}股票池为空`;
+    return `${round}${data.state === "partial" ? "可用数据中" : ""}未命中`;
+  };
+  const strategyButton = (group: StrategySignalGroup, kind: "featured" | "composite" | "base") => {
+    const selected = mode === "strategy" && !editor && focused.kind === "pattern" && active?.id === group.id;
+    const isComposite = composite(group);
+    return <button key={group.id} className={`${selected ? "active" : ""} type-${kind === "featured" ? "featured" : isComposite ? "composite" : "base"}`} aria-pressed={selected} onClick={() => activate(group.id)}><span><span className="strategy-signal-tab-name"><b>{group.name}</b></span><small className="strategy-signal-tab-audit">{selectionStatus(group, poolDataState)}</small></span><ChevronRight size={15} /></button>;
+  };
+  const hasFeatured = patternGroups.some(group => group.featured);
+  const renderTabs = (isComposite: boolean) => {
+    // 精选策略单列在最上面；这里只列其余策略。
+    const groups = filtered.filter(group => composite(group) === isComposite && !(hasFeatured && group.featured));
+    if (!groups.length) return null;
+    return <><div className={`strategy-signal-tab-section ${isComposite ? "composite" : "base"}`}><span>{hasFeatured ? `更多策略 · ${isComposite ? "组合共振" : "基础"}` : isComposite ? "组合共振策略" : "基础策略"}</span><b>{groups.length}</b></div>{groups.map(group => strategyButton(group, isComposite ? "composite" : "base"))}</>;
+  };
+  const renderFeatured = () => {
+    const groups = filtered.filter(group => group.featured);
+    if (!groups.length) return null;
+    return <><div className="strategy-signal-tab-section featured" title="按 2021–2026 全A日线回放挑出的较强策略，排在最前面"><span>精选策略</span><b>{groups.length}</b></div>{groups.map(group => strategyButton(group, "featured"))}</>;
+  };
+  const customItem = (strategy: CustomStrategy) => {
+    const group = customGroups.get(strategy.id || "");
+    const selected = mode === "strategy" && !editor && focused.kind === "custom" && focused.id === strategy.id;
+    const customData = strategy.universe === "watchlist" ? personalDataState : poolDataState;
+    const status = selectionStatus(group, customData);
+    return <button key={strategy.id} className={`strategy-library-item custom ${selected ? "active" : ""}`} aria-pressed={selected} onClick={() => choose({ kind: "custom", id: strategy.id || "" })}>
+      <span><span className="strategy-signal-tab-name"><b>{strategy.name}</b>{strategy.universe === "watchlist" && <em className="strategy-universe-tag">自选</em>}</span>
+        <small className="strategy-signal-tab-audit">{status}</small></span><ChevronRight size={15} /></button>;
+  };
+  const trendItem = (item: { id: TrendStrategyId; name: string }) => {
+    const selected = mode === "strategy" && !editor && focused.kind === "trend" && focused.id === item.id;
+    return <button key={item.id} className={`strategy-library-item trend ${selected ? "active" : ""}`} aria-pressed={selected} onClick={() => choose({ kind: "trend", id: item.id })}>
+      <span><span className="strategy-signal-tab-name"><b>{item.name}</b></span><small className="strategy-signal-tab-audit">全市场扫描 · 分钟级</small></span><ChevronRight size={15} /></button>;
+  };
+  const customGroupFor = (strategy: CustomStrategy): StrategySignalGroup => customGroups.get(strategy.id || "") || { id: strategy.id || "", name: strategy.name, custom: true, family: "custom", stocks: [] };
+  const renderMain = () => {
+    if (editor) return <CustomStrategyEditor key={`${editor.id || "new"}:${editorSession}`} initial={editor} initialAiText={editorAiText} patterns={patterns} others={customStrategies} saving={saving} error={editorError}
+      onSave={strategy => void saveStrategy(strategy)} onCancel={() => { setEditor(null); setEditorError(""); }} onImportSettings={editor.id ? undefined : () => void importSettings()} />;
+    if (mode === "stock" && report) return <StrategyStockSummaryPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} groups={strategies} onOpen={onOpen} onStrategy={activate} dataState={summaryDataState} aiScores={aiScores} />;
+    if (focused.kind === "trend") return <Suspense fallback={<div className="panel strategy-stock-empty"><LoaderCircle className="spin" size={24} /><b>正在载入趋势模型…</b></div>}>
+      <TrendScreenerView embedded focusStrategyId={focused.id as TrendStrategyId} onOpen={security => onOpen?.(security)} /></Suspense>;
+    if (focusedCustom) {
+      const group = customGroupFor(focusedCustom);
+      const summary = describeCustomStrategy(focusedCustom, patterns);
+      return <>
+        <section className="panel strategy-signal-group-head"><div className="strategy-signal-group-copy"><div className="strategy-signal-title-line"><h2>{focusedCustom.name}</h2><i className="strategy-type-badge custom">我的策略</i>{focusedCustom.universe === "watchlist" && <i className="strategy-type-badge base">自选与持仓</i>}</div>
+          <p>{focusedCustom.description || `${summary.count} 个条件${summary.required.length ? `，必要：${summary.required.join("、")}` : ""}；至少满足 ${focusedCustom.minMatchPercent}%`}</p></div>
+          <div className="custom-strategy-actions"><button type="button" className="secondary-btn" onClick={() => openEditor(structuredClone(focusedCustom))}><Pencil size={15} />编辑</button>
+            <button type="button" className="secondary-btn" onClick={() => openEditor(copyCustomStrategy(focusedCustom))}><Copy size={15} />复制</button>
+            <button type="button" className="secondary-btn danger-btn" onClick={() => setDeleteRequest({ strategy: focusedCustom, request: { title: `删除「${focusedCustom.name}」？`, message: "删除后不可恢复；设置页的自主策略组合不受影响。", confirmLabel: "删除", tone: "danger" } })}><Trash2 size={15} />删除</button></div></section>
+        {group.error && <div className="warning-banner" role="alert"><CircleAlert size={17} />本策略未参与本轮选股：{group.error}</div>}
+        {summary.external.length > 0 && <div className="strategy-pending-note" role="note"><CircleAlert size={16} />含 {summary.external.join("、")} 等需个股数据的条件：批量选股时按“待确认”处理，列表中标出依赖它们的股票，点开个股分析即可核对。</div>}
+        {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={`custom:${group.id}`} group={group} onOpen={onOpen} aiScores={aiScores} dataState={focusedCustom.universe === "watchlist" ? personalDataState : poolDataState} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
+        <CustomStrategyRules strategy={focusedCustom} group={group} patterns={patterns} />
+      </>;
+    }
+    if (!active) return null;
+    return <><section className="panel strategy-signal-group-head"><div className="strategy-signal-group-copy"><div className="strategy-signal-title-line"><h2>{active.name}</h2><i className={`strategy-type-badge ${composite(active) ? "composite" : "base"}`}>{composite(active) ? "组合共振" : "基础策略"}</i>{active.featured && <i className="strategy-type-badge featured" title="按 2021–2026 全A日线回放挑出的较强策略">精选</i>}</div><p>{active.detail}</p></div>
+      {customApi && <div className="custom-strategy-actions"><button type="button" className="secondary-btn" onClick={() => openEditor({ ...emptyCustomStrategy(), name: `${active.name.slice(0, 24)}·我的版本`, conditions: [{ ref: `pattern:${active.id}`, required: true }] })}><Plus size={15} />以此为基础新建</button></div>}</section>
+      {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={active.id} group={active} onOpen={onOpen} aiScores={aiScores} dataState={poolDataState} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
+      <StrategySelectionRules key={`${active.id}:rules`} group={active} /></>;
+  };
+  return <div className="strategy-signals-view strategy-selection-only strategy-selection-workspace">
+    <div className="page-heading"><div><h1>策略选股</h1><p>先选策略，再看按该策略选出的股票；可新建自己的条件组合，保存后立即参与选股。</p></div><div className="heading-actions">
+      {report && <div className="strategy-mode-switch" role="group" aria-label="查看方式"><button className={mode === "strategy" ? "active" : ""} aria-pressed={mode === "strategy"} onClick={() => switchMode("strategy")}>按策略</button><button className={mode === "stock" ? "active" : ""} aria-pressed={mode === "stock"} onClick={() => switchMode("stock")}>按股票汇总</button></div>}
+      {loading && <button className="secondary-btn" onClick={() => { revision.current += 1; void jobs.current.cancelAll(); setLoading(false); setError("本轮选股已取消，点击重新选股可重试。"); }}>取消</button>}
+      <button className="primary-btn" disabled={loading} onClick={() => void load(true)}>{loading ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{loading ? "正在选股" : "重新选股"}</button>
+    </div></div>
+    {loading && <div className="signal-test-status"><span role="status">{strategies.length ? `正在按 ${patternGroups.length + customStrategies.length} 套策略规则选股` : "正在获取策略规则并选股"}{report ? `，列表为上轮结果，数据日 ${report.asOfDate || "未提供"}` : ""}。</span>{" "}<span role="timer" aria-live="off">已耗时 {elapsedSeconds < 60 ? `${elapsedSeconds} 秒` : `${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`}。</span>{" "}<span>全市场逐只读取日线，首次建库可能需要数分钟，最长等待25分钟；可随时取消，已缓存日线会供下次选股复用。</span></div>}
+    {error && <div className="warning-banner" role="alert"><CircleAlert size={17} />{error}{report ? ` 当前显示上轮结果，数据日 ${report.asOfDate || "未提供"}。` : ""}</div>}
+    {catalogError && !report && <div className="warning-banner" role="alert"><CircleAlert size={17} />策略目录加载失败：{catalogError}<button className="secondary-btn" onClick={() => loadCatalog()}>重试</button></div>}
+    {customError && <div className="warning-banner" role="alert"><CircleAlert size={17} />我的策略读取失败：{customError}<button className="secondary-btn" onClick={() => void loadCustom()}>重试</button></div>}
+    {notice && <div className="strategy-picks-banner" role="status"><Check size={17} /><span>{notice}</span></div>}
+    {report?.warning && focused.kind !== "trend" && <div className="warning-banner"><CircleAlert size={17} />{report.warning}</div>}
+    {report && focused.kind !== "trend" && <div className="strategy-picks-banner" role="status"><Target size={17} /><span>{previous ? "上轮" : "本轮"}{overallUnavailable ? "历史行情暂不可用，尚不能完成选股判断" : <>共选出 <b>{uniqueCount}</b> 只股票（去重）</>} · 数据日 {report.asOfDate || "未提供"}（收盘快照） · 全市场 {report.universeSize ?? "--"} 只（剔除ST、含北交所），已计算 {report.processed ?? "--"} 只{report.failed ? ` · ${report.failed} 只日线读取失败` : ""}。表内行情独立刷新，选股依据保持为上述收盘快照。</span>
+      {!editor && onOpenAiPicks && window.stockApi?.ai && <button type="button" className="secondary-btn strategy-ai-link" onClick={onOpenAiPicks} title={aiRanking ? `已有 AI 打分（${aiRanking.model}），表里的「AI 分」标签可悬停查看点评` : "让 AI 给本轮选出的股票打分点评、写每日复盘"}><Bot size={15} />{aiRanking ? "AI 打分详情" : "AI 选股"}<ChevronRight size={14} /></button>}</div>}
+    <div className="terminal-strategy-workspace"><div className="terminal-strategy-primary"><section className="strategy-signal-layout">
+      <aside className="panel strategy-signal-tabs"><header><Activity size={18} /><div><b>策略库</b><small>选策略，看它选出的股票</small></div></header>
+        <div className="signal-catalog-filter"><input aria-label="搜索信号策略" placeholder="查找策略名称或条件" value={query} onChange={event => setQuery(event.target.value)} /><div><select aria-label="策略家族" value={family} onChange={event => setFamily(event.target.value)}>{familyOptions.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><select aria-label="策略排序" value={sort} onChange={event => setSort(event.target.value)}><option value="catalog">默认排序</option><option value="picks">按选出股票数</option></select></div>
+          {report && <label className="signal-hide-empty"><input type="checkbox" checked={hideEmpty} onChange={event => setHideEmpty(event.target.checked)} />隐藏本轮无结果策略{emptyCount ? `（${emptyCount}）` : ""}</label>}</div>
+        <div className="strategy-library-scroll">
+        {customApi && <section className="strategy-library-section custom" aria-label="我的策略"><div className="strategy-library-heading"><span>我的策略</span><b>{customStrategies.length}</b>
+          <button type="button" className="secondary-btn strategy-library-new" onClick={() => openEditor(emptyCustomStrategy())} disabled={saving || customStrategies.length >= CUSTOM_CATALOG.limits.maxStrategies}><Plus size={14} />新建</button></div>
+          <div className="strategy-library-list">{filteredCustom.map(customItem)}{!customStrategies.length && <p className="strategy-library-empty">还没有自己的策略。点“新建”组合条件，或在任一内置策略上“以此为基础新建”。</p>}</div></section>}
+        <div className="strategy-library-heading pattern"><span>涨停形态</span><b>{patternGroups.length}</b><small>全市场 · 剔除ST</small></div>
+        <div className="strategy-signal-tab-list">{renderFeatured()}{renderTabs(true)}{renderTabs(false)}{!filtered.length && <div className="signal-catalog-empty"><p>没有符合条件的策略。</p>{(query.trim() || family !== "all" || hideEmpty) && <button className="secondary-btn" onClick={() => { setQuery(""); setFamily("all"); setHideEmpty(false); }}>清除筛选</button>}</div>}</div>
+        <section className="strategy-library-section trend" aria-label="趋势模型"><div className="strategy-library-heading"><span>趋势模型</span><b>{TREND_STRATEGY_CHOICES.length}</b><small>全市场 · 单独扫描</small></div>
+          <div className="strategy-library-list">{TREND_STRATEGY_CHOICES.filter(item => !query.trim() || item.name.toLowerCase().includes(query.trim().toLowerCase())).map(trendItem)}</div></section>
         </div>
-        <div className="heading-actions">
-          {loading && <button className="secondary-btn" onClick={() => { requestId.current += 1; void scanJobs.current.cancelAll(); setLoading(false); }}>取消复核</button>}
-          <button className="primary-btn" onClick={() => load(true)} disabled={loading}>
-            {loading ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}
-            重新推演复核
-          </button>
-        </div>
-      </div>
-
-      {report?.warning && (
-        <div className="warning-banner"><CircleAlert size={17} />{report.warning}</div>
-      )}
-
-      {activeGroup && <details className="research-disclosure signal-test-disclosure"><summary><span>指定股票测试</span><small>{activeGroup.name} · 查询 / 逐项核验 / 带入回测</small></summary><SignalStockTester strategy={activeGroup} strategies={report?.strategies || []} onStrategy={activateStrategy} onBacktest={onOpenBacktest} /></details>}
-
-      <div className="terminal-strategy-workspace">
-        <div className="terminal-strategy-primary">
-      <details className="research-disclosure signal-overview-disclosure"><summary><span>复核概况</span><small>策略 {report?.strategies.length || 0} · 通过 {acceptedCount} · 合格股票 {uniqueStockCount}</small></summary><section className="strategy-signal-summary">
-        <div className="panel">
-          <Sparkles size={20} />
-          <span>策略复核库</span>
-          <b>{report?.strategies.length || 0}</b>
-          <small>
-            组合共振 {compositeStrategies.length} · 基础 {baseStrategies.length}；通过 {acceptedCount} / 观察 {observingCount} / 不足 {insufficientCount}
-          </small>
-        </div>
-        <div className="panel">
-          <Target size={20} />
-          <span>复核通过候选</span>
-          <b>{uniqueStockCount}</b>
-          <small>仅统计复核通过策略</small>
-        </div>
-        <div className="panel">
-          <Gauge size={20} />
-          <span>本轮复核</span>
-          <b>{report ? report.processed ?? report.universeSize ?? report.candidateCount ?? "--" : "--"}</b>
-          <small>
-            最近11日候选 {report?.availableUniverseSize ?? report?.universeSize ?? "--"}
-            {report?.failed ? ` · 失败 ${report.failed}` : ""}
-          </small>
-        </div>
-        <div className="panel">
-          <Database size={20} />
-          <span>历史数据窗口</span>
-          <b>{coverage.historyBarsRequested === null ? "--" : `${coverage.historyBarsRequested.toFixed(0)} 根（约三年）`}</b>
-          <small title={report?.source || ""}>
-            {report?.source || "等待生成"} · 基准 {fmt(coverage.benchmarkBars, 0)} 根
-          </small>
-        </div>
-        <div className="panel">
-          <Activity size={20} />
-          <span>样本多样性</span>
-          <b>
-            {report?.sampleDiversity
-              ? `${report.sampleDiversity.boardCount ?? "--"} 板 / ${report.sampleDiversity.dateCohortCount ?? "--"} 期`
-              : "--"}
-          </b>
-          <small>
-            证券 {report?.sampleDiversity?.securities ?? "--"} · 行业/题材 {report?.sampleDiversity?.industryOrThemeCount ?? "--"} ·
-            {report?.sampleDiversity?.diversified ? " 覆盖达标" : " 覆盖仍不足"}
-            {report?.sampleDiversity?.concentrationWarnings?.length ? " · 主板偏重" : ""}
-          </small>
-        </div>
-      </section></details>
-
-      <details className="strategy-quality-standard"><summary>怎样判断策略是否优质</summary><p>同时检查样本外胜率、扣除成本后的净收益与基准超额、最大回撤、走步窗口通过率、独立信号日和市场状态覆盖。单只股票、少量样本或训练期高胜率，都不能证明稳定性。当前五日信号诊断不替代2—6周持有期验证。</p><p>只有通过服务端完整发布门槛的策略标为“已验证”；排序仅用于比较已有数据。</p></details>
-      {loading && report && <div className="signal-test-status" role="status">历史复核进行中，规则目录与指定股票测试可先使用。</div>}
-      {loading && !report && (
-        <div className="panel strategy-signal-loading">
-          <LoaderCircle className="spin" size={32} />
-          <b>最近三年策略复核正在后台运行</b>
-          <p>最多为 300 只候选读取每只 720 根日线（约 3 年），再执行训练集、样本外与四段走步复核；计算已与主界面隔离，加载期间可以正常切换并使用其他功能。</p>
-        </div>
-      )}
-      {error && !loading && (
-        <div className="panel strategy-signal-error">
-          <CircleAlert size={28} />
-          <b>策略信号生成失败</b>
-          <p>{error}</p>
-          <button className="secondary-btn" onClick={() => load(true)}>重试</button>
-        </div>
-      )}
-
-      {!!report?.strategies.length && (
-        <section className="strategy-signal-layout">
-          <aside className="panel strategy-signal-tabs">
-            <header>
-              <Activity size={18} />
-              <div><b>策略复核库</b><small>组合共振与基础策略分组审计</small></div>
-            </header>
-            <div className="signal-catalog-filter"><input aria-label="搜索信号策略" placeholder="查找策略名称或规则" value={strategyQuery} onChange={e => setStrategyQuery(e.target.value)} /><div><select aria-label="策略验证状态" value={qualityFilter} onChange={e => setQualityFilter(e.target.value)}><option value="all">全部状态</option><option value="verified">复核通过</option><option value="observing">观察中</option><option value="insufficient">样本不足</option></select><select aria-label="策略排序" value={strategySort} onChange={e => setStrategySort(e.target.value)}><option value="catalog">默认排序</option><option value="win">样本外胜率</option><option value="stability">稳定性</option></select></div></div>
-            <div className="strategy-signal-tab-list">
-              {renderStrategyTabs(filterStrategies(compositeStrategies), "组合共振策略", "composite")}
-              {renderStrategyTabs(filterStrategies(baseStrategies), "基础策略", "base")}
-              {!filterStrategies(report.strategies).length && <p className="signal-catalog-empty">没有符合条件的策略。</p>}
-            </div>
-            <footer>
-              <Clock3 size={15} />
-              信号会随最新行情变化，历史优势不代表未来收益。
-            </footer>
-          </aside>
-
-          <div className="strategy-signal-main">
-            {activeGroup && (
-              <>
-                <section className="panel strategy-signal-group-head">
-                  <div className="strategy-signal-group-copy">
-                    <div className="strategy-signal-title-line">
-                      <h2>{activeGroup.name}</h2>
-                      <i className={`strategy-type-badge ${activeComposite ? "composite" : "base"}`}>
-                        {activeComposite ? "组合共振" : "基础策略"}
-                      </i>
-                    </div>
-                    <p>{activeGroup.detail || activeGroup.description}</p>
-                    <button
-                      className="secondary-btn strategy-group-backtest-btn"
-                      onClick={() => onOpenBacktest({
-                        securities: activeStocks,
-                        universeSource: "strategy_current_matches",
-                        universeTotalCount: activeStocks.length,
-                        source: "single_strategy",
-                        strategyEngine: "verified-signal-v2",
-                        strategyId: activeGroup.id,
-                        strategyName: activeGroup.name,
-                        ...(activeGroup.version ? { strategyVersion: activeGroup.version } : {}),
-                        strategyIds: [activeGroup.id],
-                        minimumVotes: 1
-                      })}
-                    >
-                      <Target size={16} />
-                      带入回测中心
-                    </button>
-                  </div>
-
-                </section>
-
-                <section className="panel strategy-stock-panel">
-                  <div className="strategy-stock-panel-title">
-                    <div>
-                      {activeAccepted ? <TrendingUp size={18} /> : <ShieldAlert size={18} />}
-                      <span>
-                        <b>{activeAccepted ? "本轮复核全部合格股票" : "当前不发布优质股票"}</b>
-                        <small>
-                          {activeAccepted
-                            ? activeComposite
-                              ? "同一股票须达到当前组合的投票与同时满足规则"
-                              : "按信号质量排序，不跨策略混合"
-                            : activeValidationState === "insufficient"
-                              ? "样本或数据覆盖不足，命中候选仅保留在后台审计"
-                              : "样本外或走步复核未通过，命中候选仅保留在后台审计"}
-                        </small>
-                      </span>
-                    </div>
-                    <em>{activeStocks.length} 只</em>
-                  </div>
-                  <div className="strategy-stock-table">
-                    <div className="strategy-stock-row head">
-                      <span>股票 / 板块</span>
-                      <span>行情</span>
-                      <span>信号质量</span>
-                      <span>{activeComposite ? "命中组件 / 策略依据" : "策略依据"}</span>
-                      <span>风险 / 操作</span>
-                    </div>
-                    {activeStocks.map((stock) => {
-                      const reasons = stock.reasons || stock.matchedReasons || [];
-                      const risks = Array.isArray(stock.risks) ? stock.risks : [];
-                      const riskVetoPassed = stock.riskVetoStatus === "passed";
-                      const matchedComponents = activeComposite
-                        ? matchedComponentIds(stock, activeGroup, strategyNames)
-                        : [];
-                      return (
-                        <div
-                          className="strategy-stock-row"
-                          key={stock.code}
-                        >
-                          <span className="strategy-stock-name">
-                            <b>{stock.name}<small>{stock.code}</small></b>
-                            <em>{stock.industry || "未分类"} · {stock.observationNode || stock.limitDate || "当前"}</em>
-                          </span>
-                          <span>
-                            <b>{fmt(stock.latest, 2)}</b>
-                            <em
-                              className={
-                                nullableNumber(stock.changePct) === null
-                                  ? ""
-                                  : number(stock.changePct) >= 0
-                                    ? "red"
-                                    : "green"
-                              }
-                            >
-                              {pct(stock.changePct)}
-                            </em>
-                            <small>换手 {unit(stock.turnover, 1, "%")} · {money(stock.amount)}</small>
-                          </span>
-                          <span>
-                            <b>{unit(stock.signalScore ?? stock.score ?? stock.mrs, 0, "分")}</b>
-                            <em>{stock.grade || "--"}级 · 匹配 {unit(stock.strategyMatchRate, 0, "%")}</em>
-                          </span>
-                          <details className={`strategy-stock-reasons ${activeComposite ? "composite" : ""}`}><summary>{activeComposite ? `命中 ${matchedComponents.length} 个组件` : `${reasons.length || 1} 项策略依据`}</summary>
-                            {activeComposite && (
-                              <span className="strategy-stock-component-hits">
-                                <small>
-                                  本股命中组件 {matchedComponents.length}/{activeGroup.components?.length || 0}
-                                </small>
-                                <span>
-                                  {matchedComponents.length ? (
-                                    matchedComponents.map((componentId) => (
-                                      <i key={componentId}>
-                                        {componentName(componentId, strategyNames)}
-                                      </i>
-                                    ))
-                                  ) : (
-                                    <i className="missing">组件明细未返回</i>
-                                  )}
-                                </span>
-                              </span>
-                            )}
-                            <span className="strategy-stock-reason-tags">
-                              {reasons.length
-                                ? reasons.map((reason) => (
-                                    <em key={reason}>{reason}</em>
-                                  ))
-                                : <em>通过策略硬条件</em>}
-                            </span>
-                          </details>
-                          <span className="strategy-stock-action">
-                            <small className={risks.length || !riskVetoPassed ? "has-risk" : "no-risk"}>
-                              {risks.length
-                                ? risks[0]
-                                : riskVetoPassed
-                                  ? "风险否决已核验通过"
-                                  : "风险状态未完成核验"}
-                            </small>
-                            <span className="strategy-stock-row-actions">
-                              <button onClick={() => onOpen(stock)}>
-                                详细复盘 <ChevronRight size={14} />
-                              </button>
-                              <button
-                                onClick={() => onOpenBacktest({
-                                  security: stock,
-                                  source: "single_strategy",
-                                  strategyEngine: "verified-signal-v2",
-                                  strategyId: activeGroup.id,
-                                  strategyName: activeGroup.name,
-                                  ...(activeGroup.version ? { strategyVersion: activeGroup.version } : {}),
-                                  strategyIds: [activeGroup.id],
-                                  minimumVotes: 1
-                                })}
-                              >
-                                用该策略回测
-                              </button>
-                            </span>
-                          </span>
-                        </div>
-                      );
-                    })}
-                    {!activeStocks.length && (
-                      <div className="strategy-stock-empty">
-                        <ShieldAlert size={28} />
-                        <b>
-                          {activeAccepted
-                            ? "当前没有股票通过这套策略的全部过滤"
-                            : activeValidationState === "insufficient"
-                              ? "这套策略的真实数据不足"
-                              : "这套策略仍在观察中"}
-                        </b>
-                        <p>
-                          {activeAccepted
-                            ? "不以放宽风险阈值凑数；等待下一次行情刷新。"
-                            : "不把未验证候选包装成优质信号；可展开下方历史验证证据查看完整拒绝原因。"}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </section>
-                <div className="strategy-evidence-disclosures">
-                  <details className="research-disclosure signal-validation-details"><summary>历史验证证据 · {validationStateLabel(activeValidationState)}</summary><ValidationPanel group={activeGroup} report={report} /></details>
-                  {(activeComposite ||
-                    activeGroup.conditions?.length ||
-                    activeGroup.risk) && (
-                    <details className="research-disclosure signal-rule-details"><summary>完整规则与来源</summary><div className={`strategy-rule-panel ${activeComposite ? "composite" : "base"}`}>
-                      <header>
-                        <Sparkles size={16} />
-                        <div>
-                          <span className="strategy-signal-active-kicker">{activeComposite ? "ACTIVE COMPOSITE" : "ACTIVE BASE STRATEGY"}</span>
-                          <b>{activeComposite ? "组合共振构成" : "基础策略规则"}</b>
-                          <small>
-                            {activeComposite
-                              ? "组件只说明规则构成，不代表放宽发布复核门槛"
-                              : "单策略硬条件与风险否决"}
-                          </small>
-                        </div>
-                      </header>
-                      {activeComposite && (
-                        <div className="strategy-rule-field components">
-                          <span>组成策略</span>
-                          <div>
-                            {(activeGroup.components || []).map((componentId) => (
-                              <em key={componentId}>
-                                {componentName(componentId, strategyNames)}
-                              </em>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                      {activeComposite && (
-                        <div className="strategy-rule-field vote">
-                          <span>投票 / 同时满足</span>
-                          <b>
-                            {activeGroup.voteRule ||
-                              "服务端未返回组合投票规则，不据此推测命中。"}
-                          </b>
-                        </div>
-                      )}
-                      {!!activeGroup.conditions?.length && (
-                        <div className="strategy-rule-field conditions">
-                          <span>{activeComposite ? "组合硬条件" : "策略硬条件"}</span>
-                          <ul>
-                            {activeGroup.conditions.map((condition) => (
-                              <li key={condition}>{condition}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {activeGroup.risk && (
-                        <div className="strategy-rule-field risk">
-                          <span>策略风险</span>
-                          <p>{activeGroup.risk}</p>
-                        </div>
-                      )}
-                      <StrategyRuleSources group={activeGroup} />
-                    </div></details>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </section>
-      )}
-
-      {report && !report.strategies.length && !loading && !error && (
-        <div className="panel strategy-stock-empty">
-          <ShieldAlert size={30} />
-          <b>暂无可复核策略结果</b>
-          <p>当前数据源没有返回足够历史样本，未生成推测性股票名单。</p>
-        </div>
-      )}
-
-        </div>
-        <aside className="terminal-strategy-audit">
-      {report && (report.selectionBiasWarning || report.multipleTestingWarning) && (
-        <details className="research-disclosure signal-boundary-disclosure"><summary>验证边界（必须同时查看）</summary><section className="panel strategy-validation-disclosure">
-          <CircleAlert size={19} />
-          <div>
-            {report.selectionBiasWarning && <p>{report.selectionBiasWarning}</p>}
-            {report.multipleTestingWarning && <p>{report.multipleTestingWarning}</p>}
-            {report.publicationPolicy && <small>{report.publicationPolicy}</small>}
-          </div>
-        </section></details>
-      )}
-
-      {report?.optimizedPortfolio && (
-        <details className="research-disclosure signal-portfolio-disclosure"><summary>优化组合与独立验证</summary><OptimizedPortfolioPanel
-          portfolio={report.optimizedPortfolio}
-          onOpen={onOpen}
-          onOpenBacktest={onOpenBacktest}
-        /></details>
-      )}
-
-        </aside>
-      </div>
-
-      {report && (
-        <div className="strategy-method-note">
-          <CheckCircle2 size={16} />
-          <span>
-            {report.methodology}
-            {" 五日历史诊断不等于2–6周持有收益已验证；当前候选池与分层验证样本不代表完整全市场覆盖。"}
-            {report.historyBarsRequested
-              ? ` 服务端回传历史请求窗口 ${report.historyBarsRequested} 根日线（约 ${Math.max(1, Math.round(report.historyBarsRequested / 240))} 年）。`
-              : " 服务端未回传历史请求窗口。"}
-            {report.generatedAt
-              ? ` 本轮生成于 ${new Date(report.generatedAt).toLocaleString("zh-CN", { hour12: false })}。`
-              : ""}
-          </span>
-        </div>
-      )}
-    </div>
-  );
+        <footer><Clock3 size={15} />{!report ? "完成选股后显示本轮缓存有效期。" : report.cacheValidUntil === null || summaryDataState.state === "partial" || summaryDataState.state === "unavailable" ? "本轮仅短暂缓存；来源恢复后点击“重新选股”立即重试。" : report.cacheValidUntil ? `本轮结果缓存至 ${formatShanghaiDateTime(new Date(report.cacheValidUntil).toISOString())}；点击“重新选股”强制刷新。` : "缓存有效期未提供；点击“重新选股”获取最新结果。"}</footer>
+      </aside>
+      <div className="strategy-signal-main">{renderMain()}</div>
+    </section></div></div>
+    {report && focused.kind !== "trend" && <StrategySelectionCoverage report={report} previous={previous} />}
+    <ConfirmDialog request={deleteRequest?.request || null} onResolve={confirmed => void resolveDelete(confirmed)} />
+  </div>;
 }

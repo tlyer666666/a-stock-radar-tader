@@ -1,0 +1,50 @@
+.sector-search-detail > .sector-query-result {
+  border-color: var(--line-2);
+  background: var(--accent-soft);
+}
+
+.sector-inline-detail .sector-members-error-feedback {
+  align-items: flex-start;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+}
+
+.sector-members-error-feedback > svg {
+  flex: 0 0 auto;
+}
+
+.sector-feedback-copy {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sector-feedback-copy > b {
+  color: var(--ink-1);
+}
+
+.sector-members-error > .sector-technical-details {
+  padding: 0 18px 18px;
+}
+
+.sector-board-feedback > .sector-technical-details {
+  margin: 0 0 12px;
+}
+
+.sector-technical-details {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.sector-technical-details > summary {
+  cursor: pointer;
+}
+
+.sector-technical-details > p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

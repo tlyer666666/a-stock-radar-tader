@@ -6,14 +6,14 @@ const { createTrendScreenerService } = require("./trend-screener-service.cjs");
 
 const today = new Date("2026-09-30T08:00:00Z");
 const bars = (count = 260, end = "2026-09-30") => {
-  const last = Date.parse(`${end}T00:00:00Z`);
-  return Array.from({ length: count }, (_, index) => ({
-    date: new Date(last - (count - 1 - index) * 86400000).toISOString().slice(0, 10),
-    open: 10, high: 11, low: 9, close: 10, volume: 100000, amount: 300000000
-  }));
+  const calendar = require('./trend-trading-calendar.cjs').createTradingCalendar();
+  const dates = calendar.sessionsThrough(end, count);
+  if (!dates) throw new Error('fixture calendar does not cover history');
+  return dates.map(date => ({ date, open: 10, high: 11, low: 9, close: 10, volume: 100000, amount: 300000000 }));
 };
+
 const security = (code, extra = {}) => ({ code, name: code, industry: "制造", ...extra });
-const emptyPages = ({ filter }) => ({ total: 0, rows: [] });
+const emptyPages = ({ filter: _filter }) => ({ total: 0, rows: [] });
 const history = async (_, adjustment) => ({ rows: bars(), adjustment });
 const evaluator = ({ security: item }) => ({ kind: "excluded", reason: item.code });
 async function settle(service, timeoutMs = 4000) {
@@ -40,6 +40,23 @@ test("a source-wide universe outage stops immediately with actionable failure", 
   assert.equal(result.phase, "failed");
   assert.equal(result.coverageComplete, false);
   assert.match(result.note, /连接失败/);
+});
+
+test("an implausible universe total stops before requesting another page", async () => {
+  let calls = 0;
+  const service = createTrendScreenerService({
+    now: () => today, fetchHistory: history, fetchBenchmark: async () => bars(80),
+    fetchUniversePage: async () => {
+      calls += 1;
+      return { total: 20001, rows: [] };
+    }
+  });
+  service.start();
+  const result = await settle(service);
+  assert.equal(calls, 1);
+  assert.equal(result.phase, "failed");
+  assert.equal(result.universeExpected, null);
+  assert.match(result.errors[0].message, /安全上限/);
 });
 
 test("a source-wide history outage stops workers from requesting the rest of the universe", async () => {
@@ -789,6 +806,29 @@ test("stock funnel and reasons deduplicate strategies and replay on warm cache",
   assert.deepEqual(warm.diagnostics.reasons, cold.diagnostics.reasons);
 });
 
+test("diagnostic reasons and per-stock error details remain bounded on large failure sets", async () => {
+  const securities = Array.from({ length: 205 }, (_, index) => security(String(index + 1).padStart(6, "0")));
+  const service = createTrendScreenerService({
+    now: () => today,
+    fetchUniversePage: async ({ filter, page, pageSize }) => {
+      if (filter !== "m:0+t:6") return { total: 0, rows: [] };
+      return { total: securities.length, rows: securities.slice((page - 1) * pageSize, page * pageSize) };
+    },
+    fetchBenchmark: async () => bars(80), fetchHistory: history,
+    evaluateStock: async ({ security: item }) => ({ kind: "failed", reason: `synthetic failure ${item.code}` }),
+    rankCandidates: rows => rows
+  });
+  service.start();
+  const result = await settle(service);
+  const reasons = result.diagnostics.reasons;
+  assert.equal(reasons.length, 101);
+  assert.equal(reasons.at(-1).reason, "其他未展示原因（已汇总）");
+  assert.equal(reasons.at(-1).count, 105);
+  assert.equal(result.errors.length, 201);
+  assert.equal(result.errors.at(-1).code, "TREND_ERRORS_TRUNCATED");
+  assert.match(result.errors.at(-1).message, /5 条错误未逐条展示/);
+});
+
 test("an individual fallback 503 remains a partial failure and other securities continue", async () => {
   const service = createTrendScreenerService(singleStockDeps({
     fetchUniversePage: async ({filter}) => filter === "m:0+t:6" ? {total:2,rows:[security("000001"),security("000002")]} : {total:0,rows:[]},
@@ -821,7 +861,115 @@ test('all fourteen v1.4 strategy selections share history and catalog technical 
  const catalog=require('../config/trend-strategy-library.json');
  const service=createTrendScreenerService(singleStockDeps({evaluateStock:({security:item},{strategyId})=>({kind:'candidate',candidate:{security:item,stage:'watch',patterns:[],plan:null,evidence:catalog.find(row=>row.id===strategyId)?.technicalLabels.map(label=>({label,passed:true}))||[]}})}));
  service.start({strategies:selections});const result=await settle(service);
- assert.equal(result.strategies.length,14);assert.equal(result.performance.rawRequests,1);assert.equal(result.performance.adjustedRequests,1);
- assert.equal(result.candidates.length,14);assert.equal(result.diagnostics.funnel.technicalTriggered,1);
+ assert.equal(result.strategies.length,selections.length);assert.equal(result.performance.rawRequests,1);assert.equal(result.performance.adjustedRequests,1);
+ assert.equal(result.candidates.length,selections.length);assert.equal(result.diagnostics.funnel.technicalTriggered,1);
  assert.throws(()=>service.start({strategies:[...selections,{strategyId:'classic-v1'}]}),/策略/);
+});
+
+test("a remote suspension stays valid while recent suspension remains unavailable", async () => {
+  for (const suspendedIndex of [10, 259]) {
+    const service = createTrendScreenerService({
+      now: () => today,
+      fetchUniversePage: async ({ filter }) => filter === "m:0+t:6" ? { total: 1, rows: [security("000001")] } : { total: 0, rows: [] },
+      fetchBenchmark: async () => bars(80),
+      fetchHistory: async (_, adjustment) => { const rows = bars(); rows[suspendedIndex].volume = 0; rows[suspendedIndex].amount = 0; return { rows, adjustment }; },
+      evaluateStock: evaluator, rankCandidates: items => items
+    });
+    service.start();
+    const result = await settle(service);
+    assert.equal(result.unavailable, suspendedIndex === 10 ? 0 : 1);
+  }
+});
+
+test('two-session-old data cannot be reported as a current complete signal scan', async () => {
+  const service = createTrendScreenerService({ now: () => today, fetchUniversePage: async ({filter}) => filter === 'm:0+t:6' ? {total:1,rows:[security('000001')]} : {total:0,rows:[]},
+    fetchBenchmark: async () => bars(80, '2026-09-28'), fetchHistory: history });
+  service.start(); const result = await settle(service);
+  assert.equal(result.phase, 'failed');
+  assert.equal(result.coverageComplete, false);
+  assert.equal(result.marketGate, 'unknown');
+  assert.equal(result.freshness.state, 'stale');
+  assert.equal(result.freshness.expectedDate, '2026-09-30');
+  assert.equal(result.freshness.actualDate, '2026-09-28');
+});
+
+test('verified young listing is strategy-excluded without poisoning source coverage', async () => {
+  let historyCalls=0;
+  const service=createTrendScreenerService({now:()=>today,
+    fetchUniversePage:async({filter})=>filter==='m:0+t:6'?{total:1,rows:[security('000001',{listingDate:'2026-09-15',listingDateSource:'fixture-listing'})]}:{total:0,rows:[]},
+    fetchBenchmark:async()=>bars(80),fetchHistory:async()=>{historyCalls++;return {rows:bars(12),adjustment:'none'};}});
+  service.start();const r=await settle(service);
+  assert.equal(r.phase,'completed');assert.equal(r.excluded,1);assert.equal(r.unavailable,0);assert.equal(r.coverageComplete,true);assert.equal(historyCalls,0);
+});
+test('unproven or established listing with short history stays a data issue',async()=>{
+  for(const extra of [{},{listingDate:'2025-01-02'}]){
+    const service=createTrendScreenerService({now:()=>today,
+      fetchUniversePage:async({filter})=>filter==='m:0+t:6'?{total:1,rows:[security('000001',extra)]}:{total:0,rows:[]},
+      fetchBenchmark:async()=>bars(80),fetchHistory:async()=>({rows:bars(12),adjustment:'none'})});
+    service.start();const r=await settle(service);assert.equal(r.unavailable,1);assert.equal(r.excluded,0);assert.equal(r.coverageComplete,false);
+  }
+});
+
+test('independent calendar rejects a jointly omitted older session even with only80 benchmark bars',async()=>{
+ const rows=bars(261);rows.splice(rows.length-150,1);
+ const service=createTrendScreenerService({now:()=>today,
+  fetchUniversePage:async({filter})=>filter==='m:0+t:6'?{total:1,rows:[security('000001')]}:{total:0,rows:[]},
+  fetchBenchmark:async()=>bars(80),fetchHistory:async(_security,adjustment)=>({adjustment,rows:structuredClone(rows)})});
+ service.start();const r=await settle(service);assert.equal(r.unavailable,1);assert.equal(r.coverageComplete,false);
+ assert.match(r.errors.map(x=>x.message).join(' '),/独立交易日历/);
+});
+
+test('past the bundled calendar the scan infers completed sessions from real index bars, and refuses a stale index', async () => {
+  const base = require('./trend-trading-calendar.cjs').createTradingCalendar();
+  const dates = [...base.sessionsThrough('2027-12-31', 300), '2028-01-04', '2028-01-05', '2028-01-06', '2028-01-07'];
+  const rows = count => dates.slice(-count).map(date => ({ date, open: 10, high: 11, low: 9, close: 10, volume: 100000, amount: 300000000 }));
+  const service = createTrendScreenerService({ now: () => new Date('2028-01-07T08:00:00Z'), evaluateStock: evaluator,
+    fetchUniversePage: async ({ filter }) => filter === 'm:0+t:6' ? { total: 1, rows: [security('000001')] } : { total: 0, rows: [] },
+    fetchBenchmark: async () => rows(120), fetchHistory: async (_s, adjustment) => ({ rows: rows(260), adjustment }) });
+  service.start();
+  const result = await settle(service);
+  assert.equal(result.freshness.expectedDate, '2028-01-07');
+  assert.equal(result.freshness.inferredCalendar, true);
+  assert.doesNotMatch(result.errors.map(item => item.message).join(' '), /日历/);
+  assert.equal(result.phase, 'completed');
+  const stale = createTrendScreenerService({ now: () => new Date('2028-02-01T08:00:00Z'), evaluateStock: evaluator,
+    fetchUniversePage: async ({ filter }) => filter === 'm:0+t:6' ? { total: 1, rows: [security('000001')] } : { total: 0, rows: [] },
+    fetchBenchmark: async () => rows(120), fetchHistory: async (_s, adjustment) => ({ rows: rows(260), adjustment }) });
+  stale.start();
+  const failed = await settle(stale);
+  assert.equal(failed.phase, 'failed');
+  assert.match(failed.note + failed.errors.map(item => item.message).join(' '), /日历/);
+});
+
+test("the daily store is prepared once with the listed close snapshots before per-stock history reads", async () => {
+  const order = [];
+  const service = createTrendScreenerService(singleStockDeps({
+    fetchUniversePage: async ({ filter }) => filter === "m:0+t:6"
+      ? { total: 1, rows: [security("000001", { closeSnapshot: { latest: 10 } })] } : { total: 0, rows: [] },
+    prepareHistories: async securities => { order.push(["prepare", securities.map(item => [item.code, item.closeSnapshot?.latest])]); throw new Error("snapshot offline"); },
+    fetchHistory: async (item, adjustment) => { order.push(["history", item.code, adjustment, item.closeSnapshot]); return history(item, adjustment); }
+  }));
+  service.start();
+  const result = await settle(service);
+  assert.equal(result.phase, "completed", "a failed prefetch only falls back to per-stock reads");
+  assert.deepEqual(order[0], ["prepare", [["000001", 10]]]);
+  assert.deepEqual(order[1], ["history", "000001", "none", undefined]);
+});
+
+test("a library-only scan does not require a recent limit-up while a limit-pattern scan still does", async () => {
+  const reasons = {};
+  for (const strategyId of ["ma-bull-alignment-v1", "classic-v1"]) {
+    const service = createTrendScreenerService({ now: () => today,
+      fetchUniversePage: async ({ filter }) => filter === "m:0+t:6" ? { total: 1, rows: [security("000001")] } : { total: 0, rows: [] },
+      fetchBenchmark: async () => bars(80), fetchHistory: history });
+    service.start({ strategies: [{ strategyId }] });
+    const result = await settle(service);
+    assert.equal(result.phase, "completed");
+    reasons[strategyId] = { limitRequired: result.diagnostics.limitRequired, reasons: result.diagnostics.reasons.map(item => item.reason).join(" ") };
+  }
+  assert.equal(reasons["ma-bull-alignment-v1"].limitRequired, false);
+  assert.doesNotMatch(reasons["ma-bull-alignment-v1"].reasons, /涨停/);
+  assert.match(reasons["ma-bull-alignment-v1"].reasons, /MA20/);
+  assert.equal(reasons["classic-v1"].limitRequired, true);
+  assert.match(reasons["classic-v1"].reasons, /没有收盘涨停/);
 });

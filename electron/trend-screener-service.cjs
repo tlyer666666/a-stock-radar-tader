@@ -1,7 +1,10 @@
 "use strict";
 
-const { createHash } = require("node:crypto");
+const { createHash, randomUUID } = require("node:crypto");
 const { performance: clock } = require("node:perf_hooks");
+const { BoundedCache } = require("./bounded-cache.cjs");
+const { createTradingCalendar } = require("./trend-trading-calendar.cjs");
+const { isBseAshareCode } = require("./price-limit-rules.cjs");
 
 const BOARDS = Object.freeze([
   { id: "mainSZ", label: "深市主板", filter: "m:0+t:6" },
@@ -11,12 +14,19 @@ const BOARDS = Object.freeze([
   { id: "beijing", label: "北交所", filter: "m:0+t:81+s:2048" }
 ]);
 const PAGE_SIZE = 100;
+const MAX_UNIVERSE_TOTAL = 20000;
+const MAX_DIAGNOSTIC_REASON_DETAILS = 100;
+const MAX_SCAN_ERROR_DETAILS = 200;
 const MIN_STOCK_BARS = 250;
 const MIN_BENCHMARK_BARS = 80;
 const MAX_CACHE_ENTRIES = 10000;
+const MAX_CACHE_BYTES = 64 * 1024 * 1024;
+const MAX_CACHE_ENTRY_BYTES = 4 * 1024 * 1024;
 const CACHE_TTL_MS = 15 * 60 * 1000;
 const MAX_HISTORY_CONCURRENCY = 6;
-const PIPELINE_VERSION = "trend-scan-3.1.0";
+const PIPELINE_VERSION = "trend-scan-3.3.0";
+// 只有涨停形态（classic/quality）要求近期涨停；经典技术策略库不要求。
+const LIMIT_STRATEGY_IDS = new Set(["classic-v1", "quality-v2"]);
 const TREND_LIBRARY = require("../config/trend-strategy-library.json");
 const MAX_STRATEGIES = TREND_LIBRARY.length + 2;
 
@@ -37,28 +47,9 @@ function emptyPerformance() {
     prefilterExcluded: 0, elapsedMs: 0, peakHistoryConcurrency: 0 };
 }
 
-function shanghaiClock(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
-    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", hourCycle: "h23"
-  }).formatToParts(date).filter((part) => part.type !== "literal")
-    .map((part) => [part.type, part.value]));
-  return {
-    date: `${parts.year}-${parts.month}-${parts.day}`,
-    minute: Number(parts.hour) * 60 + Number(parts.minute)
-  };
-}
-
-function priorDate(date) {
-  const value = new Date(`${date}T00:00:00Z`);
-  value.setUTCDate(value.getUTCDate() - 1);
-  return value.toISOString().slice(0, 10);
-}
-
 function validAStock(code) {
   return /^(?:00[0-3]|30[012]|60[0135]|68[89])\d{3}$/.test(code) ||
-    /^(?:[48]\d{5}|920\d{3})$/.test(code);
+    isBseAshareCode(code);
 }
 
 function riskName(name) {
@@ -72,11 +63,12 @@ function normalizeSecurity(row) {
   if (!validAStock(code) || riskName(name) || row?.isST === true || row?.st === true) {
     return null;
   }
-  const exchange = /^(?:60[0135]|68[89])/.test(code) ? "SH" : /^[489]/.test(code) ? "BJ" : "SZ";
+  const exchange = /^(?:60[0135]|68[89])/.test(code) ? "SH" : isBseAshareCode(code) ? "BJ" : "SZ";
   return {
     code, name, secid: `${exchange === "SH" ? 1 : 0}.${code}`,
     thscode: `${code}.${exchange}`, assetType: "stock",
-    industry: String(row?.industry ?? row?.f100 ?? "未分类")
+    industry: String(row?.industry ?? row?.f100 ?? "未分类"),
+    ...(isoDate(row?.listingDate) ? { listingDate: row.listingDate, listingDateSource: String(row.listingDateSource || "provided-listing-date") } : {})
   };
 }
 
@@ -108,7 +100,7 @@ function validBars(input, cutoff, priceOnly = false) {
     const amount = priceOnly && row.amount == null ? null : Number(row.amount);
     if (![open, high, low, close].every(Number.isFinite) ||
         open <= 0 || high < Math.max(open, close) || low > Math.min(open, close) ||
-        low <= 0 || [volume, amount].some(value => priceOnly && value === null ? false : !Number.isFinite(value) || (priceOnly ? value < 0 : value <= 0))) throw new Error(`日线价格或成交无效：${date}`);
+        low <= 0 || [volume, amount].some(value => priceOnly && value === null ? false : !Number.isFinite(value) || value < 0)) throw new Error(`日线价格或成交无效：${date}`);
     seen.add(date);
     rows.push({ ...row, date, open, high, low, close, volume, amount });
   }
@@ -134,16 +126,33 @@ function createTrendScreenerService(deps) {
     throw new TypeError("趋势扫描需要证券名单、日线与基准行情适配器");
   }
   const now = typeof deps.now === "function" ? deps.now : () => new Date();
+  const baseCalendar = deps.calendar || createTradingCalendar();
+  // Past the bundled exchange calendar, sessions are inferred from real index bars per scan.
+  let calendar = baseCalendar;
   const engine = () => require("./trend-screener-engine.cjs");
   const strategies = () => require("./trend-strategy.cjs");
   const rank = deps.rankCandidates || ((rows, options) => strategies().rankTrendStrategyCandidates(rows, options));
   // Injected evaluators may have different necessary conditions. Production uses
   // the shared engine prefilter, while an injected evaluator opts in explicitly.
-  const prefilter = deps.prefilterStock || (deps.evaluateStock || deps.evaluateBatch ? null : (input) => engine().prefilterTrendStock(input));
+  const prefilter = deps.prefilterStock || (deps.evaluateStock || deps.evaluateBatch ? null
+    : (input, _options, all = []) => engine().prefilterTrendStock(input, { requireLimit: limitRequired(all) }));
+  const limitRequired = optionsArray => optionsArray.every(options => LIMIT_STRATEGY_IDS.has(options?.strategyId ?? "classic-v1"));
+  // A service epoch prevents a renderer from reusing a cursor after a process restart.
+  const candidateEpoch = randomUUID();
+  let candidateRevision = 0;
   let generation = 0;
   let active = null;
   let cacheBasis = "";
-  const cache = new Map();
+  const cache = new BoundedCache({
+    maxEntries: MAX_CACHE_ENTRIES,
+    maxBytes: MAX_CACHE_BYTES,
+    maxEntryBytes: MAX_CACHE_ENTRY_BYTES,
+    now: () => new Date(now()).getTime()
+  });
+  let diagnosticReasonIndex = new Map();
+  let diagnosticReasonOverflow = null;
+  let omittedErrorCount = 0;
+  let errorSummary = null;
   // Slots belong to the service, not a job. Cancelling cannot release a slot
   // until its physical request settles, even if an adapter ignores AbortSignal.
   let historyInFlight = 0;
@@ -155,7 +164,7 @@ function createTrendScreenerService(deps) {
     unavailable: 0, failed: 0, coverageComplete: false, marketGate: "unknown",
     boards: BOARDS.map(({ id, label }) => ({ id, label, expected: null, loaded: 0, complete: false })),
     candidates: [], errors: [], note: "尚未扫描。公开行情规则推算，待核验；策略收益未经验证。",
-    validation: "unvalidated", ...strategyStatus(initialStrategies, strategySetHash(initialStrategies)), performance: emptyPerformance(), diagnostics: emptyDiagnostics()
+    validation: "unvalidated", ...strategyStatus(initialStrategies, strategySetHash(initialStrategies)), performance: emptyPerformance(), diagnostics: emptyDiagnostics(), freshness: { state: "unknown", expectedDate: null, actualDate: null, reason: "等待核对行情日期" }
   };
   const stamp = () => new Date(now()).toISOString();
   const current = (token) => active === token && !token.cancelled;
@@ -172,15 +181,34 @@ function createTrendScreenerService(deps) {
       status.performance.elapsedMs = elapsed(token);
     }
   };
-  const snapshot = () => {
+  const snapshot = (cursor) => {
     if (active && current(active)) refreshSources(active);
-    const value = clone(status);
+    const unchanged = cursor && cursor.candidateEpoch === candidateEpoch &&
+      cursor.jobId === status.jobId && cursor.candidateRevision === candidateRevision;
+    // Destructure before cloning so unchanged candidates incur neither clone nor IPC cost.
+    const { candidates, ...progress } = status;
+    const value = clone(unchanged ? progress : { ...progress, candidates });
+    value.candidateEpoch = candidateEpoch;
+    value.candidateRevision = candidateRevision;
     if (active && current(active)) value.performance.elapsedMs = elapsed(active);
     return value;
   };
   const fail = (token, stage, message, code) => {
     if (!current(token)) return;
-    status.errors.push({ ...(code ? { code } : {}), stage, message });
+    if (status.errors.length < MAX_SCAN_ERROR_DETAILS) {
+      status.errors.push({ ...(code ? { code } : {}), stage, message });
+    } else {
+      omittedErrorCount += 1;
+      if (!errorSummary) {
+        errorSummary = {
+          code: "TREND_ERRORS_TRUNCATED",
+          stage: "summary",
+          message: ""
+        };
+        status.errors.push(errorSummary);
+      }
+      errorSummary.message = `为控制扫描状态占用，另有 ${omittedErrorCount} 条错误未逐条展示；请结合失败计数和板块覆盖信息判断。`;
+    }
     status.updatedAt = stamp();
   };
 
@@ -233,7 +261,7 @@ function createTrendScreenerService(deps) {
   function normalizeOptions(options) {
     if (!options || typeof options !== "object" || Array.isArray(options) ||
         ![Object.prototype, null].includes(Object.getPrototypeOf(options)) ||
-        Reflect.ownKeys(options).some(key => !["strategyId", "config", "strategies", "forceRefresh"].includes(key))) {
+        Reflect.ownKeys(options).some(key => !["strategyId", "config", "preset", "strategies", "forceRefresh"].includes(key))) {
       throw new TypeError("扫描参数仅允许 strategyId、config、strategies 和 forceRefresh");
     }
     if (options.forceRefresh !== undefined && typeof options.forceRefresh !== "boolean") {
@@ -241,7 +269,7 @@ function createTrendScreenerService(deps) {
     }
     let selections;
     if (Object.hasOwn(options, "strategies")) {
-      if (Object.hasOwn(options, "strategyId") || Object.hasOwn(options, "config")) {
+      if (Object.hasOwn(options, "strategyId") || Object.hasOwn(options, "config") || Object.hasOwn(options, "preset")) {
         throw new TypeError("多策略参数 strategies 不能与单策略 strategyId/config 混用");
       }
       if (!Array.isArray(options.strategies) || options.strategies.length < 1 || options.strategies.length > MAX_STRATEGIES) {
@@ -249,7 +277,7 @@ function createTrendScreenerService(deps) {
       }
       selections = Array.from(options.strategies, option => {
         if (!option || typeof option !== "object" || Array.isArray(option) || !Object.hasOwn(option, "strategyId") ||
-            typeof option.strategyId !== "string" || Reflect.ownKeys(option).some(key => !["strategyId", "config"].includes(key))) {
+            typeof option.strategyId !== "string" || Reflect.ownKeys(option).some(key => !["strategyId", "config", "preset"].includes(key))) {
           throw new TypeError("策略列表每项必须提供 strategyId 参数");
         }
         return strategies().normalizeTrendStrategy(option);
@@ -260,6 +288,7 @@ function createTrendScreenerService(deps) {
     } else {
       selections = [strategies().normalizeTrendStrategy({
         ...(options.strategyId !== undefined ? { strategyId: options.strategyId } : {}),
+        ...(options.preset !== undefined ? { preset: options.preset } : {}),
         ...(options.config !== undefined ? { config: options.config } : {})
       })];
     }
@@ -269,6 +298,8 @@ function createTrendScreenerService(deps) {
 
   async function loadUniverse(token) {
     const unique = new Map();
+    const closeSnapshots = new Map();
+    token.closeSnapshots = closeSnapshots;
     const loadedCodes = new Set();
     let expectedSum = 0;
     for (let boardIndex = 0; boardIndex < BOARDS.length; boardIndex += 1) {
@@ -288,6 +319,11 @@ function createTrendScreenerService(deps) {
             throw new Error(`第 ${page} 页缺少有效 total/rows`);
           }
           if (total === null) {
+            if (reported > MAX_UNIVERSE_TOTAL - expectedSum) {
+              const error = new Error(`全市场证券名单超过安全上限 ${MAX_UNIVERSE_TOTAL.toLocaleString("zh-CN")}，已停止扫描`);
+              error.code = "TREND_UNIVERSE_LIMIT_EXCEEDED";
+              throw error;
+            }
             total = reported;
             board.expected = total;
             expectedSum += total;
@@ -296,6 +332,7 @@ function createTrendScreenerService(deps) {
             throw new Error(`第 ${page} 页总数从 ${total} 变为 ${reported}`);
           }
           const rows = response.rows;
+          if (rows.length > PAGE_SIZE) throw new Error(`第 ${page} 页返回 ${rows.length} 条，超过请求上限 ${PAGE_SIZE}`);
           if (total === 0) {
             if (rows.length) throw new Error("总数为零却返回证券");
             break;
@@ -322,6 +359,7 @@ function createTrendScreenerService(deps) {
                 const security = normalizeSecurity(row);
                 if (security) {
                   unique.set(security.code, security);
+                  if (row?.closeSnapshot && typeof row.closeSnapshot === "object") closeSnapshots.set(security.code, row.closeSnapshot);
                   status.diagnostics.funnel.universeEligible = unique.size;
                 }
                 else applyOutcomes(token, { code }, sharedOutcomes(token, { kind: "excluded" }), "universe");
@@ -340,6 +378,10 @@ function createTrendScreenerService(deps) {
         if (!current(token)) return null;
         board.loaded = received;
         board.error = errorMessage(error);
+        if (error?.code === "TREND_UNIVERSE_LIMIT_EXCEEDED") {
+          status.universeExpected = null;
+          throw error;
+        }
         if (error?.code === "MARKET_DATA_SOURCE_UNAVAILABLE") throw error;
         status.failed += 1;
         status.strategyStats.forEach(item => { item.failed += 1; });
@@ -353,16 +395,29 @@ function createTrendScreenerService(deps) {
   }
 
   async function loadBenchmark(token) {
-    const clock = shanghaiClock(now());
-    const cutoff = clock.minute >= 15 * 60 + 10 ? clock.date : priorDate(clock.date);
-    const input = await withHistorySlot(token, () => deps.fetchBenchmark({ signal: token.controller.signal }));
+    calendar = baseCalendar;
+    let expected = calendar.expectedCloseDate(now());
+    let input = null;
+    if (!expected.date && typeof calendar.withObservedSessions === "function") {
+      input = await withHistorySlot(token, () => deps.fetchBenchmark({ signal: token.controller.signal }));
+      if (!current(token)) return null;
+      const source = Array.isArray(input) ? input : input?.rows;
+      const observed = calendar.withObservedSessions((Array.isArray(source) ? source : []).map((row) => String(row?.date ?? "")));
+      const inferred = observed.expectedCloseDate(now());
+      if (inferred.date) { calendar = observed; expected = inferred; }
+    }
+    status.freshness = { state: "unknown", expectedDate: expected.date, actualDate: null, reason: expected.reason, inferredCalendar: expected.inferred === true };
+    if (!expected.date) throw new Error(expected.reason);
+    const cutoff = expected.date;
+    if (!input) input = await withHistorySlot(token, () => deps.fetchBenchmark({ signal: token.controller.signal }));
     if (!current(token)) return null;
     const rows = validBars(input, cutoff, true);
     if (rows.length < MIN_BENCHMARK_BARS) throw new Error(`中证全指有效日线不足 ${MIN_BENCHMARK_BARS} 根：${rows.length}`);
     const asOf = rows.at(-1).date;
-    if ((Date.parse(`${clock.date}T00:00:00Z`) - Date.parse(`${asOf}T00:00:00Z`)) > 14 * 86400000) {
-      throw new Error(`中证全指日线陈旧：${asOf}`);
-    }
+    status.freshness = { state: asOf === expected.date ? "current" : "stale", expectedDate: expected.date, actualDate: asOf, reason: asOf === expected.date ? expected.reason : `行情未更新：应为${expected.date}，实际${asOf}`, inferredCalendar: expected.inferred === true };
+    if (asOf !== expected.date) throw new Error(status.freshness.reason);
+    const expectedDates = calendar.sessionsThrough(asOf, MIN_BENCHMARK_BARS);
+    if (!expectedDates || rows.slice(-MIN_BENCHMARK_BARS).some((row,index)=>row.date!==expectedDates[index])) throw new Error("指数日期与独立交易日历不齐，不能用两个共同缺页的行情源互相证明完整");
     status.asOf = asOf;
     token.asOf = asOf;
     const closes = rows.slice(-60).map((row) => row.close);
@@ -373,9 +428,20 @@ function createTrendScreenerService(deps) {
 
   async function assess(token, security, benchmarkRows) {
     if (!current(token)) return;
+    if (security.listingDate) {
+      const sessions = calendar.tradingSessionsBetween(security.listingDate, token.asOf);
+      if (security.listingDate > token.asOf) {
+        applyOutcomes(token, security, sharedOutcomes(token, { kind: "unavailable", reason: "证券上市日期晚于行情截止日，来源身份冲突" }), "history");
+        return;
+      }
+      if (calendar.isSession(security.listingDate) === true && sessions !== null && sessions < MIN_STOCK_BARS) {
+        applyOutcomes(token, security, sharedOutcomes(token, { kind: "excluded", reason: `已知上市不足${MIN_STOCK_BARS}个交易日（${sessions}日），不在当前策略适用范围` }), "history");
+        return;
+      }
+    }
     const key = JSON.stringify([PIPELINE_VERSION, token.asOf, token.strategySetHash,
       token.benchmarkFingerprint, security]);
-    const stored = cache.get(key);
+    const stored = cache.get(key)?.value;
     const age = stored ? new Date(now()).getTime() - stored.createdAt : -1;
     if (!token.forceRefresh && stored && age >= 0 && age < CACHE_TTL_MS) {
       if (!current(token)) return;
@@ -400,11 +466,20 @@ function createTrendScreenerService(deps) {
       if (rawRows.length < MIN_STOCK_BARS || rawRows.at(-1)?.date !== status.asOf) {
         throw new Error(`不复权日线不足或日期不齐：${rawRows.length}/${MIN_STOCK_BARS}，最新 ${rawRows.at(-1)?.date || "无"}`);
       }
+      const requiredDates = calendar.sessionsThrough(token.asOf, MIN_STOCK_BARS);
+      if (!requiredDates || rawRows.slice(-MIN_STOCK_BARS).some((row,index)=>row.date!==requiredDates[index])) {
+        throw new Error("最近250根日线与独立交易日历不齐，存在缺页、停牌或无效交易日期");
+      }
+      const seriesGate = engine().gateTrendSeries({ raw: rawRows, benchmarkRows, asOf: token.asOf });
+      if (seriesGate.error) {
+        applyOutcomes(token, security, sharedOutcomes(token, seriesGate.error), "history", diagnostic);
+        return;
+      }
       diagnostic.rawValidated = true;
       diagnostic.stage = "recent-limit";
       const input = { security, rawRows, benchmarkRows, asOf: token.asOf };
       let prefetched = null;
-      try { if (prefilter) prefetched = await prefilter(input, token.optionsArray[0]); }
+      try { if (prefilter) prefetched = await prefilter(input, token.optionsArray[0], token.optionsArray); }
       catch (error) { failureKind = "failed"; throw error; }
       if (!current(token)) return;
       if (prefetched !== null) {
@@ -413,10 +488,10 @@ function createTrendScreenerService(deps) {
           throw new Error("原始日线预筛返回无效结果");
         }
         outcomes = sharedOutcomes(token, prefetched);
-        diagnostic.recentLimitPassed = prefetched.kind === "excluded" && /成交额/.test(prefetched.reason || "");
+        diagnostic.recentLimitPassed = !limitRequired(token.optionsArray) || (prefetched.kind === "excluded" && /成交额|MA20/.test(prefetched.reason || ""));
         if (prefetched.kind === "excluded") status.performance.prefilterExcluded += 1;
       } else {
-        diagnostic.recentLimitPassed = Boolean(prefilter);
+        diagnostic.recentLimitPassed = Boolean(prefilter) || !limitRequired(token.optionsArray);
         diagnostic.stage = "adjusted";
         let front;
         try { front = await fetchStockHistory(token, security, "front"); }
@@ -431,7 +506,7 @@ function createTrendScreenerService(deps) {
           throw new Error("不复权与前复权最近250根日线日期不齐");
         }
         diagnostic.stage = "trend";
-        try { outcomes = await evaluateBatch(token, { ...input, adjustedRows }); }
+        try { outcomes = await evaluateBatch(token, { ...input, rawRows: rawRows.slice(-MIN_STOCK_BARS), adjustedRows: adjustedRows.slice(-MIN_STOCK_BARS) }); }
         catch (error) { failureKind = "failed"; throw error; }
       }
       if (!current(token)) return;
@@ -439,8 +514,14 @@ function createTrendScreenerService(deps) {
       validateOutcomes(token, security, outcomes);
       diagnostic = summarizeStock(outcomes, diagnostic);
       if (outcomes.every(outcome => ["candidate", "excluded"].includes(outcome.kind))) {
-        cache.set(key, { outcomes: clone(outcomes), diagnostic: clone(diagnostic), createdAt: new Date(now()).getTime() });
-        if (cache.size > MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value);
+        const createdAt = new Date(now()).getTime();
+        const cached = clone({ outcomes, diagnostic });
+        outcomes = cached.outcomes;
+        diagnostic = cached.diagnostic;
+        cache.set(key, {
+          value: { ...cached, createdAt },
+          expiresAt: createdAt + CACHE_TTL_MS
+        });
       }
     } catch (error) {
       if (!current(token)) return;
@@ -533,9 +614,22 @@ function createTrendScreenerService(deps) {
     const diagnostic = facts?.reasons ? facts : summarizeStock(outcomes, facts || { stage });
     for (const key of FUNNEL_STAGES) status.diagnostics.funnel[key] += Number(Boolean(diagnostic[key]));
     for (const reason of diagnostic.reasons) {
-      const existing = status.diagnostics.reasons.find(row => row.stage === reason.stage && row.reason === reason.reason);
+      const stage = String(reason.stage || "unknown").slice(0, 40);
+      const message = String(reason.reason || "未知原因").slice(0, 300);
+      const key = `${stage}\u0000${message}`;
+      const existing = diagnosticReasonIndex.get(key);
       if (existing) existing.count += 1;
-      else status.diagnostics.reasons.push({ ...reason, count: 1 });
+      else if (diagnosticReasonIndex.size < MAX_DIAGNOSTIC_REASON_DETAILS) {
+        const entry = { stage, reason: message, count: 1 };
+        diagnosticReasonIndex.set(key, entry);
+        status.diagnostics.reasons.push(entry);
+      } else {
+        if (!diagnosticReasonOverflow) {
+          diagnosticReasonOverflow = { stage: "summary", reason: "其他未展示原因（已汇总）", count: 0 };
+          status.diagnostics.reasons.push(diagnosticReasonOverflow);
+        }
+        diagnosticReasonOverflow.count += 1;
+      }
     }
     status.processed += 1;
     if (outcomes.some(outcome => outcome.kind === "failed")) status.failed += 1;
@@ -547,7 +641,8 @@ function createTrendScreenerService(deps) {
       stats.processed += 1;
       if (outcome.kind === "candidate") {
         stats.candidateCount += 1;
-        status.candidates.push(clone(outcome.candidate));
+        status.candidates.push(outcome.candidate);
+        candidateRevision += 1;
       } else {
         stats[outcome.kind] += 1;
         if (outcome.kind !== "excluded") errors.add(String(outcome.reason || "数据不可用"));
@@ -583,6 +678,15 @@ function createTrendScreenerService(deps) {
       const basis = `${status.asOf}:${fingerprint}`;
       token.benchmarkFingerprint = fingerprint;
       if (cacheBasis !== basis) { cache.clear(); cacheBasis = basis; }
+      if (typeof deps.prepareHistories === "function") {
+        // 本地日线库：用名单自带的收盘行情（或扶摇批量快照）给已有日线补当天一根，减少逐只下载。
+        try {
+          await deps.prepareHistories(universe.map(security => token.closeSnapshots?.has(security.code)
+            ? { ...security, closeSnapshot: token.closeSnapshots.get(security.code) } : security));
+        } catch { /* 预取失败只会退回逐只下载 */ }
+        token.closeSnapshots = null;
+        if (!current(token)) return;
+      }
       status.phase = "scanning";
       status.note = "逐只验证原始日线必要条件；仍可能入选者再核对前复权日线。公开涨停价规则推算待核验，策略收益未经验证。";
       publish(token);
@@ -591,11 +695,15 @@ function createTrendScreenerService(deps) {
         while (current(token) && !token.outage && cursor < universe.length) {
           const security = universe[cursor++];
           await assess(token, security, benchmarkRows);
+          // Cached/excluded scans can otherwise retain the microtask queue for
+          // thousands of stocks and starve IPC, cancellation and painting.
+          if (cursor % 12 === 0) await new Promise(resolve => setImmediate(resolve));
         }
       });
       await Promise.all(workers);
       if (!current(token)) return;
       status.candidates = rankAll(token, status.candidates);
+      candidateRevision += 1;
       status.coverageComplete = status.boards.every((board) => board.complete) &&
         status.processed === status.universeLoaded && status.unavailable === 0 && status.failed === 0;
       status.strategyStats.forEach(item => {
@@ -641,18 +749,23 @@ function createTrendScreenerService(deps) {
         forceRefresh: normalized.forceRefresh,
         optionsArray: Object.freeze(selected.map(strategy => Object.freeze({ strategyId: strategy.id, config: strategy.config }))) };
       active = token;
+      diagnosticReasonIndex = new Map();
+      diagnosticReasonOverflow = null;
+      omittedErrorCount = 0;
+      errorSummary = null;
+      candidateRevision += 1;
       status = {
         jobId: `${startedAt}:${token.id}`, phase: "loading-universe", startedAt, updatedAt: startedAt,
         asOf: "", universeLoaded: 0, universeExpected: null, processed: 0, excluded: 0,
         unavailable: 0, failed: 0, coverageComplete: false, marketGate: "unknown",
         boards: BOARDS.map(({ id, label }) => ({ id, label, expected: null, loaded: 0, complete: false })),
         candidates: [], errors: [], note: "正在获取全市场名单；公开行情规则推算，待核验。",
-        validation: "unvalidated", ...strategyStatus(selected, token.strategySetHash), performance: emptyPerformance(), diagnostics: emptyDiagnostics()
+        validation: "unvalidated", ...strategyStatus(selected, token.strategySetHash), performance: emptyPerformance(), diagnostics: { ...emptyDiagnostics(), limitRequired: limitRequired(token.optionsArray) }, freshness: { state: "unknown", expectedDate: null, actualDate: null, reason: "等待核对行情日期" }
       };
       queueMicrotask(() => { void scan(token); });
       return snapshot();
     },
-    getStatus() { return snapshot(); },
+    getStatus(cursor) { return snapshot(cursor); },
     cancel() {
       if (active && !active.cancelled) {
         refreshSources(active);

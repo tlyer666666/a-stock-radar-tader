@@ -1,5 +1,14 @@
 "use strict";
 
+require('node:test')('malformed JSON responses are not retried as network failures',async()=>{
+ const assert=require('node:assert/strict');
+ const {fetchJsonWithPolicy}=require('./http-client.cjs');
+ const original=global.fetch;let calls=0;
+ global.fetch=async()=>{calls++;return new Response('{bad json',{status:200});};
+ try {await assert.rejects(fetchJsonWithPolicy('https://syntax-error.test',{},{retries:2}),SyntaxError);assert.equal(calls,1);}
+ finally {global.fetch=original;}
+});
+
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const http = require("node:http");
@@ -152,4 +161,89 @@ test("a successful raw response keeps its body available to the caller", async (
   assert.ok(actual instanceof Response);
   assert.equal(actual.status, response.status);
   assert.equal(await actual.text(), "successful payload");
+});
+
+function oversizedResponse({ chunks, chunkBytes, contentLength } = {}) {
+  let sent = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (sent >= chunks) { controller.close(); return; }
+      sent += 1;
+      controller.enqueue(new Uint8Array(chunkBytes).fill(32));
+    }
+  });
+  const headers = contentLength ? { "content-length": String(contentLength) } : {};
+  return { response: new Response(body, { status: 200, headers }), sentChunks: () => sent };
+}
+
+test("a declared oversized response is rejected before its body is read and is not retried", async (t) => {
+  const { fetchJsonWithPolicy } = require("./http-client.cjs");
+  const originalFetch = global.fetch;
+  let calls = 0;
+  let fixture;
+  global.fetch = async () => { calls += 1; fixture = oversizedResponse({ chunks: 4, chunkBytes: 1024, contentLength: 4096 }); return fixture.response; };
+  t.after(() => { global.fetch = originalFetch; });
+  await assert.rejects(
+    fetchJsonWithPolicy("https://size-declared.test/data", {}, { retries: 2, maxResponseBytes: 1024 }),
+    error => error.code === "RESPONSE_TOO_LARGE"
+  );
+  assert.equal(calls, 1);
+  assert.equal(fixture.sentChunks() <= 1, true);
+});
+
+test("an undeclared oversized JSON body stops streaming once the byte limit is crossed", async (t) => {
+  const { fetchJsonWithPolicy } = require("./http-client.cjs");
+  const originalFetch = global.fetch;
+  let fixture;
+  global.fetch = async () => { fixture = oversizedResponse({ chunks: 1000, chunkBytes: 1024 }); return fixture.response; };
+  t.after(() => { global.fetch = originalFetch; });
+  await assert.rejects(
+    fetchJsonWithPolicy("https://size-stream.test/data", {}, { maxResponseBytes: 4096 }),
+    error => error.code === "RESPONSE_TOO_LARGE"
+  );
+  assert.equal(fixture.sentChunks() < 20, true);
+});
+
+test("a raw response body is bounded by the same byte limit", async (t) => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => oversizedResponse({ chunks: 1000, chunkBytes: 1024 }).response;
+  t.after(() => { global.fetch = originalFetch; });
+  const response = await fetchWithPolicy("https://size-raw.test/data", {}, { maxResponseBytes: 4096 });
+  await assert.rejects(response.text(), error => error.code === "RESPONSE_TOO_LARGE");
+});
+
+test("responses within the byte limit are delivered unchanged", async (t) => {
+  const { fetchJsonWithPolicy } = require("./http-client.cjs");
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({ ok: true, rows: [1, 2, 3] }), { status: 200, headers: { "content-type": "application/json" } });
+  t.after(() => { global.fetch = originalFetch; });
+  assert.deepEqual(await fetchJsonWithPolicy("https://size-ok.test/data", {}, { maxResponseBytes: 4096 }), { ok: true, rows: [1, 2, 3] });
+});
+test('RequestInit Headers survive policy merging and override policy values case-insensitively',async t=>{
+ const server=http.createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(req.headers));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+ const {fetchJsonWithPolicy}=require('./http-client.cjs');const headers=new Headers({'X-Shared':'request','X-Extra':'kept'});
+ const result=await fetchJsonWithPolicy(`http://127.0.0.1:${server.address().port}`,{headers},{headers:{'X-Shared':'policy','X-Base':'base'}});
+ assert.equal(result['x-shared'],'request');assert.equal(result['x-extra'],'kept');assert.equal(result['x-base'],'base');
+});
+test('JSON policy accepts Headers and pair arrays without dropping or misnaming fields',async t=>{
+ const server=http.createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify(req.headers));});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>{server.closeAllConnections();server.close();});
+ const {fetchJsonWithPolicy}=require('./http-client.cjs');
+ for(const headers of [new Headers({'X-Policy':'kept'}),[['X-Policy','kept']]]){
+  const result=await fetchJsonWithPolicy(`http://127.0.0.1:${server.address().port}`,{},{headers});assert.equal(result['x-policy'],'kept');assert.equal(result['0'],undefined);
+ }
+});
+
+test('1.6.52: a request timeout is reported as a retryable timeout, not as a user cancellation', async () => {
+  const http = require('node:http');
+  const server = http.createServer(() => { /* never answers */ });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const { fetchJsonWithPolicy } = require('./http-client.cjs');
+    const { withIpcResult } = require('./security-policy.cjs');
+    const error = await fetchJsonWithPolicy(`http://127.0.0.1:${server.address().port}/`, {}, { timeoutMs: 1000, retries: 0 }).then(() => null, reason => reason);
+    assert.equal(error?.code, 'ETIMEDOUT');
+    assert.match(error.message, /超时/);
+    const result = await withIpcResult(async () => { throw error; })();
+    assert.deepEqual([result.error.code, result.error.retryable], ['ETIMEDOUT', true]);
+  } finally { server.closeAllConnections?.(); server.close(); }
 });

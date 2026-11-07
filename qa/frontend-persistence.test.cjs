@@ -11,11 +11,11 @@ async function paperStorageFixture(p, code) {
   const key='a-stock-radar-v054-paper-sim-v1';
   if(!localStorage.getItem('paper-fault-seeded')){
    localStorage.setItem('paper-fault-seeded','1');
-   localStorage.setItem(key,JSON.stringify({initialCapital:100000,cash:99000,openPositions:[{id:'p',code,name:'合成纸面仓',shares:100,entryPrice:10,latestPrice:10,stopPrice:8,takePrice:20,holdingBars:0,highWaterMark:10,openedAt:new Date().toISOString()}],closedPositions:[],totalTradeCount:1}));
+   localStorage.setItem(key,JSON.stringify({initialCapital:100000,cash:99000,openPositions:[{id:'p',code,name:'合成纸面仓',shares:100,quoteDate:new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'}),quoteName:'合成纸面仓',quotePreClose:10,quoteVolume:10000,entryPrice:10,latestPrice:10,stopPrice:8,takePrice:20,holdingBars:0,highWaterMark:10,openedAt:'2026-01-05T02:00:00Z'}],closedPositions:[],totalTradeCount:1}));
   }
   window.failPaperSave=true;window.paperWrites=0;const set=Storage.prototype.setItem;
   Storage.prototype.setItem=function(k,v){if(k===key){window.paperWrites++;if(window.failPaperSave)throw new DOMException('synthetic quota','QuotaExceededError');}return set.call(this,k,v);};
-  let api;Object.defineProperty(window,'stockApi',{get:()=>api,set(value){api=value;const analyze=value.analyze.bind(value);value.analyze=async(...args)=>{const result=await analyze(...args);return {...result,quote:{...result.quote,latest:window.syntheticPrice||12}};};}});
+  let api;Object.defineProperty(window,'stockApi',{get:()=>api,set(value){api=value;const analyze=value.analyze.bind(value);value.analyze=async(...args)=>{const result=await analyze(...args);const latest=window.syntheticPrice||12;return {...result,quote:{...result.quote,latest,high:latest,low:latest}};};}});
  },code);
  await ready(p);
 }
@@ -82,12 +82,12 @@ await ready(p);await p.waitForFunction(()=>window.finishStartup);await p.getByRo
 await p.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
 assert.equal(await p.evaluate(()=>window.written),undefined);
 await p.evaluate(()=>window.finishStartup());await openView(p,'settings','数据源设置');
-await p.waitForFunction(()=>document.querySelector('input[type=password]')?.value==='SYNTHETIC_EXISTING');
+await p.waitForFunction(()=>document.querySelector('input[placeholder^=付费]')?.value==='SYNTHETIC_EXISTING');
 await p.getByRole('button',{name:'白天',exact:true}).click();await p.waitForFunction(()=>window.written);
 assert.equal(await p.evaluate(()=>window.written.refreshToken),'SYNTHETIC_EXISTING');assert.equal(await p.evaluate(()=>window.written.quoteRefreshSeconds),17);
 }finally{await p.close();}});
 test('settings old acknowledgement preserves new draft; failed draft never changes committed settings',async()=>{
-const p=await page();try{await ready(p);await openView(p,'settings','数据源设置');const input=p.locator('input[type=password]').first();
+const p=await page();try{await ready(p);await openView(p,'settings','数据源设置');const input=p.locator('input[placeholder^=付费]').first();
 await input.fill('SYNTHETIC_FIRST');await p.evaluate(()=>{window.stockApi.saveSettings=next=>new Promise(resolve=>{window.finishSave=()=>resolve(next);});});
 await p.getByRole('button',{name:'保存设置',exact:true}).first().click();await p.waitForFunction(()=>window.finishSave);await input.fill('SYNTHETIC_SECOND');await p.evaluate(()=>window.finishSave());
 await p.getByRole('button',{name:'保存设置',exact:true}).first().waitFor();assert.equal(await input.inputValue(),'SYNTHETIC_SECOND');
@@ -127,7 +127,7 @@ await p.getByRole('button',{name:'白天',exact:true}).click();await p.evaluate(
 test('slow holdings read does not block settings hydration and external theme preserves dirty fields',async()=>{
 const p=await page();try{
 await p.addInitScript(()=>{let api;Object.defineProperty(window,'stockApi',{get:()=>api,set(value){api=value;const get=value.getSettings.bind(value);value.getSettings=async()=>({...await get(),refreshToken:'SYNTHETIC_LOADED'});value.getHoldings=()=>new Promise(()=>{});}});});
-await ready(p);await openView(p,'settings','数据源设置');const input=p.locator('input[type=password]').first();await p.waitForFunction(()=>document.querySelector('input[type=password]')?.value==='SYNTHETIC_LOADED');
+await ready(p);await openView(p,'settings','数据源设置');const input=p.locator('input[placeholder^=付费]').first();await p.waitForFunction(()=>document.querySelector('input[placeholder^=付费]')?.value==='SYNTHETIC_LOADED');
 assert.equal(await p.getByRole('button',{name:'保存设置',exact:true}).first().isDisabled(),false);
 await input.fill('SYNTHETIC_DIRTY');await p.getByRole('button',{name:'白天',exact:true}).click();await p.waitForFunction(()=>document.documentElement.dataset.theme==='light');assert.equal(await input.inputValue(),'SYNTHETIC_DIRTY');
 }finally{await p.close();}});
@@ -140,7 +140,7 @@ await p.evaluate(()=>window.finishSearch());await p.waitForFunction(()=>!documen
 }finally{await p.close();}});
 
 test('successful normalized settings replace the submitted draft when no newer edit exists',async()=>{
-const p=await page();try{await ready(p);await openView(p,'settings','数据源设置');await p.getByRole('button',{name:'监控与提醒',exact:true}).click();const refresh=p.locator('#settings-monitoring input[type=range]').first();await refresh.fill('30');
+const p=await page();try{await ready(p);await openView(p,'settings','数据源设置');await p.getByRole('button',{name:'监控与提醒',exact:true}).click();const refresh=p.locator('#settings-monitoring input[type=range]').first();assert.equal(await refresh.getAttribute('max'),'20');await refresh.fill('20');
 await p.getByRole('button',{name:'保存设置',exact:true}).click();await p.getByText('设置已保存',{exact:true}).waitFor();assert.equal(await refresh.inputValue(),'20');
 }finally{await p.close();}});
 
@@ -148,7 +148,7 @@ test('a queued form save preserves a pending theme change and explicitly clears 
 const p=await page();try{await ready(p);await openView(p,'settings','数据源设置');
 await p.evaluate(()=>{window.settingWrites=[];window.pendingSettingWrites=[];window.stockApi.saveSettings=next=>new Promise(resolve=>{window.settingWrites.push(next);window.pendingSettingWrites.push(()=>resolve(next));});});
 await p.getByRole('button',{name:'白天',exact:true}).click();await p.waitForFunction(()=>window.settingWrites.length===1);
-const token=p.locator('input[type=password]').first();await token.fill('SYNTHETIC_DRAFT');await p.getByRole('button',{name:'保存设置',exact:true}).first().click();
+const token=p.locator('input[placeholder^=付费]').first();await token.fill('SYNTHETIC_DRAFT');await p.getByRole('button',{name:'保存设置',exact:true}).first().click();
 await p.evaluate(()=>window.pendingSettingWrites.shift()());await p.waitForFunction(()=>window.settingWrites.length===2);
 assert.equal(await p.evaluate(()=>window.settingWrites[1].theme),'light');assert.equal(await p.evaluate(()=>window.settingWrites[1].refreshToken),'SYNTHETIC_DRAFT');
 await p.evaluate(()=>window.pendingSettingWrites.shift()());await p.getByRole('button',{name:'保存设置',exact:true}).first().waitFor();

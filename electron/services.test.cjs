@@ -1,7 +1,9 @@
+require("../qa/test-env.cjs"); // 自防御：不依赖运行器预加载，直接 node --test 本文件也禁网
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
   priceLimitRate,
+  incompleteBacktestBarAllowance,
   isRiskStockName,
   toSecurity,
   searchSecurities,
@@ -26,12 +28,15 @@ const {
   normalizeSearchSecurity,
   resolveBacktestSecurity,
   analyzeHistory,
+  average,
+  returnFor,
   buildTradeExecutionReadiness,
   strategyDefinitionsFor,
   validateHistoryRows,
   withSingleFlightCache,
   selectLimitUpTradingDates,
   normalizeThsLimitUpItem,
+  mergeThsAndEastmoneyLimitPool,
   extractThsTable,
   normalizeThsHistoryTable,
   discoverLimitUps,
@@ -374,6 +379,67 @@ test("THS normalization preserves missing fields as unknown and does not invent 
   assert.equal(row.tradedFloatRatio, null);
 });
 
+test("A2-04 a sealed amount missing from both limit-up sources is unknown (null), never 0", () => {
+  // THS 侧没有封单量 → decorateLimitPoolItem 的 fund 兜底会写 0；merge 必须还原成 null，
+  // 否则封单占比 = 0% 会被界面读成"封单极弱"，而真实情况是"没拿到"。
+  const withoutOrderVolume = normalizeThsLimitUpItem({
+    code: "600001", name: "样本甲", latest: 20, amount: 100000000, ltsz: 1000000000, high_days: "首板"
+  }, "2026-10-19");
+  assert.equal(withoutOrderVolume.sealedAmount, null, "缺失封单量不能变成 0 元封单");
+  assert.equal(withoutOrderVolume.sealFloatRatio, null);
+
+  const merged = mergeThsAndEastmoneyLimitPool(
+    { pool: [withoutOrderVolume] },
+    { pool: [{ code: "600001", sealedAmount: 0, floatMarketCap: 1000000000 }] }
+  ).pool[0];
+  assert.equal(merged.sealedAmount, null, "双源缺失（east 的 0 只是占位）时保持 null");
+  assert.equal(merged.sealFloatRatio, null, "封单占比在缺值时必须是未知，不能是 0%");
+
+  // 东财有真实封单额时仍然回填；两家都有时优先 THS 原生值。
+  const eastOnly = mergeThsAndEastmoneyLimitPool(
+    { pool: [withoutOrderVolume] },
+    { pool: [{ code: "600001", sealedAmount: 50000000, floatMarketCap: 1000000000 }] }
+  ).pool[0];
+  assert.equal(eastOnly.sealedAmount, 50000000);
+  assert.equal(eastOnly.sealFloatRatio, 0.05);
+
+  const bothSources = mergeThsAndEastmoneyLimitPool(
+    { pool: [normalizeThsLimitUpItem({ code: "600002", name: "样本乙", latest: 20, order_volume: 5000, ltsz: 1000000000 }, "2026-10-19")] },
+    { pool: [{ code: "600002", sealedAmount: 90000000, floatMarketCap: 1000000000 }] }
+  ).pool[0];
+  assert.equal(bothSources.sealedAmount, 100000, "THS 封单额 = 最新价 × 封单量");
+  assert.equal(bothSources.sealFloatRatio, 0.0001);
+});
+
+test("E-06 average() and returnFor() return null for missing samples instead of a fake zero", () => {
+  assert.equal(average([]), null, "空样本是未知，不是均值 0");
+  assert.equal(average([Number.NaN, undefined, null]), null);
+  assert.equal(average([1, 3]), 2, "有样本时口径不变");
+
+  const history = (closes) => closes.map((close, index) => ({ date: `2026-10-${String(index + 1).padStart(2, "0")}`, close }));
+  assert.equal(returnFor(history([10, 11]), 3), null, "不足 days+1 根 K 线 = 未知，不是 0%");
+  assert.equal(returnFor(history([0, 10, 11, 12]), 3), null, "基准价为 0 时不能返回 Infinity 或 0");
+  assert.ok(Math.abs(returnFor(history([10, 10, 10, 13]), 3) - 30) < 1e-9, "有样本时口径不变");
+});
+
+test("E-06 an uncomputable 3-day return keeps relative sector strength unknown and never awards sector points", () => {
+  const rows = Array.from({ length: 30 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+    open: 10, high: 10.2, low: 9.8, close: 10, volume: 100, amount: 100000, turnover: 2
+  }));
+  rows[26] = { ...rows[26], close: 0, high: 0, low: 0, open: 0 }; // history.at(-4) 基准价为 0
+  const sector = { returns: { r3: 1.5 }, score: 70, memberCount: 20 };
+  const analysis = analyzeHistory({ code: "600001" }, { name: "样本", latest: 10 }, rows, sector, null, [], []);
+  assert.equal(analysis.stockReturn3, null);
+  assert.equal(analysis.rsSector, null, "样本不足/基准异常时相对板块是未知，不是 0% 超额");
+  assert.equal(analysis.sectorLeader, false, "未知不能被当成 rsSector >= 0");
+  const strategies = strategyDefinitionsFor(analysis, { latest: 10 });
+  const sectorStrategy = strategies.find((item) => item.id === "sector");
+  assert.equal(sectorStrategy.matched, false, "null >= 0 的隐式成立必须被挡住");
+  assert.match(sectorStrategy.detail, /未知/);
+  assert.match(strategies.find((item) => item.id === "sectorLeader").detail, /未知/, "展示层不能在 null 上调用 toFixed");
+});
+
 test("THS primary pool is enriched from Eastmoney and retains Eastmoney-only Beijing stocks", async (t) => {
   const originalFetch = global.fetch;
   t.after(() => {
@@ -663,7 +729,12 @@ test("price limit rates follow board and ST rules", () => {
   assert.equal(priceLimitRate("600000", "浦发银行"), 0.1);
   assert.equal(priceLimitRate("300750", "宁德时代"), 0.2);
   assert.equal(priceLimitRate("688981", "中芯国际"), 0.2);
-  assert.equal(priceLimitRate("600000", "ST测试"), 0.05);
+  assert.equal(priceLimitRate("600000", "ST测试"), 0.1);
+  assert.equal(priceLimitRate("600000", "ST测试", "2026-07-05"), 0.05);
+  assert.equal(priceLimitRate("600000", "ST测试", "2026-07-06"), 0.1);
+  assert.equal(priceLimitRate("300001", "ST测试", "2020-08-23"), 0.05);
+  assert.equal(priceLimitRate("300001", "ST测试", "2020-08-24"), 0.2);
+  assert.equal(priceLimitRate("300001", "ST历史改名", "2026-07-06", false), 0.2);
   assert.equal(priceLimitRate("920000", "北交所测试"), 0.3);
 });
 
@@ -1155,8 +1226,10 @@ test("verified runBacktest returns only the safe strategy profile whitelist", as
   ]) {
     assert.equal(serializedProfile.includes(credential), false, credential);
   }
-  assert.equal(requestedUrls.length, 2);
-  assert.ok(requestedUrls.every((url) => url.includes("push2his.eastmoney.com/")));
+  // 同花顺日线为主源（此处模拟同花顺不可用）；应急时只请求东方财富日线两次。
+  const eastUrls = requestedUrls.filter((url) => url.includes("push2his.eastmoney.com/"));
+  assert.equal(eastUrls.length, 2);
+  assert.ok(requestedUrls.every((url) => url.includes("push2his.eastmoney.com/") || url.includes("d.10jqka.com.cn/")), "only THS (primary) and the Eastmoney emergency source are requested");
 });
 
 test("portfolio backtest service keeps a no-signal basket as an all-cash diagnostic", async () => {
@@ -1288,6 +1361,9 @@ test("Sina industry catalog and constituents normalize into canonical A-share ro
   assert.equal(members[0].code, "600001");
   assert.equal(members[0].secid, "1.600001");
   assert.equal(members[0].isLimitUp, true);
+  assert.equal(normalizeSinaSectorMembers([{
+    code: "600002", name: "乙公司", trade: "10.99", settlement: "10.00"
+  }])[0].isLimitUp, false);
 });
 
 test("THS smart-picking columns normalize into sector member rows", () => {
@@ -1347,6 +1423,18 @@ test("sector fallback scoring never turns missing history into zero returns", ()
   assert.equal(summaryOnly.memberCount, 100);
 });
 
+test("回测余量：15:10 前多取 1 根，收盘后与非交易日为 0", () => {
+  const at = (iso) => incompleteBacktestBarAllowance(new Date(iso));
+  // 2026-10-23 是交易日（周五）
+  assert.equal(at("2026-10-23T09:00:00+08:00"), 1, "盘前应多取当天未完成的一根");
+  assert.equal(at("2026-10-23T15:09:59+08:00"), 1, "15:10 之前仍视为未完成");
+  assert.equal(at("2026-10-23T15:10:00+08:00"), 0, "15:10 起视为已收盘");
+  assert.equal(at("2026-10-23T20:00:00+08:00"), 0);
+  // 2026-10-24 / 25 是周六 / 周日
+  assert.equal(at("2026-10-24T10:00:00+08:00"), 0, "周六不取余量");
+  assert.equal(at("2026-10-25T10:00:00+08:00"), 0, "周日不取余量");
+});
+
 test("portfolio service accepts one stock and fixes the return window at 120 bars with warmup", async () => {
   const rows = Array.from({ length: 340 }, (_, index) => {
     const date = new Date(Date.UTC(2025, 0, 1 + index));
@@ -1385,7 +1473,11 @@ test("portfolio service accepts one stock and fixes the return window at 120 bar
   assert.equal(result.dataQuality.warmupBarsRequested, 80);
   assert.equal(result.dataQuality.warmupBarsAvailable, 80);
   assert.equal(result.dataQuality.benchmarkHistoryBarsLoaded, 200);
-  assert.deepEqual(requestedBars, [200, 200]);
+  // 请求根数 = 120 回测窗口 + 80 预热 + 未收盘当天的余量（15:10 前多取 1 根，收盘后 0）。
+  // 用同一规则算期望值：写死 200 会让这个用例随"跑测试的时刻"变红（盘前/盘中跑必红）。
+  const allowance = incompleteBacktestBarAllowance(new Date());
+  assert.ok(allowance === 0 || allowance === 1, `余量只能是 0 或 1，实际 ${allowance}`);
+  assert.deepEqual(requestedBars, [200 + allowance, 200 + allowance]);
 });
 
 test("portfolio service lists a strategy-hit stock by signal date even when entry is rejected", async () => {
@@ -1446,7 +1538,7 @@ test("portfolio service lists a strategy-hit stock by signal date even when entr
         { code: "600002", name: "实际成交", assetType: "stock" },
         { code: "600003", name: "容量拒绝", assetType: "stock" }
       ],
-      strategyIds: ["low_first_board"],
+      strategyIds: ["platform_breakout"],
       lookbackBars: 120,
       maxPositions: 1
     },
@@ -1480,10 +1572,16 @@ test("portfolio service lists a strategy-hit stock by signal date even when entr
 
 test("portfolio strategy definition endpoint exposes the full auditable library", () => {
   const definitions = getStrategyDefinitions();
-  assert.equal(definitions.length, 32);
+  const engine = require("./strategy-signal-engine.cjs");
+  // 回测中心看到完整策略库：在用的在前，2026-11-05 下线的标 retired 排在后面；策略选股页只用在用的。
+  assert.equal(definitions.length, engine.ALL_STRATEGY_DEFINITIONS.length);
   assert.ok(definitions.every((item) => item.id && item.name && item.detail));
-  assert.equal(definitions.filter((item) => item.type === "base").length, 14);
+  assert.equal(definitions.filter((item) => item.type === "base").length, 25);
   assert.equal(definitions.filter((item) => item.type === "composite").length, 18);
+  assert.equal(definitions.filter((item) => item.retired).length, engine.RETIRED_STRATEGY_DEFINITIONS.length);
+  assert.equal(definitions.filter((item) => !item.retired).length, engine.STRATEGY_DEFINITIONS.length);
+  assert.deepEqual(definitions.slice(0, engine.STRATEGY_DEFINITIONS.length).map((item) => item.id), engine.STRATEGY_DEFINITIONS.map((item) => item.id));
+  assert.ok(definitions.filter((item) => item.featured).every((item) => !item.retired));
   for (const entry of require("../config/strategy-signal-combinations.json")) {
     const definition = definitions.find((item) => item.id === entry.id);
     assert.equal(definition.version, entry.version);
@@ -1675,4 +1773,125 @@ test("analysis detects a limit-up event and exact node", () => {
   assert.ok(strategies.find((item) => item.id === "chipLock"));
   assert.equal(strategies.find((item) => item.id === "marketEmotion").matched, true);
   assert.equal(strategies.find((item) => item.id === "riskVeto").matched, true);
+});
+
+
+function completedWindowFixture() {
+  const rows = [];
+  for (let index = 0; index < 425; index++) {
+    const date = new Date(Date.UTC(2025, 8, 1 + index));
+    if ([0, 6].includes(date.getUTCDay())) continue;
+    rows.push({ date: date.toISOString().slice(0, 10), open: 10, high: 10.1, low: 9.9,
+      close: 10, volume: 100000, amount: 1000000, turnover: 1 });
+  }
+  return rows;
+}
+
+for (const [label, now, expectedTo] of [
+  ["intraday", "2026-10-23T02:00:00Z", "2026-10-22"],
+  ["before settlement buffer", "2026-10-23T07:09:59Z", "2026-10-22"],
+  ["completed close", "2026-10-23T07:10:00Z", "2026-10-23"],
+  ["holiday", "2026-10-05T08:00:00Z", "2026-09-30"]
+]) {
+  test(`portfolio backtest ${label} excludes unfinished and future daily bars`, async t => {
+    t.mock.timers.enable({ apis: ["Date"], now: Date.parse(now) });
+    const result = await runPortfolioBacktest({
+      securities: [{ code: "600071", name: "完成日边界样本", assetType: "stock" }],
+      strategyIds: ["low_first_board"], lookbackBars: 120
+    }, {}, { resolveSecurity: async security => toSecurity(security), loadHistory: async () => completedWindowFixture() });
+    assert.equal(result.dataQuality.signalWindow.to, expectedTo);
+    assert.equal(result.equityCurve.at(-1).date, expectedTo);
+    assert.equal(result.dataQuality.warmupBarsAvailable, 80);
+    assert.ok(result.signalEvents.every(row => row.signalDate <= expectedTo));
+  });
+}
+
+test("single stock backtest excludes a live daily bar from the settled range", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T02:00:00Z") });
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async url => {
+    if (!String(url).includes("push2his.eastmoney.com/")) throw new Error("fixture source unavailable");
+    return mockJsonResponse({ data: { klines: completedWindowFixture().filter(row => row.date <= "2026-10-23").map(row =>
+      [row.date, row.open, row.close, row.high, row.low, row.volume, row.amount, 2, 0, 0, row.turnover].join(",")) } });
+  };
+  const result = await runBacktest({ code: "603998", name: "盘中回测边界", assetType: "stock" }, {},
+    { signalStrategyIds: ["low_first_board"], lookbackBars: 200 });
+  assert.equal(result.range.signalTo, "2026-10-22");
+  assert.equal(result.range.historyTo, "2026-10-22");
+  assert.equal(result.dataCoverage.stock.source, "eastmoney");
+  assert.equal(result.dataCoverage.benchmark.source, "eastmoney");
+  assert.ok(result.trades.every(row => row.exitDate <= "2026-10-22"));
+});
+
+test("intraday amount strategy accepts the full completed window without an optional live bar", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T02:00:00Z") });
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const dates = require("./trend-trading-calendar.cjs").createTradingCalendar().sessionsThrough("2026-10-22", 200);
+  global.fetch = async url => {
+    if (!String(url).includes("push2his.eastmoney.com/")) throw new Error("fixture source unavailable");
+    return mockJsonResponse({ data: { klines: dates.map(date => `${date},10,10,10.1,9.9,100000,1000000,2,0,0,1`) } });
+  };
+  const result = await runBacktest({ code: "603997", name: "完整收盘窗口", assetType: "stock" },
+    { fallbackEnabled: false }, { signalStrategyIds: ["limit_rsi_pullback_resonance"], lookbackBars: 200 });
+  assert.equal(result.dataCoverage.amountRequired, true);
+  assert.equal(result.dataCoverage.stock.bars, 200);
+  assert.equal(result.dataCoverage.benchmark.bars, 200);
+  assert.equal(result.range.signalTo, "2026-10-22");
+});
+
+test("intraday amount strategy requires its full window after removing a live stock bar", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T02:00:00Z") });
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const dates = require("./trend-trading-calendar.cjs").createTradingCalendar().sessionsThrough("2026-10-22", 200);
+  global.fetch = async url => {
+    if (!String(url).includes("push2his.eastmoney.com/")) throw new Error("fixture source unavailable");
+    const isStock = new URL(String(url)).searchParams.get("secid") === "1.603996";
+    const sourceDates = isStock ? [...dates.slice(1), "2026-10-23"] : dates;
+    return mockJsonResponse({ data: { klines: sourceDates.map(date => `${date},10,10,10.1,9.9,100000,1000000,2,0,0,1`) } });
+  };
+  await assert.rejects(runBacktest({ code: "603996", name: "未满完整窗口", assetType: "stock" },
+    { fallbackEnabled: false }, { signalStrategyIds: ["limit_rsi_pullback_resonance"], lookbackBars: 200 }),
+  /回测数据不足：(个股.*200.*199|请求窗口 200 根，实际仅 199 根)/);
+});
+
+test("intraday amount strategy ignores missing amount on the excluded live bar", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T02:00:00Z") });
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const dates = require("./trend-trading-calendar.cjs").createTradingCalendar().sessionsThrough("2026-10-22", 200);
+  global.fetch = async url => {
+    if (!String(url).includes("push2his.eastmoney.com/")) throw new Error("fixture source unavailable");
+    const klines = dates.map(date => `${date},10,10,10.1,9.9,100000,1000000,2,0,0,1`);
+    klines.push("2026-10-23,10,10,10.1,9.9,100000,invalid,2,0,0,1");
+    return mockJsonResponse({ data: { klines } });
+  };
+  const result = await runBacktest({ code: "603995", name: "盘中部分行情", assetType: "stock" },
+    { fallbackEnabled: false }, { signalStrategyIds: ["limit_rsi_pullback_resonance"], lookbackBars: 200 });
+  assert.equal(result.dataCoverage.stock.bars, 200);
+  assert.equal(result.dataCoverage.stock.amountPresentBars, 200);
+  assert.equal(result.range.signalTo, "2026-10-22");
+});
+
+test("optional live-bar allowance does not exceed the verified raw source capacity", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T02:00:00Z") });
+  const complete = Array.from({ length: 1500 }, (_, i) => ({ date: new Date(Date.UTC(2026, 9, 22 - 1499 + i)).toISOString().slice(0, 10),
+    open: 10, high: 10.1, low: 9.9, close: 10, volume: 100, amount: 100000 }));
+  let requested;
+  const rows = await loadBacktestHistory(toSecurity("603994"), {}, 1501, {
+    thsPublic: async () => { throw new Error("fixture unavailable"); },
+    eastmoney: async () => complete.map(row => ({ ...row, amount: null })),
+    completeRaw: async (_security, bars) => {
+      requested = bars;
+      if (bars > 1500) throw new Error("historyBars必须为20至1500的整数");
+      return { rows: complete, adjustment: "none", source: "verified-raw-capacity", provenance: { amountUnit: "CNY" } };
+    }
+  }, { requireAmount: true, minimumRows: 1500, completedAt: new Date() });
+  assert.equal(requested, 1500);
+  assert.equal(rows.length, 1500);
+  assert.equal(rows.dataSource, "verified-raw-capacity");
+  assert.equal(rows.actualAdjustment, 0);
+  assert.equal(rows.provenance.amountUnit, "CNY");
 });

@@ -7,7 +7,11 @@ export function createCollectionWriter<T>(options: {
   let tail: Promise<unknown> = Promise.resolve();
   return (update: (items: T[]) => T[]): Promise<T[]> => {
     const pending = tail.then(async () => {
-      const saved = await options.persist(update(options.read()));
+      const current = options.read();
+      const next = update(current);
+      // 内容没变就不写盘也不触发界面更新（观察池每分钟合并一次，多数时候没有新股票）。
+      if (next === current || JSON.stringify(next) === JSON.stringify(current)) return current;
+      const saved = await options.persist(next);
       options.accept(saved);
       return saved;
     });

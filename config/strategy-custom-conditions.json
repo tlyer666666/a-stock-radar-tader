@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "groups": [
+    { "id": "daily", "label": "日线因子", "detail": "与个股分析同一套日线算法，选股时逐只计算。" },
+    { "id": "pattern", "label": "涨停形态规则", "detail": "内置33套涨停形态规则，可直接作为条件引用。" },
+    { "id": "external", "label": "需个股数据", "detail": "依赖板块、资讯、情绪或封板明细；批量选股时不能逐只取数，标为“待确认”，进入个股分析后核对。" }
+  ],
+  "factors": [
+    { "id": "support", "label": "涨停低点防守", "group": "daily", "detail": "观察期内不跌破涨停日最低价" },
+    { "id": "avwap", "label": "锚定均价承接", "group": "daily", "detail": "收盘位于涨停日起算的 AVWAP 上方" },
+    { "id": "trend", "label": "均线多头发散", "group": "daily", "detail": "MA5 > MA10 > MA20，且三条均线同时向上" },
+    { "id": "contraction", "label": "缩量抗跌", "group": "daily", "detail": "量能低于前五日均量，相对换手不过热" },
+    { "id": "volatility", "label": "回撤与收盘质量", "group": "daily", "detail": "涨停后回撤小于10%，收盘位于振幅上半区" },
+    { "id": "originBreakout", "label": "平台突破首板", "group": "daily", "detail": "涨停从窄幅箱体放量突破" },
+    { "id": "vcpCompression", "label": "波动压缩平台", "group": "daily", "detail": "涨停后真实波动逐步收窄" },
+    { "id": "chipLock", "label": "缩量抛压代理", "group": "daily", "detail": "成交衰减、下跌量占比低；不证明实际锁仓" },
+    { "id": "lowFirstBoard", "label": "低位首板", "group": "daily", "detail": "近60日首次涨停、板前不过热且价格偏低位" },
+    { "id": "secondBreakout", "label": "平台二次突破", "group": "daily", "detail": "涨停后整理，温和放量突破平台高点" },
+    { "id": "weakToStrong", "label": "弱转强", "group": "daily", "detail": "收回关键位，或低开后强势反包" },
+    { "id": "exactNode", "label": "精确观察节点", "group": "daily", "gate": true, "detail": "仅在涨停后第 3 / 5 / 7 / 9 个交易日成立" },
+    { "id": "sector", "label": "强板块共振", "group": "external", "detail": "板块强度不低于65，个股不弱于板块" },
+    { "id": "sectorLeader", "label": "板块龙头", "group": "external", "detail": "个股排名与相对板块收益领先" },
+    { "id": "sectorLadder", "label": "板块梯队", "group": "external", "detail": "首板、连板、晋级率和炸板率确认板块持续性" },
+    { "id": "information", "label": "信息催化确认", "group": "external", "detail": "高可信资讯存在正向催化，且无重大风险公告" },
+    { "id": "marketEmotion", "label": "市场情绪过滤", "group": "external", "detail": "涨跌停数量与变化过滤退潮期" },
+    { "id": "firstBoardQuality", "label": "首板质量", "group": "external", "detail": "封板时间、开板次数、封单与换手" }
+  ],
+  "filters": [
+    { "key": "minDaysSinceLimit", "label": "涨停后最少天数", "min": 0, "max": 60, "step": 1, "integer": true, "unit": "天" },
+    { "key": "maxDaysSinceLimit", "label": "涨停后最多天数", "min": 0, "max": 60, "step": 1, "integer": true, "unit": "天" },
+    { "key": "minAmountYi", "label": "当日成交额不低于", "min": 0, "max": 500, "step": 0.1, "unit": "亿元" },
+    { "key": "maxConsecutiveBoards", "label": "连板数不超过", "min": 1, "max": 20, "step": 1, "integer": true, "unit": "板" },
+    { "key": "maxDistanceToInvalidationPct", "label": "距失效位不超过", "min": 1, "max": 50, "step": 0.5, "unit": "%" }
+  ],
+  "boards": [
+    { "id": "main", "label": "沪深主板" },
+    { "id": "chinext", "label": "创业板" },
+    { "id": "star", "label": "科创板" },
+    { "id": "bse", "label": "北交所" }
+  ],
+  "universes": [
+    { "id": "limit_pool", "label": "全市场 · 近期涨停股", "detail": "全市场A股（剔除ST，含北交所）中近期有涨停事件的股票；以最近一次涨停为风险否决基准。" },
+    { "id": "watchlist", "label": "我的自选与持仓", "detail": "观察池、自选与持仓中的股票，最多300只；不要求近期涨停。" }
+  ],
+  "limits": { "maxStrategies": 30, "maxConditions": 24, "nameMax": 30, "descriptionMax": 200, "maxRequiredAnyGroups": 4 },
+  "defaults": { "minMatchPercent": 70, "universe": "limit_pool" }
+}

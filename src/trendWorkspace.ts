@@ -1,4 +1,4 @@
-import type { TrendCandidate, TrendScanStatus } from "./trendScreenerTypes";
+import type { TrendCandidate, TrendScanStatus, TrendScanRequest } from "./trendScreenerTypes";
 import { validStrategySnapshot, libraryDefinition, strategyName, sameTrendStrategy } from "./trendStrategyConfig";
 
 export const TREND_PLAN_STORAGE_KEY = "a-stock-radar:trend-plans:v1";
@@ -12,6 +12,7 @@ export type SavedTrendPlan = {
   marketGate: TrendScanStatus["marketGate"];
   candidate: TrendCandidate;
   reviewDraft?: TrendReviewDraft;
+  archivedAt?: string;
 };
 
 type PlanStorage = Pick<Storage, "getItem" | "setItem">;
@@ -37,7 +38,24 @@ export function createSavedTrendPlan(candidate: TrendCandidate, status: Pick<Tre
   };
 }
 
-export function reviewSavedTrendPlan(plan: SavedTrendPlan, status: TrendScanStatus | null): {
+// The canonical key keeps legacy classic snapshots comparable with supported classic metadata.
+function candidateReviewKey(candidate: TrendCandidate): string {
+  const strategy = candidate.strategy;
+  const identity = !strategy || (strategy.id === "classic-v1" && validStrategySnapshot(strategy)) ? ["classic-v1"] :
+    [strategy.id, strategy.version, strategy.configHash, Object.entries(strategy.config).sort(([a], [b]) => a.localeCompare(b))];
+  return JSON.stringify([candidate.security.secid, identity]);
+}
+
+export function indexTrendCandidates(candidates: TrendCandidate[]): ReadonlyMap<string, TrendCandidate> {
+  const index = new Map<string, TrendCandidate>();
+  for (const candidate of candidates) {
+    const key = candidateReviewKey(candidate);
+    if (!index.has(key)) index.set(key, candidate);
+  }
+  return index;
+}
+
+export function reviewSavedTrendPlan(plan: SavedTrendPlan, status: TrendScanStatus | null, candidateIndex?: ReadonlyMap<string, TrendCandidate>): {
   verificationAvailable: boolean;
   marketGate: TrendScanStatus["marketGate"];
   latestCandidate?: TrendCandidate;
@@ -49,7 +67,9 @@ export function reviewSavedTrendPlan(plan: SavedTrendPlan, status: TrendScanStat
   const comparable = snapshots.length ? snapshots.some(snapshot => sameTrendStrategy(snapshot, plan.candidate.strategy)) :
     !status.strategies && sameTrendStrategy(status.strategy, plan.candidate.strategy);
   if (!comparable) return unavailable;
-  const observed = status.candidates.find(candidate => candidate.security.secid === plan.candidate.security.secid && sameTrendStrategy(candidate.strategy, plan.candidate.strategy));
+  const indexed = candidateIndex?.get(candidateReviewKey(plan.candidate));
+  const observed = candidateIndex ? (indexed && sameTrendStrategy(indexed.strategy, plan.candidate.strategy) ? indexed : undefined) :
+    status.candidates.find(candidate => candidate.security.secid === plan.candidate.security.secid && sameTrendStrategy(candidate.strategy, plan.candidate.strategy));
   // A stale stock row cannot establish either a current signal or an absence.
   if (observed && observed.asOf !== status.asOf) return unavailable;
   const legacySingle = snapshots.length <= 1 && (!status.strategies || Boolean(status.strategy));
@@ -65,12 +85,17 @@ function validCandidate(value: unknown): value is TrendCandidate {
   if (!record(value) || !record(value.security) || !record(value.metrics)) return false;
   const security = value.security;
   const metrics = value.metrics;
-  if (![security.code, security.name, security.secid, value.asOf, value.limitDate].every((item) => typeof item === "string" && item.length > 0)) return false;
+  if (![security.code, security.name, security.secid, value.asOf].every((item) => typeof item === "string" && item.length > 0)) return false;
+  // 经典技术策略库的候选可以没有近期涨停（limitDate 为 null）；有涨停时必须带完整的涨停证据。
+  const hasLimit = value.limitDate !== null;
+  if (hasLimit && !(typeof value.limitDate === "string" && value.limitDate.length > 0)) return false;
   if (security.industry !== undefined && typeof security.industry !== "string") return false;
   if (!["main", "growth", "star", "beijing"].includes(String(value.board)) || !["signal", "watch"].includes(String(value.stage))) return false;
-  if (!["official", "calculated"].includes(String(value.limitEvidence)) || !finite(value.daysSinceLimit)) return false;
+  if (hasLimit ? !["official", "calculated"].includes(String(value.limitEvidence)) || !finite(value.daysSinceLimit) : value.daysSinceLimit !== null) return false;
   if (!strings(value.patterns) || !value.patterns.every((pattern) => pattern === "A" || pattern === "B") || !strings(value.warnings)) return false;
   if (![metrics.close, metrics.ma20, metrics.ma60, metrics.avgAmount20, metrics.deviationPercent, metrics.atr14].every(finite)) return false;
+  if (metrics.medianAmount20 !== undefined && (!finite(metrics.medianAmount20) || metrics.medianAmount20 <= 0)) return false;
+  if (record(value.plan) && value.plan.entryType !== undefined && !["breakout", "close-confirmation"].includes(String(value.plan.entryType))) return false;
   if (metrics.relativeStrength20 !== null && !finite(metrics.relativeStrength20)) return false;
   if (!Array.isArray(value.evidence) || !value.evidence.every((item) => record(item) && typeof item.label === "string" && typeof item.passed === "boolean" && typeof item.value === "string" && typeof item.rule === "string")) return false;
   if (value.plan !== null && (!record(value.plan) || ![value.plan.stop, value.plan.maxEntry, value.plan.maxRiskPercent].every(finite) || typeof value.plan.holdingDays !== "string")) return false;
@@ -102,6 +127,7 @@ function validPlan(value: unknown): value is SavedTrendPlan {
     ["open", "blocked", "unknown"].includes(String(value.marketGate)) &&
     typeof value.savedAt === "string" && !Number.isNaN(Date.parse(value.savedAt)) &&
     value.id === trendPlanId(value.candidate, value.isPreview) &&
+    (value.archivedAt === undefined || (typeof value.archivedAt === "string" && !Number.isNaN(Date.parse(value.archivedAt)))) &&
     (value.reviewDraft === undefined || (record(value.reviewDraft) && record(value.reviewDraft.fields) && record(value.reviewDraft.checks) &&
       Object.values(value.reviewDraft.fields).every((item) => typeof item === "string") &&
       Object.values(value.reviewDraft.checks).every((item) => typeof item === "boolean")));
@@ -143,7 +169,7 @@ export function csvCell(value: unknown): string {
 type CandidateExport = Pick<SavedTrendPlan, "candidate" | "isPreview" | "coverageComplete" | "marketGate"> & { savedAt?: string };
 
 export function trendCandidatesCsv(rows: CandidateExport[]): string {
-  const header = ["数据性质", "代码", "名称", "数据截止日", "快照保存时间", "板块", "行业", "阶段", "形态", "涨停日期", "涨停后交易日", "收盘", "MA20", "MA60", "距MA20(%)", "20日平均成交额(元)", "20日超额涨幅(百分点)", "参考止损S", "最高参考入场Pmax", "Pmax下计划风险(%)", "市场门槛", "覆盖状态", "规则依据", "待复核事项", "使用说明", "策略版本", "参数快照", "配置指纹", "最低参考入场", "止损引用形态", "策略名称", "独立信号", "触发参考价", "技术指标"];
+  const header = ["数据性质", "代码", "名称", "数据截止日", "快照保存时间", "板块", "行业", "阶段", "形态", "涨停日期", "涨停后交易日", "收盘", "MA20", "MA60", "距MA20(%)", "20日平均成交额(元)", "20日超额涨幅(百分点)", "参考止损S", "最高参考入场Pmax", "Pmax下计划风险(%)", "市场门槛", "覆盖状态", "规则依据", "待复核事项", "使用说明", "策略版本", "参数快照", "配置指纹", "最低参考入场", "止损引用形态", "策略名称", "独立信号", "触发参考价", "技术指标", "入场类型", "20日成交额中位数(元)"];
   const gateNames = { open: "通过", blocked: "暂停新开仓", unknown: "未知" };
   const body = rows.map(({ candidate: candidate, isPreview, savedAt, coverageComplete, marketGate }) => [
     isPreview ? "DEMO 虚构演示" : "扫描结果 / 待人工复核",
@@ -157,7 +183,44 @@ export function trendCandidatesCsv(rows: CandidateExport[]): string {
     candidate.evidence.map((item) => `${item.passed ? "通过" : "未满足"} ${item.label}：${item.value}；规则：${item.rule}`).join(" | "),
     candidate.warnings.join("；"), "历史快照；次日人工复核；非持仓记录；不自动下单或退出",
     candidate.strategy ? `${candidate.strategy.id}@${candidate.strategy.version}` : "classic-v1@1.0.0",
-    JSON.stringify(candidate.strategy?.config || {}), candidate.strategy?.configHash || "旧版快照", candidate.plan?.minEntry, candidate.primaryPattern || "", strategyName(candidate.strategy), candidate.setup?.label || "", candidate.setup?.triggerPrice ?? "", candidate.technical ? JSON.stringify(candidate.technical.indicators) : ""
+    JSON.stringify(candidate.strategy?.config || {}), candidate.strategy?.configHash || "旧版快照", candidate.plan?.minEntry, candidate.primaryPattern || "", strategyName(candidate.strategy), candidate.setup?.label || "", candidate.setup?.triggerPrice ?? "", candidate.technical ? JSON.stringify(candidate.technical.indicators) : "", candidate.plan?.entryType || "旧版未区分", candidate.metrics.medianAmount20 ?? ""
   ]);
   return "\uFEFF" + [header, ...body].map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+
+export const TREND_SCAN_JOURNAL_KEY = "a-stock-radar:trend-scan-journal:v1";
+export type TrendScanJournalInput = {
+  request: TrendScanRequest;
+  reason: string;
+  range: { start: string | null; end: string | null };
+  requestedAt: string;
+  asOf: string | null;
+  isPreview: boolean;
+  strategies?: TrendScanStatus["strategies"];
+};
+export type TrendScanJournalEntry = TrendScanJournalInput & { parameterHash: string };
+export function readTrendScanJournal(storage: PlanStorage): TrendScanJournalEntry[] {
+  const raw = storage.getItem(TREND_SCAN_JOURNAL_KEY);
+  if (raw === null) return [];
+  const data: unknown = JSON.parse(raw);
+  if (!record(data) || data.version !== 1 || !Array.isArray(data.entries) || !data.entries.every(entry =>
+    record(entry) && typeof entry.reason === "string" && typeof entry.requestedAt === "string" &&
+    typeof entry.parameterHash === "string" && /^[a-f0-9]{64}$/.test(entry.parameterHash) && record(entry.request) && record(entry.range) &&
+    [entry.range.start, entry.range.end, entry.asOf].every(value => value === null || typeof value === "string") && typeof entry.isPreview === "boolean")) throw new Error("本地扫描日志格式错误，原始记录保留");
+  return (data.entries as TrendScanJournalEntry[]).slice(0, 200);
+}
+export async function appendTrendScanJournal(storage: PlanStorage, input: TrendScanJournalInput): Promise<TrendScanJournalEntry> {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical) : record(value) ?
+    Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(canonical({ request: input.request, strategies: input.strategies || [] }))));
+  const parameterHash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+  const entry: TrendScanJournalEntry = { ...JSON.parse(JSON.stringify(input)), reason: input.reason.slice(0, 1000), parameterHash };
+  storage.setItem(TREND_SCAN_JOURNAL_KEY, JSON.stringify({ version: 1, entries: [entry, ...readTrendScanJournal(storage)].slice(0, 200) }));
+  return entry;
+}
+export function trendScanJournalCsv(entries: TrendScanJournalEntry[]): string {
+  return "\uFEFF" + [["请求时间", "原因", "研究起始", "研究截止", "数据截止", "数据性质", "参数指纹", "冻结参数", "策略版本快照"], ...entries.map(entry =>
+    [entry.requestedAt, entry.reason, entry.range.start, entry.range.end, entry.asOf, entry.isPreview ? "DEMO 虚构演示" : "市场扫描 / 未经收益验证", entry.parameterHash, JSON.stringify(entry.request), JSON.stringify(entry.strategies || [])])]
+    .map(row => row.map(csvCell).join(",")).join("\r\n");
 }

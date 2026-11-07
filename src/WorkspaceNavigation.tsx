@@ -2,8 +2,8 @@ import { PanelLeftClose, PanelLeftOpen, Settings as SettingsIcon, type LucideIco
 
 type Item = { id: string; label: string; icon: LucideIcon };
 const groups = [
-  { label: '选股研究', ids: ['trend-screener', 'signals', 'sectors'] },
-  { label: '行情跟踪', ids: ['dashboard', 'watchlist', 'favorites', 'holdings'] },
+  { label: '选股研究', ids: ['signals', 'ai-picks', 'ai-agent', 'sectors'] },
+  { label: '行情跟踪', ids: ['dashboard', 'beijing', 'bonds', 'hsgt', 'previous-limit-up-failed', 'watchlist', 'favorites', 'holdings'] },
   { label: '复盘与信息', ids: ['review', 'compare', 'backtest', 'news'] }
 ];
 
@@ -11,7 +11,7 @@ export default function WorkspaceNavigation({ items, active, counts, collapsed, 
   items: Item[]; active: string; counts: Record<string, number>; collapsed: boolean;
   onCollapse: () => void; onNavigate: (id: string) => void;
 }) {
-  const selected = active === 'announcements' ? 'news' : active;
+  const selected = active === 'announcements' ? 'news' : active === 'trend-screener' ? 'signals' : active;
   return <aside className="sidebar workspace-navigation" aria-label="工作台导航">
     <div className="workspace-nav-top"><span>工作台</span><button className="sidebar-collapse" aria-label={collapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!collapsed} title={collapsed ? '展开导航栏' : '收起导航栏'} onClick={onCollapse}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button></div>
     <nav aria-label="功能模块">{groups.map(group => <section className="workspace-nav-group" key={group.label} aria-label={group.label}>

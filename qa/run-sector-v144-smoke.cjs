@@ -94,11 +94,11 @@ function inspectTypography() {
 async function main() {
   fs.mkdirSync(output, { recursive: true });
   const startedAt = new Date().toISOString();
-  const sourceFiles = ['src/App.tsx', 'src/previewApi.ts', 'src/SectorExplorerPanel.tsx', 'src/sector-explorer.css', 'src/styles.css', 'src/terminal-ui.css', 'src/terminal-research.css', 'src/workbench.css', 'src/sectorExplorerTypes.ts', 'qa/run-sector-v144-smoke.cjs'];
+  const sourceFiles = ['src/App.tsx', 'src/previewApi.ts', 'src/SectorExplorerPanel.tsx', 'src/styles/modules/sector-explorer.css', 'src/styles/modules/app-base.css', 'src/styles/modules/terminal-ui.css', 'src/styles/modules/terminal-research.css', 'src/styles/modules/workbench.css', 'src/styles/tokens.css', 'src/styles/theme/components.css', 'src/styles/theme/responsive.css', 'src/sectorExplorerTypes.ts', 'qa/run-sector-v144-smoke.cjs'];
   const sourceHashes = Object.fromEntries(sourceFiles.map(f => [f, hash(fs.readFileSync(path.join(root, f)))]));
   const baselineDir = process.env.QA_BASELINE_DIR && path.resolve(process.env.QA_BASELINE_DIR);
   if (baselineDir && !baselineDir.startsWith(artifactRoot + path.sep)) throw new Error('Baseline must remain in the QA artifact directory');
-  const overrides = baselineDir ? ['src/SectorExplorerPanel.tsx', 'src/sector-explorer.css', 'src/sectorExplorerTypes.ts'] : [];
+  const overrides = baselineDir ? ['src/SectorExplorerPanel.tsx', 'src/styles/modules/sector-explorer.css', 'src/sectorExplorerTypes.ts'] : [];
   const servedOverrides = Object.fromEntries(overrides.map(f => [f, hash(fs.readFileSync(path.join(baselineDir, f)))]));
   const results = [], errors = [], contexts = [], unexpectedRequests = [];
   let server, browser, inspectedPage;

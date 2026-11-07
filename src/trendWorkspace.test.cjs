@@ -54,3 +54,33 @@ test("CSV blocks formulas and escapes commas, quotes and newlines while preservi
   assert.ok(csv.includes("2026-09-29"));
   assert.ok(csv.includes("不自动下单或退出"));
 });
+
+test("new snapshots preserve entry type and median amount without silently upgrading old snapshots", () => {
+  const status = preview.createTrendPreviewStatus();
+  const candidate = status.candidates[0];
+  candidate.plan.entryType = 'close-confirmation'; candidate.metrics.medianAmount20 = 300000000;
+  const plan = workspace.createSavedTrendPlan(candidate, status);
+  const store = storage();
+  assert.equal(workspace.writeTrendPlans(store, [plan]), true);
+  assert.equal(workspace.readTrendPlans(store).plans[0].candidate.plan.entryType, 'close-confirmation');
+  assert.ok(workspace.trendCandidatesCsv([plan]).includes('close-confirmation'));
+  candidate.plan.entryType = 'invalid';
+  assert.equal(workspace.writeTrendPlans(store, [workspace.createSavedTrendPlan(candidate, status)]), false);
+});
+test("scan journal is locally bounded, hashes exact parameters and preserves reason and research range", async () => {
+  const store = storage();
+  const input = { request: { strategyId: 'quality-v2', config: { maxExtensionAtr: 2, minCloseLocation: 0.7, maxVolumeRatio: 3 } },
+    reason: '冻结稳健预设，观察候选', range: { start: '2025-01-01', end: '2026-10-20' },
+    requestedAt: '2026-10-21T01:00:00Z', asOf: '2026-10-20', isPreview: false };
+  const first = await workspace.appendTrendScanJournal(store, input);
+  assert.match(first.parameterHash, /^[a-f0-9]{64}$/);
+  const second = await workspace.appendTrendScanJournal(store, { ...input, reason: '复查' });
+  assert.equal(first.parameterHash, second.parameterHash);
+  for (let i = 0; i < 202; i++) await workspace.appendTrendScanJournal(store, { ...input, reason: `复查 ${i}` });
+  const rows = workspace.readTrendScanJournal(store);
+  assert.equal(rows.length, 200);
+  assert.equal(rows[0].reason, '复查 201');
+  assert.equal(rows[0].range.start, '2025-01-01');
+  const csv = workspace.trendScanJournalCsv(rows);
+  for (const text of ['参数指纹', '冻结参数', '研究起始', '2025-01-01', '复查 201', first.parameterHash]) assert.ok(csv.includes(text), text);
+});

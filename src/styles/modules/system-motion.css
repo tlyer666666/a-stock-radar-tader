@@ -1,0 +1,150 @@
+/*
+ * motion.css —— 动效层：统一过渡兜底 / 关键帧体系 / 骨架屏工具类 / reduced-motion 保护
+ * 负责专项：E（交互反馈与响应式）
+ * 规范出处：《设计基座与分工简报》§3（克制的 120–240ms 缓动反馈）/§4.4（动效令牌）/§8；
+ *          配套说明：《专项E-交互与响应式.md》（§编号互引）
+ * 令牌真源：src/styles/tokens.css（--dur-fast/--dur-base/--dur-slow、--ease-out/--ease-in-out）
+ *
+ * 【定位：兜底面，不与组件层打架】
+ * - 专项 D 已在 components.css 为 `button` 元素基线与 .trend-btn 等域内控件定义了
+ *   完全相同的五属性过渡（--dur-fast/--ease-out）——本层【不再重复声明 button】，
+ *   避免未来组件层调整按钮时长时被本层反向压制；本层兜底其余元素与裸交互类。
+ * - 兜底时长统一取 --dur-fast（100ms）：行情终端以「快而不跳」为先，与 D 层按钮
+ *   节奏一致；--dur-base/--dur-slow 留给组件层的进出场（如弹层、toast）自行取用。
+ * - 只过渡颜色/阴影/透明度类属性，不过渡几何属性（width/height/padding），
+ *   避免布局抖动与重排开销。
+ *
+ * 【关键帧与工具类】
+ * - fade-in-up / skeleton-shimmer / radar-spin 为体系交付：现有 TSX 未挂接
+ *   .anim-fade-in-up / .skeleton / .anim-radar-spin（grep 证实），属「备而未用」的
+ *   体系件；适用场景见专项文档 §4（未来弹层进场、列表/面板加载态、刷新态）。
+ * - 既有 @keyframes spin / radar / slide-in（styles.css）、review-spin、trend-spin
+ *   不动；本层命名（radar-spin 等）经 grep 确认无冲突。
+ *
+ * 【reduced-motion】
+ * - 文末 @media (prefers-reduced-motion: reduce) 为全项目唯一允许的 !important
+ *   （无障碍特例，已登记专项文档 §8 白名单）。styles.css:4775 既有内容完全相同的
+ *   块 —— 本层按体系归属重复声明，两块取值一致、叠加为幂等，无行为差异。
+ */
+
+/* ============================================================
+ * §1 元素级过渡兜底（特异性 (0,0,1)/(0,0,2)，仅对无类规则者与状态切换生效）
+ *    a        —— 外链（TrendStrategyPanel 策略来源链接等）
+ *    input/select/textarea —— 补 D 层（D 仅给 button 定了过渡）；focus 边线/底色平滑
+ *    tr/th/td —— 行 hover 与表头状态平滑（tbody tr 的 background-color 过渡由
+ *                D 的 (0,0,2) 规则拥有并优先；本层为 thead 行与其余属性补面）
+ * ============================================================ */
+a,
+input,
+select,
+textarea,
+tr,
+th,
+td {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+/* ============================================================
+ * §2 高频交互类（grep 审计后圈定，特异性 (0,1,0) 靠后压过旧值）
+ *    .nav-item         —— styles.css:35 旧 transition: .2s（无缓动函数）→ 令牌化 100ms
+ *    .sidebar-collapse —— 侧栏折叠按钮，terminal-layout.css 有 hover 态但无过渡定义
+ * ============================================================ */
+.nav-item,
+.sidebar-collapse {
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out),
+    opacity var(--dur-fast) var(--ease-out);
+}
+
+/* ============================================================
+ * §3 关键帧
+ * ============================================================ */
+
+/* 进场：淡入 + 8px 上浮（与既有 slide-in 的位移量一致，延续动效语汇） */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-sm));
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 骨架屏：高光横扫。起点/终点均在画布外且渐变对称 → 循环首尾无缝 */
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 雷达/刷新旋转（与既有 spin 同义的新体系命名，供新组件挂接） */
+@keyframes radar-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ============================================================
+ * §4 工具类
+ *    .anim-fade-in-up —— 弹层/卡片进场：挂上即用，fill:both 保证首帧即隐
+ *    .anim-radar-spin —— 刷新指示（0.9s 对齐既有 .spin 1s 的感知节奏）
+ *    .skeleton        —— 加载占位：底 --surface-2，高光由 --ink-1 以 color-mix
+ *                        合成 7% 相对明度（规范原文为「半透明白」——纯白高光在
+ *                        亮色主题的 --surface-2 纸白底上不可见，改用随主题反转的相对高光，
+ *                        深/亮两主题均成立；已登记专项文档 §6）
+ *    周期 1.6s 属「氛围循环」时长，不在 --dur-* 交互时长级差内（一次性特殊值，
+ *    理由登记于专项文档 §6）。
+ * ============================================================ */
+.anim-fade-in-up {
+  animation: fade-in-up var(--dur-slow) var(--ease-out) both;
+}
+
+.anim-radar-spin {
+  animation: radar-spin 0.9s linear infinite;
+}
+
+.skeleton {
+  background-color: var(--surface-2);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--ink-1) 7%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  border-radius: var(--radius-xs);
+  animation: skeleton-shimmer 1.6s linear infinite;
+}
+
+/* ============================================================
+ * §5 减动效保护（prefers-reduced-motion: reduce）
+ *    ⚠ 全项目唯一允许的 !important（无障碍特例，专项文档 §8 登记白名单）。
+ *    将所有动画/过渡压至 0.01ms 并限播一次：加载 spinner、shimmer、上浮进场
+ *    全部即时呈现终态，滚动行为回归瞬时。
+ * ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

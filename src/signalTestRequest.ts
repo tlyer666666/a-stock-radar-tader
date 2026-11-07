@@ -2,7 +2,7 @@ import type { StrategyBacktestRequest } from './StrategySignalsView';
 
 export type SignalTestStrategy = { id: string; name: string; version?: string };
 
-export function isEligibleSignalTestStock(value: unknown): value is Security {
+function isEligibleSignalTestStock(value: unknown): value is Security {
   if (!value || typeof value !== 'object') return false;
   const s = value as Security & { isST?: boolean };
   if (s.assetType && s.assetType !== 'stock') return false;

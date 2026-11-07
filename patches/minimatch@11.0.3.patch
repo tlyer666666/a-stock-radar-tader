@@ -1,0 +1,12 @@
+diff --git a/dist/commonjs/index.js b/dist/commonjs/index.js
+index eb1c915f43b2debf5faa7ac3a73c262a161c7a4f..e42555fe46dbd83f73c43d37393331ddeac8ead0 100644
+--- a/dist/commonjs/index.js
++++ b/dist/commonjs/index.js
+@@ -1547,4 +1547,7 @@ Object.defineProperty(exports, "unescape", { enumerable: true, get: function ()
+ exports.minimatch.Minimatch = Minimatch;
+ exports.minimatch.escape = escape_js_1.escape;
+ exports.minimatch.unescape = unescape_js_1.unescape;
++// Preserve the callable CJS API used by asar 3 and dir-compare while
++// retaining all named exports for current consumers. ESM is unchanged.
++module.exports = Object.assign(exports.minimatch, exports);
+ //# sourceMappingURL=index.js.map

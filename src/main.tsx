@@ -2,27 +2,20 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import AppErrorBoundary from "./AppErrorBoundary";
-import "./styles.css";
-import "./review.css";
-import "./terminal-research.css";
-import "./terminal-ui.css";
-import "./workbench.css";
-import "./watch-workspace.css";
-import "./stock-chart.css";
-import "./terminal-layout.css";
-import "./market-workspace.css";
-import "./research-workspace.css";
-import "./analysis-workspace.css";
-import { createPreviewApi } from "./previewApi";
+import "./styles/index.css";
+import { DataBridgeFailure, initializeStockApi } from "./runtimeBridge";
+import { allowPreviewRuntime } from "./runtimePreview";
 
-if (!window.stockApi) {
-  window.stockApi = createPreviewApi();
-}
+// A production bridge failure must remain visible; only development and
+// the explicit ?preview=1 entry may install the browser preview bridge.
+const apiAvailable = initializeStockApi(allowPreviewRuntime());
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <AppErrorBoundary>
-      <App />
-    </AppErrorBoundary>
+    {apiAvailable ? (
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
+    ) : <DataBridgeFailure />}
   </React.StrictMode>
 );

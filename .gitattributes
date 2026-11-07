@@ -1,0 +1,6 @@
+# 统一用 LF 换行：Windows 检出时不改写源码（审计指纹、正则匹配依赖逐字节一致）。
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.cmd text eol=crlf

@@ -241,7 +241,8 @@ async function runSoak(options) {
       (async () => {
         const response = await httpClient.fetchWithPolicy(base + '/hang', { signal: ctx.signal }, policy);
         // Deliberately retain an unread body past its one-second deadline.
-        await delay(1100); await assert.rejects(response.text(), error => error.name === 'AbortError');
+        // 超时带明确原因（TimeoutError / ETIMEDOUT），不再是无原因的 AbortError。
+        await delay(1100); await assert.rejects(response.text(), error => error.name === 'TimeoutError' && error.code === 'ETIMEDOUT');
         report.counts.bodyTimeouts++;
       })(),
       get('/fail').then(() => { throw new Error('503 unexpectedly succeeded'); }, error => {

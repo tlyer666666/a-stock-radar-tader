@@ -1,0 +1,107 @@
+diff --git a/common.js b/common.js
+index 424c46e1dab1be6b6e357b0620d3efbc059ee0b8..c5790311782f79f0b48852b3094a6c10a9844b2d 100644
+--- a/common.js
++++ b/common.js
+@@ -120,11 +120,14 @@ function setopts (self, pattern, options) {
+ function finish (self) {
+   var nou = self.nounique
+   var all = nou ? [] : Object.create(null)
++  // minimatch 11 can merge brace rows; their indices no longer identify
++  // individual globSet literals. Recheck only for legacy nonull/nounique.
++  var merged = self.minimatch.globSet.length !== self.minimatch.set.length
+ 
+   for (var i = 0, l = self.matches.length; i < l; i ++) {
+     var matches = self.matches[i]
+     if (!matches || Object.keys(matches).length === 0) {
+-      if (self.nonull) {
++      if (self.nonull && !merged) {
+         // do like the shell, and spit out the literal glob
+         var literal = self.minimatch.globSet[i]
+         if (nou)
+@@ -147,6 +150,28 @@ function finish (self) {
+   if (!nou)
+     all = Object.keys(all)
+ 
++  if ((self.nonull || nou) && merged) {
++    var actual = Array.from(new Set(all))
++    var repeated = []
++    self.minimatch.globSet.forEach(function (literal) {
++      var matcher = new Minimatch(literal, Object.assign({}, self.options, { nobrace: true }))
++      var found = actual.filter(function (file) {
++        var candidate = file
++        if (isAbsolute(literal) && !self.nomount)
++          candidate = '/' + path.relative(self.root, file).split(path.sep).join('/')
++        else if (self.absolute && !isAbsolute(literal))
++          candidate = path.relative(self.cwdAbs, file).split(path.sep).join('/')
++        return matcher.match(candidate)
++      })
++      if (nou)
++        repeated.push.apply(repeated, found)
++      if (!found.length && self.nonull)
++        (nou ? repeated : all).push(literal)
++    })
++    if (nou)
++      all = repeated
++  }
++
+   if (!self.nosort)
+     all = all.sort(alphasort)
+ 
+diff --git a/glob.js b/glob.js
+index 37a4d7e60775a381e843d26bebe568270e9c4388..0a8c12498bd0fd29ae6c9ddb28b6d1d9dd30b8ba 100644
+--- a/glob.js
++++ b/glob.js
+@@ -382,8 +382,10 @@ Glob.prototype._processReaddir2 = function (prefix, read, abs, remain, index, in
+   // dot is set.  Stuff like @(.foo|.bar) isn't allowed.
+   var pn = remain[0]
+   var negate = !!this.minimatch.negate
+-  var rawGlob = pn._glob
+-  var dotOk = this.dot || rawGlob.charAt(0) === '.'
++  // minimatch 11 uses a nonrecursive Matcher instead of RegExp.
++  var rawGlob = pn._glob || pn.pattern
++  // Matcher.test applies dot rules within merged extglob alternatives itself.
++  var dotOk = this.dot || rawGlob.charAt(0) === '.' || typeof pn.pattern === 'string'
+ 
+   var matchedEntries = []
+   for (var i = 0; i < entries.length; i++) {
+@@ -391,9 +393,9 @@ Glob.prototype._processReaddir2 = function (prefix, read, abs, remain, index, in
+     if (e.charAt(0) !== '.' || dotOk) {
+       var m
+       if (negate && !prefix) {
+-        m = !e.match(pn)
++        m = !pn.test(e)
+       } else {
+-        m = e.match(pn)
++        m = pn.test(e)
+       }
+       if (m)
+         matchedEntries.push(e)
+diff --git a/sync.js b/sync.js
+index 2c4f480192d28d3aabc2a7697b6352131ff3c339..bf8a8f1304e8f11996842ce58a04d4609a47b96e 100644
+--- a/sync.js
++++ b/sync.js
+@@ -144,8 +144,10 @@ GlobSync.prototype._processReaddir = function (prefix, read, abs, remain, index,
+   // dot is set.  Stuff like @(.foo|.bar) isn't allowed.
+   var pn = remain[0]
+   var negate = !!this.minimatch.negate
+-  var rawGlob = pn._glob
+-  var dotOk = this.dot || rawGlob.charAt(0) === '.'
++  // minimatch 11 uses a nonrecursive Matcher instead of RegExp.
++  var rawGlob = pn._glob || pn.pattern
++  // Matcher.test applies dot rules within merged extglob alternatives itself.
++  var dotOk = this.dot || rawGlob.charAt(0) === '.' || typeof pn.pattern === 'string'
+ 
+   var matchedEntries = []
+   for (var i = 0; i < entries.length; i++) {
+@@ -153,9 +155,9 @@ GlobSync.prototype._processReaddir = function (prefix, read, abs, remain, index,
+     if (e.charAt(0) !== '.' || dotOk) {
+       var m
+       if (negate && !prefix) {
+-        m = !e.match(pn)
++        m = !pn.test(e)
+       } else {
+-        m = e.match(pn)
++        m = pn.test(e)
+       }
+       if (m)
+         matchedEntries.push(e)

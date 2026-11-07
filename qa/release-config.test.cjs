@@ -117,7 +117,9 @@ if(tool==='pnpm') {
 }
 process.exit(tool==='node'&&args[0]==='qa/verify-dependencies.cjs'&&args.includes('--audit')?23:0);
 `);
-  for (const tool of ["pnpm", "node", "vite", "tsc", "electron-builder", "install-electron"]) {
+  // 夹具只替换"可执行文件边界"：发布链里出现的每个工具都要有桩，否则真实 PATH 上
+  // 找不到时会被误判成链路失败。1.6.0 起 verify:release 也跑 lint，故补 eslint 桩。
+  for (const tool of ["pnpm", "node", "vite", "tsc", "eslint", "electron-builder", "install-electron"]) {
     const executable = path.join(root, tool + (process.platform === "win32" ? ".cmd" : ""));
     const content = process.platform === "win32"
       ? `@"${process.execPath}" "${runner}" "${tool}" %*\r\n`
@@ -143,7 +145,20 @@ for (const script of appBuildEntryPoints) {
 test("web-only builds remain usable offline and fullstack verification includes independent probes", () => {
   for (const script of ["build:web", "build:review"]) assert.equal(expandScript(script).some((command) => command.includes("verify-dependencies")), false);
   assert.ok(expandScript("verify:fullstack").includes("node --test qa/module-polish-independent.test.cjs"));
+  assert.ok(expandScript("verify:fullstack").includes("node --test qa/ui-remediation.test.cjs"));
   assert.equal(packageJson.scripts.test.includes("module-polish-independent.test.cjs"), false);
+});
+
+test("six-dimension audit regressions stay in the release test gates", () => {
+  const unitTests = packageJson.scripts.test.split(/\s+/);
+  for (const file of [
+    "electron/market-audit.test.cjs",
+    "electron/quant-audit-remediation.test.cjs",
+    "src/features/paper-simulation/sixAuditPaper.test.cjs",
+  ]) assert.ok(unitTests.includes(file), `${file} must run in pnpm test`);
+  const uiTests = packageJson.scripts["qa:fullstack:ui"].split(/\s+/);
+  assert.ok(uiTests.includes("qa/six-audit-frontend.test.cjs"));
+  assert.ok(uiTests.includes("--test-concurrency=1"), "renderer suites must not race separate Vite servers");
 });
 
 for (const suite of ['qa:fullstack:ui','qa:modules:independent']) test(`release includes ${suite} before packaging`,()=>{
@@ -154,4 +169,18 @@ for (const suite of ['qa:fullstack:ui','qa:modules:independent']) test(`release 
 for(const script of ['build','build:app','internal:build:unpacked','build:trend:mac'])test(`${script} compiles the independent review before packaging`,()=>{
  const commands=expandScript(script),review=commands.findIndex(x=>x==='vite build --config review.vite.config.ts');const pack=commands.findIndex(x=>/build-unpacked\.cjs|electron-builder/.test(x));
  assert.ok(review>=0&&review<pack);
+});
+
+test('packaged style verification accepts one global stylesheet plus referenced lazy page styles', () => {
+  const { verifyStylesheets } = require('./verify-review-build.cjs');
+  const content = {
+    'dist/index.html': '<link rel="stylesheet" href="./assets/index.css">',
+    'dist/assets/index.css': 'body{margin:0}',
+    'dist/assets/SectorView.css': '.sector{display:flex}',
+    'dist/assets/index.js': 'const pages=["./SectorView.css"];'
+  };
+  assert.doesNotThrow(() => verifyStylesheets(Object.keys(content), file => content[file]));
+  assert.throws(() => verifyStylesheets(Object.keys(content), file => file.endsWith('index.html') ? '<link rel="stylesheet" href="./assets/missing.css">' : content[file]), /stylesheet.*missing|Missing.*stylesheet/i);
+  assert.throws(() => verifyStylesheets(Object.keys(content), file => file.endsWith('index.js') ? '' : content[file]), /Unreferenced.*SectorView/);
+  assert.throws(() => verifyStylesheets(Object.keys(content), file => file.endsWith('index.html') ? content[file] + '<link rel="stylesheet" href="./assets/SectorView.css">' : content[file]), /one ordered main stylesheet/);
 });

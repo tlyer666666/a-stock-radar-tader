@@ -115,3 +115,42 @@ test("unknown session counts, missing required MA observations or price-basis mi
     assert.equal(plan.evaluateTrendExit(exit(values)).action, "needs-data");
   }
 });
+
+test("round trip minimum commissions, tax and slippage fit the risk budget after board rounding", () => {
+  const result = plan.calculateTrendPosition(position({ commissionRate: 0.0003, minimumCommission: 5,
+    sellTaxRate: 0.0005, slippageRate: 0.001 }));
+  assert.equal(result.eligible, true);
+  assert.equal(result.shares, 900);
+  assert.ok(result.plannedLoss > 450 && result.plannedLoss <= 500);
+  assert.ok(result.roundTripCosts >= 10);
+  assert.ok(result.totalCashRequired >= result.cost + 5);
+  assert.ok(result.totalCashRequired <= 100000);
+});
+
+test("gap stress and remaining portfolio risk cap constrain the same rounded order", () => {
+  const stressed = plan.calculateTrendPosition(position({ gapStressRatio: 0.05 }));
+  assert.equal(stressed.shares, 500);
+  assert.equal(stressed.plannedLoss, 250);
+  assert.equal(stressed.stressLoss, 487.5);
+  const remaining = plan.calculateTrendPosition(position({ portfolioRiskUsed: 29800, portfolioRiskCapRatio: 0.3 }));
+  assert.equal(remaining.shares, 400);
+  assert.equal(remaining.riskBudget, 200);
+  assert.equal(plan.calculateTrendPosition(position({ portfolioRiskUsed: 30000, portfolioRiskCapRatio: 0.3 })).eligible, false);
+});
+
+test("costs cannot round up beyond cash, board units or median liquidity participation", () => {
+  const result = plan.calculateTrendPosition(position({ cashAvailable: 2005, minimumBuyQuantity: 200, quantityStep: 1,
+    commissionRate: 0.0003, minimumCommission: 5, sellTaxRate: 0.0005, slippageRate: 0.001 }));
+  assert.equal(result.eligible, false);
+  const liquidity = plan.calculateTrendPosition(position({ medianAmount20: 250000, maxParticipationRatio: 0.01 }));
+  assert.equal(liquidity.shares, 200);
+  for (const values of [{ gapStressRatio: -0.1 }, { commissionRate: NaN }, { minimumCommission: -5 },
+    { sellTaxRate: -1 }, { slippageRate: 1.1 }, { portfolioRiskUsed: -1 }, { portfolioRiskCapRatio: 2 }, { medianAmount20: 0 }]) {
+    assert.equal(plan.calculateTrendPosition(position(values)).eligible, false);
+  }
+});
+
+test("slippage cannot create an estimated fill above Pmax or beyond the 8 percent stop distance", () => {
+  assert.equal(plan.calculateTrendPosition(position({ entryPrice: 10.2, slippageRate: 0.001 })).eligible, false);
+  assert.equal(plan.calculateTrendPosition(position({ entryPrice: 10, stopPrice: 9.2, slippageRate: 0.001 })).eligible, false);
+});

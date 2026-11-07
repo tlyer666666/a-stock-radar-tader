@@ -1,5 +1,5 @@
 export type StockMonitorField = "latest" | "changePct" | "turnover" | "amount";
-export type StockMonitorCondition = {
+type StockMonitorCondition = {
   id: string;
   field: StockMonitorField;
   operator: "gte" | "lte";
@@ -13,6 +13,7 @@ export type StockMonitorConfig = {
 };
 export type StockMonitorSnapshot = {
   quote?: Record<string, unknown>;
+  fetchedAt?: string;
   updatedAt?: string;
   actualProvider?: string;
   provider?: string;
@@ -97,8 +98,10 @@ export function evaluateStockMonitor(
   if (!snapshot) return result("waiting", "等待获取有效行情");
   const quote = snapshot.quote;
   if (!quote || [snapshot.actualProvider, snapshot.provider, quote.source].some(value => /preview|mock|demo/i.test(String(value || "")))) return result("unavailable", "当前数据不可用于实时提醒");
-  const fetchedAt = Date.parse(String(snapshot.updatedAt || ""));
-  const sourceTimeText = String(quote.updatedAt || "").trim();
+  // Fetch time is a transport observation; quote time identifies the market sample.
+  // Keep legacy adapters compatible while respecting the quoteAt field of public feeds.
+  const fetchedAt = Date.parse(String(snapshot.fetchedAt || snapshot.updatedAt || ""));
+  const sourceTimeText = [quote.updatedAt, quote.quoteAt].map(value => String(value || "").trim()).find(Boolean) || "";
   const sourceTime = sourceTimeText ? Date.parse(sourceTimeText) : null;
   const maxAgeMs = Math.max(1, maxAgeSeconds) * 1000;
   const fresh = (time: number) => Number.isFinite(time) && now - time <= maxAgeMs && time - now <= 30000;

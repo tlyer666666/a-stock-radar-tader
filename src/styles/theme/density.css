@@ -1,0 +1,128 @@
+/* Terminal density and state contracts. No global button or shadow resets. */
+:root .terminal-shell .primary-btn,
+:root .terminal-shell .trend-btn-accent {
+  color: var(--ink-on-action);
+  background: var(--action-fill);
+  border-color: var(--action-fill);
+}
+:root .terminal-shell :is(.primary-btn, .trend-btn-accent):hover:not(:disabled) { background: var(--action-fill-hover); border-color: var(--action-fill-hover); }
+:root .terminal-shell :is(.primary-btn, .trend-btn-accent):active:not(:disabled) { background: var(--action-fill-active); }
+:root .app-shell.terminal-shell :is(button.active, button[aria-selected="true"], button[aria-pressed="true"]):not(.nav-item, .primary-btn, .window-control, .danger) {
+  color: var(--accent); background-color: var(--selected-bg); border-color: var(--accent); font-weight: var(--fw-semibold);
+}
+:root .app-shell.terminal-shell .workspace-navigation .nav-item::before { width: 2px; background: var(--navigation-indicator); }
+:root .app-shell.terminal-shell .workspace-navigation .nav-item.active::before { height: 24px; }
+:root .terminal-shell :is(.table-action.danger, button.danger, .danger-btn) { color: var(--danger); }
+:root .terminal-shell :is(.table-action.danger, button.danger, .danger-btn):hover { background: var(--danger-soft); border-color: var(--danger-border); }
+:root .app-shell.terminal-shell .holdings-table .holdings-row-actions .table-action.danger { color: var(--danger); }
+:root .terminal-shell :is(.suggestions, .limit-columns-panel, .strategy-quick-menu, .page-heading-help > div, [role="listbox"], [role="menu"]) { border: 1px solid var(--line-2); box-shadow: var(--shadow-3); }
+
+:root .app-shell.terminal-shell :is(.watch-stock-table, .trend-result-table, .sector-explorer-table, .pbt-stock-table) :is(th, td) { height: var(--terminal-row-h); padding: 2px 8px; font-variant-numeric: tabular-nums; }
+:root .app-shell.terminal-shell :is(.watch-stock-table, .trend-result-table, .sector-explorer-table, .pbt-stock-table) tbody tr:not(.trend-result-details):nth-child(even),
+:root .terminal-shell :is(.limit-analysis-row:not(.limit-analysis-head), .holdings-table .tr:not(.th), .strategy-stock-row:not(.head)):nth-child(odd) { background: var(--table-stripe); }
+:root .app-shell.terminal-shell :is(.watch-stock-table, .trend-result-table, .sector-explorer-table, .pbt-stock-table) tbody tr:not(.trend-result-details):hover,
+:root .terminal-shell :is(.limit-analysis-row:not(.limit-analysis-head), .holdings-table .tr:not(.th), .strategy-stock-row:not(.head)):hover { background: var(--hover-bg); }
+:root .terminal-shell .limit-analysis-row[aria-selected="true"] { background: var(--selected-bg); box-shadow: inset 2px 0 var(--accent); }
+:root .app-shell.terminal-shell .compact-limit-pool .compact-limit-grid .limit-analysis-row[aria-selected="true"] { background: var(--selected-bg); box-shadow: inset 2px 0 var(--accent); }
+:root .terminal-shell .trend-result-table .trend-result-details > td { height: auto; padding: 0; }
+:root .app-shell.terminal-shell :is(.trend-result-table, .watch-stock-table) :is(td, th) { font-size: var(--fs-xs); line-height: 20px; white-space: nowrap; }
+:root .terminal-shell .trend-result-row > th :is(b, small),
+:root .terminal-shell .watch-security-code small { display: inline; margin-left: 5px; }
+:root .terminal-shell :is(.trend-result-table .trend-text-button, .watch-stock-open, .watch-row-actions button) { min-height: 22px; height: 22px; padding-top: 0; padding-bottom: 0; }
+
+:root .terminal-shell .compact-limit-pool { display: flex; flex-direction: column; flex: 1 1 0; min-width: 0; min-height: 0; max-height: none; padding: 8px; margin-bottom: 10px; }
+:root .terminal-shell .compact-limit-pool > :is(.panel-title, .limit-pool-tools) { flex-shrink: 0; }
+:root .terminal-shell .compact-limit-pool .panel-title { margin-bottom: 6px; }
+:root .terminal-shell .compact-limit-pool .limit-pool-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: 0 0 6px; }
+:root .terminal-shell .compact-limit-pool .limit-pool-search { display: flex; align-items: center; flex: 0 1 290px; height: 28px; padding: 0 6px; border: 1px solid var(--line-2); background: var(--page); }
+:root .terminal-shell .compact-limit-pool .limit-pool-search:focus-within { border-color: var(--accent); box-shadow: var(--focus-ring); }
+:root .terminal-shell .compact-limit-pool .limit-pool-search input { min-width: 0; width: 100%; height: 24px; padding: 0 6px; border: 0; background: transparent; box-shadow: none; outline: none; font-size: var(--fs-xs); }
+:root .terminal-shell .compact-limit-pool .limit-pool-search button { border: 0; background: transparent; color: var(--ink-2); }
+:root .terminal-shell .limit-keyboard-hint { flex: 1; color: var(--ink-3); font-size: var(--fs-2xs); }
+:root .terminal-shell .compact-limit-pool .secondary-btn { min-height: 26px; padding: 2px 7px; border-radius: var(--radius-2xs); font-size: var(--fs-xs); }
+:root .terminal-shell .limit-columns-settings { position: relative; font-size: var(--fs-xs); }
+:root .terminal-shell .limit-columns-settings > summary { padding: 4px 8px; border: 1px solid var(--line-2); background: var(--surface-1); }
+:root .terminal-shell .limit-columns-panel { position: absolute; top: calc(100% + 5px); right: 0; z-index: 25; display: grid; grid-template-columns: repeat(2, minmax(100px, 1fr)); gap: 7px; width: 250px; max-height: 360px; overflow: auto; padding: 12px; background: var(--surface-2); border-radius: var(--radius-sm); }
+:root .terminal-shell .limit-columns-panel label { display: flex; align-items: center; gap: 6px; }
+:root .terminal-shell .compact-limit-pool .limit-columns-panel > label { width: auto; min-width: 0; height: auto; min-height: 0; padding: 0; border: 0; background: transparent; flex: none; }
+:root .terminal-shell .compact-limit-pool .limit-columns-panel > label > input { width: 14px; min-width: 14px; max-width: 14px; height: 14px; margin: 0; padding: 0; flex: 0 0 14px; }
+:root .terminal-shell .limit-columns-panel > button { grid-column: 1 / -1; }
+:root .terminal-shell .limit-grid-scroll { flex: 1; min-height: 0; width: 100%; overflow: auto; scrollbar-gutter: stable; border: 1px solid var(--line-1); }
+:root .terminal-shell .compact-limit-grid { width: max-content; min-width: 100%; outline-offset: -2px; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+:root .terminal-shell .limit-analysis-row { display: grid; align-items: center; height: var(--terminal-row-h); min-height: var(--terminal-row-h); border-bottom: 1px solid var(--line-1); }
+/* Grid rows can skip offscreen paint. Native table rows keep their shared
+   column layout: per-row containment can misalign cells after scrolling. */
+:root .terminal-shell .compact-limit-grid > .limit-analysis-row:not(.limit-analysis-head):not([aria-selected="true"]),
+:root .terminal-shell .holdings-table .tr:not(.th) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto var(--terminal-row-h);
+}
+:root .terminal-shell .limit-analysis-row > div { min-width: 0; padding: 2px 7px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root .terminal-shell .limit-analysis-row > .num { text-align: right; }
+:root .terminal-shell .compact-limit-pool .limit-analysis-row em.up { color: var(--up); font-style: normal; }
+:root .terminal-shell .compact-limit-pool .limit-analysis-row em.down { color: var(--down); font-style: normal; }
+:root .terminal-shell .limit-analysis-head { position: sticky; top: 0; z-index: 2; color: var(--ink-2); background: var(--surface-2); font-weight: var(--fw-semibold); }
+:root .terminal-shell .limit-analysis-head > div { position: relative; height: 100%; padding: 0; overflow: visible; }
+:root .terminal-shell .limit-analysis-head button { width: 100%; height: 100%; border: 0; padding: 2px 7px; color: inherit; background: transparent; text-align: inherit; font-size: inherit; font-weight: inherit; }
+/* 涨停池「操作」列固定在表格右侧：表格比面板宽时只横向滚动数据列，「分析/监控」始终可点（2026-11-06）。
+   悬停、选中的底色是半透明的，固定格子先垫一层面板色再叠上去，避免透出下面滚过的内容。 */
+:root .terminal-shell .compact-limit-pool .limit-analysis-row > :last-child { position: sticky; right: 0; z-index: 1; background: var(--surface-1); box-shadow: -1px 0 0 var(--line-1); }
+:root .terminal-shell .compact-limit-pool .limit-analysis-head > :last-child { z-index: 3; background: var(--surface-2); display: flex; align-items: center; padding: 2px 7px; }
+:root .terminal-shell .compact-limit-pool .limit-analysis-row:not(.limit-analysis-head):nth-child(odd) > :last-child { background: var(--table-stripe); }
+:root .terminal-shell .compact-limit-pool .limit-analysis-row:not(.limit-analysis-head):hover > :last-child { background: linear-gradient(var(--hover-bg), var(--hover-bg)), var(--surface-1); }
+:root .terminal-shell .compact-limit-pool .limit-analysis-row[aria-selected="true"] > :last-child { background: linear-gradient(var(--selected-bg), var(--selected-bg)), var(--surface-1); }
+:root .terminal-shell .limit-analysis-head button:hover { background: var(--hover-bg); }
+:root .terminal-shell .limit-column-resize { position: absolute; top: 0; right: -3px; bottom: 0; width: 7px; cursor: col-resize; touch-action: none; z-index: 3; }
+:root .terminal-shell .limit-column-resize:hover { background: var(--accent-soft); }
+:root .terminal-shell .limit-stock-link { max-width: 100%; overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--ink-1); font: inherit; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; }
+:root .terminal-shell .limit-stock-link:hover { color: var(--accent); text-decoration: underline; }
+:root .terminal-shell .limit-analysis-row .board-tag { display: inline-block; min-width: 27px; padding: 0 4px; color: var(--ink-2); background: var(--surface-3); border-radius: var(--radius-2xs); font-size: var(--fs-2xs); line-height: 19px; }
+:root .terminal-shell .limit-analysis-row .board-tag.high { color: var(--on-up); background: var(--high-board-bg); }
+:root .terminal-shell .limit-row-actions { display: flex; align-items: center; gap: 4px; }
+:root .terminal-shell .limit-row-actions .table-action { display: inline-flex; align-items: center; gap: 2px; min-height: 21px; height: 21px; padding: 1px 4px; font-size: var(--fs-2xs); }
+:root .terminal-shell[data-workspace="dashboard"] .main > .page { display: flex; flex-direction: column; }
+:root .terminal-shell .limit-pool-workspace { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+:root .terminal-shell .limit-pool-workspace > .page-heading { flex-shrink: 0; }
+:root .terminal-shell .limit-pool-workspace > .empty-inline { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-height: 180px; padding: 24px; border: 1px dashed var(--line-2); background: var(--surface-1); }
+:root .terminal-shell .compact-limit-pool + .empty-inline { flex: 0 0 auto; min-height: 0; padding: 8px 12px; }
+/* 涨停池下面还有涨停生态等内容：涨停池固定占满一屏（表格内部滚动），不再被下方内容挤成一条线。 */
+:root .terminal-shell .limit-pool-workspace > .compact-limit-pool { flex: 0 0 auto; height: clamp(360px, calc(100vh - 210px), 860px); }
+
+:root .terminal-shell .holdings-table .tr { grid-template-columns: 150px 175px 135px 95px 165px 138px; min-width: 914px; height: var(--terminal-row-h); min-height: var(--terminal-row-h); gap: 8px; padding: 2px 8px; font-size: var(--fs-xs); }
+:root .terminal-shell .holdings-table .tr > span { display: flex; flex-direction: row; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
+:root .terminal-shell .holdings-table .tr > span:nth-child(n+2):nth-child(-n+5) { justify-content: flex-end; text-align: right; font-variant-numeric: tabular-nums; }
+:root .terminal-shell .holdings-table .stock-cell small { white-space: nowrap; }
+:root .terminal-shell .holdings-row-actions { display: inline-flex; flex-wrap: nowrap; gap: 4px; white-space: nowrap; }
+:root .terminal-shell .holdings-row-actions button { min-height: 22px; padding: 1px 5px; font-size: var(--fs-xs); }
+:root .terminal-shell .holdings-summary-grid .fact b.up { color: var(--up); }
+:root .terminal-shell .holdings-summary-grid .fact b.down { color: var(--down); }
+:root .terminal-shell .information-filter-rail .news-scope-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+:root .terminal-shell .multi-compare-view .compare-cell .compare-essential-metric { overflow: visible; white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
+:root .terminal-shell .multi-compare-view .compare-primary-value .up { color: var(--up); }
+:root .terminal-shell .multi-compare-view .compare-primary-value .down { color: var(--down); }
+:root .app-shell.terminal-shell .strategy-stock-row > span { flex-direction: row; align-items: center; gap: 6px; white-space: nowrap; }
+:root .app-shell.terminal-shell .strategy-stock-row .strategy-stock-name > b { flex-wrap: nowrap; font-size: var(--fs-xs); }
+:root .app-shell.terminal-shell .strategy-stock-row .strategy-stock-name > em,
+:root .app-shell.terminal-shell .strategy-stock-quote > small,
+:root .app-shell.terminal-shell .strategy-stock-score > em { display: none; }
+:root .app-shell.terminal-shell .strategy-stock-row .strategy-stock-row-actions { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 4px; }
+:root .app-shell.terminal-shell .strategy-stock-row-actions button { min-height: 22px; height: 22px; padding: 1px 5px; line-height: 18px; white-space: nowrap; }
+:root .app-shell.terminal-shell .strategy-stock-action > small { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root .app-shell.terminal-shell .strategy-stock-action .no-risk { color: var(--ink-2); }
+:root .app-shell.terminal-shell .strategy-stock-action .has-risk { color: var(--warn); }
+:root .app-shell.terminal-shell .strategy-secondary-facts { display: block; margin: 6px 0; color: var(--ink-2); font-size: var(--fs-2xs); line-height: 1.6; white-space: normal; }
+:root .terminal-shell .strategy-stock-pagination { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 7px; padding: 6px 8px; border-top: 1px solid var(--line-1); font-size: var(--fs-xs); }
+:root .terminal-shell .strategy-stock-pagination > span { margin-right: auto; color: var(--ink-2); }
+:root .terminal-shell .strategy-stock-pagination > button { min-height: 26px; font-size: var(--fs-xs); }
+
+body[data-standalone-review] { margin: 0; padding: 12px; color: var(--ink-1); background: var(--page); font-family: var(--font-sans); }
+body[data-standalone-review] #root { min-height: calc(100dvh - 24px); }
+
+/* Rule selection uses quote columns only; keep dates visible at compact widths. */
+:root .app-shell.terminal-shell .strategy-selection-only .strategy-stock-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* 涨停池表格铺满宽度（行业、涨停原因列自动加宽），表头「操作」与其他表头对齐。 */
+:root .terminal-shell .compact-limit-grid { width: auto; }
+:root .terminal-shell .limit-analysis-head > div:not(:has(button)) { display: flex; align-items: center; padding: 2px 7px; }
+
+/* 1.6.47：窗口较窄时文字列（名称、质量、板块、涨停原因等）收窄后换行显示，行高随内容增高，不再把「操作」列挤出可视区。 */
+:root .terminal-shell .compact-limit-grid > .limit-analysis-row:not(.limit-analysis-head) { height: auto; }

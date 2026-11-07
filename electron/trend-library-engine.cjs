@@ -3,7 +3,7 @@
 const catalog = require("../config/trend-strategy-library.json");
 const { trendMath } = require("./trend-screener-engine.cjs");
 const indicators = require("./trend-indicators.cjs");
-const { prepareRows, prepareBenchmarkRows, maAt, atr14, ceilCents, floorCents } = trendMath;
+const { prepareAlignedTrendSeries, maAt, atr14, ceilCents, floorCents } = trendMath;
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const evidence = (label, passed, value, rule) => ({ label, passed: Boolean(passed), value: String(value), rule });
 const format = value => finite(value) ? value.toFixed(6) : "无法计算";
@@ -13,24 +13,17 @@ const median = values => {
 };
 const entryById = new Map(catalog.map(item => [item.id, item]));
 
-// The facade runs the unchanged classic engine exactly once. Its candidate
-// result establishes the shared universe/trend/liquidity gates, NOT A/B entry.
+// The facade evaluates the limit-free trend base once (evaluateTrendBase).
+// Its candidate establishes the shared universe/trend/liquidity gates; technical
+// triggers remain independent of classic A/B entry qualification and of any limit-up.
 function prepareTrendLibrary(input, base) {
   if (base.kind !== "candidate") return { result: base };
-  const raw = prepareRows(input.rawRows, input.asOf, true);
-  const adjusted = prepareRows(input.adjustedRows, input.asOf, false);
-  const benchmark = prepareBenchmarkRows(input.benchmarkRows, input.asOf);
-  const calendarLookback = Math.max(...catalog.map(item => item.marketCalendarLookback));
-  if (!benchmark || benchmark.length < calendarLookback ||
-      benchmark.slice(-calendarLookback).some((row, i) => row.date !== raw[raw.length - calendarLookback + i]?.date)) {
-    return { result: { kind: "unavailable", reason: `近${calendarLookback}个交易所交易日与个股K线不齐或基准不足` } };
-  }
-  const factor = raw.at(-1).close / adjusted.at(-1).close;
+  const prepared = prepareAlignedTrendSeries(input);
+  if (prepared.kind !== "prepared") return { result: prepared };
+  const { raw, adjusted, prices, factor, benchmark } = prepared;
+  if (!benchmark) return { result: { kind: "unavailable", reason: "缺少基准交易日历，无法核对80日窗口" } };
   const aligned21 = raw.slice(-21).every((row, i) =>
     Math.abs((row.close / adjusted[adjusted.length - 21 + i].close) / factor - 1) <= .002);
-  const prices = adjusted.map((row, i) => ({ ...row, open: row.open * factor,
-    high: row.high * factor, low: row.low * factor, close: row.close * factor,
-    volume: raw[i].volume, amount: raw[i].amount }));
   const last = prices.length - 1, today = prices[last], closes = prices.map(row => row.close);
   const ma = Object.fromEntries([5, 10, 20, 60].map(period => [period, indicators.rollingMean(closes, period)]));
   const previousAtr = atr14(prices.slice(0, -1));
@@ -53,12 +46,19 @@ function prepareTrendLibrary(input, base) {
     roc: indicators.roc(closes, params("roc-zero-recovery-v1").period),
     emv: indicators.emv(prices, params("emv-zero-recovery-v1").period, params("emv-zero-recovery-v1").volumeDivisor),
     mfi: indicators.mfi(prices, params("mfi-midline-recovery-v1").period),
-    donchian: indicators.donchian(prices, params("donchian-55-breakout-v1").channelPeriod), ma
+    donchian: indicators.donchian(prices, params("donchian-55-breakout-v1").channelPeriod), ma,
+    // 经典技术策略（v1.5）：海龟20日通道、120日收盘新高。
+    turtle: indicators.donchian(prices, params("turtle-20-breakout-v1").channelPeriod),
+    priorHighClose: closes.map((_, i) => {
+      const lookback = params("new-high-120-v1").highLookback;
+      return i >= lookback ? Math.max(...closes.slice(i - lookback, i)) : null;
+    })
   };
   return { base, prices, raw, last, today, series, aligned21, previousAtr, atrKnown, extensionAtr,
     relativeStrength20, marketOpen: end.close >= maAt(benchmark, benchmark.length - 1, 60),
     ma60Rising: ma[60][last] >= ma[60][last - 5],
-    t0Low: prices[raw.findIndex(row => row.date === base.candidate.limitDate)].low };
+    // 近期涨停且仍有支撑时，涨停日最低价参与止损；没有涨停的股票只用前低减0.5ATR。
+    t0Low: base.candidate.limitDate ? prices[raw.findIndex(row => row.date === base.candidate.limitDate)]?.low ?? null : null };
 }
 
 function evaluatePreparedTrendLibrary(prepared, strategy) {
@@ -147,17 +147,50 @@ function evaluatePreparedTrendLibrary(prepared, strategy) {
       add("首日突破", finite(series.donchian.upper[n - 1]) && prices[n - 1].close <= series.donchian.upper[n - 1], format(prices[n - 1].close), "昨日收盘未突破昨日对应55日上轨");
       break;
     }
+    case "ma-golden-cross-v1": {
+      const fast = series.ma[config.fastPeriod], slow = series.ma[config.slowPeriod];
+      Object.assign(values, { maFastPrevious: fast[n - 1], maSlowPrevious: slow[n - 1], maSlowEarlier: slow[n - config.slopeSessions] });
+      add("MA5上穿MA20", cross(fast[n - 1], slow[n - 1], fast[n], slow[n]), `${format(fast[n])} / ${format(slow[n])}`, "昨日MA5≤MA20且今日MA5>MA20");
+      add("MA20向上", finite(slow[n - config.slopeSessions]) && slow[n] > slow[n - config.slopeSessions], `${format(slow[n - config.slopeSessions])} → ${format(slow[n])}`, `MA20严格高于${config.slopeSessions}个交易日前`);
+      add("站上MA20", close > slow[n], format(close), "今日收盘严格高于MA20");
+      break;
+    }
+    case "turtle-20-breakout-v1": {
+      triggerPrice = series.turtle.upper[n];
+      Object.assign(values, { turtleUpper: triggerPrice, turtleUpperPrevious: series.turtle.upper[n - 1], turtleLower: series.turtle.lower[n] });
+      add("20日通道突破", finite(triggerPrice) && close > triggerPrice, format(triggerPrice), "收盘严格突破此前20日最高价，参照窗不含今日");
+      add("首日突破", finite(series.turtle.upper[n - 1]) && prices[n - 1].close <= series.turtle.upper[n - 1], format(prices[n - 1].close), "昨日收盘未突破昨日对应20日上轨");
+      break;
+    }
+    case "new-high-120-v1": {
+      triggerPrice = series.priorHighClose[n];
+      const previousHigh = series.priorHighClose[n - 1];
+      Object.assign(values, { priorHighClose: triggerPrice, priorHighClosePrevious: previousHigh });
+      add("半年收盘新高", finite(triggerPrice) && close > triggerPrice, format(triggerPrice), `收盘严格高于此前${config.highLookback}个交易日最高收盘，参照窗不含今日`);
+      add("首日新高", finite(previousHigh) && prices[n - 1].close <= previousHigh, format(prices[n - 1].close), "昨日收盘未创出对应的半年新高");
+      break;
+    }
+    case "ma-bull-alignment-v1": {
+      const { ma } = series;
+      const aligned = i => [ma[config.fastPeriod][i], ma[config.middlePeriod][i], ma[config.trendPeriod][i], ma[config.longPeriod][i]].every(finite) &&
+        ma[config.fastPeriod][i] > ma[config.middlePeriod][i] && ma[config.middlePeriod][i] > ma[config.trendPeriod][i] && ma[config.trendPeriod][i] > ma[config.longPeriod][i];
+      add("多头排列首日", aligned(n) && !aligned(n - 1), `${format(ma[5][n])} / ${format(ma[10][n])} / ${format(ma[20][n])} / ${format(ma[60][n])}`, "今日MA5>MA10>MA20>MA60，昨日尚未同时满足");
+      add("MA20向上", finite(ma[config.trendPeriod][n - config.slopeSessions]) && ma[config.trendPeriod][n] > ma[config.trendPeriod][n - config.slopeSessions], format(ma[20][n]), `MA20严格高于${config.slopeSessions}个交易日前`);
+      break;
+    }
     default: throw new TypeError("未知策略库ID");
   }
   const priorLow = Math.min(...prices.slice(n - config.stopLookback, n).map(row => row.low));
-  const stop = ceilCents(Math.max(t0Low, priorLow - .5 * previousAtr));
+  const stop = ceilCents(finite(t0Low) ? Math.max(t0Low, priorLow - .5 * previousAtr) : priorLow - .5 * previousAtr);
   const stopDistanceAtr = atrKnown ? (close - stop) / previousAtr : null;
-  const minEntry = finite(triggerPrice) ? ceilCents(Math.max(triggerPrice + .01, stop + .01)) : null;
+  const entryType = entry.entryType;
+  const minEntry = entryType === "close-confirmation" ? ceilCents(stop + .01)
+    : finite(triggerPrice) ? ceilCents(Math.max(triggerPrice + .01, stop + .01)) : null;
   const maxEntry = floorCents(Math.min(1.03 * close, stop / .92, close + config.entryAtrAllowance * previousAtr));
   const entryValid = finite(minEntry) && finite(maxEntry) && stop < minEntry && minEntry <= maxEntry;
   const deviation = (close / series.ma[20][n] - 1) * 100;
   const common = [
-    evidence("交易日历", true, "80日一致", "最近80个市场交易日与个股日期严格对齐"),
+    evidence("交易日历", true, "80日一致", "最近80个市场交易日与个股日期严格对齐；原始/复权共用250日窗口"),
     evidence("21日复权口径", aligned21, aligned21 ? "一致" : "变化", "最近21根原始/复权价格因子相对变化不超过0.2%"),
     evidence("MA60方向", ma60Rising, format(series.ma[60][n]), "MA60不低于五个交易日前"),
     evidence("相对强度", relativeStrength20 > 0, format(relativeStrength20), "未舍入20日超额涨幅严格大于0"),
@@ -165,21 +198,21 @@ function evaluatePreparedTrendLibrary(prepared, strategy) {
     evidence("当日振幅", today.high > today.low, format(today.high - today.low), "当日最高价严格大于最低价"),
     evidence("偏离MA20", deviation <= 10 && atrKnown && extensionAtr <= config.maxExtensionAtr, `${format(deviation)}% / ${format(extensionAtr)}ATR`, "收盘距MA20不超过10%且不超过3倍昨日ATR"),
     evidence("止损波动距离", atrKnown && stopDistanceAtr >= config.minStopAtr, format(stopDistanceAtr), "收盘至冻结止损至少0.5倍昨日ATR"),
-    evidence("独立入场区间", entryValid, entryValid ? `${minEntry.toFixed(2)}–${maxEntry.toFixed(2)}` : "无有效区间", "S<入场下限≤入场上限；突破位+0.01，最多1.03C、S/0.92和C+0.5昨日ATR的较低值"),
+    evidence("独立入场区间", entryValid, entryValid ? `${minEntry.toFixed(2)}–${maxEntry.toFixed(2)}` : "无有效区间", entryType === "close-confirmation" ? "收盘确认：S<P≤Pmax；最低入场为止损+0.01，允许平开或低于信号收盘，最多1.03C、S/0.92和C+0.5昨日ATR的较低值" : "结构突破：S<入场下限≤入场上限；突破位+0.01，最多1.03C、S/0.92和C+0.5昨日ATR的较低值"),
     evidence("市场门槛", marketOpen, marketOpen ? "通过" : "暂停", "中证全指收盘不低于MA60")
   ];
   const signal = [...conditions, ...common].every(row => row.passed);
-  const plan = signal ? { stop, minEntry, maxEntry,
+  const plan = signal ? { entryType, stop, minEntry, maxEntry,
     maxRiskPercent: Number(((maxEntry - stop) / maxEntry * 100).toFixed(2)),
     holdingDays: "目标持有10–30个交易日；收盘跌破止损或连续两日低于MA20则下一可交易日退出，第30日开盘离场" } : null;
   Object.assign(values, { stopDistanceAtr });
   return { kind: "candidate", reason: `${entry.name}${signal ? "信号" : "观察"}`, candidate: {
     ...base.candidate, strategy, patterns: [], primaryPattern: null, stage: signal ? "signal" : "watch", plan,
     setup: { id: strategy.id, label: entry.name, triggerPrice: finite(triggerPrice) ? triggerPrice : close,
-      stopBasis: "涨停日最低价与此前五日最低价减0.5倍昨日ATR14的较高者，向上取分" },
+      stopBasis: finite(t0Low) ? "近期涨停日最低价与此前五日最低价减0.5倍昨日ATR14的较高者，向上取分" : "此前五日最低价减0.5倍昨日ATR14，向上取分" },
     technical: { indicators: Object.fromEntries(Object.entries(values).filter(([, value]) => finite(value))) },
     metrics: { ...base.candidate.metrics, relativeStrength20 },
-    evidence: [...base.candidate.evidence.filter(row => ["收盘涨停", "趋势", "成交额"].includes(row.label)), ...common, ...conditions],
+    evidence: [...base.candidate.evidence.filter(row => ["收盘涨停", "近期涨停", "趋势", "成交额"].includes(row.label)), ...common, ...conditions],
     warnings: [...base.candidate.warnings, "公开指标的独立适配规则；固定参数与排序未经收益验证，不代表官方推荐"]
   } };
 }

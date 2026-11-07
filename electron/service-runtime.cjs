@@ -42,7 +42,10 @@ function createServiceRuntime({ controller = new AbortController(), jobOptions =
         const settled = previous ? Object.fromEntries(Object.entries(previous).filter(([name]) => !['promise','forceRefresh','promiseForceRefresh'].includes(name))) : null;
         record.restore = () => {
           if (cache.get(key)?.promise !== record) return;
-          if (settled && Object.hasOwn(settled, 'value')) cache.set(key, settled); else cache.delete(key);
+          const prior = previous?.promise;
+          const fallback = prior?.result || (prior && !prior.returned && !prior.signal?.aborted ? previous : null)
+            || (settled && Object.hasOwn(settled, 'value') ? settled : null);
+          if (fallback) cache.set(key, fallback); else cache.delete(key);
         };
         record.producer = ctx => producerContext.run(ctx, async () => {
           record.started = true;
@@ -50,12 +53,13 @@ function createServiceRuntime({ controller = new AbortController(), jobOptions =
             ctx.throwIfAborted();
             const value = await ctx.track(loader);
             ctx.throwIfAborted();
-            if (cache.get(key)?.promise === record && (!options.shouldCache || options.shouldCache(value))) {
+            if (!options.shouldCache || options.shouldCache(value)) {
               const expiresAt = now() + Math.max(0, Number(typeof ttlMs === 'function' ? ttlMs(value) : ttlMs) || 0);
-              cache.set(key, { value, expiresAt, ...(options.staleTtlMs ? { staleUntil: now() + options.staleTtlMs } : {}) });
+              record.result = { value, expiresAt, ...(options.staleTtlMs ? { staleUntil: now() + options.staleTtlMs } : {}) };
+              if (cache.get(key)?.promise === record) cache.set(key, record.result);
             }
             return value;
-          } finally { record.restore(); }
+          } finally { record.returned = true; record.restore(); }
         });
         cache.set(key, { ...settled, promise: record, forceRefresh, expiresAt: previous?.expiresAt || 0 });
       }

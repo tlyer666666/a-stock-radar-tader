@@ -2,6 +2,16 @@
 const test=require('node:test');const assert=require('node:assert/strict');
 const {createServiceRuntime}=require('./service-runtime.cjs');
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
+test('failed forced refresh restores the original pending generation for ordinary subscribers',async()=>{
+ const r=createServiceRuntime(),cache=new Map(),old=deferred();let calls=0;
+ const first=r.cached(cache,'same',1000,()=>{calls++;return old.promise;});
+ try {
+  await assert.rejects(r.cached(cache,'same',1000,()=>Promise.reject(Error('refresh failed')),{forceRefresh:true}),/refresh failed/);
+  const follower=r.cached(cache,'same',1000,()=>{calls++;return 'unexpected duplicate';});
+  assert.equal(calls,1);old.resolve('original');assert.deepEqual(await Promise.all([first,follower]),['original','original']);
+  assert.equal(cache.get('same').value,'original');
+ } finally {old.resolve('original');await first;await r.shutdown();}
+});
 const tick=()=>new Promise(r=>setImmediate(r));
 test('shared cache isolates subscriber cancellation and retains physical parent ownership',async t=>{
  const r=createServiceRuntime(),cache=new Map(),gate=deferred();t.after(()=>r.shutdown());let signal,calls=0;
@@ -57,7 +67,7 @@ test('queued cache cancellation invalidates its record synchronously before a re
 test('parent deadline during synchronous cache creation leaves no unobserved subscriber rejection',async()=>{
  const r=createServiceRuntime({jobOptions:{operationTimeouts:{single:5}}}),cache=new Map();
  const job=r.run('single','late',{owner:1,requestId:'late'},()=>r.cached(cache,'late',1000,()=>{
-  const end=performance.now()+15;while(performance.now()<end){}return 42;
+  const end=performance.now()+15;while(performance.now()<end){/* spin to the deadline */}return 42;
  }));
  try {await assert.rejects(job,{code:'JOB_TIMEOUT'});await job.drained;await tick();assert.equal(r.getDiagnostics().jobs.active,0);assert.equal(r.getDiagnostics().cache.active,0);}
  finally {await r.shutdown();}

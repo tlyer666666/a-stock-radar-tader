@@ -12,7 +12,7 @@ before(async () => {
     import {createRoot} from 'react-dom/client';
     import Editor from '/src/StockMonitorEditor.tsx';
     import useStockMonitors from '/src/useStockMonitors.ts';
-    import '/src/styles.css';
+    import '/src/styles/index.css';
     window.nextQuote={latest:10,changePct:1,turnover:2,amount:50000,source:'eastmoney'};
     window.sampleTime=Date.now()-2000;
     window.stockApi={getQuoteSnapshot:async()=>({quote:structuredClone(window.nextQuote),updatedAt:new Date(window.sampleTime+=10).toISOString(),actualProvider:'eastmoney'})};

@@ -1,4 +1,4 @@
-export type SectorExplorerStatus = 'ready' | 'partial' | 'unavailable' | 'stale';
+type SectorExplorerStatus = 'ready' | 'partial' | 'unavailable' | 'stale';
 export type SectorExplorerEntry = {
     id: string;
     code: string;
@@ -9,7 +9,7 @@ export type SectorExplorerEntry = {
     classification: string;
     sourceUrl: string;
 };
-export type SectorExplorerCoverage = {
+type SectorExplorerCoverage = {
     loaded: number;
     total?: number | null;
     failed?: number;
@@ -21,8 +21,33 @@ export type SectorExplorerCoverage = {
     pagesTotal: number | null;
     complete: boolean;
     scope: string;
+    /** 板块页数超过同花顺匿名开放页数时给出（只能取到前若干页）。 */
+    anonymousLimit?: { pages: number; approxTotal: number } | null;
 };
-export type SectorExplorerSource = {
+/** 目录列表上的板块行情快照（同花顺概念页 / 行业资金流）。 */
+export type SectorExplorerQuote = {
+    changePct: number | null;
+    /** 主力净流入（元）。 */
+    netInflow: number | null;
+    indexCode: string;
+    leaderName: string;
+    leaderChangePct: number | null;
+    companyCount: number | null;
+};
+export type SectorExplorerQuotes = {
+    status: SectorExplorerStatus;
+    fetchedAt: string;
+    quotes: Record<string, SectorExplorerQuote>;
+    sources: SectorExplorerSource[];
+    warnings: string[];
+};
+export type SectorExplorerTrend = {
+    asOf: string;
+    change5: number | null;
+    change20: number | null;
+    closes: { date: string; close: number }[];
+};
+type SectorExplorerSource = {
     name: string;
     url: string;
     status: SectorExplorerStatus;
@@ -46,7 +71,7 @@ export type SectorExplorerMember = {
     amount: number | null;
     turnover: number | null;
 };
-export type SectorExplorerEvidence = {
+type SectorExplorerEvidence = {
     title: string;
     date: string;
     url: string;
@@ -66,12 +91,14 @@ export type SectorExplorerDetail = {
         rising: number | null;
         falling: number | null;
     } | null;
+    quote?: SectorExplorerQuote | null;
+    trend?: SectorExplorerTrend | null;
     sources: SectorExplorerSource[];
     warnings: string[];
     evidence: SectorExplorerEvidence[];
     relatedTerms: string[];
 };
-export type SectorExplorerRequest = {
+type SectorExplorerRequest = {
     requestId?: string;
     forceRefresh?: boolean;
 };
@@ -80,6 +107,7 @@ export type SectorExplorerApi = {
     getSectorClassifications: (options: SectorExplorerRequest & {
         code: string;
     }) => Promise<SectorExplorerCatalog>;
+    getSectorQuotes?: (options?: SectorExplorerRequest) => Promise<SectorExplorerQuotes>;
     getSectorDetail: (options: SectorExplorerRequest & {
         id: string;
     }) => Promise<SectorExplorerDetail>;

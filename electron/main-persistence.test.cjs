@@ -2,6 +2,19 @@
 const test=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path");
 const {createHarness}=require("../qa/main-ipc-test-harness.cjs");
 
+test('repeated settings and service reads use one in-memory snapshot until a successful save',()=>{
+ const observed=[];const h=createHarness({getProfessionalReview:input=>{observed.push(input.settings);return {};}});
+ const originalRead=fs.readFileSync;let reads=0;
+ try {
+  h.invoke('settings:save',{refreshToken:'first',tushareToken:'second'});
+  fs.readFileSync=(file,...args)=>{if(String(file)===path.join(h.directory,'settings.json'))reads++;return originalRead(file,...args);};
+  for(let i=0;i<5;i++){h.invoke('settings:get');h.invoke('review:get-market');}
+  assert.equal(reads,0);assert.equal(observed[0].refreshToken,'first');
+  h.invoke('settings:save',{refreshToken:'changed'});
+  h.invoke('review:get-market');assert.equal(observed.at(-1).refreshToken,'changed');
+ } finally {fs.readFileSync=originalRead;h.cleanup();}
+});
+
 for(const resource of ["watchlist","holdings"])test(`malformed ${resource} save must reject without erasing saved rows`,()=>{
   const h=createHarness();try{
     const row={code:"600000",name:"ISOLATED_SYNTHETIC",shares:100,costPrice:10,favorite:true};
@@ -157,3 +170,38 @@ test("failed initial sensitive primary commit removes the uncommitted backup", (
 for(const kind of ['watchlist','holdings'])test('R3 all-invalid '+kind+' primary must not hide a valid backup',()=>{const h=createHarness();try{const good={code:'600001',name:'synthetic-backup',shares:100,costPrice:10};const primary='[null,{"code":"bad","shares":0}]',backup=JSON.stringify([good]);fs.writeFileSync(path.join(h.directory,kind+'.json'),primary);fs.writeFileSync(path.join(h.directory,kind+'.last-good.json'),backup);const rows=JSON.parse(JSON.stringify(h.invoke(kind+':get')));console.log('R3 INVALID PRIMARY',JSON.stringify({kind,rows,backupCode:good.code}));assert.equal(fs.readFileSync(path.join(h.directory,kind+'.json'),'utf8'),primary);assert.equal(fs.readFileSync(path.join(h.directory,kind+'.last-good.json'),'utf8'),backup);assert.deepEqual(rows.map(x=>x.code),['600001']);}finally{h.cleanup();}});
 for(const kind of ['watchlist','holdings'])test('control mixed and intentionally empty '+kind+' primary retain authority',()=>{const h=createHarness();try{const good={code:'600003',name:'synthetic-primary',shares:100,costPrice:10},backup=[{...good,code:'600004'}];fs.writeFileSync(path.join(h.directory,kind+'.last-good.json'),JSON.stringify(backup));for(const [value,expected] of [[[null,good],['600003']],[[],[]]]){fs.writeFileSync(path.join(h.directory,kind+'.json'),JSON.stringify(value));assert.deepEqual(Array.from(h.invoke(kind+':get'),x=>x.code),expected);}}finally{h.cleanup();}});
 for(const kind of ['watchlist','holdings'])test('R3 successful '+kind+' save must not rotate wholly corrupt primary over last-good',()=>{const h=createHarness();try{const good={code:'600005',name:'synthetic-backup',shares:100,costPrice:10},backup=JSON.stringify([good]);fs.writeFileSync(path.join(h.directory,kind+'.json'),'[null]');fs.writeFileSync(path.join(h.directory,kind+'.last-good.json'),backup);h.invoke(kind+':save',[{...good,code:'600006'}]);const retained=JSON.parse(fs.readFileSync(path.join(h.directory,kind+'.last-good.json'),'utf8'));console.log('R3 BACKUP ROTATION',JSON.stringify({kind,retained}));assert.deepEqual(retained,[good]);}finally{h.cleanup();}});
+
+test("application startup cannot read or write bundled Fuyao credentials", () => {
+  const source = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.doesNotMatch(source, /fuyao-seed|applyFuyaoSeed/);
+  // 1.6.49：只有本机还留着钥匙串密文需要迁回时才不启用模拟钥匙串。
+  assert.match(source, /if \(process\.platform === "darwin" && !keychainMigrationPending\) app\.commandLine\?\.appendSwitch\?\.\("use-mock-keychain"\);/);
+});
+
+test("explicit Fuyao secret edits persist to both controlled settings files", () => {
+  const h = createHarness();
+  try {
+    h.invoke("settings:save", {fuyaoApiKey:"SYNTHETIC_MANUAL_KEY"});
+    const primary = h.json("settings");
+    assert.match(primary.fuyaoApiKey, /^safe:/);
+    assert.equal(h.json("settings.last-good").fuyaoApiKey, primary.fuyaoApiKey);
+    h.invoke("settings:save", {fuyaoApiKey:""});
+    assert.equal(h.json("settings").fuyaoApiKey, "");
+    assert.equal(h.json("settings.last-good").fuyaoApiKey, "");
+  } finally { h.cleanup(); }
+});
+
+test("a temporarily locked keychain preserves old files, and ordinary saves cannot copy legacy plaintext into the backup", () => {
+  const h = createHarness({ secureStoreAvailable: false });
+  try {
+    const old = JSON.stringify({refreshToken:"plain:SYNTHETIC_ONLY",theme:"dark"});
+    fs.writeFileSync(path.join(h.directory,"settings.json"),old);
+    assert.match(h.invoke("settings:get").refreshToken, /^•+$/);
+    assert.throws(() => h.invoke("settings:save", {theme:"light"}), {code:"SAFE_STORAGE_UNAVAILABLE"});
+    assert.equal(fs.readFileSync(path.join(h.directory,"settings.json"),"utf8"),old);
+    assert.equal(fs.existsSync(path.join(h.directory,"settings.last-good.json")),false);
+    h.invoke("settings:save",{refreshToken:""});
+    assert.equal(h.json("settings").refreshToken,"");
+    assert.equal(h.json("settings.last-good").refreshToken,"");
+  } finally { h.cleanup(); }
+});

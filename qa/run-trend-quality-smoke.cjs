@@ -8,16 +8,26 @@ async function run() {
  const page = await browser.newPage({viewport:{width:1480,height:1050},acceptDownloads:true});
  const output = path.resolve('artifacts/strategy-v2-qa');fs.mkdirSync(output,{recursive:true});
  const errors=[];page.on('pageerror', e=>errors.push(e.message));
+ const revealCandidate=async code=>{
+  const row=page.locator('.trend-result-row:visible').filter({hasText:code});
+  await row.getByRole('button',{name:/详情与计划/}).click();
+  return page.locator(`.trend-candidate[data-code="${code}"]`);
+ };
+ const revealAllCandidates=async()=>{
+  for(const row of await page.locator('.trend-result-row:visible').all()) await row.getByRole('button',{name:/详情与计划/}).click();
+ };
  try {
   await page.goto(process.env.QA_BASE_URL || 'http://127.0.0.1:5173',{waitUntil:'networkidle'});
   await page.getByRole('heading',{name:'趋势筛选',exact:true}).waitFor();
-  await page.getByRole('button',{name:'单策略扫描',exact:true}).click();
+  await page.locator('details.trend-scan-configuration > summary').click();
+  await page.getByRole('button',{name:'单模型扫描',exact:true}).click();
+  await page.getByLabel('扫描策略',{exact:true}).selectOption('quality-v2');
   assert.equal(await page.getByLabel('扫描策略',{exact:true}).inputValue(),'quality-v2');
   await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
-  await page.locator('.trend-strategy-current').getByText(/1 个策略 · 趋势质量 v2/).waitFor();
+  await page.locator('.trend-strategy-current').getByText(/1 套 · 趋势质量 v2/).waitFor();
   const initial = await page.evaluate(()=>window.stockApi.getTrendScan());
   assert.equal(initial.strategy.id,'quality-v2');assert.equal(initial.strategy.config.maxExtensionAtr,2);
-  let card=page.locator('.trend-candidate[data-code="DEMO-A01"]');
+  let card=await revealCandidate('DEMO-A01');
   await card.getByRole('button',{name:'加入我的计划',exact:true}).click();
   await card.locator('.trend-calculator > summary').click();
   for(const [label,value] of Object.entries({'账户净资产':'100000','拟成交价 P':'12.29','可用现金':'100000','已有同业仓位':'0','已有总仓位':'0','已有持仓数量':'0','预留费用':'0','该股最低买入数量':'100','该股申报递增单位':'100'})) await card.getByLabel(label,{exact:true}).fill(value);
@@ -38,19 +48,22 @@ async function run() {
   assert.match(await page.locator('.trend-candidate[data-code="DEMO-A01"] .trend-reference-plan').innerText(),/11.42/, 'same-date correction must not replace saved stop');
   assert.match(await page.locator('.trend-candidate[data-code="DEMO-A01"] .trend-reference-plan').innerText(),/12.30/, 'same-date correction must not replace saved floor');
   await page.evaluate(()=>window.__restoreTrendStatus());
+  await page.locator('details.trend-quality-parameters > summary').click();
   await page.getByRole('button',{name:'均衡',exact:true}).click();
   await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
   await page.waitForFunction(async h=>(await window.stockApi.getTrendScan()).strategy.configHash!==h,initial.strategy.configHash);
   const balanced=await page.evaluate(()=>window.stockApi.getTrendScan());assert.equal(balanced.strategy.config.maxExtensionAtr,2.5);
-  await page.locator('.trend-candidate[data-code="DEMO-A01"]').getByRole('button',{name:'加入我的计划',exact:true}).click();
+  card=await revealCandidate('DEMO-A01');
+  await card.getByRole('button',{name:'加入我的计划',exact:true}).click();
   await page.getByLabel('最大均线偏离（ATR）',{exact:true}).fill('99');
   await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
   await page.getByRole('alert').filter({hasText:'三个有效参数'}).waitFor();
   assert.equal((await page.evaluate(()=>window.stockApi.getTrendScan())).strategy.configHash,balanced.strategy.configHash);
   await page.getByLabel('扫描策略',{exact:true}).selectOption('classic-v1');
   await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
-  await page.locator('.trend-strategy-current').getByText(/1 个策略 · 原版趋势 v1/).waitFor();
+  await page.locator('.trend-strategy-current').getByText(/1 套 · 原版趋势 v1/).waitFor();
   await page.getByRole('button',{name:/^我的计划/}).click();
+  await revealAllCandidates();
   assert.equal(await page.locator('.trend-candidate').count(),2);
   for(const c of await page.locator('.trend-candidate').all()) assert.match(await c.locator('.trend-reference-plan').innerText(),/12.30/);
   await page.locator('.trend-candidate').first().locator('.trend-calculator > summary').click();
@@ -63,7 +76,7 @@ async function run() {
   assert.match(await card.locator('.trend-calculation-result').innerText(),/市场/);
   const downloadP=page.waitForEvent('download');await page.getByRole('button',{name:'导出计划 CSV',exact:true}).click();
   const csv=fs.readFileSync(await(await downloadP).path(),'utf8');assert.match(csv,/quality-v2@2.0.0/);assert.match(csv,/最低参考入场/);assert.match(csv,/DEMO/);
-  await page.reload({waitUntil:'networkidle'});await page.getByRole('button',{name:/^我的计划/}).click();assert.equal(await page.locator('.trend-candidate').count(),2);
+  await page.reload({waitUntil:'networkidle'});await page.getByRole('button',{name:/^我的计划/}).click();await revealAllCandidates();assert.equal(await page.locator('.trend-candidate').count(),2);
   await page.getByRole('button',{name:/^研究候选/}).click();await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
   for(const [width,theme] of [[1480,'dark'],[1024,'dark'],[760,'dark'],[1480,'light']]){
    await page.setViewportSize({width,height:1050});await page.getByRole('button',{name:theme==='dark'?'黑夜':'白天',exact:true}).count().then(async count=>{if(count) await page.getByRole('button',{name:theme==='dark'?'黑夜':'白天',exact:true}).click(); else await page.getByRole('button',{name:theme==='dark'?'暮夜':'白昼',exact:true}).click();});

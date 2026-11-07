@@ -9,3 +9,18 @@ test('source manifests cover asset/icon contents and reject symlink inputs',t=>{
 for(const kind of ['web','review'])test(`output root symlink cannot delete or overwrite outside receipt: ${kind}`,t=>{
  const root=fixture(t),external=fs.mkdtempSync(path.join(os.tmpdir(),'radar-outside-proof-'));t.after(()=>fs.rmSync(external,{recursive:true,force:true}));const managed=path.join(root,kind==='web'?'dist':'dist/review');fs.rmSync(managed,{recursive:true,force:true});fs.symlinkSync(external,managed,'junction');const sentinel=path.join(external,'build-provenance.json');fs.writeFileSync(sentinel,'KEEP OUTSIDE');const plugin=subject.createBuildProvenancePlugin({root,kind});assert.throws(()=>plugin.buildStart(),/symlink|unsafe/i);assert.equal(fs.readFileSync(sentinel,'utf8'),'KEEP OUTSIDE');
 });
+
+test('dependency patches enter source hashes and editing a patch invalidates an existing receipt',t=>{
+ const root=fixture(t);fs.mkdirSync(path.join(root,'patches'));const patch=path.join(root,'patches/minimatch.patch');fs.writeFileSync(patch,'first patch');const plugin=subject.createBuildProvenancePlugin({root,kind:'web'});plugin.buildStart();plugin.buildEnd();plugin.closeBundle();const receipt=JSON.parse(fs.readFileSync(path.join(root,'dist/build-provenance.json'),'utf8'));assert.equal(receipt.sourceHashes['patches/minimatch.patch'],require('node:crypto').createHash('sha256').update('first patch').digest('hex'));fs.writeFileSync(patch,'changed patch');assert.notDeepEqual(subject.snapshotBuildInputs(root),receipt.sourceHashes);
+});
+test('dependency patch edits during compilation cannot retain a successful receipt',t=>{
+ const root=fixture(t);fs.mkdirSync(path.join(root,'patches'));const patch=path.join(root,'patches/minimatch.patch');fs.writeFileSync(patch,'first patch');const plugin=subject.createBuildProvenancePlugin({root,kind:'web'});plugin.buildStart();fs.writeFileSync(patch,'changed patch');plugin.buildEnd();assert.throws(()=>plugin.closeBundle(),/inputs changed/);assert.equal(fs.existsSync(path.join(root,'dist/build-provenance.json')),false);
+});
+
+
+test('a credential seed cannot enter a build receipt even when excluded from packaging', t => {
+  const root = fixture(t);
+  fs.mkdirSync(path.join(root, 'config'));
+  fs.writeFileSync(path.join(root, 'config/fuyao-seed.json'), '{"key":"synthetic-test-only"}');
+  assert.throws(() => subject.snapshotBuildInputs(root), /credential seed/);
+});

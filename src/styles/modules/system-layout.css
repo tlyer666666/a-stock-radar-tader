@@ -1,0 +1,326 @@
+/*
+ * layout.css —— 布局层：应用外壳 / 窗口标题栏 / 侧栏 / 顶栏 / 内容栅格 / 底部状态栏
+ * 专项：A（界面布局）｜规范出处：《设计基座与分工简报》§3/§4.4/§6/§8 与《专项A-界面布局.md》
+ *
+ * 职责（只做布局尺寸与间距，交互态归 D/E，配色归 B，断点适配归 E）：
+ *   1. 外壳网格尺寸收敛到令牌：--sidebar-w / --titlebar-h / --topbar-h / --content-pad / --card-gap / --statusbar-h；
+ *   2. 顶栏 sticky 置顶 + 毛玻璃（backdrop-filter，背景 var(--topbar) 双主题可读）；
+ *   3. 侧栏气质升级：var(--sidebar) 叠加极浅纵向渐变（color-mix 引用令牌色，不自造色相）、导航节奏 --space-*；
+ *   4. 内容栅格与面板间距统一 --card-gap，面板内边距统一 --space-lg；
+ *   5. 表单类面板可读性 max-width（920px，提案令牌 --form-max-w，见专项文档 §5）；
+ *   6. 折叠态布局可行性：保证 [data-nav-collapsed="true"] 图标栏（--sidebar-w-compact）随时可用（≤1100px 自动折叠由 E 实现）。
+ *
+ * 级联与覆盖策略（不使用 !important）：
+ *   - 本文件经 styles/index.css 载入（main.tsx / review-entry.tsx 均在全部既有 css 之后 import），同特异性可覆盖既有规则；
+ *   - 为同时兼容简报 §6 所述「index.css 早于其余全局 css」的装载顺序，凡覆盖 terminal-layout.css / terminal-ui.css /
+ *     workbench.css / trend-shell.css 等以 html 前缀书写的规则，一律改用 :root 前缀并叠加 .app-shell.terminal-shell，
+ *     使特异性至少高出一级（如 (0,4,0) > (0,2,1)），不依赖载入顺序；
+ *   - styles.css 的 [data-theme="light"] 前缀规则特异性 (0,2,0)，涉及覆盖处一律书写 :root[data-theme="light"] 变体；
+ *   - 侧栏渐变与顶栏底色全部由主题令牌（--sidebar/--surface-3/--page/--topbar）合成，深浅主题自动成立，无需成对硬编码。
+ *
+ * 尺寸书写纪律：一律引用令牌或令牌的 calc() 组合；唯一例外 backdrop-filter: blur(12px) 为简报 §3 指定质感参数
+ * （已登记提案 --blur-sticky，见专项文档 §5）。57.5rem（=920px）为表单可读宽度，待令牌化（--form-max-w 提案）。
+ */
+
+/* ============================================================
+ * 0. 布局守卫：栅格/表格容器防溢出（横向滚动预期的基础）
+ *    宽表容器自身的 overflow-x: auto 由各视图 css 提供（已存在于
+ *    market-workspace / research-workspace / portfolio-backtest /
+ *    analysis-workspace / watch-workspace / review 等 9 个文件），
+ *    此处只保证 grid/flex 子项可收缩，避免内容把栅格撑破。
+ * ============================================================ */
+.panel { min-width: 0; }
+.table,
+.stock-table,
+.holding-table,
+.discover-table,
+.table-panel,
+.trend-candidate-list { min-width: 0; }
+
+/* ============================================================
+ * 1. 应用外壳网格
+ *    旧值：styles.css 232px/40px → terminal-ui 190px/32px → terminal-layout 176px
+ *    （各断点另有 206/174/170/152/140/64px 的字面量变体，随本规则统一失效）
+ *    新值：列 var(--sidebar-w) 232px ｜ 行 var(--titlebar-h) 40px
+ *    折叠态：[data-nav-collapsed="true"] → var(--sidebar-w-compact) 72px（交互开关已存在于 DOM）
+ * ============================================================ */
+.app-shell {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+}
+
+:root .app-shell.terminal-shell {
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: var(--titlebar-h) minmax(0, 1fr);
+}
+
+/* 用户手动折叠（WorkspaceNavigation 的收起按钮，任意窗宽可用）；≤1100px 的自动折叠由专项 E 衔接 */
+:root .app-shell.terminal-shell[data-nav-collapsed="true"] {
+  grid-template-columns: var(--sidebar-w-compact) minmax(0, 1fr);
+}
+
+/* ============================================================
+ * 2. 窗口标题栏（拖拽区）
+ *    旧值：height 40px / padding-left 18px，但外壳行高被 terminal-ui 压成 32px，
+ *          拖拽区向下溢出 8px（其底边线切过侧栏与顶栏顶部）。
+ *    新值：行高与元素高度统一 var(--titlebar-h)，溢出消除；左留白收敛到 --space-lg。
+ * ============================================================ */
+.window-dragbar {
+  height: var(--titlebar-h);
+  padding-left: var(--space-lg);
+}
+
+/* ============================================================
+ * 3. 侧栏（.sidebar.workspace-navigation，同一元素双类名）
+ *    旧值：padding 8px 7px（terminal-layout 压缩态），背景 var(--terminal-sidebar)；
+ *          styles.css 基础态为字面渐变 #0a101d→#070b14，light 变体为字面渐变+投影。
+ *    新值：var(--sidebar) 叠加极浅纵向渐变——顶端混入 6% --surface-3 提亮、底端过渡到 --page，
+ *          全部由主题令牌合成（深色：深蓝黑微渐变；亮色：纸白微渐变），双主题自动成立。
+ *          留白与导航节奏全部落到 --space-*：顶部标题行 36px、分组间距 16px、导航项最小高 36px。
+ * ============================================================ */
+:root .app-shell.terminal-shell .workspace-navigation {
+  background: color-mix(in srgb, var(--sidebar) 94%, var(--surface-3));
+  padding: var(--space-sm) var(--space-sm) var(--space-md);
+}
+
+/* 分组间距：nav 纵向 gap 18px → --space-lg（16px），回归 4px 基准网格 */
+:root .app-shell.terminal-shell .workspace-navigation nav {
+  gap: var(--space-lg);
+}
+
+/* 侧栏头部（「工作台」+ 折叠按钮）：min-height 36px，底部分隔线留白节奏化 */
+:root .app-shell.terminal-shell .workspace-nav-top {
+  min-height: calc(var(--space-4xl) - var(--space-md));
+  padding: 0 var(--space-2xs) var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+/* 分组标题：与导航项文字左缘对齐（导航项水平内边距 --space-sm） */
+:root .app-shell.terminal-shell .workspace-navigation .nav-caption {
+  margin: 0 var(--space-sm) var(--space-2xs);
+}
+
+/* 导航项：高 34px→最小高 36px（--space-3xl + --space-2xs），padding/gap/margin 全部节奏化；
+   height 放开为 auto，交由 min-height + 行高决定，避免长文案被裁切 */
+:root .app-shell.terminal-shell .workspace-navigation .nav-item {
+  min-height: calc(var(--space-3xl) + var(--space-2xs));
+  height: auto;
+  margin: var(--space-3xs) 0;
+  padding: var(--space-2xs) var(--space-sm);
+  gap: var(--space-sm);
+}
+
+/* 底部固定区（数据源设置）：与上部分隔留白节奏化 */
+:root .app-shell.terminal-shell .workspace-nav-bottom {
+  padding-top: var(--space-sm);
+  margin-top: var(--space-md);
+}
+
+/* 品牌区（.brand 系列为遗留标记，当前导航组件未渲染；保留令牌化规则以备复用）：
+   图标 40px→36px（--space-4xl - --space-md），与侧栏头部行高一致 */
+.brand {
+  gap: var(--space-sm);
+  padding: 0 var(--space-xs) var(--space-lg);
+}
+
+.brand-mark {
+  width: calc(var(--space-4xl) - var(--space-md));
+  height: calc(var(--space-4xl) - var(--space-md));
+}
+
+/* ============================================================
+ * 4. 顶栏（.topbar）：sticky 置顶 + 毛玻璃
+ *    旧值（实际生效链）：styles.css 66px/rgba(7,11,20,.86) → terminal-ui 58px →
+ *    terminal-layout min-height 48px/无毛玻璃；trend-shell 另以 flex-basis 66px 强制趋势页顶栏。
+ *    新值：min-height var(--topbar-h) 56px、背景 var(--topbar)（深 .88 / 浅 .92 半透明，双主题可读）、
+ *    backdrop-filter blur(12px)（简报 §3 指定）、z-index var(--z-sticky)。
+ *    说明：滚动发生在 .main > .page 内部，顶栏结构性常驻；sticky 为语义声明兼未来防御
+ *    （若某视图改为 .main 滚动仍能保持置顶）。flex-wrap: wrap 沿用既有规则，窄顶栏可换行不裁切。
+ * ============================================================ */
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  min-height: var(--topbar-h);
+  height: auto;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-2xs) var(--space-lg);
+  background: var(--topbar);
+  backdrop-filter: none;
+}
+
+:root .app-shell.terminal-shell .topbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  min-height: var(--topbar-h);
+  height: auto;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-2xs) var(--space-lg);
+  background: var(--topbar);
+  backdrop-filter: none;
+}
+
+/* 亮色主题：styles.css 的 [data-theme="light"] .topbar 字面背景 (0,2,0) 需以更高特异性压回令牌 */
+:root[data-theme="light"] .topbar {
+  background: var(--topbar);
+  backdrop-filter: none;
+}
+
+/* 顶栏右侧动作区：gap 6px → --space-xs（节奏化，数值不变） */
+:root .app-shell.terminal-shell .top-actions {
+  gap: var(--space-xs);
+}
+
+/* 面包屑位置文字与搜索框之间的分隔留白节奏化（数值不变 12px） */
+:root .app-shell.terminal-shell .workspace-location {
+  padding-right: var(--space-md);
+}
+
+/* 顶栏控件统一高度：30–32px → 36px（= --topbar-h - --space-xl），
+   使 56px 顶栏内上下留白各 10px，控件比例与新版整体密度匹配 */
+:root .app-shell.terminal-shell :is(.search-box, .strategy-quick-trigger, .theme-switch, .live-toggle, .icon-button) {
+  height: calc(var(--topbar-h) - var(--space-xl));
+  min-height: calc(var(--topbar-h) - var(--space-xl));
+}
+
+/* 图标按钮保持正方形（宽随高） */
+:root .app-shell.terminal-shell .icon-button {
+  width: calc(var(--topbar-h) - var(--space-xl));
+  padding: 0;
+}
+
+/* ============================================================
+ * 5. 内容区（.main > .page 为唯一滚动容器）
+ *    旧值：padding 27px 30px 60px → terminal-ui 24px 24px 32px → terminal-layout 12px（各断点再变）。
+ *    新值：统一 var(--content-pad) 16px，双主题背景沿用既有令牌变量（配色归 B/F，不在本层改动）。
+ * ============================================================ */
+:root .app-shell.terminal-shell .main > .page {
+  padding: var(--content-pad);
+}
+
+/* 页头：最小高 36px、下间距/分隔留白统一 --space-md（原 10–12px 字面量收敛） */
+:root .app-shell.terminal-shell .page-heading {
+  min-height: calc(var(--space-4xl) - var(--space-md));
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-md);
+  gap: var(--space-sm);
+}
+
+/* ============================================================
+ * 6. 内容栅格与面板间距（统一 --card-gap 12px / 面板内边距统一 --space-lg 16px）
+ *    旧值散布：gap 11/12/16px，padding 17/18px，margin-bottom 12/13px 等。
+ *    注意：.content-grid.lower 在 terminal-analysis-layout 内由上层栅格负责分隔
+ *    （terminal-ui 将其 margin 归零），故只统一其 gap，不额外加 margin，避免双重间距。
+ * ============================================================ */
+.content-grid {
+  gap: var(--card-gap);
+  margin-bottom: var(--card-gap);
+}
+
+:root .app-shell.terminal-shell .content-grid.lower {
+  gap: var(--card-gap);
+}
+
+.hero-grid,
+.signal-grid,
+.market-summary-grid {
+  gap: var(--card-gap);
+  margin-bottom: var(--card-gap);
+}
+
+/* 面板容器：内边距 17/18px → var(--space-lg) 16px，并保证栅格内可收缩 */
+.chart-panel,
+.node-panel,
+.sector-panel,
+.news-panel,
+.discover-panel,
+.strategy-status-panel,
+.sector-board-panel,
+.sector-search-panel,
+.holdings-table-panel {
+  padding: var(--space-lg);
+  min-width: 0;
+}
+
+/* 面板纵向节奏：统一落到 --card-gap */
+.strategy-status-panel,
+.sector-board-panel,
+.sector-search-panel,
+.holdings-table-panel,
+.risk-strip,
+.warning-banner,
+.concept-chain-panel {
+  margin-bottom: var(--card-gap);
+}
+
+.discover-panel {
+  margin-top: var(--card-gap);
+}
+
+/* 面板标题行：gap 9px→--space-sm、标题与内容间距 14/16px→--space-md（基础态 + shell 态各一条） */
+.panel-title {
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+:root .app-shell.terminal-shell .panel-title {
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.panel-title-icon {
+  width: var(--space-3xl);
+  height: var(--space-3xl);
+}
+
+/* ============================================================
+ * 7. 底部状态栏（.terminal-statusbar，位于 .main 底部、flex 常驻）
+ *    旧值：min-height 26px/35px 二选一（terminal-ui 35px 被 terminal-layout 26px 压制）、
+ *          padding 8px 20px → 4px 12px。
+ *    新值：min-height var(--statusbar-h) 26px、padding/gap 全部节奏化（数值与现行生效值一致，纯令牌化）。
+ * ============================================================ */
+:root .app-shell.terminal-shell .terminal-statusbar {
+  min-height: var(--statusbar-h);
+  padding: var(--space-2xs) var(--space-md);
+  gap: var(--space-xs) var(--space-md);
+}
+
+/* 配额进度线：3px→--space-3xs（2px），上下留白 12/7px→12/6px 节奏化 */
+.quota-line {
+  height: var(--space-3xs);
+  margin: var(--space-md) 0 var(--space-xs);
+}
+
+/* ============================================================
+ * 8. 表单类面板可读性宽度
+ *    纵向表单面板在超宽内容区一行排到底可读性差，统一封顶 920px（--form-max-w，左对齐不居中，
+ *    保持与页头/表格的左缘节奏）。令牌 --form-max-w: 920px 已由总控落地 tokens.css，此处按监工 P1-8 收口引用。
+ *    横向工具条型面板（如 .sector-search-panel）不设上限，避免破坏其多列工具栏布局。
+ * ============================================================ */
+.backtest-setup-panel,
+.trend-strategy-settings,
+.signal-stock-tester {
+  max-width: var(--form-max-w);
+}
+
+/* ============================================================
+ * 9. 与专项 E（responsive.css）的衔接边界（此处只留说明，不写断点规则）
+ *    本层把外壳列宽统一为 --sidebar-w / --sidebar-w-compact 两个令牌值后，
+ *    旧 css 中各断点的侧栏字面宽度（206/190/176/174/170/152/140/68/64px）因特异性较低而全部失效。
+ *    E 需在 responsive.css 中以 ≥(0,4,0) 特异性补齐窄窗行为，参考实现（≤1100px 收缩为图标栏）：
+ *
+ *      @media (max-width: 1100px) {
+ *        :root .app-shell.terminal-shell { grid-template-columns: var(--sidebar-w-compact) minmax(0, 1fr); }
+ *        :root .app-shell.terminal-shell .workspace-navigation :is(.nav-caption, .nav-item span, .nav-item em, .workspace-nav-top > span) { display: none; }
+ *        :root .app-shell.terminal-shell .workspace-navigation .nav-item { justify-content: center; padding: var(--space-2xs); }
+ *        :root .app-shell.terminal-shell .workspace-nav-top { justify-content: center; padding: 0 0 var(--space-sm); }
+ *      }
+ *
+ *    同时建议 E 覆接 trend-shell.css 在 ≤1100/≤820 失效的 .app-shell[data-workspace="trend-screener"] 列宽
+ *    （188px/68px），以同一对令牌表达。手动折叠（[data-nav-collapsed="true"]）已由本层保证可用。
+ * ============================================================ */

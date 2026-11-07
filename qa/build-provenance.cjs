@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
 const RECEIPT = 'build-provenance.json';
-const INPUT_FOLDERS = ['src', 'electron', 'config', '.github', 'qa', 'assets', 'public'];
+const INPUT_FOLDERS = ['src', 'electron', 'config', '.github', 'qa', 'assets', 'public', 'patches'];
 const ROOT_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.ts', '.html', '.ico', '.png', '.svg']);
 const sha = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -35,6 +35,9 @@ function walkFiles(root, directory, accept, result) {
 function sorted(object) { return Object.fromEntries(Object.entries(object).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)); }
 
 function snapshotBuildInputs(root) {
+  if (fs.existsSync(path.join(root, 'config/fuyao-seed.json'))) {
+    throw new Error('Plaintext credential seed is forbidden in a build source tree');
+  }
   const result = {};
   for (const folder of INPUT_FOLDERS) {
     assertManagedPath(root, path.join(root, folder));
@@ -97,4 +100,4 @@ function createBuildProvenancePlugin({ root, kind }) {
   };
 }
 
-module.exports = { createBuildProvenancePlugin, snapshotBuildInputs, snapshotOutputs };
+module.exports = { createBuildProvenancePlugin, snapshotBuildInputs };

@@ -1,0 +1,425 @@
+/*
+ * typography.css —— 排版层：全局字阶 / 行高 / 字重 / 数字等宽（tabular-nums）
+ * 专项：C（排版层次）｜规范出处：《设计基座与分工简报》§3/§4.4/§6/§8 与《专项C-排版层次.md》
+ *
+ * 职责（只做文字排印，配色归 B/F，组件皮肤归 D，交互态归 E）：
+ *   1. 根基：:root 字体族收敛到 var(--font-sans) + 抗锯齿；body 基准字号 var(--fs-base)、行高 var(--lh-normal)；
+ *   2. 五级字阶批量落地：主标题(--fs-xl/--fs-lg) → 面板题(--fs-xs/--fs-sm + 600) → 说明/元数据(--fs-xs/--fs-2xs + --ink-3)
+ *      → 正文/表格(--fs-sm/--fs-base) → KPI 数字(--fs-xl/--fs-2xl + 700)；
+ *   3. 数字等宽：table 族与数值容器批量 font-variant-numeric: tabular-nums，并提供 .tabular-nums 工具类；
+ *   4. 中文排版纪律：粗体上限 700（存量 800/900 收敛）、标题 600、正文 400/500；
+ *   5. 极端字号修正：8px/10px 系（.market-pill/.return-bar/.timeline-node/.test-result/.api-note 等）收敛到 --fs-2xs。
+ *
+ * 级联与覆盖策略（不使用 !important；全部值引用令牌，无色值/px 字面量，仅装饰性 letter-spacing 用 em）：
+ *   - 本文件经 styles/index.css 在全部既有 css 之后载入（main.tsx:16 / review-entry.tsx 实证）；
+ *   - 运行时外壳恒为 .app-shell.terminal-shell（App.tsx:4701），凡与 terminal-ui / terminal-layout / workbench /
+ *     market-workspace 等 `html` 前缀规则竞争的面，一律用 `:root .app-shell.terminal-shell` 前缀
+ *     （伪类:root 计入类级特异性，整体 ≥ (0,4,x)，稳定压过既有 (0,3,x)），不依赖载入顺序；
+ *   - 复盘窗口（review-entry.tsx）无外壳类，其内部为 .professional-review —— 涉及 review-* 的规则
+ *     统一以 `.professional-review` 前缀书写，主窗口与独立复盘窗口双语境同时成立；
+ *   - 既有层 [data-theme="light"] 前缀规则不涉及排版属性（已审计），故本文件无需 light 成对变体；
+ *     颜色一律引用 --ink-* 语义令牌，随主题自动取值。
+ *
+ * ⚠ 受既有 !important 压制、暂不生效的规则（已逐条登记于《专项C-排版层次.md》§5，待总控/F 移除后自动收敛）：
+ *   review.css:578/588（字体族 var(--ui-font) !important，压制本文件 §0 的 --font-sans）；
+ *   terminal-layout.css:53（.page-heading h1 18px !important）；review.css:621-635（搜索框/面板题/eyebrow/
+ *   metric b/表头/状态栏小字等 15px/13px/10px !important）；analysis-workspace.css:12/106/198、
+ *   research-workspace.css:27（各工作区 h1 18px !important）；terminal-ui.css:63-64、trend-shell.css（.brand 遗留标记）。
+ */
+
+/* ============================================================
+ * 0. 根基：字体族 / 渲染品质 / 基准字号与行高
+ *    旧值：styles.css :root 用无 PingFang SC 的四段栈；review.css:578 以 !important
+ *          强制 --ui-font（Segoe UI 栈，同样无 PingFang SC，macOS 上落回泛型 sans-serif）。
+ *    新值：--font-sans（含 PingFang SC / HarmonyOS Sans SC 完整中文栈）。
+ *    ⚠ 本规则当前被 review.css 的 font-family !important 压制，生效需总控/F 清理（登记 §5.1）。
+ * ============================================================ */
+:root {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* body 基准：review.css 的 body 14px/1.5 由本规则（html body，(0,0,2)）接管 */
+html body {
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+}
+
+/* 外壳基准：terminal-layout.css:16 的 14px/1.5 收敛为令牌（字号同值，行高 1.5→--lh-normal 1.55） */
+:root .app-shell.terminal-shell {
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+}
+
+/* ============================================================
+ * 1. 数字等宽（金融终端关键规范，简报 §3/§8）
+ *    旧值：仅 terminal-layout:72（.table/.stock-table/.holding-table）与 terminal-ui:116、
+ *          trend-screener / watch-ladder / sector-explorer / stock-chart 局部覆盖；
+ *          .discover-table / .watch-stock-table / .trend-result-table / 回测与限价表、
+ *          .return-bar / .quota-text / .strategy-signal-summary 等数值面缺失。
+ *    新值：表格族 + 数值容器两批全量启用，并提供 .tabular-nums 工具类供 TSX 侧按需挂载。
+ * ============================================================ */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 1.1 表格族：全部行情/持仓/回测/复盘表整体启用（含 th/td 继承） */
+:root .app-shell.terminal-shell
+  :is(.table, .stock-table, .discover-table, .holdings-table, .watch-stock-table,
+      .trend-result-table, .backtest-trade-table, .paper-position-table, .limit-analysis-table,
+      .trend-candidate-list, .sector-explorer) {
+  font-variant-numeric: tabular-nums;
+}
+
+.professional-review :is(.review-observation-table, .review-index-row, .review-sector-row) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 1.2 数值容器：指标瓦片 / 报价 / 扫描统计 / 顶栏与状态栏数值 */
+:root .app-shell.terminal-shell
+  :is(.metric, .fact, .signal-card, .quote-grid, .return-bar, .mini-bar,
+      .market-summary-grid, .news-overview-grid, .comparison-periods,
+      .score-ring, .monitor-card-quote, .trend-scan-numbers, .trend-market-metrics,
+      .trend-plan-prices, .trend-health-counts, .trend-sizing-values, .trend-funnel,
+      .board-ladder, .watch-toolbar, .sector-explorer-metrics, .strategy-signal-summary,
+      .quota-text, .status-row) {
+  font-variant-numeric: tabular-nums;
+}
+
+.professional-review
+  :is(.review-stock-price, .review-score-ring, .review-exposure, .review-observations,
+      .review-factor-overview-metrics, .review-metric, .review-leader-grid) {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+ * 2. R1 主标题层：页面/工作区标题（--fs-xl）/ 工作区次级标题（--fs-lg）
+ *    旧值（实际生效链）：.page-heading h1 被 terminal-layout:53 压为 18px !important/26px；
+ *    .trend-header h1 24px、.sector-explorer h2 22px、复盘 .review-heading h1 23px !important
+ *    （又被 analysis-workspace:106 的 18px !important 覆盖）——散布 18–31px 无级差。
+ *    新值：统一 --fs-xl（19px）+ --fw-semibold + --lh-tight + --ink-1；
+ *          18px !important 移除前显示 18px（区间容差内），移除后自动收敛 19px（登记 §5.2）。
+ * ============================================================ */
+:root .app-shell.terminal-shell .page-heading h1,
+:root .app-shell.terminal-shell .trend-header h1,
+:root .app-shell.terminal-shell :is(.pbt-page-head h1, .pbt-result-head h2),
+:root .app-shell.terminal-shell .multi-compare-view .compare-workspace-title h1,
+:root .app-shell.terminal-shell .sector-explorer h2 {
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-1);
+}
+
+.professional-review .review-heading h1 {
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-1);
+}
+
+/* 工作区次级标题（区块/结果组标题）：22–24px → --fs-lg 17px */
+:root .app-shell.terminal-shell
+  :is(.empty-state h2, .loading-state h2, .sector-score-summary h2,
+      .optimized-strategy-title h2, .strategy-signal-group-head h2,
+      .sector-explorer-detail-title h3) {
+  font-size: var(--fs-lg);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-1);
+}
+
+.professional-review
+  :is(.review-stock-hero h2, .review-decision-heading h2, .review-regime-main h2,
+      .review-archive-head h2, .review-stock-empty h2) {
+  font-size: var(--fs-lg);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-1);
+}
+
+/* ============================================================
+ * 3. R2 面板题层：--fs-xs 起步 + --fw-semibold + --ink-2（Linear/Radix 式次级面板标题）
+ *    旧值：.panel-title h3 实际生效 15px/700（review.css:625 !important，全应用域），
+ *          terminal-layout:66 与 terminal-ui:110 的 14px/600 均被压制；
+ *    新值：--fs-xs（12px）/600/--lh-tight/--ink-2。⚠ 字号与字重被上述 !important 压制，
+ *          当前生效面为「颜色 --ink-2 + 行高 --lh-tight」（登记 §5.3）；颜色只引用令牌。
+ * ============================================================ */
+:root .app-shell.terminal-shell .panel-title h3 {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-2);
+}
+
+/* 面板内区块标题（策略设置/信号测试/评分卡）：15px → --fs-sm（起步区间上一级） */
+:root .app-shell.terminal-shell
+  :is(.trend-strategy-settings h2, .signal-test-heading h3, .score-copy h3) {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-semibold);
+  color: var(--ink-2);
+}
+
+/* ============================================================
+ * 4. R3 说明与元数据层：--ink-3 次级文字
+ *    R3a 描述文字（--fs-xs）：页头/面板副标题；
+ *    R3b 元数据与标注（--fs-2xs）：图注/字段标注/徽标/状态栏小字 —— 修正 8px 极端值主战场
+ *        （.market-pill/.timeline-node/.test-result/.api-note/.source-lane/.switch-row 等
+ *          原为 8px，本层收敛 --fs-2xs 11px；shell 内被 terminal-ui:114 提到 13px 的标注同步回落）。
+ *    旧值生效链：terminal-ui:114 将这批标注统一 13px；styles.css 源头 8px。
+ * ============================================================ */
+:root .app-shell.terminal-shell :is(.page-heading p, .panel-title p, .panel-title > span) {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+  color: var(--ink-3);
+}
+
+:root .app-shell.terminal-shell
+  :is(.eyebrow,
+      .metric span, .metric small, .fact span, .signal-card > span, .signal-card small,
+      .chart-legend, .chart-labels, .chart-axis-text, .news-copy small, .empty-inline,
+      .provider-options small, .source-lane small, .field > span, .field > small, .field small,
+      .switch-row small, .mini-bar > span, .timeline-node > span, .timeline-node b,
+      .market-pill, .score-copy .grade, .return-bar, .return-bar b, .table-action,
+      .test-result, .api-note p, .sector-head small) {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-snug);
+  color: var(--ink-3);
+}
+
+:root .app-shell.terminal-shell .timeline-node.passed > span {
+  color: var(--down);
+}
+
+.professional-review .review-heading p {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-snug);
+}
+
+/* eyebrow 品牌字距：terminal-ui:102 的 .13em 保留（仅字号 10px!important→登记，未覆盖字距）；
+   .brand span 装饰字距由 .18em 微调 .12em（8px→11px 放大补偿，登记 §6）；
+   该标记当前未渲染（WorkspaceNavigation 无 .brand），规则为遗留兼容预留。 */
+:root .app-shell.terminal-shell .brand span {
+  font-size: var(--fs-2xs);
+  letter-spacing: 0.12em;
+}
+
+/* ============================================================
+ * 5. R4 正文与表格层：--fs-sm / --fs-base
+ *    旧值：表格行 13px（terminal-layout:70 与 review.css:629 !important 同值）、
+ *          表头 12px/700（review.css:631 !important）与 13px（workbench:115）二重奏、
+ *          sector-explorer th 14px —— 无统一规范。
+ *    新值：表格族正文 --fs-sm + --lh-snug；表头统一 --fs-xs + --fw-semibold（700→600 纪律）；
+ *          表头颜色仅在通用终端表上设 --ink-3，sector-explorer / review 自带主题调色板的面
+ *          不动颜色（归 B/F）。
+ * ============================================================ */
+:root .app-shell.terminal-shell
+  :is(.table, .stock-table, .discover-table, .holdings-table, .watch-stock-table,
+      .trend-result-table, .backtest-trade-table, .paper-position-table, .limit-analysis-table,
+      .trend-candidate-list, .sector-explorer) {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+}
+
+:root .app-shell.terminal-shell .stock-cell,
+:root .app-shell.terminal-shell .news-copy b {
+  font-size: var(--fs-sm);
+}
+
+:root .app-shell.terminal-shell .news-copy b {
+  line-height: var(--lh-snug);
+}
+
+:root .app-shell.terminal-shell
+  :is(.table .th, .stock-table th, .discover-table .th, .holdings-table .th,
+      .watch-stock-table th, .trend-result-table thead th, .backtest-trade-table th,
+      .paper-position-table .th, .limit-analysis-table .th, .sector-explorer th,
+      .review-observation-table thead th) {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  line-height: var(--lh-snug);
+}
+
+/* 表头次级色：仅通用终端表（原本即 terminal-muted 的面），自定义调色板视图不碰颜色 */
+:root .app-shell.terminal-shell
+  :is(.table .th, .stock-table th, .discover-table .th, .holdings-table .th, .watch-stock-table th) {
+  color: var(--ink-3);
+}
+
+/* ============================================================
+ * 6. R5 KPI/大数字层：瓦片级 --fs-xl / 主视觉级 --fs-2xl，均 + --fw-bold + 等宽
+ *    旧值（实际生效）：metric strong 15px、market-summary b 20px、price-block 30px、
+ *    monitor-card-quote 25px、trend-scan-numbers 25px、score-ring 22px、
+ *    sector-score-summary 72px、quality-score 40px、复盘 21–28px —— 极端值与相邻层级无纪律。
+ *    新值：全部收敛到两档（19/23px），任务规定的 KPI 区间 --fs-xl–--fs-2xl。
+ *    ⚠ .metric b 被 review.css:628 压为 13px !important（strong 已升 19px，过渡期同卡片
+ *      strong/b 存在级差，登记 §5.4）；巨型展示数字（72/40px→23px）压缩幅度大，登记 §6。
+ * ============================================================ */
+:root .app-shell.terminal-shell
+  :is(.metric strong, .fact strong, .market-summary-grid b, .score-ring strong,
+      .sector-row strong, .sector-head strong, .news-overview-grid b, .comparison-periods b,
+      .sector-explorer-metrics strong, .strategy-signal-summary b, .trend-funnel b,
+      .board-ladder-height > strong) {
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-bold);
+}
+
+:root .app-shell.terminal-shell
+  :is(.price-block strong, .monitor-card-quote strong, .trend-scan-numbers > strong,
+      .quality-score strong, .sector-score-summary > strong) {
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-bold);
+}
+
+.professional-review
+  :is(.review-observations strong, .review-factor-overview-metrics b,
+      .review-dimension > b, .review-factor > b) {
+  font-size: var(--fs-xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-bold);
+}
+
+.professional-review
+  :is(.review-stock-price b, .review-score-ring strong, .review-exposure b) {
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-tight);
+  font-weight: var(--fw-bold);
+}
+
+/* 次级数值文本（非 KPI 瓦片）：仅统一字重/等宽，不强行升阶（登记 §6） */
+:root .app-shell.terminal-shell :is(.trend-plan-prices strong, .trend-market-metrics strong) {
+  font-weight: var(--fw-semibold);
+}
+
+/* ============================================================
+ * 7. R6 侧栏 / 顶栏 / 状态栏文字
+ *    旧值生效链：导航项 13px/400（terminal-layout:24，workbench:114 的 500 被后载压制）、
+ *    分组标题 11px、workspace-nav-top/workspace-location 13px、window-dragbar 13px、
+ *    状态栏 strong 12px/其余 10px（review.css:632-635 !important）。
+ *    新值：导航/位置 --fs-sm + --fw-medium（正文 500 纪律）；分组标题/拖拽区/状态栏小字 --fs-2xs；
+ *    状态栏强值 --fs-xs。⚠ 状态栏 10px !important 未移除前仍显示 10px（登记 §5.5）。
+ * ============================================================ */
+:root .app-shell.terminal-shell .workspace-navigation .nav-caption {
+  font-size: var(--fs-2xs);
+  line-height: var(--lh-snug);
+  font-weight: var(--fw-medium);
+  color: var(--ink-3);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  font-weight: var(--fw-medium);
+}
+
+/* 激活态字重须显式保住 600（否则被本层 (0,5,0) 的 500 压过） */
+:root .app-shell.terminal-shell .workspace-navigation .nav-item.active {
+  font-weight: var(--fw-semibold);
+}
+
+:root .app-shell.terminal-shell .workspace-navigation .nav-item em {
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-medium);
+}
+
+:root .app-shell.terminal-shell :is(.workspace-nav-top, .workspace-location) {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
+}
+
+/* 拖拽区标题：13px → --fs-2xs；装饰字距 .02em（terminal-ui:59）保留不动（登记 §6） */
+:root .app-shell.terminal-shell .window-dragbar {
+  font-size: var(--fs-2xs);
+}
+
+:root .app-shell.terminal-shell .terminal-statusbar .status-row strong {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+:root .app-shell.terminal-shell .terminal-statusbar :is(.status-row small, .quota-text, .version) {
+  font-size: var(--fs-2xs);
+}
+
+/* ============================================================
+ * 8. R7 控件文字（尺寸契约归专项 A：控件高 36px；此处只统文字排印）
+ *    旧值生效链：搜索框 13px（review.css:621 !important，与 --fs-sm 同值）、
+ *    主题切换/快捷触发 12px、主次按钮 13px/400（workbench:114 提到 500）、
+ *    表单控件 13px（terminal-layout:68）。
+ * ============================================================ */
+:root .app-shell.terminal-shell .search-box input {
+  font-size: var(--fs-sm);
+}
+
+:root .app-shell.terminal-shell :is(.theme-switch button, .strategy-quick-trigger, .live-toggle) {
+  font-size: var(--fs-xs);
+}
+
+:root .app-shell.terminal-shell :is(.primary-btn, .secondary-btn) {
+  font-size: var(--fs-sm);
+  line-height: var(--lh-snug);
+  font-weight: var(--fw-medium);
+}
+
+:root .app-shell.terminal-shell
+  :is(.field input, .field select, .field textarea,
+      .backtest-field input, .backtest-field select, .backtest-field textarea) {
+  font-size: var(--fs-sm);
+}
+
+:root .app-shell.terminal-shell .trend-header-rule {
+  font-size: var(--fs-xs);
+}
+
+/* ============================================================
+ * 9. 中文排版纪律：粗体上限 700（存量 800/900 全量收敛）、控件 600
+ *    存量分布：800×13（review 6 / portfolio-backtest 4 / styles 3）、900×6（review）、
+ *    650/550 各 1（trend-screener）。一律映射 --fw-bold（标注/徽标/eyebrow）或
+ *    --fw-semibold（按钮/页签/表头行）。
+ * ============================================================ */
+:root .app-shell.terminal-shell
+  :is(.pbt-page-head > div:first-child > span, .pbt-result-head > div > span,
+      .pbt-validation-badge, .pbt-signal-day > header time,
+      .strategy-signal-tab-section span, .optimized-strategy-title span,
+      .optimized-strategy-panel > header > em, .indicator-selector-label) {
+  font-weight: var(--fw-bold);
+}
+
+.professional-review
+  :is(.review-eyebrow, .review-evidence-list > div > span, .review-scenario > span,
+      .review-method-note > span, .review-factor-overview-copy > span, .review-archive-head span) {
+  font-weight: var(--fw-bold);
+}
+
+/* 按钮与页签：800 → 600（控件强调，非粗体标题） */
+.professional-review
+  :is(.review-tabs button, .review-journal > button, .review-archive-head > button,
+      .review-stock-toolbar form > button) {
+  font-weight: var(--fw-semibold);
+}
+
+/* 复盘伪表头行：800 → 600（表头纪律） */
+.professional-review :is(.review-index-row.head, .review-sector-row.head) {
+  font-weight: var(--fw-semibold);
+}
+
+/* 非 700/600/500/400 的过渡字重：650（趋势页 h1，字号已被 18px !important 压制）与
+   550（.trend-funnel b，已在 §6 被 --fw-bold 接管）→ 统一 600 */
+:root .app-shell.terminal-shell .trend-header h1 {
+  font-weight: var(--fw-semibold);
+}
+
+/* ============================================================
+ * 10. 与其他专项的边界备忘（不写规则，仅留档）
+ *     - 颜色：本文件仅在 R2/R3/R4(表头)/R6 使用 --ink-2/--ink-3 层级色（任务指定），
+ *       其余文本颜色归 B/F；[data-theme="light"] 变体无需成对书写（审计确认既有层
+ *       无 light 前缀排版规则，令牌随主题自动取值）。
+ *     - 组件皮肤（按钮/徽标/输入的视觉态）归 D（components.css 载入序在本文件之后，
+ *       同特异性时 D 优先；本文件一律更高特异性，互不依赖顺序）。
+ *     - 行高仅三档：标题 --lh-tight / 多行说明与单元格 --lh-snug / 正文基准 --lh-normal；
+ *       既有层散布的 1.1–1.9 行高未逐条清洗（约 240 处），属 F 阶段值级清理范围（登记 §6）。
+ * ============================================================ */

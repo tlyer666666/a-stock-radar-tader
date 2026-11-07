@@ -38,20 +38,33 @@ def production_files():
 
 
 def verify_app(app):
-    resources = app / 'Contents/Resources/app'
     verify_build_receipts(ROOT)
-    verify_build_receipts(ROOT, resources / 'dist')
-    require(read_json(resources / 'package.json')['version'] == VERSION, 'Wrong packaged version')
-    for source in production_files():
-        require(sha(source) == sha(resources / source.relative_to(ROOT)), f'Packaged source mismatch: {source}')
-    env = {**os.environ, 'ELECTRON_RUN_AS_NODE': '1'}
-    result = subprocess.run([str(app / 'Contents/MacOS/A股雷达趋势版'), '-p', 'JSON.stringify(process.versions)'],
-                            capture_output=True, text=True, env=env, timeout=30, check=True)
-    versions = json.loads(result.stdout)
-    expected = read_json(ROOT / 'package.json')['devDependencies']['electron']
-    require(versions['electron'] == expected, 'Packaged Electron differs from the manifest')
-    require(versions['undici'] == '7.29.1', 'Packaged embedded network runtime differs from the reviewed release')
-    return versions
+    verification = ROOT / 'qa' / 'delivery-verification.cjs'
+    command = [
+        'node', '-e',
+        (
+            "const v=require(process.argv[1]);"
+            "const fs=require('node:fs'),path=require('node:path');"
+            "const root=path.resolve(process.argv[2]),app=path.resolve(process.argv[3]);"
+            "const manifest=v.readPackagedJson(app);"
+            "if(manifest.version!==process.argv[4])throw Error('Wrong packaged version');"
+            "const files=[...(function*(){const walk=d=>{for(const e of fs.readdirSync(d,{withFileTypes:true})){"
+            "const p=path.join(d,e.name);if(e.isDirectory())yield* walk(p);else if(e.isFile())yield p;}};"
+            "for(const name of ['dist','electron','assets','config']){const p=path.join(root,name);"
+            "if(fs.existsSync(p))yield* walk(p);}yield path.join(root,'package.json');})()];"
+            "v.verifyProductionFiles(app,root,files);"
+            "const runtime=v.verifyPackagedRuntime(app,root,{electron:manifest.devDependencies?.electron});"
+            "process.stdout.write(JSON.stringify({manifest,runtime}));"
+        ),
+        str(verification), str(ROOT), str(app), VERSION
+    ]
+    env = dict(os.environ)
+    env.pop('ELECTRON_RUN_AS_NODE', None)
+    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                            env=env, timeout=120, check=False)
+    require(result.returncode == 0, f'Packaged verification failed: {result.stderr.strip() or result.stdout.strip()}')
+    evidence = json.loads(result.stdout)
+    return evidence['runtime']
 
 
 def verified_zip(target, sources, prefix):

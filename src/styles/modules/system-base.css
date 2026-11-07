@@ -1,0 +1,152 @@
+/*
+ * base.css —— 基础层：元素默认值 / 选区 / 全局键盘焦点 / 滚动条精修 / 禁用态 / 输入光标
+ * 负责专项：E（交互反馈与响应式）
+ * 规范出处：《设计基座与分工简报》§2/§3/§4.4/§6/§8；配套说明：《专项E-交互与响应式.md》（§编号互引）
+ * 令牌真源：src/styles/tokens.css（本文件不出现任何字面色值）
+ *
+ * 【级联与覆盖策略】（不使用 !important；reduced-motion 特例见 motion.css 并已登记）
+ * 1) styles.css 的 :root 以字面值设定 color/background（墨白字/深蓝黑底），并在
+ *    [data-theme="light"] body 上另设字面色 —— 本文件经 styles/index.css 于全部全局 css
+ *    之后载入，用 :root 与 :root[data-theme="light"] 双规则 + :root body（含亮色变体）
+ *    压回令牌（var() 随主题自动取值，双主题一套声明成立）；
+ * 2) styles.css:4767 的 button/input/textarea/select :focus-visible（outline: 2px
+ *    旧品牌粉字面值，特异性 (0,1,1)）由本文件同特异性、靠后加载的 :is(...) 规则
+ *    接管为 --focus-ring；
+ * 3) 三个「域内自有焦点样式」不接管：.trend-screener（trend-screener.css:22，outline
+ *    var(--trend-accent)）、.strategy-signals-view / .professional-review
+ *    （terminal-research.css:31，outline var(--research-accent)）—— 它们特异性更高、
+ *    且视图 css 可能晚于本层加载。为避免「域内 outline + 全局 ring」双指示，
+ *    在 §3 以 box-shadow: none 让位（焦点仍可见，仅指示器归域内所有；
+ *    --trend-accent/--research-accent → var(--accent) 的色彩同源由 F 阶段映射）；
+ * 4) 容器型输入（.search-box / .backtest-security-search）的焦点环由专项 D 的
+ *    :focus-within 承担，内部 input 不再叠加自身 ring（§3 第二条），杜绝双环。
+ *
+ * 【有意不做】（审计结论，详见专项文档 §7 风险登记）
+ * - img/svg 不做 max-width:100%/height:auto 防破格：全应用无 <img> 元素（grep 证实），
+ *   而 K 线/分时等图表为带显式尺寸的 SVG，盲目防破格反而可能压扁图表 —— 收益为零、
+ *   风险为真，故不设。
+ */
+
+/* ============================================================
+ * §1 文档默认色（元素默认值）：压过 styles.css 的 :root 与
+ *    [data-theme="light"] body 字面值
+ *    :root                     (0,1,0)  晚于 styles.css 同特异性规则 → 胜
+ *    :root[data-theme="light"] (0,2,0)  亮色主题加装甲（styles.css 无 html 级
+ *                                       亮色规则，此条为防御性双写）
+ *    :root body                (0,1,1)  压过 styles.css:976
+ *                                       [data-theme="light"] body (0,1,1)（靠后同胜）
+ *    :root[data-theme="light"] body (0,2,1) 亮色 body 加装甲
+ * ============================================================ */
+:root {
+  color: var(--ink-1);
+  background: var(--page);
+}
+
+:root[data-theme="light"] {
+  color: var(--ink-1);
+  background: var(--page);
+}
+
+:root body {
+  color: var(--ink-1);
+  background: var(--page);
+}
+
+:root[data-theme="light"] body {
+  color: var(--ink-1);
+  background: var(--page);
+}
+
+/* ============================================================
+ * §2 选区：底 --accent-soft、字 --ink-1（双主题经令牌自动成立）
+ * ============================================================ */
+::selection {
+  background-color: var(--accent-soft);
+  color: var(--ink-1);
+}
+
+/* ============================================================
+ * §3 全局键盘可见焦点（hover/active 归专项 D 组件层，本层只管键盘）
+ *    选择器特异性 (0,1,1)：与 styles.css:4767 的四元素 :focus-visible 同特异性、
+ *    靠后加载 → outline: none 接管其 2px 旧品牌粉 outline，统一为双层 --focus-ring
+ *    （深/亮主题各有取值，见 tokens.css）。
+ *    说明：不在此规则中追加 border-radius —— 焦点态改写圆角会造成元素几何跳变；
+ *    ring 沿用元素自身圆角（无圆角元素为直角环，属预期）。
+ * ============================================================ */
+:is(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* 容器型输入让位：容器（D 的 :focus-within 环）即焦点指示，内部输入不再叠环 */
+.search-box input:focus-visible,
+.backtest-security-search input:focus-visible {
+  box-shadow: none;
+}
+
+/* 域内自有焦点样式让位（避免双指示，理由见文件头注 §3）：
+   域内 outline 已是可见键盘焦点，本层 ring 在这些域内退场 */
+.trend-screener :is(button, input, textarea, summary):focus-visible,
+.strategy-signals-view :is(button, input, textarea):focus-visible,
+.professional-review :is(button, input, textarea):focus-visible {
+  box-shadow: none;
+}
+
+/* ============================================================
+ * §4 滚动条精修
+ *    实现说明（重要，已登记专项文档 §6）：本应用为 Electron（仅 Chromium 渲染），
+ *    自 Chromium 121 起，同元素上非初始值的 scrollbar-width/scrollbar-color
+ *    会使 ::-webkit-scrollbar 系伪元素样式整体失效（标准属性优先的互操作约定）。
+ *    因此「精修（10px/圆角拇指/hover 加深/留白）」必须走 ::-webkit-scrollbar；
+ *    标准属性 scrollbar-width/color 仅作为不识别该伪元素的引擎的兜底，
+ *    收进 @supports not selector(::-webkit-scrollbar) 内 —— 若按任务原文直接写
+ *    `* { scrollbar-width: thin; … }` 会反过来废掉整个精修块，故作此层化处理。
+ * ============================================================ */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* 拇指：令牌色 + 全圆角；transparent 边 + background-clip 造 2px 环留白
+   （比「边用页面底色」更稳：滚动容器可能坐在 surface-1 面板上而非 page 上，
+   透明边露出的是真实底色，双主题、任意面板色下都正确） */
+::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border: 2px solid transparent;
+  border-radius: var(--radius-full);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background-color: transparent;
+}
+
+/* 标准属性兜底：仅供不识别 ::-webkit-scrollbar 的引擎（当前应用不会走到） */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+
+/* ============================================================
+ * §5 禁用态与输入光标
+ *    opacity 弱化为既有 :disabled 规则（如 .paper-trade-btn 灰渐变）之上的统一
+ *    反馈面；cursor 补齐 D 层 button:disabled 之外的输入族。
+ * ============================================================ */
+:is(button, input, select, textarea):disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+input,
+select,
+textarea {
+  caret-color: var(--accent);
+}

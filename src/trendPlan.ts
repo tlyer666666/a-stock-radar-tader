@@ -17,6 +17,18 @@ export type TrendPositionInput = {
   feeReserve: number;
   minimumBuyQuantity: number;
   quantityStep: number;
+  /** Optional explicit cost assumptions; omitted values retain legacy formula examples. */
+  commissionRate?: number;
+  minimumCommission?: number;
+  sellTaxRate?: number;
+  slippageRate?: number;
+  /** Additional adverse move below S. Included in the sizing constraint when configured. */
+  gapStressRatio?: number;
+  /** Existing combined risk amount in currency, including pending orders. */
+  portfolioRiskUsed?: number;
+  portfolioRiskCapRatio?: number;
+  medianAmount20?: number;
+  maxParticipationRatio?: number;
   alreadyHeld: boolean;
   permissionVerified: boolean;
   announcementVerified: boolean;
@@ -30,6 +42,10 @@ export type TrendPositionResult = {
   shares: number;
   cost: number;
   plannedLoss: number;
+  stressLoss: number;
+  roundTripCosts: number;
+  totalCashRequired: number;
+  remainingPortfolioRisk: number;
   positionRatio: number;
   riskRatio: number;
   riskBudget: number;
@@ -47,6 +63,7 @@ export function calculateTrendPosition(input: TrendPositionInput): TrendPosition
   const reasons: string[] = [];
   const result: TrendPositionResult = {
     eligible: false, reasons, shares: 0, cost: 0, plannedLoss: 0,
+    stressLoss: 0, roundTripCosts: 0, totalCashRequired: 0, remainingPortfolioRisk: 0,
     positionRatio: 0, riskRatio: 0, riskBudget: 0, budget: 0, stopDistanceRatio: 0
   };
   if (!positive(input.netAssetValue)) reasons.push("请填写有效账户净值");
@@ -64,6 +81,18 @@ export function calculateTrendPosition(input: TrendPositionInput): TrendPosition
   if (![input.minimumBuyQuantity, input.quantityStep].every((value) => Number.isSafeInteger(value) && value > 0)) {
     reasons.push("请核验并填写所属市场的最低买入数量和数量步长");
   }
+  const commissionRate = input.commissionRate ?? 0;
+  const minimumCommission = input.minimumCommission ?? 0;
+  const sellTaxRate = input.sellTaxRate ?? 0;
+  const slippageRate = input.slippageRate ?? 0;
+  const gapStressRatio = input.gapStressRatio ?? 0;
+  const portfolioRiskUsed = input.portfolioRiskUsed ?? 0;
+  const portfolioRiskCapRatio = input.portfolioRiskCapRatio ?? 0.03;
+  const maxParticipationRatio = input.maxParticipationRatio ?? 0.01;
+  if (![commissionRate, sellTaxRate, slippageRate, gapStressRatio, portfolioRiskCapRatio, maxParticipationRatio].every(ratio) ||
+      slippageRate >= 1 || gapStressRatio >= 1 || portfolioRiskCapRatio <= 0 || maxParticipationRatio <= 0 ||
+      !nonnegative(minimumCommission) || !nonnegative(portfolioRiskUsed)) reasons.push("费用、滑点、跳空压力与组合风险额度必须为有效非负参数");
+  if (input.medianAmount20 !== undefined && !positive(input.medianAmount20)) reasons.push("20日成交额中位数无效，不能核验订单参与比例");
   if (input.alreadyHeld !== false) reasons.push("同股持仓未结束前不重复开仓，不对亏损持仓补仓");
   if (input.permissionVerified !== true) reasons.push("交易权限及当日交易、数量规则尚未核验");
   if (input.announcementVerified !== true) reasons.push("公告与重大风险尚未核验");
@@ -73,10 +102,13 @@ export function calculateTrendPosition(input: TrendPositionInput): TrendPosition
   }
   if (reasons.length) return result;
 
-  result.riskBudget = money(input.netAssetValue * 0.005);
-  result.stopDistanceRatio = (input.entryPrice - input.stopPrice) / input.entryPrice;
+  result.remainingPortfolioRisk = Math.max(0, input.netAssetValue * portfolioRiskCapRatio - portfolioRiskUsed);
+  result.riskBudget = Math.floor(Math.min(input.netAssetValue * 0.005, result.remainingPortfolioRisk) * 100) / 100;
+  if (result.riskBudget <= 0) reasons.push("组合剩余风险额度已用尽（含未成交计划），暂停新增风险");
+  const entryFill = input.entryPrice * (1 + slippageRate);
+  result.stopDistanceRatio = (entryFill - input.stopPrice) / entryFill;
   if (input.entryPrice <= input.stopPrice) reasons.push("拟成交价必须高于冻结止损 S");
-  if (input.entryPrice > input.maxEntryPrice) reasons.push("拟成交价超过 Pmax，取消本次入场");
+  if (entryFill > input.maxEntryPrice) reasons.push("拟成交价加滑点超过 Pmax，取消本次入场");
   if (input.minEntryPrice !== undefined && input.entryPrice < input.minEntryPrice) reasons.push("拟成交价低于冻结突破下限，取消本次入场");
   if (result.stopDistanceRatio > 0.08 + 1e-10) reasons.push("拟成交价至止损的幅度超过 8%");
   if (input.openPositions >= 6) reasons.push("同时持有最多 6 只，当前无新增名额");
@@ -84,29 +116,58 @@ export function calculateTrendPosition(input: TrendPositionInput): TrendPosition
   if (input.portfolioExposureRatio >= 0.6) reasons.push("组合总仓位已达 60% 上限");
   if (reasons.length) return result;
 
+  // Preserve the original principal reserve cap, then enforce actual modeled cash and
+  // loss constraints on valid board quantities. Binary search is monotonic even with
+  // minimum commissions and avoids an unsafe round-up after estimating unit risk.
   const positionCap = Math.min(0.15, 0.005 / result.stopDistanceRatio,
     0.25 - input.industryExposureRatio, 0.6 - input.portfolioExposureRatio);
   const principalBudget = Math.max(0,
     Math.min(input.netAssetValue * positionCap, input.cashAvailable) - input.feeReserve);
   result.budget = Math.floor((principalBudget + 1e-8) * 100) / 100;
-  const maximumShares = Math.floor((principalBudget + 1e-8) / input.entryPrice);
-  if (maximumShares < input.minimumBuyQuantity) {
-    reasons.push("扣除预留费用后，可买数量不足已核验的最低买入数量");
-    return result;
-  }
-  const shares = input.minimumBuyQuantity +
-    Math.floor((maximumShares - input.minimumBuyQuantity) / input.quantityStep) * input.quantityStep;
-  const cost = shares * input.entryPrice;
-  const loss = shares * (input.entryPrice - input.stopPrice);
-  // Guard against unsafe numeric inputs rather than yielding a misleading plan.
-  if (!Number.isSafeInteger(shares) || !Number.isFinite(cost) ||
-      cost + input.feeReserve > input.cashAvailable + 1e-8 ||
-      loss > input.netAssetValue * 0.005 + 1e-8) {
+  const exitFill = input.stopPrice * (1 - slippageRate);
+  const stressFill = input.stopPrice * (1 - gapStressRatio) * (1 - slippageRate);
+  const commission = (principal: number) => Math.max(minimumCommission, principal * commissionRate);
+  const amounts = (shares: number) => {
+    const cost = shares * entryFill;
+    const buyFee = commission(cost);
+    const exitProceeds = shares * exitFill;
+    const stressProceeds = shares * stressFill;
+    const roundTripCosts = buyFee + commission(exitProceeds) + exitProceeds * sellTaxRate;
+    return { cost, roundTripCosts,
+      plannedLoss: cost - exitProceeds + roundTripCosts,
+      stressLoss: cost - stressProceeds + buyFee + commission(stressProceeds) + stressProceeds * sellTaxRate,
+      totalCashRequired: cost + buyFee + input.feeReserve };
+  };
+  const maximumShares = Math.floor(principalBudget / entryFill + 1e-8);
+  const maxSteps = Math.floor((maximumShares - input.minimumBuyQuantity) / input.quantityStep);
+  if (!Number.isSafeInteger(maxSteps)) {
     reasons.push("数量或预算无法可靠计算，请复核账户、价格及交易单位");
     return result;
   }
-  return { ...result, eligible: true, shares, cost: money(cost), plannedLoss: money(loss),
-    positionRatio: cost / input.netAssetValue, riskRatio: loss / input.netAssetValue };
+  const fits = (shares: number) => {
+    const amount = amounts(shares);
+    return Number.isSafeInteger(shares) && Object.values(amount).every(Number.isFinite) &&
+      amount.cost <= principalBudget + 1e-8 && amount.totalCashRequired <= input.cashAvailable + 1e-8 &&
+      amount.plannedLoss <= result.riskBudget + 1e-8 && amount.stressLoss <= result.riskBudget + 1e-8 &&
+      (input.medianAmount20 === undefined || amount.cost <= input.medianAmount20 * maxParticipationRatio + 1e-8);
+  };
+  let lo = 0, hi = maxSteps, best = -1;
+  while (lo <= hi) {
+    const middle = lo + Math.floor((hi - lo) / 2);
+    if (fits(input.minimumBuyQuantity + middle * input.quantityStep)) { best = middle; lo = middle + 1; }
+    else hi = middle - 1;
+  }
+  if (best < 0) {
+    reasons.push("现金、含费用风险、跳空压力或成交额参与额度不足最低买入数量");
+    return result;
+  }
+  const shares = input.minimumBuyQuantity + best * input.quantityStep;
+  const amount = amounts(shares);
+  return { ...result, eligible: true, shares,
+    cost: money(amount.cost), plannedLoss: money(amount.plannedLoss), stressLoss: money(amount.stressLoss),
+    roundTripCosts: money(amount.roundTripCosts), totalCashRequired: money(amount.totalCashRequired),
+    positionRatio: amount.cost / input.netAssetValue, riskRatio: amount.plannedLoss / input.netAssetValue };
+
 }
 
 export type TrendExitInput = {

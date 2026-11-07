@@ -4,8 +4,9 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const views = [
-  ['trend-screener', '涨停趋势'], ['signals', '策略信号'], ['sectors', '板块强度'],
-  ['dashboard', '涨停监控'], ['watchlist', '观察池'], ['favorites', '自选板块'],
+  // 「涨停趋势」与「策略信号」已合并为「策略选股」；趋势模型在其策略库内打开（见 frontend-v150.test.cjs）。
+  ['signals', '策略选股'], ['sectors', '板块强度'],
+  ['dashboard', '涨停监控'], ['beijing', '北交所'], ['watchlist', '观察池'], ['favorites', '自选板块'],
   ['holdings', '持仓股'], ['review', '专业复盘'], ['compare', '多股同列'],
   ['backtest', '回测中心'], ['news', '资讯中心'], ['settings', '数据源设置']
 ];
@@ -58,6 +59,11 @@ async function openView(page,id,label) {
   await page.getByRole('button',{ name: label, exact: true }).first().click();
   await page.locator(`.app-shell[data-workspace="${id}"]`).waitFor();
   await page.locator('.main > .page').waitFor();
+  // `data-workspace` flips and the `.page` container exists before the lazy-loaded view
+  // has committed, so waiting on those alone leaves an empty container. Wait for the
+  // view to actually have content; how many frames Suspense needs is an implementation
+  // detail that changed between React versions and must not be assumed.
+  await page.waitForFunction(() => ((document.querySelector('.main > .page')||{}).innerText || '').length >= 30);
   await page.locator('.main > .page').evaluate(el => { el.scrollTop = 0; });
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }

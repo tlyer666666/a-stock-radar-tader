@@ -16,12 +16,73 @@ function readJsonFile(filePath, validator) {
   }
 }
 
+/**
+ * ERR-03 修复：主备文件**同时**损坏时必须让上层知道，不能静默回退。
+ *
+ * 原实现双损坏时直接返回 fallback 且 recovered=false，与「文件不存在」
+ * 无法区分。后果：启动时的自动合并会把默认值写回磁盘，覆盖掉损坏但
+ * 仍可能人工恢复的原始数据，造成不可逆丢失（23/23 持久化测试均未覆盖该分支）。
+ *
+ * 新契约（向后兼容，只增加字段）：
+ *   { value, recovered, corrupted }
+ *   · corrupted=true 表示「主备都读失败且至少有一份存在过」—— 上层应
+ *     备份损坏文件再写，而不是直接覆盖。
+ *
+ * 备份损坏文件：把读失败的原文件复制为 `<name>.corrupted-<时间戳>`，
+ * 保留最后一次人工抢救的机会。
+ */
+// E-05：损坏副本必须有上限。轮询/高频读取每次遇到损坏文件都会复制一份
+// .corrupted-<时间戳>，原实现无上限增长（实测连续 5 次读取产生 5 份）。
+// 现按「同一源文件只保留最近 CORRUPTED_COPY_LIMIT 份」清理更早的副本；
+// 时间戳由 ISO 派生且定长，按文件名升序即按时间升序。
+const CORRUPTED_COPY_LIMIT = 3;
+
+function pruneCorruptedCopies(filePath, limit = CORRUPTED_COPY_LIMIT) {
+  try {
+    const directory = path.dirname(filePath);
+    const prefix = `${path.basename(filePath)}.corrupted-`;
+    const keep = Math.max(0, Math.floor(Number(limit) || 0));
+    const copies = fs.readdirSync(directory).filter((name) => name.startsWith(prefix)).sort();
+    for (const name of copies.slice(0, Math.max(0, copies.length - keep))) {
+      fs.rmSync(path.join(directory, name), { force: true });
+    }
+  } catch {
+    // 清理失败不能影响主读取路径：最坏情况是副本多留几份。
+  }
+}
+
+function quarantineFile(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    let target = `${filePath}.corrupted-${stamp}`;
+    // 同一毫秒内连续读取会撞名；撞名时加序号，否则 5 次读取只会留下 1 份。
+    for (let sequence = 1; fs.existsSync(target); sequence += 1) {
+      target = `${filePath}.corrupted-${stamp}-${sequence}`;
+    }
+    fs.copyFileSync(filePath, target);
+    pruneCorruptedCopies(filePath);
+    return target;
+  } catch {
+    return null;
+  }
+}
+
 function readJsonWithBackup(filePath, backupPath, fallback, validator) {
   const primary = readJsonFile(filePath, validator);
-  if (primary.ok) return { value: primary.value, recovered: false };
+  if (primary.ok) return { value: primary.value, recovered: false, corrupted: false };
   const backup = readJsonFile(backupPath, validator);
-  if (backup.ok) return { value: backup.value, recovered: true };
-  return { value: fallback, recovered: false };
+  if (backup.ok) return { value: backup.value, recovered: true, corrupted: false };
+
+  // 双损坏：主备都存在但都读不出来 → 这是真实的数据损坏，
+  // 不是「首次运行」。把损坏文件留档，并标记 corrupted 让上层避免静默覆盖。
+  const hadPrimary = fs.existsSync(filePath);
+  const hadBackup = fs.existsSync(backupPath);
+  const corrupted = hadPrimary || hadBackup;
+  const quarantined = corrupted
+    ? [quarantineFile(filePath), quarantineFile(backupPath)].filter(Boolean)
+    : [];
+  return { value: fallback, recovered: false, corrupted, quarantined };
 }
 
 function capItemsPreservingFavorites(items, limit = 500, isFavorite = (item) => item?.favorite === true) {
@@ -57,7 +118,7 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
   fs.mkdirSync(directory, { recursive: true });
   const temporaryPath = path.join(
     directory,
-    `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
   );
   const previousBackupPath = path.join(path.dirname(backupPath), `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.rollback.tmp`);
   let backupWasReplaced = false;
@@ -95,7 +156,13 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
       backupWasReplaced = true;
     }
     // Never replace a known-good backup with a corrupt primary file.
-    else if (primaryWasValid) replaceBackup();
+    else if (primaryWasValid) {
+      try { replaceBackup(); }
+      catch (error) {
+        try { if (typeof onBackupError === 'function') onBackupError(error); }
+        catch { /* Optional diagnostics cannot prevent the primary commit. */ }
+      }
+    }
     try {
       fs.renameSync(temporaryPath, filePath);
     } catch (error) {
@@ -140,8 +207,8 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
 }
 
 module.exports = {
+  CORRUPTED_COPY_LIMIT,
   capItemsPreservingFavorites,
-  readJsonFile,
   readJsonWithBackup,
   writeJsonAtomic
 };

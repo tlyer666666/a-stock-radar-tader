@@ -119,3 +119,16 @@ test("explicit short token expiry never remains cached beyond the server lifetim
     assert.ok(expiresAt>=1000);assert.ok(expiresAt<=1000+seconds*1000);
   }
 });
+
+test('different credentials retain independent caches under the same namespace',async()=>{
+ let calls=0;
+ const fetchJson=async(_,request)=>{calls++;return {data:{access_token:`access-${request.headers.refresh_token}`,expires_in:3600}};};
+ const options={baseUrl:'https://example.test',cacheKey:'credential-isolation'};
+ assert.equal(await getThsAccessToken('alpha',fetchJson,options),'access-alpha');
+ assert.equal(await getThsAccessToken('beta',fetchJson,options),'access-beta');
+ assert.equal(await getThsAccessToken('alpha',fetchJson,options),'access-alpha');
+ assert.equal(calls,2);
+ invalidateThsAccessToken('beta',options.cacheKey);
+ assert.equal(await getThsAccessToken('alpha',fetchJson,options),'access-alpha');
+ assert.equal(calls,2);
+});

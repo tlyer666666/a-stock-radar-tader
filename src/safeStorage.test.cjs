@@ -58,3 +58,17 @@ test('a committed first primary remains successful if optional backup allocation
   assert.equal(subject.saveSafeLocalJson('first', ['committed']), true);
   assert.deepEqual(subject.loadSafeLocalJson('first', []), ['committed']);
 });
+
+test('backup quota cannot prevent replacing the committed primary', () => {
+  values.set('list', '["old"]'); values.set('list:last-good', '["older"]');
+  window.localStorage.setItem = (key, value) => { if (key.endsWith(':last-good')) throw new DOMException('full', 'QuotaExceededError'); values.set(key, String(value)); };
+  assert.equal(subject.saveSafeLocalJson('list', ['new']), true);
+  assert.deepEqual(subject.loadSafeLocalJson('list', []), ['new']);
+});
+test('primary quota retries after reclaiming the optional backup', () => {
+  values.set('list', '["old"]'); values.set('list:last-good', '["older"]');
+  window.localStorage.removeItem = key => values.delete(key);
+  window.localStorage.setItem = (key, value) => { if(key === 'list' && values.has('list:last-good')) throw new DOMException('full', 'QuotaExceededError'); values.set(key, String(value)); };
+  assert.equal(subject.saveSafeLocalJson('list', ['new']), true);
+  assert.deepEqual(subject.loadSafeLocalJson('list', []), ['new']);
+});

@@ -23,7 +23,8 @@ function fixture(seed) {
     let volume = 8000000 + Math.floor(random() * 1000000);
     if (index === 291) volume = 16000000;
     if (index === 299) volume = 9000000;
-    history.push({ date: new Date(Date.UTC(2024, 0, index + 1)).toISOString().slice(0, 10), open, high, low, close, volume, amount: 300000000 });
+    const unusualSession = index > 0 && Math.abs((close / history[index - 1].close - 1) * 100) > 10.75;
+    history.push({ ...(unusualSession ? { noPriceLimit: true } : {}), date: new Date(Date.UTC(2024, 0, index + 1)).toISOString().slice(0, 10), open, high, low, close, volume, amount: 300000000 });
   }
   const benchmark = history.map(({ date }) => ({ date, open: 100, close: 100, high: 101, low: 99, volume: 1, amount: 1 }));
   return { history, benchmark, security: { code: "600001", secid: "1.600001", name: "固定虚构样本" } };
@@ -35,14 +36,15 @@ function reportFor(input) {
 
 test("six sourced combinations extend the original fourteen bases and four composites", () => {
   const report = engine.buildStrategySignalReport();
-  assert.equal(report.strategies.length, 32);
-  assert.equal(report.strategies.filter(item => item.type === "base").length, 14);
+  // 2026-11-05 新增「连板后缩量回调」（基础策略），历史回放仍覆盖已下线的策略。
+  assert.equal(report.strategies.length, 43);
+  assert.equal(report.strategies.filter(item => item.type === "base").length, 25);
   assert.equal(report.strategies.filter(item => item.type === "composite").length, 18);
   const catalog = require("../config/strategy-signal-combinations.json");
   assert.deepEqual(catalog.slice(0, 6).map(item => item.id), ids);
   for (const id of ids) {
     const item = report.strategies.find(item => item.id === id);
-    assert.equal(item.version, "1.0.0");
+    assert.equal(item.version, "1.2.0");
     assert.equal(item.type, "composite");
     assert.ok(item.sources.length >= 2);
     assert.ok(item.sources.every(source => /^https:\/\/(help\.tdx\.com\.cn|search\.10jqka\.com\.cn)\//.test(source.url)));
@@ -66,7 +68,7 @@ for (const [index, id] of ids.entries()) {
     assert.ok(stock.componentEvidence.length >= 2);
     assert.ok(stock.componentEvidence.every(item => item.passed));
     assert.ok(Object.values(stock.signalEvidence.indicators).every(Number.isFinite));
-    const definition = engine.STRATEGY_DEFINITIONS.find(item => item.id === id);
+    const definition = engine.ALL_STRATEGY_DEFINITIONS.find(item => item.id === id);
     const feature = engine.__test.buildFeatureTimeline(input.history, input.security.code, input.security.name, input.benchmark).at(-1);
     assert.equal(definition.matches(feature), true);
     for (const atom of ["shape", "confirmation"]) {
@@ -76,7 +78,7 @@ for (const [index, id] of ids.entries()) {
     }
     const replay = engine.buildSelectedStrategyReplay([id], input.security, input.history, input.benchmark);
     assert.ok(replay.matchedSignalCount > 0);
-    assert.equal(replay.version, "1.0.0");
+    assert.equal(replay.version, "1.2.0");
   });
 }
 
@@ -140,7 +142,7 @@ test("pre-reform ChiNext shape and new common evidence agree causally on ten-per
   assert.equal(feature.eventDate, input.history[291].date);
   assert.equal(feature.signalCombinations.limit.rate, .1);
   assert.equal(feature.signalCombinations.common, true);
-  assert.equal(engine.STRATEGY_DEFINITIONS.find(row => row.id === ids[0]).matches(feature), true);
+  assert.equal(engine.ALL_STRATEGY_DEFINITIONS.find(row => row.id === ids[0]).matches(feature), true);
   input.history.push({ ...input.history.at(-1), date: "2026-09-30", close: 99, high: 100 });
   input.benchmark.push({ ...input.benchmark.at(-1), date: "2026-09-30" });
   assert.deepEqual(timeline()[299], feature);
@@ -156,10 +158,13 @@ test("new source metadata survives the worker/service audit while insufficient e
   for (const id of ids) {
     const audited = report.auditedStrategies.find(item => item.id === id);
     const summary = report.strategyAudit.find(item => item.id === id);
-    assert.equal(audited.version, "1.0.0");
+    assert.equal(audited.version, "1.2.0");
     assert.deepEqual(audited.sources, summary.sources);
     assert.equal(audited.publicationAccepted, false);
-    assert.equal(report.strategies.some(item => item.id === id), false);
+    // 未发布的策略仍会出现（供用户查看命中股票），但必须标记为未发布、未验证。
+    const exposed = report.strategies.find(item => item.id === id);
+    assert.equal(exposed.publicationAccepted, false);
+    assert.ok(exposed.stocks.every(stock => stock.validationPassed === false));
   }
 });
 
@@ -167,7 +172,7 @@ test("new combination metadata and signals also flow through multi-stock selecte
   const input = fixture(127);
   const report = engine.buildSelectedStrategyPortfolioReplay([ids[0]], [input.security],
     { [input.security.code]: input.history }, input.benchmark);
-  assert.equal(report.version, "1.0.0");
+  assert.equal(report.version, "1.2.0");
   assert.equal(report.sources.length, 2);
   assert.ok(report.matchedSignalCount > 0);
 });
@@ -175,9 +180,9 @@ test("new combination metadata and signals also flow through multi-stock selecte
 module.exports = { fixture, ids, seeds };
 
 const expansionIds = ['limit_rsi_pullback_resonance','limit_cci_breakout_resonance','limit_roc_reclaim_resonance','limit_emv_dryup_resonance','limit_mfi_pullback_resonance','limit_donchian_breakout_resonance','limit_rsi_mfi_resonance','limit_cci_roc_resonance'];
-test('v1.4 expands to 32 signals with eight separately identified indicator combinations',()=>{
- const report=engine.buildStrategySignalReport();assert.equal(report.strategies.length,32);
- assert.equal(report.strategies.filter(row=>row.type==='base').length,14);
+test('versioned catalog retains old IDs and adds relative strength and the volume rebound hold to 34 signals with eight separately identified indicator combinations',()=>{
+ const report=engine.buildStrategySignalReport();assert.equal(report.strategies.length,43);
+ assert.equal(report.strategies.filter(row=>row.type==='base').length,25);
  assert.equal(report.strategies.filter(row=>row.type==='composite').length,18);
  const catalog=require('../config/strategy-signal-combinations.json');assert.deepEqual(catalog.slice(6).map(row=>row.id),expansionIds);
  const input=fixture(127);const feature=engine.__test.buildFeatureTimeline(input.history,input.security.code,input.security.name,input.benchmark).at(-1);
@@ -188,7 +193,7 @@ const expansionSeeds=[3,570,341,5,3,570,7,544];
 for(const [index,id] of expansionIds.entries()){
  test(`${id} has a causal OHLCV positive and cannot bypass any required component`,()=>{
   const input=fixture(expansionSeeds[index]);const feature=engine.__test.buildFeatureTimeline(input.history,input.security.code,input.security.name,input.benchmark).at(-1);
-  const definition=engine.STRATEGY_DEFINITIONS.find(row=>row.id===id);assert.equal(definition.matches(feature),true);
+  const definition=engine.ALL_STRATEGY_DEFINITIONS.find(row=>row.id===id);assert.equal(definition.matches(feature),true);
   const group=reportFor(input).strategies.find(row=>row.id===id);assert.equal(group.stocks.length,1);
   assert.ok(group.stocks[0].componentEvidence.every(row=>row.passed));
   for(const key of ['shape','confirmation']){const copy=structuredClone(feature);copy.signalCombinations.matches[id][key]=false;assert.equal(definition.matches(copy),false,key);}

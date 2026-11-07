@@ -1,3 +1,12 @@
+const { preLimitRangePosition, LOW_POSITION } = require("./strategy-selection-rules.cjs");
+const { anchoredVwap } = require("./market-history-rules.cjs");
+const {
+  isBseAshareCode,
+  isLimitUpBar,
+  isOpeningLimitUpEntry,
+  upperLimitPrice
+} = require("./price-limit-rules.cjs");
+
 function average(values) {
   const valid = values.filter(Number.isFinite);
   return valid.length ? valid.reduce((sum, value) => sum + value, 0) / valid.length : 0;
@@ -8,17 +17,6 @@ function median(values) {
   if (!valid.length) return 0;
   const middle = Math.floor(valid.length / 2);
   return valid.length % 2 ? valid[middle] : (valid[middle - 1] + valid[middle]) / 2;
-}
-
-function roundPrice(value) {
-  return Math.round(value * 100 + 1e-7) / 100;
-}
-
-function priceLimitRate(code, name = "") {
-  if (/ST|\*ST/i.test(name)) return 0.05;
-  if (/^(300|301|302|688|689)/.test(code)) return 0.2;
-  if (/^(8|4|9)/.test(code)) return 0.3;
-  return 0.1;
 }
 
 function formatPoolTime(value) {
@@ -32,17 +30,30 @@ function poolTimeMinutes(value) {
   return Number(text.slice(0, 2)) * 60 + Number(text.slice(2, 4));
 }
 
+/**
+ * A2-01/A2-02：缺失的盘口字段必须保持 null，不能被折算成 0。
+ * 0 是一个有意义的观测值（0 次开板是最好的首板、0 封单比是最差的一档），
+ * 把"没有数据"写成 0 会让首板质量按满分给分并把 dataComplete 谎报为 true。
+ * 与 failed-board-history.cjs 的 nullablePoolMetric 同一口径：不可得 → null。
+ */
+function nullablePoolNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 function decorateLimitPoolItem(raw, date = "") {
   const code = String(raw?.c || raw?.code || "");
   const market = Number(raw?.m ?? (/^(6|68)/.test(code) ? 1 : 0));
   const floatMarketCap = Number(raw?.ltsz || raw?.floatMarketCap || 0);
   const sealedAmount = Number(raw?.fund || raw?.sealedAmount || 0);
   const amount = Number(raw?.amount || 0);
+  const hasFloatCap = Number.isFinite(floatMarketCap) && floatMarketCap > 0;
   return {
     code,
     name: String(raw?.n || raw?.name || code),
     secid: `${market}.${code}`,
-    thscode: `${code}.${market === 1 ? "SH" : /^(8|4|9)/.test(code) ? "BJ" : "SZ"}`,
+    thscode: `${code}.${market === 1 ? "SH" : isBseAshareCode(code) ? "BJ" : "SZ"}`,
     latest: Number(raw?.p || 0) / (raw?.p ? 1000 : 1),
     changePct: Number(raw?.zdp || raw?.changePct || 0),
     turnover: Number(raw?.hs || raw?.turnover || 0),
@@ -51,15 +62,15 @@ function decorateLimitPoolItem(raw, date = "") {
     totalMarketCap: Number(raw?.tshare || raw?.totalMarketCap || 0),
     industry: raw?.hybk || raw?.industry || "未分类",
     limitDate: date,
-    consecutiveBoards: Number(raw?.lbc || raw?.consecutiveBoards || 1),
+    consecutiveBoards: Number(raw?.lbc ?? raw?.consecutiveBoards) >= 1 ? Number(raw.lbc ?? raw.consecutiveBoards) : null,
     firstSealTime: formatPoolTime(raw?.fbt ?? raw?.firstSealRaw),
     lastSealTime: formatPoolTime(raw?.lbt ?? raw?.lastSealRaw),
     firstSealRaw: Number(raw?.fbt ?? raw?.firstSealRaw ?? 0),
     lastSealRaw: Number(raw?.lbt ?? raw?.lastSealRaw ?? 0),
-    openBoardCount: Number(raw?.zbc ?? raw?.openBoardCount ?? 0),
+    openBoardCount: nullablePoolNumber(raw?.zbc ?? raw?.openBoardCount),
     sealedAmount,
-    sealFloatRatio: floatMarketCap ? sealedAmount / floatMarketCap : 0,
-    tradedFloatRatio: floatMarketCap ? amount / floatMarketCap : 0,
+    sealFloatRatio: hasFloatCap && Number.isFinite(sealedAmount) ? sealedAmount / floatMarketCap : null,
+    tradedFloatRatio: hasFloatCap && Number.isFinite(amount) ? amount / floatMarketCap : null,
     limitStats: {
       windowDays: Number(raw?.zttj?.days || raw?.limitStats?.windowDays || 0),
       count: Number(raw?.zttj?.ct || raw?.limitStats?.count || 0)
@@ -214,10 +225,8 @@ function detectLimitEvents(history, code, name) {
   for (let index = 1; index < history.length; index += 1) {
     const previous = history[index - 1];
     const day = history[index];
-    const target = roundPrice(Number(previous.close) * (1 + priceLimitRate(code, name)));
-    if (Number(day.close) >= target - 0.011 && Number(day.high) >= target - 0.011) {
-      events.push({ ...day, index, target });
-    }
+    if (!isLimitUpBar(Number(previous.close), day, code, name)) continue;
+    events.push({ ...day, index, target: upperLimitPrice(Number(previous.close), day, code, name) });
   }
   return events;
 }
@@ -401,9 +410,7 @@ function featureSnapshot(history, event, evaluationIndex, events) {
   const since = history.slice(event.index, evaluationIndex + 1);
   const minLow = Math.min(...since.map((item) => Number(item.low)));
   const heldSupport = minLow >= Number(event.low) - 0.001;
-  const avwapVolume = since.reduce((sum, item) => sum + Number(item.volume || 0), 0);
-  const avwapAmount = since.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const avwap = avwapVolume ? avwapAmount / (avwapVolume * 100) : 0;
+  const avwap = anchoredVwap(since);
   const ma5 = movingAverage(history, 5, evaluationIndex);
   const ma10 = movingAverage(history, 10, evaluationIndex);
   const ma20 = movingAverage(history, 20, evaluationIndex);
@@ -440,6 +447,7 @@ function featureSnapshot(history, event, evaluationIndex, events) {
   const preLimitReturn20 = Number(history[start20]?.close)
     ? ((Number(history[event.index - 1]?.close) / Number(history[start20].close)) - 1) * 100
     : 0;
+  const preLimitPosition = preLimitRangePosition(history, event.index);
   const reclaimedSupport = Number(latest.low) < Number(event.low) && Number(latest.close) >= Number(event.low);
   const lowOpenRecovery = Boolean(
     previousDay &&
@@ -470,7 +478,9 @@ function featureSnapshot(history, event, evaluationIndex, events) {
       volumeRatio >= 1.1 &&
       volumeRatio <= 2.2 &&
       heldSupport,
-    lowFirstBoard: recentEventCount === 1 && preLimitReturn20 >= -25 && preLimitReturn20 <= 15 && heldSupport,
+    // Same "低位" definition as the strategy-signal rule (shared helper, v1.2.0).
+    lowFirstBoard: recentEventCount === 1 && preLimitReturn20 >= -25 && preLimitReturn20 <= 15 && heldSupport &&
+      (preLimitPosition === null || preLimitPosition <= LOW_POSITION.maxPosition),
     weakToStrong: (reclaimedSupport || lowOpenRecovery) && closePosition >= 0.7 && volumeRatio <= 1.8,
     ...patternStrategies,
     riskVeto:
@@ -520,6 +530,34 @@ function strategyMatched(id, feature) {
     case "riskVeto": return feature.riskVeto;
     default: return null;
   }
+}
+
+/** Settings factor ids replayable from daily bars alone, and those that need sector/news/emotion/seal data. */
+const LEGACY_DAILY_FACTORS = Object.freeze(["support", "avwap", "trend", "contraction", "volatility", "exactNode", "lowFirstBoard",
+  "originBreakout", "vcpCompression", "chipLock", "secondBreakout", "weakToStrong", "riskVeto"]);
+const LEGACY_EXTERNAL_FACTORS = Object.freeze(["sector", "sectorLeader", "sectorLadder", "information", "marketEmotion", "firstBoardQuality"]);
+const limitEventsByHistory = new WeakMap();
+
+/**
+ * The 个股分析 daily factors for one evaluation day, computed with the same
+ * featureSnapshot/strategyMatched used by the per-stock replay. Like the live
+ * analysis, the event is the latest limit-up in the last 60 sessions; only
+ * bars up to evaluationIndex are used.
+ */
+function legacyFactorSnapshot(history, evaluationIndex, code, name) {
+  if (!Array.isArray(history) || !Number.isInteger(evaluationIndex) || evaluationIndex < 1 || evaluationIndex >= history.length) return null;
+  let events = limitEventsByHistory.get(history);
+  if (!events) { events = detectLimitEvents(history, code, name); limitEventsByHistory.set(history, events); }
+  const visible = events.filter((item) => item.index <= evaluationIndex);
+  const event = visible.filter((item) => item.index >= evaluationIndex - 59).at(-1);
+  if (!event) {
+    return { hasEvent: false, daysSinceLimit: null, eventDate: "", factors: Object.fromEntries(LEGACY_DAILY_FACTORS.map((id) => [id, false])) };
+  }
+  const feature = featureSnapshot(history, event, evaluationIndex, visible);
+  const daysSinceLimit = evaluationIndex - event.index;
+  const factors = Object.fromEntries(LEGACY_DAILY_FACTORS.map((id) => [id,
+    id === "exactNode" ? [3, 5, 7, 9].includes(daysSinceLimit) : strategyMatched(id, feature) === true]));
+  return { hasEvent: true, daysSinceLimit, eventDate: event.date || "", factors };
 }
 
 function confidenceFor(sampleCount) {
@@ -642,13 +680,8 @@ function buildHistoricalStrategyStats(
       const entry = history[entryIndex];
       const entryPrice = Number(entry.open);
       if (!entryPrice) continue;
-      const entryTarget = roundPrice(
-        Number(evaluation.close) * (1 + priceLimitRate(code, name))
-      );
-      const onePriceLimitUp =
-        Number(entry.low) >= entryTarget - 0.011 &&
-        Math.abs(Number(entry.high) - Number(entry.low)) < 0.001;
-      if (onePriceLimitUp) {
+      const openingLimitUp = isOpeningLimitUpEntry(Number(evaluation.close), entry, code, name);
+      if (openingLimitUp || entry.volume === null || entry.volume === undefined || !Number.isFinite(Number(entry.volume)) || Number(entry.volume) <= 0) {
         untradeableCount += 1;
         continue;
       }
@@ -717,7 +750,7 @@ function buildHistoricalStrategyStats(
     range: `${history[0]?.date || ""} 至 ${history.at(-1)?.date || ""}`,
     totalEvents: events.length,
     rawEventCount: rawEvents.length,
-    entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入；一字涨停不可成交样本剔除",
+    entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入；开盘涨停或无有效成交量样本剔除",
     benchmarkAvailable: Array.isArray(benchmarkHistory) && benchmarkHistory.length > 0,
     untradeableCount,
     stats: [
@@ -744,7 +777,7 @@ function buildHistoricalStrategyStats(
   };
 }
 
-function buildSectorLadder({ currentPool = [], previousPool = [], failedPool = [], memberCodes = [] } = {}) {
+function buildSectorLadder({ currentPool = [], previousPool = [], failedPool = null, memberCodes = [], previousDate = "", currentDate = "" } = {}) {
   const members = new Set(memberCodes.map(String));
   const inSector = (item) => !members.size || members.has(String(item.code));
   const current = (Array.isArray(currentPool) ? currentPool : []).filter(inSector);
@@ -753,16 +786,16 @@ function buildSectorLadder({ currentPool = [], previousPool = [], failedPool = [
   const failed = failedPoolAvailable ? failedPool.filter(inSector) : [];
   const previousCodes = new Set(previous.map((item) => String(item.code)));
   const promoted = current.filter((item) => previousCodes.has(String(item.code)));
-  const maxHeight = current.length
-    ? Math.max(...current.map((item) => Number(item.consecutiveBoards || 1)))
-    : 0;
-  const levels = [...new Set(current.map((item) => Number(item.consecutiveBoards || 1)))]
+  const known = current.filter(item => item.consecutiveBoards != null && Number(item.consecutiveBoards) >= 1);
+  const maxHeight = known.length ? Math.max(...known.map(item => Number(item.consecutiveBoards))) : current.length ? null : 0;
+  const previousAvailable = previous.length > 0 || Boolean(previousDate && previousDate !== currentDate);
+  const levels = [...new Set(known.map((item) => Number(item.consecutiveBoards)))]
     .sort((a, b) => b - a)
     .map((height) => ({
       height,
       label: height === 1 ? "首板" : `${height}连板`,
-      stocks: current
-        .filter((item) => Number(item.consecutiveBoards || 1) === height)
+      stocks: known
+        .filter((item) => Number(item.consecutiveBoards) === height)
         .sort((a, b) => Number(a.firstSealRaw || 999999) - Number(b.firstSealRaw || 999999))
         .map((item) => ({
           code: item.code,
@@ -772,13 +805,13 @@ function buildSectorLadder({ currentPool = [], previousPool = [], failedPool = [
           turnover: item.turnover
         }))
     }));
-  const promotionRate = previous.length ? promoted.length / previous.length : 0;
+  const promotionRate = previousAvailable ? previous.length ? promoted.length / previous.length : 0 : null;
   const breakRate = failedPoolAvailable
     ? current.length + failed.length
       ? failed.length / (current.length + failed.length)
       : 0
     : null;
-  const ladderScore = failedPoolAvailable
+  const ladderScore = failedPoolAvailable && previousAvailable && known.length === current.length
     ? Math.round(
         Math.max(
           0,
@@ -796,8 +829,8 @@ function buildSectorLadder({ currentPool = [], previousPool = [], failedPool = [
   return {
     currentLimitUps: current.length,
     previousLimitUps: previous.length,
-    firstBoards: current.filter((item) => Number(item.consecutiveBoards || 1) === 1).length,
-    continuationBoards: current.filter((item) => Number(item.consecutiveBoards || 1) > 1).length,
+    firstBoards: known.filter((item) => Number(item.consecutiveBoards) === 1).length,
+    continuationBoards: known.filter((item) => Number(item.consecutiveBoards) > 1).length,
     failedBoards: failedPoolAvailable ? failed.length : null,
     failedPoolAvailable,
     promotedCount: promoted.length,
@@ -809,18 +842,32 @@ function buildSectorLadder({ currentPool = [], previousPool = [], failedPool = [
     score: ladderScore,
     state: !failedPoolAvailable
       ? "炸板数据缺失"
-      : ladderScore >= 80 ? "梯队完整" :
+      : ladderScore === null ? "梯队资料待确认" : ladderScore >= 80 ? "梯队完整" :
         ladderScore >= 65 ? "梯队增强" :
           ladderScore >= 50 ? "首板扩散" :
             ladderScore >= 35 ? "梯队分化" : "梯队退潮"
   };
 }
 
+/**
+ * C2-03：ST/退市风险名称的统一判定，供选股报告、策略信号与趋势扫描共用。
+ * 原三处口径不一致：选股报告 /ST|退/i、策略信号 /ST|\*ST/i、趋势扫描 /\*?ST|退市|退$/i。
+ * 差异实例：「XX退」（退市整理期）会被策略信号放行，而「退市XX」在趋势扫描被剔除。
+ * 统一取三者并集，与 services.cjs 的 isRiskStockName 同口径：名称含 ST 或含「退」即风险证券。
+ */
+function isRiskSecurityName(name = "") {
+  const normalized = String(name).replace(/\s+/g, "").toUpperCase();
+  return normalized.includes("ST") || normalized.includes("退");
+}
+
 module.exports = {
+  LEGACY_DAILY_FACTORS,
+  LEGACY_EXTERNAL_FACTORS,
+  legacyFactorSnapshot,
   decorateLimitPoolItem,
+  isRiskSecurityName,
   scoreFirstBoardQuality,
   computePatternStrategies,
   buildHistoricalStrategyStats,
-  buildSectorLadder,
-  formatPoolTime
+  buildSectorLadder
 };

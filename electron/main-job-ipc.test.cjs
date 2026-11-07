@@ -10,7 +10,8 @@ function harness() {
   const ast = ts.createSourceFile('main.cjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const functions = [], registrations = [], handlers = new Map(), requests = [], gate = deferred(), runtime = createServiceRuntime();
   const names = new Set(['serviceRequestId', 'serviceRequestRuntime']);
-  const channels = new Set(['strategy:scan', 'backtest:run', 'backtest:run-portfolio', 'service:cancel']);
+  const channels = new Set(['strategy:scan', 'backtest:run', 'backtest:run-portfolio', 'service:cancel', 'trend-screener:start']);
+  const senders=new Map();let scanCancels=0;
   function visit(node) {
     if (ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text)) functions.push(node.getText(ast));
     if (ts.isCallExpression(node) && node.expression.getText(ast) === 'handleTrustedIpc' && ts.isStringLiteral(node.arguments[0]) && channels.has(node.arguments[0].text)) registrations.push(node.getText(ast) + ';');
@@ -20,17 +21,29 @@ function harness() {
   const invokeService = (operation, input, request) => { requests.push({ operation, input, request }); return runtime.run(operation, 'shared', request || {}, () => gate.promise); };
   vm.runInNewContext([...functions, ...registrations].join('\n'), {
     serviceJobOwners: new WeakSet(), handleTrustedIpc: (name, handler) => handlers.set(name, handler),
+    customStrategiesForScan:()=>[],readJson:()=>[],normalizeWatchlist:v=>v,normalizeHoldings:v=>v,usableWatchlist:()=>true,usableHoldings:()=>true,
+    trustedMainWebContents:()=>senders.get(1),trendScanOwner:undefined,trendScreener:{start:()=>({phase:'started',jobId:'trend-job-1'}),getStatus:()=>({jobId:'trend-job-1'}),cancel:()=>{scanCancels++;}},runtimeErrorLog:()=>{},
     settingsForService: () => ({ provider: 'eastmoney', fallbackEnabled: true }), pickBacktestSettingOverrides,
     scanStrategySignals: (options, request) => invokeService('scan', options, request),
     runBacktest: (input, _settings, _options, request) => invokeService('single', input, request),
     runPortfolioBacktest: (input, _settings, request) => invokeService('portfolio', input, request),
     cancelServiceJob: request => runtime.cancel(request), cancelServiceOwner: owner => runtime.cancelOwner(owner)
   });
-  return { requests, runtime, gate, invoke: (contents, channel, ...args) => {
+  return { requests, runtime, gate, scanCancels:()=>scanCancels, invoke: (contents, channel, ...args) => {
+    senders.set(contents.id,contents);
     assert.equal(typeof handlers.get(channel), 'function', `${channel} handler exists`);
     return handlers.get(channel)({ sender: contents }, ...args);
   }, cleanup: async () => { gate.resolve('done'); await runtime.shutdown(); } };
 }
+test('trend-only renderer reload cancels its background scan without requiring a backtest job first',async()=>{
+ const h=harness(),contents=sender(1);
+ try{
+  h.invoke(contents,'trend-screener:start',{});
+  assert.equal(contents.listenerCount('did-start-navigation'),1);
+  contents.emit('did-start-navigation',{isMainFrame:true,isSameDocument:false});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(h.scanCancels(),1);
+ }finally{await h.cleanup();}
+});
 test('job IPC uses sender identity and cannot cancel a peer using the same renderer request id', async () => {
   const h = harness(), first = sender(11), second = sender(22), jobs = [];
   try {
@@ -104,7 +117,7 @@ test('invalid cancellation and job metadata never reach services or register des
 test('preload exposes owner-free cancellation through the service channel', async () => {
   let api; const calls = [];
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'preload.cjs'), 'utf8'), {
-    process: { platform: 'test' }, require: () => ({ contextBridge: { exposeInMainWorld: (_name, value) => { api = value; } }, ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve(true); } } })
+    process: { platform: 'test' }, require: () => ({ contextBridge: { exposeInMainWorld: (_name, value) => { api = value; } }, ipcRenderer: { invoke: (...args) => { calls.push(args); return Promise.resolve({ok:true,value:true}); } } })
   });
   assert.equal(typeof api.cancelServiceJob, 'function'); assert.equal(await api.cancelServiceJob('id'), true);
   assert.deepEqual(calls, [['service:cancel', 'id']]);

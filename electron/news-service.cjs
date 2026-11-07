@@ -1,3 +1,4 @@
+const { shanghaiDateTime } = require("./market-time-rules.cjs");
 const THS_BASE = "https://quantapi.51ifind.com/api/v1";
 const FAST_NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList";
 const ANNOUNCEMENT_URL = "https://np-anotice-stock.eastmoney.com/api/security/ann";
@@ -5,6 +6,8 @@ const CLS_TELEGRAPH_URL = "https://www.cls.cn/api/cache";
 const { fetchJsonWithPolicy } = require("./http-client.cjs");
 const newsController = new AbortController();
 const newsRequests = new Set();
+const { createServiceRuntime } = require("./service-runtime.cjs");
+const newsRuntime = createServiceRuntime({ controller: newsController, cacheJobOptions: { maxActive: 8, maxQueued: 0 } });
 const {
   thsProviderError,
   withThsAccessToken
@@ -17,6 +20,7 @@ const sourceCaches = {
   ths: { value: null, expiresAt: 0, fetchedAt: "", key: "" }
 };
 const { BoundedCache, credentialFingerprint } = require("./bounded-cache.cjs");
+const sourceWork = new BoundedCache({ maxEntries: 8, maxBytes: 8 * 1024 * 1024, now: () => Date.now() });
 const firstSeen = new BoundedCache({ maxEntries: 5000, maxBytes: 512 * 1024, now: () => Date.now() });
 let cacheGeneration = 0;
 
@@ -50,25 +54,26 @@ const MATERIAL_TERMS = [
 ];
 
 async function fetchJson(url, options = {}, timeoutMs = 12000) {
-  const signal = options.signal ? AbortSignal.any([options.signal, newsController.signal]) : newsController.signal;
+  const signal = newsRuntime.signal(options.signal);
   signal.throwIfAborted();
   const method = String(options?.method || "GET").toUpperCase();
-  const request = fetchJsonWithPolicy(url, { ...options, signal }, {
+  const request = newsRuntime.track(() => fetchJsonWithPolicy(url, { ...options, signal }, {
     timeoutMs,
     retries: method === "GET" || method === "HEAD" ? 1 : 0,
     minimumGapMs: /eastmoney\.com/i.test(String(url)) ? 160 : 80,
     headers: {
       "User-Agent": "Mozilla/5.0 AStockRadar/0.9"
     }
-  });
-  newsRequests.add(request);
-  request.then(() => newsRequests.delete(request), () => newsRequests.delete(request));
+  }));
+  const owned = request.drained || request;
+  newsRequests.add(owned);
+  owned.then(() => newsRequests.delete(owned), () => newsRequests.delete(owned));
   return request;
 }
 
 function normalizeTitle(value = "") {
   return String(value)
-    .replace(/[【】\[\]（）()：:\s]/g, "")
+    .replace(/[【】[\]（）()：:\s]/g, "")
     .replace(/关于|公告|股份有限公司/g, "")
     .toLowerCase();
 }
@@ -215,7 +220,7 @@ function normalizeClsTelegraph(item) {
       return {
         code,
         name: String(row.stock_name || row.name || row.StockName || ""),
-        secid: code ? `${/^(5|6|9)/.test(code) ? 1 : 0}.${code}` : ""
+        secid: code ? `${/^(5|6|900)/.test(code) ? 1 : 0}.${code}` : ""
       };
     })
     .filter((row) => row.code);
@@ -370,7 +375,7 @@ async function fetchThsReports(settings) {
   if (!settings?.refreshToken || settings.provider !== "ths") return [];
   const now = new Date();
   const since = new Date(now.getTime() - 36 * 60 * 60 * 1000);
-  const dateText = (value) => value.toISOString().replace("T", " ").slice(0, 19);
+  const dateText = shanghaiDateTime;
   const json = await withThsAccessToken(settings.refreshToken, fetchJson, (token) =>
     fetchJson(`${THS_BASE}/report_query`, {
       method: "POST",
@@ -395,46 +400,47 @@ async function fetchThsReports(settings) {
   return thsRows(json).map(normalizeThsReport);
 }
 
-async function cachedSource(id, ttlMs, factory, key = "") {
-  const cache = sourceCaches[id];
-  if (
-    cache?.value &&
-    cache.expiresAt > Date.now() &&
-    (!key || cache.key === key)
-  ) {
-    return {
-      items: cache.value,
-      fetchedAt: cache.fetchedAt,
-      fromCache: true,
-      stale: false
-    };
+/**
+ * E-04：反爬页 / 错误页通常是 HTTP 200 + 空壳 JSON（`{}`、`{"data":null}`、字段改名）。
+ * 旧实现写的是 `json?.data?.xxx || []`，于是「源挂了」被折叠成「0 条资讯成功」并写进缓存，
+ * 上层再也分不清「今天没有快讯」与「这个源不可用」。这里把「结构不存在」与「真正的空列表」
+ * 分开：只有当字段确实是数组时才接受（空数组是合法的 0 条）；结构不符直接抛错，
+ * 交给 cachedSource 现有的「保留旧值 + stale:true + warning」分支。
+ */
+function requireFeedRows(json, field, label) {
+  const rows = json?.data?.[field];
+  if (!Array.isArray(rows)) {
+    throw new Error(`${label}响应结构异常（缺少 data.${field} 数组），已按该源失败处理`);
   }
-  if (cache?.promise && cache.key === key && cache.generation === cacheGeneration) return cache.promise;
+  return rows;
+}
+
+async function cachedSource(id, ttlMs, factory, key = "") {
   const generation = cacheGeneration;
-  const entry = { ...(cache?.key === key ? cache : {}), key, generation };
-  const promise = Promise.resolve().then(factory).then(items => {
-    const fetchedAt = new Date().toISOString();
-    if (sourceCaches[id] === entry && generation === cacheGeneration) {
-      sourceCaches[id] = { value: items, expiresAt: Date.now() + ttlMs, fetchedAt, key, generation };
+  const jobKey = `${id}:${key}:${generation}`;
+  const previous = sourceWork.get(jobKey);
+  const fromCache = previous && Object.hasOwn(previous, "value") && previous.expiresAt > Date.now();
+  const value = await newsRuntime.cached(sourceWork, jobKey, ttlMs, async () => {
+    const cache = sourceCaches[id];
+    const entry = { ...(cache?.key === key ? cache : {}), key, generation };
+    sourceCaches[id] = entry;
+    try {
+      const items = await newsRuntime.track(factory);
+      newsRuntime.checkpoint();
+      const fetchedAt = new Date().toISOString();
+      if (sourceCaches[id] === entry && generation === cacheGeneration) {
+        sourceCaches[id] = { value: items, expiresAt: Date.now() + ttlMs, fetchedAt, key, generation };
+      }
+      return { items, fetchedAt, fromCache: false, stale: false };
+    } catch (error) {
+      newsRuntime.checkpoint();
+      if (cache?.value && (!key || cache.key === key)) {
+        return { items: cache.value, fetchedAt: cache.fetchedAt, fromCache: true, stale: true, warning: String(error?.message || error) };
+      }
+      throw error;
     }
-    return { items, fetchedAt, fromCache: false, stale: false };
-  }).catch(error => {
-    if (cache?.value && (!key || cache.key === key)) {
-      return {
-        items: cache.value,
-        fetchedAt: cache.fetchedAt,
-        fromCache: true,
-        stale: true,
-        warning: String(error?.message || error)
-      };
-    }
-    throw error;
-  }).finally(() => {
-    if (sourceCaches[id] === entry) delete entry.promise;
-  });
-  entry.promise = promise;
-  sourceCaches[id] = entry;
-  return promise;
+  }, { shouldCache: result => !result.stale });
+  return fromCache ? { ...value, fromCache: true } : value;
 }
 
 async function fetchPublicFeed(settings) {
@@ -467,7 +473,7 @@ async function fetchPublicFeed(settings) {
           { headers: { Referer: "https://kuaixun.eastmoney.com/" } },
           5000
         );
-        return (json?.data?.fastNewsList || []).map(normalizeFastNews);
+        return requireFeedRows(json, "fastNewsList", "7×24财经快讯").map(normalizeFastNews);
       }
     ),
     cachedSource(
@@ -479,7 +485,7 @@ async function fetchPublicFeed(settings) {
           { headers: { Referer: "https://www.cls.cn/telegraph" } },
           5000
         );
-        return (json?.data?.roll_data || []).map(normalizeClsTelegraph);
+        return requireFeedRows(json, "roll_data", "财联社电报").map(normalizeClsTelegraph);
       }
     ),
     cachedSource(
@@ -487,7 +493,7 @@ async function fetchPublicFeed(settings) {
       15000,
       async () => {
         const json = await fetchJson(announcementUrl.toString(), {}, 7000);
-        return (json?.data?.list || []).map(normalizeEastAnnouncement);
+        return requireFeedRows(json, "list", "公司公告聚合").map(normalizeEastAnnouncement);
       }
     ),
     thsEnabled
@@ -575,7 +581,7 @@ function dedupeItems(items) {
   const seenIds = new Set();
   const titleWindow = new Map();
   const result = [];
-  for (const item of items.sort((a, b) => parseTime(b.publishedAt) - parseTime(a.publishedAt))) {
+  for (const item of items.map(item => ({ ...item })).sort((a, b) => parseTime(b.publishedAt) - parseTime(a.publishedAt))) {
     if (seenIds.has(item.id)) continue;
     seenIds.add(item.id);
     const titleKey = normalizeTitle(item.title);
@@ -673,6 +679,7 @@ async function getNewsFeed(input = {}, settings = {}) {
 
 function resetNewsCache() {
   cacheGeneration += 1;
+  sourceWork.clear();
   for (const cache of Object.values(sourceCaches)) {
     cache.expiresAt = 0;
     delete cache.promise;
@@ -682,17 +689,15 @@ function resetNewsCache() {
 function shutdownNewsService() {
   newsController.abort(new DOMException("应用正在退出，资讯请求已取消", "AbortError"));
   resetNewsCache();
-  return Promise.allSettled([...newsRequests]).then(() => undefined);
+  return Promise.allSettled([...newsRequests, newsRuntime.shutdown(newsController.signal.reason)]).then(() => undefined);
 }
 
 module.exports = {
   getNewsFeed,
   resetNewsCache,
   shutdownNewsService,
-  normalizeFastNews,
   normalizeClsTelegraph,
   normalizeEastAnnouncement,
-  normalizeThsReport,
   thsRows,
   dedupeItems,
   filterItems,

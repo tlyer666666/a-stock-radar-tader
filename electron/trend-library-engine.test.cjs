@@ -36,18 +36,22 @@ function bollFixture() {
   return input;
 }
 const examples = [
-  ["macd-zero-cross-v1", () => fixture(19), 13.24, 14.19, 14.39],
+  ["macd-zero-cross-v1", () => fixture(19), 13.24, 13.25, 14.39],
   ["boll-squeeze-breakout-v1", bollFixture, 13.74, 14.65, 14.93],
-  ["dmi-trend-strength-v1", () => fixture(37), 13.16, 14.04, 14.29],
+  ["dmi-trend-strength-v1", () => fixture(37), 13.16, 13.17, 14.29],
   ["obv-volume-breakout-v1", () => fixture(7), 13.29, 14.25, 14.44],
-  ["kdj-trend-cross-v1", () => fixture(25), 13.3, 14.13, 14.37],
+  ["kdj-trend-cross-v1", () => fixture(25), 13.3, 13.31, 14.37],
   ["ma-pullback-resume-v1", () => fixture(14), 13.84, 14.52, 14.87],
   ["rsi-midline-recovery-v1", () => fixture(659), 12.96, 13.57, 14.08],
   ["cci-strength-breakout-v1", () => fixture(9), 13.62, 14.35, 14.6],
   ["roc-zero-recovery-v1", () => fixture(2), 13.82, 14.44, 14.97],
   ["emv-zero-recovery-v1", () => fixture(1712), 12.25, 13.18, 13.31],
   ["mfi-midline-recovery-v1", () => fixture(9), 13.62, 14.35, 14.6],
-  ["donchian-55-breakout-v1", () => fixture(640), 13.45, 14.6, 14.61]
+  ["donchian-55-breakout-v1", () => fixture(640), 13.45, 14.6, 14.61],
+  ["ma-golden-cross-v1", () => fixture(1349), 12.55, 12.56, 13.64],
+  ["turtle-20-breakout-v1", () => fixture(640), 13.45, 14.6, 14.61],
+  ["new-high-120-v1", () => fixture(13), 13.41, 14.22, 14.48],
+  ["ma-bull-alignment-v1", () => fixture(4), 13.37, 13.38, 14.34]
 ];
 
 test("fixed catalog parameters accept defaults, freeze full order, and reject retuning", () => {
@@ -90,6 +94,8 @@ for (const [id, makeInput, stop, minEntry, maxEntry] of examples) {
     change(input, 299, { open: previous.close, close: previous.close, high: previous.close + .05, low: previous.close - .05 });
     // DMI compares high/low directions, so a flat close alone is not a veto.
     if (id === "dmi-trend-strength-v1") change(input, 299, { high: previous.high, low: previous.low - 2 });
+    // MA alignment depends on averages, not on one flat close: break it with a real drop.
+    if (id === "ma-bull-alignment-v1") change(input, 299, { open: previous.close, close: previous.close - 1.5, high: previous.close, low: previous.close - 1.6 });
     const result = facade.evaluateTrendStrategy(input, { strategyId: id });
     assert.notEqual(result.candidate?.stage, "signal");
     if (result.candidate) assert.equal(result.candidate.plan, null);
@@ -113,10 +119,10 @@ test("new batch never overrides base excluded/unavailable outcomes", () => {
   assert.ok(facade.evaluateTrendStrategyBatch(short, options).every(row => row.kind === "unavailable"));
 });
 
-test("new strategies require an aligned 80-session calendar even when classic accepts 65", () => {
+test("classic and library strategies require the same aligned 80-session calendar", () => {
   const input = fixture(19);
   input.rawRows.splice(230, 1); input.adjustedRows.splice(230, 1);
-  assert.equal(evaluateTrendStock(input).kind, "candidate");
+  assert.equal(evaluateTrendStock(input).kind, "unavailable");
   for (const item of catalog) assert.equal(facade.evaluateTrendStrategy(input, { strategyId: item.id }).kind, "unavailable");
   const unknown = { ...fixture(19), benchmarkRows: [] };
   assert.equal(facade.evaluateTrendStrategy(unknown, { strategyId: catalog[0].id }).kind, "unavailable");
@@ -187,13 +193,14 @@ test("current-day range cannot widen yesterday's ATR stop or entry allowance", (
   assert.equal(actual.technical.indicators.atr14Previous, expected.technical.indicators.atr14Previous);
 });
 
-test("an empty entry interval vetoes an otherwise valid MACD setup", () => {
+test("close confirmation retains a valid low-open interval when signal close exceeds risk cap", () => {
   const input = fixture(19);
   change(input, 299, { close: 14.6, high: 14.7 });
   const c = facade.evaluateTrendStrategy(input, { strategyId: "macd-zero-cross-v1" }).candidate;
   assert.equal(c.evidence.find(row => row.label === "MACD金叉").passed, true);
-  assert.equal(c.evidence.find(row => row.label === "独立入场区间").passed, false);
-  assert.equal(c.stage, "watch"); assert.equal(c.plan, null);
+  assert.equal(c.evidence.find(row => row.label === "独立入场区间").passed, true);
+  assert.equal(c.stage, "signal"); assert.ok(c.plan.minEntry < c.plan.maxEntry);
+  assert.ok(c.plan.maxEntry < c.metrics.close);
 });
 
 test("positive excess return below display precision remains eligible", () => {
@@ -223,7 +230,9 @@ test("six-way batch executes the real shared base and indicator preparation only
   const realBase = require("./trend-screener-engine.cjs"), realLibrary = require("./trend-library-engine.cjs");
   let baseCalls = 0, preparationCalls = 0;
   const sandbox = { module: { exports: {} }, require(id) {
-    if (id === "./trend-screener-engine.cjs") return { ...realBase, evaluateTrendStock(...args) { baseCalls++; return realBase.evaluateTrendStock(...args); } };
+    if (id === "./trend-screener-engine.cjs") return { ...realBase,
+      evaluateTrendStock() { throw new Error("library-only batches must not run the limit-anchored evaluator"); },
+      evaluateTrendBase(...args) { baseCalls++; return realBase.evaluateTrendBase(...args); } };
     if (id === "./trend-library-engine.cjs") return { ...realLibrary, prepareTrendLibrary(...args) { preparationCalls++; return realLibrary.prepareTrendLibrary(...args); } };
     return require(id);
   } };
@@ -238,7 +247,7 @@ test("six-way batch executes the real shared base and indicator preparation only
 
 const expansionIds = ['rsi-midline-recovery-v1','cci-strength-breakout-v1','roc-zero-recovery-v1','emv-zero-recovery-v1','mfi-midline-recovery-v1','donchian-55-breakout-v1'];
 test('v1.4 exposes six additional distinct fixed-parameter families without changing old identities',()=>{
- assert.equal(catalog.length,12);assert.deepEqual(catalog.slice(6).map(row=>row.id),expansionIds);
+ assert.equal(catalog.length,16);assert.deepEqual(catalog.slice(6,12).map(row=>row.id),expansionIds);
  const input=fixture(19);const outcomes=facade.evaluateTrendStrategyBatch(input,expansionIds.map(strategyId=>({strategyId})));
  assert.equal(outcomes.length,6);
  for(const [i,outcome] of outcomes.entries()){
@@ -246,4 +255,74 @@ test('v1.4 exposes six additional distinct fixed-parameter families without chan
   assert.deepEqual(outcome.candidate.patterns,[]);assert.equal(outcome.candidate.primaryPattern,null);
   assert.ok(Object.values(outcome.candidate.technical.indicators).every(Number.isFinite));
  }
+});
+
+
+test("library shares the exact last250 price window across unequal feed lengths", () => {
+  for (const [id, makeInput] of examples) {
+    const expected = facade.evaluateTrendStrategy(makeInput(), { strategyId: id });
+    for (const key of ["rawRows", "adjustedRows"]) {
+      const input = makeInput(); input[key] = input[key].slice(-250);
+      assert.deepEqual(facade.evaluateTrendStrategy(input, { strategyId: id }), expected, `${id}/${key}`);
+    }
+  }
+});
+
+test("MACD DMI KDJ close confirmation allows flat or lower next-session entry", () => {
+  for (const [id, seed] of [["macd-zero-cross-v1", 19], ["dmi-trend-strength-v1", 37], ["kdj-trend-cross-v1", 25]]) {
+    const c = facade.evaluateTrendStrategy(fixture(seed), { strategyId: id }).candidate;
+    assert.equal(c.stage, "signal"); assert.equal(c.strategy.version, "1.1.0");
+    assert.equal(c.plan.entryType, "close-confirmation");
+    assert.equal(c.plan.minEntry, Math.round((c.plan.stop + .01) * 100) / 100);
+    assert.ok(c.plan.minEntry < c.metrics.close);
+    assert.ok(c.metrics.close <= c.plan.maxEntry);
+    assert.ok(c.evidence.some(row => row.label === "独立入场区间" && row.rule.includes("收盘确认")));
+  }
+  const c = facade.evaluateTrendStrategy(bollFixture(), { strategyId: "boll-squeeze-breakout-v1" }).candidate;
+  assert.equal(c.plan.entryType, "breakout"); assert.ok(c.plan.minEntry > c.setup.triggerPrice);
+});
+
+
+test("technical strategies accept the sufficient original80-session benchmark", () => {
+  for (const [id, makeInput] of examples) {
+    const input = makeInput(), expected = facade.evaluateTrendStrategy(input, { strategyId: id });
+    input.benchmarkRows = input.benchmarkRows.slice(-80);
+    assert.deepEqual(facade.evaluateTrendStrategy(input, { strategyId: id }), expected);
+  }
+});
+
+const classicIds = ['ma-golden-cross-v1','turtle-20-breakout-v1','new-high-120-v1','ma-bull-alignment-v1'];
+test('v1.5 adds four classic technical models after the existing twelve without changing old identities', () => {
+  assert.deepEqual(catalog.slice(12).map(row => row.id), classicIds);
+  assert.ok(catalog.slice(12).every(row => row.version === '1.0.0' && row.fixedParameters === true && row.sources.length >= 2));
+  const outcomes = facade.evaluateTrendStrategyBatch(fixture(19), classicIds.map(strategyId => ({ strategyId })));
+  assert.deepEqual(outcomes.map(outcome => outcome.candidate.strategy.id), classicIds);
+});
+
+test("classic technical models no longer require a recent limit-up; the limit-up models still do", () => {
+  const input = fixture(19);
+  const previous = input.rawRows[285].close;
+  change(input, 286, { close: Math.round(previous * 1.03 * 100) / 100, open: previous, high: Math.round(previous * 1.04 * 100) / 100, low: previous - .1 });
+  const engine = require("./trend-screener-engine.cjs");
+  assert.match(evaluateTrendStock(input).reason, /没有收盘涨停/);
+  assert.equal(engine.prefilterTrendStock(input).kind, "excluded", "limit-up scans still prefilter on the limit");
+  const base = engine.evaluateTrendBase(input);
+  assert.equal(base.kind, "candidate");
+  assert.equal(base.candidate.limitDate, null);
+  const [library, classic] = facade.evaluateTrendStrategyBatch(input, [{ strategyId: "ma-bull-alignment-v1" }, { strategyId: "classic-v1" }]);
+  assert.equal(library.kind, "candidate");
+  assert.equal(library.candidate.limitDate, null);
+  assert.doesNotMatch(library.candidate.setup.stopBasis, /涨停/);
+  assert.ok(!library.candidate.evidence.some(row => /涨停/.test(row.label)));
+  assert.equal(classic.kind, "excluded");
+});
+
+test("the limit-free prefilter checks the raw trend only when no corporate action is visible", () => {
+  const engine = require("./trend-screener-engine.cjs");
+  const falling = fixture(19);
+  for (let i = 240; i < 300; i++) change(falling, i, { close: Math.round((20 - (i - 240) * .1) * 100) / 100, open: 20 - (i - 240) * .1, high: 20.2 - (i - 240) * .1, low: 19.8 - (i - 240) * .1 });
+  assert.match(engine.prefilterTrendStock(falling, { requireLimit: false }).reason, /MA20/);
+  const split = structuredClone(falling);
+  split.rawRows[280].changePct = 1; // 报告涨跌幅与原始收盘不符：疑似除权，原始价不能判断趋势
+  assert.equal(engine.prefilterTrendStock(split, { requireLimit: false }), null);
 });
