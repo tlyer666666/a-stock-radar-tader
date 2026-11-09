@@ -53,6 +53,7 @@ import {
   Landmark,
   Coins,
   ArrowLeftRight,
+  ArrowDownUp,
   Bot,
   LineChart,
   MessagesSquare,
@@ -76,6 +77,7 @@ import {
 import { FormEvent, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiInterpretPanel } from "./features/ai-review/AiInterpretPanel";
 import { registerAgentOpener } from "./features/ai-agent/agentModel";
+import { useTAssistant } from "./features/t-assistant/useTAssistant";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 import DisplayDensityControl from "./components/terminal/DisplayDensityControl";
 import PreviousLimitUpFailedBoards from "./PreviousLimitUpFailedBoards";
@@ -147,6 +149,7 @@ const ConvertibleBondView = lazy(() => import("./features/bonds/ConvertibleBondV
 const HsgtWebView = lazy(() => import("./features/hsgt/HsgtWebView"));
 const AiPicksView = lazy(() => import("./features/ai-picks/AiPicksView"));
 const AiAgentView = lazy(() => import("./features/ai-agent/AiAgentView"));
+const TAssistantView = lazy(() => import("./features/t-assistant/TAssistantView"));
 
 /** 交给 AI 解读的板块强度榜：每个板块只留数字和文字字段，成分股只留前 3 个名称。 */
 function sectorsForAi(rows: any[], extra?: SectorStrengthExtra | null) {
@@ -2599,6 +2602,7 @@ const buildBacktestExecutionPlan = (
     refreshSeconds: Number(settings.quoteRefreshSeconds) || 5,
     onAlert: alert => showToast(`${alert.name}（${alert.code}）：${alert.detail}`)
   });
+  const tAssistant = useTAssistant({ live, onAlert: message => showToast(message) });
   const compareCandidates = useMemo(() => {
     const merged = new Map<string, Security>();
     const add = (item: any) => {
@@ -2741,6 +2745,7 @@ const buildBacktestExecutionPlan = (
 
   const navItems = [
     { id: "dashboard" as View, label: "涨停监控", icon: LayoutDashboard },
+    { id: "t-assistant" as View, label: "做T助手", icon: ArrowDownUp },
     { id: "previous-limit-up-failed" as View, label: "炸板观察", icon: Activity },
     { id: "favorites" as View, label: "自选板块", icon: Star },
     { id: "holdings" as View, label: "持仓股", icon: WalletCards },
@@ -3088,6 +3093,17 @@ const buildBacktestExecutionPlan = (
               <AiAgentView
                 onOpenStock={(stock: Security) => openAnalysis(stock, { view: "ai-agent", label: "返回 AI 问股" })}
                 onOpenSettings={() => navigateTo("settings")}
+              />
+            </Suspense>
+          )}
+          {view === "t-assistant" && (
+            <Suspense fallback={<LoadingState />}>
+              <TAssistantView
+                api={tAssistant}
+                holdings={holdings}
+                live={live}
+                onOpenStock={(stock: Security) => openAnalysis(stock, { view: "t-assistant", label: "返回做T助手" })}
+                onToast={showToast}
               />
             </Suspense>
           )}
