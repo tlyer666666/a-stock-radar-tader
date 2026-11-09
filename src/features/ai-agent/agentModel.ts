@@ -22,6 +22,8 @@ export const QUICK_TASKS: QuickTask[] = [
     prompt: focus => `软件的选股策略和打分框架对${nameOf(focus)}怎么看？命中了哪些策略，理由和失效价是多少，基础分多少？` },
   { id: "holding", label: "持仓诊断", hint: "填上成本价再发送", needsStock: true, send: false,
     prompt: focus => `我持有${nameOf(focus)}，成本价 元，帮我诊断一下现在该怎么办：继续持有、减仓还是止损，依据是什么？` },
+  { id: "intraday", label: "做T思路", hint: "结合分时给出高抛低吸价位", needsStock: true, send: true,
+    prompt: focus => `我持有${nameOf(focus)}的底仓，想今天做T。结合今天的分时走势、均价线、量能和关键价位，告诉我今天更适合倒T（先卖后买）还是正T（先买后卖），高抛和低吸的参考价位，以及什么情况下今天不要做T。` },
   { id: "market", label: "今日市场", hint: "情绪、主线、强弱板块", needsStock: false, send: true,
     prompt: () => "今天A股短线情绪怎么样？主线题材是什么，最强的板块和龙头是谁，接下来要注意什么？" }
 ];
