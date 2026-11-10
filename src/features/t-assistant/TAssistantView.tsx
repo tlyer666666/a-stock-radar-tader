@@ -137,7 +137,7 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
           <span className={toneOf(analysis.changePct)}>{signed(analysis.changePct)}%</span>
           <span>均价 {fmt(analysis.levels.vwap)}</span>
           <span>{day} {analysis.time}</span>
-          <span className={`t-assistant-regime ${analysis.regime}`}>{analysis.regime === "up" ? "单边上涨" : analysis.regime === "down" ? "单边下跌" : "震荡"}</span>
+          <span className={`t-assistant-regime ${analysis.regime}`}>{analysis.regime === "up" ? "单边上涨" : analysis.regime === "down" ? "单边下跌" : analysis.slot < 19 ? "方向未定" : "震荡"}</span>
         </p>}
       </div>
       <div className="t-assistant-stock-actions">
@@ -163,7 +163,7 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
           <button type="button" className="link-btn" onClick={() => api.setShowReplay(!showReplay)}>{showReplay ? <EyeOff size={14} /> : <Eye size={14} />}{showReplay ? "隐藏回放" : "显示回放"}</button>
         </div>
         {share && <TChart share={share} analysis={analysis} trades={trades} markers={showReplay ? replay?.markers || [] : []} />}
-        {replay && <p className="t-assistant-note">信号回放：如果今天从开盘起完全按提示做（每次 {item.config.tShares} 股），共完成 {replay.rounds} 次T，模拟盈亏 <b className={toneOf(replay.realized)}>{signed(replay.realized, 0)} 元</b>（已扣手续费）{replay.open ? `，还有${replay.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${replay.open.shares} 股` : ""}。回放只用来检验参数，不代表真实成交。</p>}
+        {replay && item.config.sellableShares > 0 && <p className="t-assistant-note">信号回放：如果今天从开盘起完全按提示做（每次 {item.config.tShares} 股），共完成 {replay.rounds} 次T，模拟盈亏 <b className={toneOf(replay.realized)}>{signed(replay.realized, 0)} 元</b>（已扣手续费）{replay.open ? `，还有${replay.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${replay.open.shares} 股` : ""}。回放只用来检验参数，不代表真实成交。</p>}
       </div>
       <div className="t-assistant-grid">
         <TradesCard analysis={analysis} trades={trades} day={day} item={item} draft={draft} setDraft={setDraft} startDraft={() => startDraft(false)} submitDraft={submitDraft} onRemove={id => api.removeTrade(day, item.code, id)} />

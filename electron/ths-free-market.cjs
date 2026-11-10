@@ -461,6 +461,19 @@ function parseThsTimeShare(payload, unitsPerLot = 100) {
   return { date, preClose: preClose > 0 ? preClose : null, rows };
 }
 
+/**
+ * 开盘前（约 9:15–9:30）源端已经把日期换成当天，但分时点还是上一个交易日的完整一天。
+ * 判断依据：日期是今天，而最后一个点的时间比现在还晚。此时把日期改回上一个交易日，避免把昨天的走势当成今天。
+ * clock 为北京时间 { date, minute }；previousDate 为上一个交易日（未知时原样返回）。
+ */
+function rebaseStaleTimeShare(share, clock, previousDate) {
+  const last = String(share?.rows?.at(-1)?.date || "").slice(11, 16);
+  if (!share || share.date !== clock?.date || !/^\d{2}:\d{2}$/.test(last)) return share;
+  const lastMinute = Number(last.slice(0, 2)) * 60 + Number(last.slice(3, 5));
+  if (lastMinute <= clock.minute + 2 || !/^\d{4}-\d{2}-\d{2}$/.test(String(previousDate || ""))) return share;
+  return { ...share, date: previousDate, rows: share.rows.map((row) => ({ ...row, date: `${previousDate}${String(row.date).slice(10)}` })) };
+}
+
 async function thsFreeTimeShare(security, { signal } = {}) {
   if (!thsFreeSupports(security)) throw thsFreeError("同花顺分时只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
   const url = `${THS_FREE_HOST}/v6/time/${thsMarketPrefix(security)}_${security.code}/last.js`;
@@ -479,6 +492,7 @@ module.exports = {
   thsFreeKline,
   thsFreeTimeShare,
   parseThsTimeShare,
+  rebaseStaleTimeShare,
   parseThsMinuteData,
   groupMinuteRows,
   THS_FREE_HOST,

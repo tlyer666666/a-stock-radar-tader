@@ -165,9 +165,11 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
   const aboveShare = recent60.filter(point => point.price > point.average).length / Math.max(1, recent60.length);
   // 均价线是累计平均，趋势里会滞后，所以同时看近 30 分钟价格本身的涨跌。
   const priceSlope = pct(price, back.price);
-  const regime: TRegime = aboveShare >= 0.8 && (vwapSlope > 0.25 || priceSlope > 0.6) ? "up"
+  // 开盘头 20 分钟样本太少，不下「单边」的结论。
+  const settled = history.length >= 20;
+  const regime: TRegime = !settled ? "range" : aboveShare >= 0.8 && (vwapSlope > 0.25 || priceSlope > 0.6) ? "up"
     : aboveShare <= 0.2 && (vwapSlope < -0.25 || priceSlope < -0.6) ? "down" : "range";
-  const regimeText = regime === "up" ? "单边上涨：价格持续在均价线上方，倒T容易卖飞" : regime === "down" ? "单边下跌：价格持续在均价线下方，正T容易接飞刀" : "震荡：价格围绕均价线来回，适合高抛低吸";
+  const regimeText = !settled ? "开盘不久，方向还没走出来" : regime === "up" ? "单边上涨：价格持续在均价线上方，倒T容易卖飞" : regime === "down" ? "单边下跌：价格持续在均价线下方，正T容易接飞刀" : "震荡：价格围绕均价线来回，适合高抛低吸";
 
   const last5 = history.slice(-5), prev = history[history.length - 2] ?? now;
   const recentHigh = Math.max(...last5.map(point => point.price)), recentLow = Math.min(...last5.map(point => point.price));

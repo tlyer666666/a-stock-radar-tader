@@ -2528,6 +2528,7 @@ const buildBacktestExecutionPlan = (
     };
   }, [live, researchView]);
 
+  const sectorFetchedAtRef = useRef("");
   const loadSectorBoard = useCallback(async (forceRefresh = false) => {
     if (sectorBoardBusy.current && !forceRefresh) return false;
     sectorBoardBusy.current = true;
@@ -2542,6 +2543,7 @@ const buildBacktestExecutionPlan = (
       setSectorBoard(rows);
       if (board) setSectorExtra({ concepts: Array.isArray(board.concepts) ? board.concepts : [], themes: Array.isArray(board.themes) ? board.themes : [],
         warnings: Array.isArray(board.warnings) ? board.warnings : [], conceptLimitUpSource: board.conceptLimitUpSource || "", limitUpTotal: board.limitUpTotal ?? null, fetchedAt: board.fetchedAt || "" });
+      sectorFetchedAtRef.current = board?.fetchedAt || new Date().toISOString();
       setSectorBoardError("");
       setSectorBoardLoaded(true);
       if (forceRefresh) showToast("板块排行已刷新");
@@ -2569,6 +2571,9 @@ const buildBacktestExecutionPlan = (
       const day = cn.getUTCDay(), minute = cn.getUTCHours() * 60 + cn.getUTCMinutes();
       return day >= 1 && day <= 5 && ((minute >= 9 * 60 + 15 && minute <= 11 * 60 + 30) || (minute >= 13 * 60 && minute <= 15 * 60 + 5));
     };
+    // 从别的页面切回来时，手里的榜单可能是几分钟前的（比如开盘前看过一次，涨停家数还都是 0）：超过 30 秒就马上刷新，不等下一分钟。
+    const age = Date.now() - Date.parse(sectorFetchedAtRef.current || "");
+    if (sectorFetchedAtRef.current && inSession() && !(age < 30_000)) void loadSectorBoard(false);
     const timer = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
       if (!inSession()) return;
