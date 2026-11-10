@@ -105,6 +105,8 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
   const [draft, setDraft] = useState<{ side: "buy" | "sell"; price: string; shares: string; time: string } | null>(null);
   const security: Security = { code: item.code, name: item.name, secid: item.secid || secidForCode(item.code), assetType: "stock" };
 
+  const stale = staleNote(share?.date, analysis?.time);
+
   const startDraft = (fromSignal: boolean) => {
     const signal = analysis?.signal;
     const side = fromSignal && signal ? actionSide(signal.action) : null;
@@ -147,6 +149,7 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
       </div>
     </div>
 
+    {stale && <div className="warning-banner" role="alert"><CircleAlert size={17} />{stale}</div>}
     {runtime.error && <div className="warning-banner" role="alert"><CircleAlert size={17} />分时读取失败：{runtime.error}{share ? "（显示上次成功读取的数据）" : ""}</div>}
     {!analysis ? <div className="panel t-assistant-loading">{runtime.loading ? "正在读取分时…" : "暂无分时数据"}</div> : <>
       <div className="t-assistant-grid">
@@ -169,6 +172,18 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
     </>}
     <p className="t-assistant-disclaimer">做T提示由分时均价线、波动带、量能和当日格局按固定规则算出，会有误判；单边行情里做T容易卖飞或越买越跌。软件不会下单，成交请在券商软件里自行完成后回来登记。</p>
   </section>;
+}
+
+/** 盘中分时没跟上（数据源延迟或还停在上一个交易日）时提醒，避免按旧信号操作。 */
+function staleNote(date: string | undefined, time: string | undefined, now = new Date()): string {
+  if (!date || !time || !inTradingSession(now)) return "";
+  const clock = shanghaiClock(now);
+  if (clock < "09:33") return "";
+  const today = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
+  if (date !== today) return `还没读到今天的分时（现在显示的是 ${date}），下面的提示不是当前行情；若今天休市可忽略`;
+  const minutes = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
+  const lag = minutes(clock) - minutes(time) - (clock >= "13:00" && time <= "11:30" ? 90 : 0);
+  return lag > 3 ? `分时数据停在 ${time}，比现在慢了 ${lag} 分钟，提示可能已经过时，可以点「刷新」重试` : "";
 }
 
 function SignalCard({ analysis, onRecord }: { analysis: TAnalysis; onRecord: () => void }) {

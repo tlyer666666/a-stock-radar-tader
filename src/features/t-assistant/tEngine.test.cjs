@@ -85,3 +85,32 @@ test("配置归一：可卖不超过底仓，默认每次做T三分之一并按�
   assert.equal(value.tShares, 800);
   assert.equal(engine.normalizeTConfig({ baseShares: 1000 }, "688001").tShares, 333);
 });
+
+test("T+1：今天卖出的底仓不再算可卖，卖完后不再提示开新T", () => {
+  const prices = Array.from({ length: 150 }, (_, i) => Number((10 + 0.2 * Math.sin(i / 8)).toFixed(2)));
+  const trades = [
+    { id: "1", side: "sell", price: 10.2, shares: 600, time: "09:45" },
+    { id: "2", side: "buy", price: 10.0, shares: 600, time: "10:05" }
+  ];
+  const result = engine.analyzeT(share(prices), ctx, config({ baseShares: 600, sellableShares: 600, tShares: 600 }), trades);
+  assert.equal(result.stats.soldShares, 600);
+  assert.equal(result.signal.action, "wait");
+  assert.equal(result.signal.title, "可卖底仓已用完");
+  const half = engine.analyzeT(share(prices), ctx, config({ baseShares: 900, sellableShares: 900, tShares: 600 }), trades);
+  assert.notEqual(half.signal.title, "可卖底仓已用完");
+  const replay = engine.replayT(share(prices), ctx, config({ baseShares: 600, sellableShares: 600, tShares: 600 }));
+  assert.ok(replay.markers.filter(marker => marker.side === "sell").length <= 1, "回放也只能卖一次");
+});
+
+test("倒T卖出后均价线离得远：有最小价差并反弹时提示先接回；亏损了结过的方向当天不再提示", () => {
+  // 一路走高到 11.0 卖出，回落到 10.8（均价线还在 10.5 附近）后反弹
+  const prices = [...Array.from({ length: 100 }, (_, i) => 10 + i * 0.01), ...Array.from({ length: 20 }, (_, i) => 11 - (i + 1) * 0.01), 10.76, 10.8, 10.84];
+  const result = engine.analyzeT(share(prices.map(v => Number(v.toFixed(2)))), ctx, config(), [{ id: "1", side: "sell", price: 11, shares: 1000, time: "11:09" }]);
+  assert.ok(result.levels.buyTarget < result.price, "均价线目标还没到");
+  assert.equal(result.signal.action, "buyBack");
+  const { stats } = engine.settleTrades([
+    { id: "1", side: "sell", price: 10, shares: 500, time: "10:00" }, { id: "2", side: "buy", price: 10.3, shares: 500, time: "10:20" },
+    { id: "3", side: "buy", price: 10, shares: 500, time: "11:00" }, { id: "4", side: "sell", price: 10.2, shares: 500, time: "11:20" }
+  ], config());
+  assert.deepEqual(stats.lost, { reverse: true, forward: false });
+});
