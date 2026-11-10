@@ -44,6 +44,10 @@ export type TStats = {
   rounds: number; realized: number; fees: number; costReduction: number; newCost: number | null; tradedShares: number;
   /** 最近一次完成的T：用于冷却期和止损后不再同方向开T。 */
   lastClosed: { kind: "reverse" | "forward"; time: string; profit: number } | null;
+  /** 今天已经卖出的股数：T+1 下每卖一股就少一股可卖底仓，买回来的当天不能再卖。 */
+  soldShares: number;
+  /** 今天亏损了结（止损）过的方向，当天不再提示。 */
+  lost: { reverse: boolean; forward: boolean };
 };
 export type TAnalysis = {
   time: string; slot: number; price: number; changePct: number; preClose: number;
@@ -101,10 +105,13 @@ export function settleTrades(trades: TTrade[], config: Pick<TConfig, "baseShares
   const sorted = [...trades].filter(trade => trade.price > 0 && trade.shares > 0).sort((a, b) => a.time.localeCompare(b.time));
   let open = null as TOpen, realized = 0, fees = 0, rounds = 0, tradedShares = 0;
   let lastClosed: TStats["lastClosed"] = null;
+  let soldShares = 0;
+  const lost = { reverse: false, forward: false };
   for (const trade of sorted) {
     const value = trade.price * trade.shares;
     const fee = trade.side === "sell" ? calcAshareSellFee(value, config.commissionPercent) : calcAshareBuyFee(value, config.commissionPercent);
     fees += fee; realized -= fee; tradedShares += trade.shares;
+    if (trade.side === "sell") soldShares += trade.shares;
     const kind = trade.side === "sell" ? "reverse" : "forward";
     if (!open || open.kind === kind) {
       const shares: number = (open?.shares ?? 0) + trade.shares;
@@ -116,6 +123,7 @@ export function settleTrades(trades: TTrade[], config: Pick<TConfig, "baseShares
     realized += profit;
     rounds += 1;
     lastClosed = { kind: open.kind, time: trade.time, profit };
+    if (profit < 0) lost[open.kind] = true;
     const rest: number = open.shares - closed;
     const extra = trade.shares - closed;
     open = rest > 0 ? { ...open, shares: rest } : extra > 0 ? { kind, shares: extra, price: trade.price, time: trade.time } : null;
@@ -123,7 +131,7 @@ export function settleTrades(trades: TTrade[], config: Pick<TConfig, "baseShares
   const costReduction = config.baseShares > 0 ? realized / config.baseShares : 0;
   return {
     open,
-    stats: { rounds, realized, fees, costReduction, newCost: config.costPrice > 0 ? config.costPrice - costReduction : null, tradedShares, lastClosed }
+    stats: { rounds, realized, fees, costReduction, newCost: config.costPrice > 0 ? config.costPrice - costReduction : null, tradedShares, lastClosed, soldShares, lost }
   };
 }
 
@@ -194,8 +202,9 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
   if (now.slot >= AUCTION_SLOT) {
     return wait("收盘集合竞价", open ? [`还有${open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${open.shares} 股，竞价阶段只能挂单，按计划处理`] : ["14:57 以后是收盘集合竞价，不再做T"]);
   }
-  const usable = Math.max(0, config.sellableShares - (open?.kind === "reverse" ? open.shares : 0));
-  const tShares = Math.min(config.tShares || config.sellableShares, config.sellableShares);
+  // T+1：今天卖过的底仓不会回来（买回的要明天才能卖），剩余可卖 = 今日可卖 − 今天已卖出。
+  const remaining = Math.max(0, config.sellableShares - stats.soldShares);
+  const tShares = Math.min(config.tShares || config.sellableShares, remaining);
 
   if (open?.kind === "reverse") {
     // 已卖出一部分底仓，等回落接回。
@@ -204,7 +213,10 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
     const gain = pct(open.price, price);
     const status = [`已于 ${open.time} 卖出 ${open.shares} 股，均价 ${fmtPrice(open.price)}，现在接回${gain >= 0 ? "可赚" : "要亏"} ${Math.abs(gain).toFixed(2)}%`];
     if (now.slot >= CLOSE_SLOT) return done({ action: "closeBuyBack", strength: "strong", title: "尾盘接回", price, shares: open.shares, reasons: [...reasonsBase, ...status, "14:45 后尽量接回，保持底仓股数不变，避免隔夜少了筹码"] });
+    if (sealedUp) return wait("涨停封板中", [...status, "封板时挂单大概率买不到；可以在涨停价排队，或等开板回落再接回"], "normal");
     if (price >= stop && (regime === "up" || price > upper)) return done({ action: "stopBuyBack", strength: "strong", title: "止损接回", price, shares: open.shares, reasons: [...reasonsBase, ...status, `已涨过止损位 ${fmtPrice(stop)}，走势转强，先把筹码接回来`] });
+    // 均价线离得远时：已经有最小价差、并从 5 分钟低点反弹 0.3% 以上，先落袋，不死等均价线。
+    if (price > buyTarget && gain >= config.minSpreadPct && turningUp && pct(price, recentLow) >= 0.3) return done({ action: "buyBack", strength: "normal", title: "接回", price, shares: open.shares, reasons: [...reasonsBase, ...status, `还没回到均价线，但已有 ${gain.toFixed(2)}% 价差并开始反弹，先接回落袋`] });
     if (price <= buyTarget && turningUp) return done({ action: "buyBack", strength: price <= lower ? "strong" : "normal", title: "接回", price, shares: open.shares, reasons: [...reasonsBase, ...status, `回落到接回价 ${fmtPrice(buyTarget)} 以下且开始企稳`] });
     if (price <= buyTarget) return wait("到接回区，等企稳", [...status, `已到接回价 ${fmtPrice(buyTarget)}，但还在往下走，等止跌拐头再接`], "normal");
     return wait("等回落接回", [...status, `接回价 ${fmtPrice(buyTarget)}，止损价 ${fmtPrice(stop)}`]);
@@ -215,13 +227,16 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
     sellTarget = Math.max(vwap, open.price * (1 + config.minSpreadPct / 100));
     stop = open.price * (1 - stopPct / 100);
     const gain = pct(price, open.price);
-    const sellable = Math.min(open.shares, config.sellableShares);
+    const sellable = Math.min(open.shares, remaining);
     const status = [`已于 ${open.time} 买入 ${open.shares} 股，均价 ${fmtPrice(open.price)}，现在卖出${gain >= 0 ? "可赚" : "要亏"} ${Math.abs(gain).toFixed(2)}%`];
-    if (sellable <= 0) return wait("没有可卖底仓", [...status, "T+1：今天买入的股票当天不能卖，需要有昨天及以前的底仓才能完成正T"]);
+    if (sellable <= 0) return wait("没有可卖底仓", [...status, "T+1：今天买入的股票当天不能卖，今日可卖的底仓已经用完，这笔只能留到明天"]);
+    const short = sellable < open.shares ? [`今日可卖底仓只剩 ${sellable} 股，少于买入的 ${open.shares} 股，其余要留到明天`] : [];
+    if (nearLimitDown && price <= stop) return wait("接近跌停", [...status, "跌停附近卖单可能成交不了；能卖先卖，卖不掉只能等开板"], "normal");
     if (sealedUp) return wait("涨停封板中", [...status, "封板时一般不急着卖，封板打开再考虑卖出底仓"], "normal");
-    if (now.slot >= CLOSE_SLOT) return done({ action: "closeSellBack", strength: "strong", title: "尾盘卖出底仓", price, shares: sellable, reasons: [...reasonsBase, ...status, "14:45 后卖出等量底仓，保持持仓股数不变"] });
-    if (price <= stop && (regime === "down" || price < lower)) return done({ action: "stopSellBack", strength: "strong", title: "止损卖出", price, shares: sellable, reasons: [...reasonsBase, ...status, `已跌破止损位 ${fmtPrice(stop)}，走势转弱，卖出等量底仓控制仓位`] });
-    if (price >= sellTarget && turningDown) return done({ action: "sellBack", strength: price >= upper ? "strong" : "normal", title: "卖出底仓", price, shares: sellable, reasons: [...reasonsBase, ...status, `反弹到卖出价 ${fmtPrice(sellTarget)} 以上且开始拐头`] });
+    if (now.slot >= CLOSE_SLOT) return done({ action: "closeSellBack", strength: "strong", title: "尾盘卖出底仓", price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, "14:45 后卖出等量底仓，保持持仓股数不变"] });
+    if (price <= stop && (regime === "down" || price < lower)) return done({ action: "stopSellBack", strength: "strong", title: "止损卖出", price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, `已跌破止损位 ${fmtPrice(stop)}，走势转弱，卖出等量底仓控制仓位`] });
+    if (price < sellTarget && gain >= config.minSpreadPct && turningDown && pct(recentHigh, price) >= 0.3) return done({ action: "sellBack", strength: "normal", title: "卖出底仓", price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, `还没回到均价线，但已有 ${gain.toFixed(2)}% 价差并开始回落，先卖出落袋`] });
+    if (price >= sellTarget && turningDown) return done({ action: "sellBack", strength: price >= upper ? "strong" : "normal", title: "卖出底仓", price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, `反弹到卖出价 ${fmtPrice(sellTarget)} 以上且开始拐头`] });
     if (price >= sellTarget) return wait("到卖出区，等拐头", [...status, `已到卖出价 ${fmtPrice(sellTarget)}，还在往上冲，拐头再卖`], "normal");
     return wait("等反弹卖出", [...status, `卖出价 ${fmtPrice(sellTarget)}，止损价 ${fmtPrice(stop)}`]);
   }
@@ -230,13 +245,14 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
   sellTarget = upper; buyTarget = lower;
   if (now.slot >= CLOSE_SLOT) return wait("尾盘不再开新T", ["14:45 以后时间不够完成一买一卖，今天不再开新的T"]);
   if (stats.rounds >= MAX_ROUNDS[config.style]) return wait("今天做够了", [`已完成 ${stats.rounds} 次T（${STYLE_LABELS[config.style]}风格每天最多 ${MAX_ROUNDS[config.style]} 次），频繁做T容易被来回打脸`]);
+  if (tShares <= 0) return wait("可卖底仓已用完", [`今日可卖 ${config.sellableShares} 股，今天已卖出 ${stats.soldShares} 股；T+1 下买回的股票明天才能卖，今天不能再做T`]);
   const last = stats.lastClosed;
   const lastSlot = last ? timeShareSlot(last.time) : null;
   const sinceLast = lastSlot === null ? Infinity : now.slot - lastSlot;
   if (sinceLast < COOLDOWN_MINUTES) return wait("刚做完一次，先冷静", [`上一次T在 ${last!.time} 完成，隔 ${COOLDOWN_MINUTES} 分钟再看下一次`]);
   // 止损过的方向当天不再做：说明今天的走势和这个方向相反。
-  const blockedReverse = last?.kind === "reverse" && last.profit < 0;
-  const blockedForward = last?.kind === "forward" && last.profit < 0;
+  const blockedReverse = stats.lost.reverse;
+  const blockedForward = stats.lost.forward;
   const earlyNoise = now.slot < OPEN_NOISE_SLOT;
   const strongBand = halfBandPct * 1.6;
   const volumeNote = volumeRatio >= 1.5 ? `近 5 分钟放量（${volumeRatio.toFixed(1)} 倍）` : volumeRatio <= 0.6 ? `近 5 分钟缩量（${volumeRatio.toFixed(1)} 倍）` : "";
@@ -245,10 +261,10 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
     if (sealedUp) return wait("涨停封板中", ["封板时不做倒T，避免卖在板上；炸板回落再考虑"], "normal");
     if (!turningDown) return wait("冲高中，等拐头再卖", [`已到上轨 ${fmtPrice(upper)}，还在往上走`, volumeNote].filter(Boolean), "normal");
     if (earlyNoise && deviationPct < strongBand) return wait("开盘波动，先观察", ["开盘 15 分钟内波动大，偏离不够大时不急着卖"]);
-    if (blockedReverse) return wait("今天不再倒T", [`${last!.time} 的倒T止损接回，说明今天偏强，先不做先卖后买`], "normal");
+    if (blockedReverse) return wait("今天不再倒T", ["今天的倒T亏损接回过，说明走势偏强，先不做先卖后买"], "normal");
     if (regime === "up" && !(volumeRatio >= 1.5 && momentumPct <= 0.1) && !spikeDown) return wait("单边上涨，谨慎倒T", [regimeText, "强势单边时卖出容易接不回，除非放量滞涨"], "normal");
     const strong = regime !== "up" && (deviationPct >= strongBand || (volumeRatio >= 1.5 && momentumPct <= 0.1) || price >= high * 0.997);
-    return done({ action: "sell", strength: strong ? "strong" : "normal", title: "高抛（倒T）", price, shares: Math.min(tShares, usable), reasons: [
+    return done({ action: "sell", strength: strong ? "strong" : "normal", title: "高抛（倒T）", price, shares: tShares, reasons: [
       ...reasonsBase, `冲到上轨 ${fmtPrice(upper)} 以上后拐头`, regime === "up" ? "今天整体偏强，只是急拉后回落，接回要果断" : "", volumeNote, nearLimitUp ? "接近涨停，留意是否回封" : "",
       `接回参考 ${fmtPrice(Math.min(vwap, price * (1 - config.minSpreadPct / 100)))}，若涨过 ${fmtPrice(price * (1 + stopPct / 100))} 止损接回`
     ].filter(Boolean) });
@@ -257,7 +273,7 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
     if (nearLimitDown) return wait("接近跌停，不接", ["接近跌停时不做正T，等跌停打开、企稳后再说"], "normal");
     if (!turningUp) return wait("下探中，等企稳再买", [`已到下轨 ${fmtPrice(lower)}，还在往下走`, volumeNote].filter(Boolean), "normal");
     if (earlyNoise && -deviationPct < strongBand) return wait("开盘波动，先观察", ["开盘 15 分钟内波动大，偏离不够大时不急着买"]);
-    if (blockedForward) return wait("今天不再正T", [`${last!.time} 的正T止损卖出，说明今天偏弱，先不做先买后卖`], "normal");
+    if (blockedForward) return wait("今天不再正T", ["今天的正T亏损卖出过，说明走势偏弱，先不做先买后卖"], "normal");
     if (regime === "down" && !spikeUp) return wait("单边下跌，谨慎正T", [regimeText, "弱势单边时低吸容易越买越跌"], "normal");
     const strong = regime !== "down" && (-deviationPct >= strongBand || price <= low * 1.003);
     return done({ action: "buy", strength: strong ? "strong" : "normal", title: "低吸（正T）", price, shares: tShares, reasons: [
