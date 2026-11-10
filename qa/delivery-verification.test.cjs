@@ -28,7 +28,15 @@ async function createAsarFixture(t, files) {
   const builderRequire = createRequire(require.resolve("electron-builder"));
   const appBuilderRequire = createRequire(builderRequire.resolve("app-builder-lib"));
   const asar = require(appBuilderRequire.resolve("@electron/asar"));
-  await asar.createPackage(source, path.join(resources, "app.asar"));
+  const archive = path.join(resources, "app.asar");
+  await asar.createPackage(source, archive);
+  // createPackage 偶尔在文件内容落盘前就返回（Linux CI 上读到过全空白的内容），等到能读回首个文件再继续。
+  const [firstName, firstValue] = Object.entries(files)[0];
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { if (asar.extractFile(archive, firstName).toString() === String(firstValue)) break; } catch { /* 还没写完 */ }
+    asar.uncacheAll?.();
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
   return { root, source, resources };
 }
 

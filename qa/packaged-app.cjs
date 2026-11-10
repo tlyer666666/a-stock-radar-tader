@@ -241,8 +241,8 @@ async function run() {
       !intersectionState.oneWordToggle ||
       !intersectionState.oneWordLabel.includes("排除已识别一字板") ||
       !intersectionState.search ||
-      !intersectionState.table ||
-      intersectionState.sortButtons < 3 ||
+      // 开盘前或当天没有炸板时页面显示空状态而不是表格，这同样是正确结果。
+      !(intersectionState.table ? intersectionState.sortButtons >= 3 : intersectionState.stateText.includes("无符合记录")) ||
       !intersectionState.sourceStrip
     ) {
       throw new Error(`Failed-board intersection controls are incomplete: ${JSON.stringify(intersectionState)}`);
