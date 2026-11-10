@@ -124,7 +124,8 @@ async function run() {
       undefined,
       { timeout: 20_000 }
     );
-    await page.getByText("专业复盘", { exact: true }).first().waitFor();
+    // 窗口较窄时侧栏收成图标，导航里的「专业复盘」文字是隐藏的；这里等的是页面上可见的标题。
+    await page.locator(':text-is("专业复盘"):visible').first().waitFor({ timeout: 60_000 });
     await page.getByText("有序证据 · 2–6 周观察", { exact: true }).waitFor({ timeout: 90_000 });
     await page.locator(".review-legacy-details")
       .filter({ hasText: "展开原 8 维市场资料与诊断详情" })
