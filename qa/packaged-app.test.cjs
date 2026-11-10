@@ -229,6 +229,7 @@ test("packaged E2E rejects settled strategy and failed-board placeholders", () =
   const runner = fs.readFileSync(path.join(projectRoot, "qa", "packaged-app.cjs"), "utf8");
   assert.match(runner, /!intersectionState\.table/);
   assert.match(runner, /intersectionState\.sortButtons < 3/);
+  assert.match(runner, /!intersectionState\.table && !intersectionState\.stateText\.includes\("无符合记录"\)/);
   assert.match(runner, /signalState\.tabCount !== expectedSignalStrategyCount/);
   assert.match(runner, /signalState\.loading/);
   assert.match(runner, /signalState\.rows > 0 && signalState\.empty/);
