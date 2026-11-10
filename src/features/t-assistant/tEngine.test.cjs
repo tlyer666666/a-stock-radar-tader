@@ -114,3 +114,10 @@ test("倒T卖出后均价线离得远：有最小价差并反弹时提示先接�
   ], config());
   assert.deepEqual(stats.lost, { reverse: true, forward: false });
 });
+
+test("开盘头 20 分钟不判单边", () => {
+  const prices = Array.from({ length: 10 }, (_, i) => Number((10 - i * 0.03).toFixed(2)));
+  const result = engine.analyzeT(share(prices), ctx, config(), []);
+  assert.equal(result.regime, "range");
+  assert.match(result.regimeText, /方向还没走出来/);
+});

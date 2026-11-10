@@ -99,8 +99,10 @@ export default function ConvertibleBondView({ onOpenSecurity, live = true }: { o
   }, [load, pending, live]);
 
   const rows = useMemo(() => selectBonds(snapshot?.members || [], { query, market, price, sort }), [snapshot, query, market, price, sort]);
-  const summary = snapshot?.summary;
   const coverage = snapshot?.quoteCoverage;
+  // 一只行情都还没取到时，涨跌家数和成交额是「未知」而不是 0。
+  const quoted = !coverage || coverage.loaded > 0;
+  const summary = snapshot?.summary ? (quoted ? snapshot.summary : { ...snapshot.summary, rising: null, falling: null, flat: null, amount: null }) : undefined;
   const discovering = snapshot?.roster.discovering;
   return <div className="bond-workspace">
     <PageHeading eyebrow="CONVERTIBLE BONDS" title="可转债"

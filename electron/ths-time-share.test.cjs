@@ -27,3 +27,15 @@ test("THS time-share accepts an unkeyed body and rejects empty payloads", () => 
   assert.equal(parseThsTimeShare(wrap("")), null);
   assert.equal(parseThsTimeShare(null), null);
 });
+
+test("开盘前源端日期已换成当天但分时仍是上一交易日：日期改回上一交易日；盘中不改", () => {
+  const { rebaseStaleTimeShare } = require("./ths-free-market.cjs");
+  const share = { date: "2026-11-10", preClose: 11.81, rows: [{ date: "2026-11-10 09:30", close: 11.8 }, { date: "2026-11-10 15:00", close: 11.89 }] };
+  const before = rebaseStaleTimeShare(share, { date: "2026-11-10", minute: 9 * 60 + 26 }, "2026-11-09");
+  assert.equal(before.date, "2026-11-09");
+  assert.deepEqual(before.rows.map(row => row.date), ["2026-11-09 09:30", "2026-11-09 15:00"]);
+  const live = { ...share, rows: [{ date: "2026-11-10 09:30", close: 11.8 }, { date: "2026-11-10 09:41", close: 11.9 }] };
+  assert.equal(rebaseStaleTimeShare(live, { date: "2026-11-10", minute: 9 * 60 + 41 }, "2026-11-09"), live);
+  assert.equal(rebaseStaleTimeShare(share, { date: "2026-11-10", minute: 15 * 60 + 30 }, "2026-11-09"), share, "收盘后是当天数据");
+  assert.equal(rebaseStaleTimeShare(share, { date: "2026-11-10", minute: 9 * 60 + 26 }, null), share, "上一交易日未知时不改");
+});

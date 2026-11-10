@@ -5848,8 +5848,10 @@ async function timeShareForSecurity(security, options) {
   if (thsFreeMarket.thsFreeSupports(security) && !marketSourceHealth.isOpen("ths_free_time")) {
     const startedAt = Date.now();
     try {
-      const share = await serviceRuntime.cached(chartCache, `${security.secid}:time`, 5000, () => serviceRuntime.track(() => trackServiceRequest(
+      const fetched = await serviceRuntime.cached(chartCache, `${security.secid}:time`, 5000, () => serviceRuntime.track(() => trackServiceRequest(
         thsFreeMarket.thsFreeTimeShare(security, { signal: serviceSignal() }))), options);
+      const clock = shanghaiClock(new Date());
+      const share = thsFreeMarket.rebaseStaleTimeShare(fetched, clock, dailyBarCalendar.previousSession(clock.date));
       marketSourceHealth.recordSuccess("ths_free_time", Date.now() - startedAt);
       return { rows: share.rows, interval: "time", range: "1d", visibleLimit: share.rows.length, source: "同花顺实时分时",
         sourceClass: "public_web", dataSource: "ths_free_time", adjustment: "不复权", preClose: share.preClose, tradingDate: share.date,
