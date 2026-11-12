@@ -106,3 +106,31 @@
 .backup-message { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: var(--fs-xs); }
 .backup-message.ok { color: var(--accent); }
 .backup-message.error { color: var(--danger); }
+
+/* 1.6.66：价格条件、AI 整理、让 AI 看看 */
+.notes-watch-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 6px 0 0; color: var(--accent); font-size: var(--fs-2xs); }
+.notes-condition-chip { background: var(--warn-soft); color: var(--warn); }
+.notes-condition-chip svg { flex: none; }
+.notes-condition-edit { align-items: center; }
+.notes-condition-edit select, .notes-condition-edit input { height: 28px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-1); font: inherit; font-size: var(--fs-xs); }
+.notes-condition-edit input { width: 140px; }
+.notes-ai { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); background: var(--accent-soft); }
+.notes-ai.error { border-left-color: var(--warn); background: var(--warn-soft); }
+.notes-ai.running { border-left-color: var(--accent); }
+.notes-ai-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--accent); font-size: var(--fs-xs); }
+.notes-ai.error .notes-ai-head { color: var(--warn); }
+.notes-ai-head small { color: var(--ink-3); }
+.notes-ai-head .notes-card-actions { margin-left: auto; }
+.notes-ai-error { margin: 6px 0 0; color: var(--ink-2); font-size: var(--fs-xs); line-height: 1.6; }
+.notes-ai-body { margin-top: 8px; }
+.notes-ai-body .agent-markdown { font-size: var(--fs-sm); }
+.notes-ai-body.clipped { max-height: 7.5em; overflow: hidden; -webkit-mask-image: linear-gradient(to bottom, var(--ink-1) 60%, transparent); mask-image: linear-gradient(to bottom, var(--ink-1) 60%, transparent); }
+.notes-popup .notes-ai { margin-top: 0; max-height: 14em; overflow: auto; }
+.notes-popup .notes-ai-body.clipped { max-height: 6em; }
+.notes-popup-detail { color: var(--warn) !important; font-weight: 600; }
+.quick-note { position: relative; display: inline-flex; }
+.quick-note-pop { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; width: min(420px, 80vw); padding: 12px; display: grid; gap: 8px; box-shadow: var(--shadow-3); }
+.quick-note-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); color: var(--ink-1); }
+.quick-note-pop textarea { width: 100%; min-height: 72px; resize: vertical; padding: var(--space-sm) var(--space-md); border: 1px solid var(--line-2); border-radius: var(--radius-md); background: var(--surface-2); color: var(--ink-1); font: inherit; font-size: var(--fs-sm); line-height: 1.6; }
+.quick-note-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: var(--fs-2xs); color: var(--ink-3); }
+.quick-note-foot .primary-btn { margin-left: auto; }

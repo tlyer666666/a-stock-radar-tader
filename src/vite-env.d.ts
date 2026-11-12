@@ -309,6 +309,9 @@ interface Window {
       summary(input: AiSelectionInput): Promise<AiSummary>;
       cached(input: AiSelectionInput): Promise<{ rank: AiRanking | null; summary: AiSummary | null }>;
       draftStrategy(input: { text: string; patterns: { id: string; name: string; detail?: string | undefined }[] }): Promise<{ strategy: any; notes: string; model: string }>;
+      /** 随心记「AI 整理」（1.6.66）。 */
+      parseNote?(input: { text: string; now: string; tradingDays: string[] }): Promise<{ text: string; when: string | null; repeat: "none" | "tradingDays" | "daily" | "weekly";
+        code: string | null; condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } | null; note: string; model: string }>;
       test(input: { id?: string | null; baseUrl: string; model: string; apiKey?: string }): Promise<{ ok: boolean; latency: number; model: string }>;
       profiles(): Promise<AiProfileList>;
       saveProfile(input: { id?: string | null; name: string; baseUrl: string; model: string; apiKey?: string; activate?: boolean }): Promise<AiProfileList & { saved: AiProfile }>;
@@ -481,6 +484,9 @@ interface Window {
     ): Promise<{ ok: boolean; maximized: boolean }>;
     /** 系统通知（随心记提醒）；旧版本没有这个接口。 */
     notify?(message: { title: string; body?: string }): Promise<{ shown: boolean }>;
+    /** 随心记价格条件（1.6.66）：交来要盯的条件，取走已触发的记录。 */
+    notesWatch?(input: { items: Array<{ id: string; code: string; name: string; secid: string; text: string; condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } }>; systemNotify: boolean }):
+      Promise<{ hits: Array<{ id: string; at: string; detail: string }>; watching: number; session: boolean; error?: string }>;
     /** 数据备份（1.6.64）；类型见 src/features/backup/backupClient.ts。 */
     backup?: import("./features/backup/backupClient").BackupApi;
     openExternal(url: string): Promise<void>;

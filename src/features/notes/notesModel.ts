@@ -6,6 +6,13 @@ import marketCalendar from "../../../config/a-share-market-calendar.json";
  */
 export type NoteRepeat = "none" | "tradingDays" | "daily" | "weekly";
 export type NoteStock = { code: string; name: string; secid: string };
+/** 价格条件：盘中软件替你盯着，满足一次就提醒。field = 最新价（元）或涨跌幅（%）。 */
+export type NoteCondition = { field: "latest" | "changePct"; op: "lte" | "gte"; value: number };
+/** 「让 AI 看看」的结果（AI 问股里的一段对话）。 */
+export type NoteAi = {
+  conversationId: string; runId: string | null; status: "running" | "done" | "error";
+  answer: string; stance: string; at: string; trigger: "manual" | "auto";
+};
 export type Note = {
   id: string;
   text: string;
@@ -18,13 +25,17 @@ export type Note = {
   done: boolean;
   /** 最近一次已经提醒过的那个时间点（ISO）；等于 remindAt 说明这次已提醒、等你处理。 */
   firedFor: string | null;
+  condition: NoteCondition | null;
+  /** 条件满足、已经提醒的时间（ISO）和当时的说明；为 null 表示还在盯。 */
+  conditionHit: { at: string; detail: string } | null;
+  ai: NoteAi | null;
 };
-export type NotesStore = { notes: Note[]; voice: boolean; systemNotify: boolean };
+export type NotesStore = { notes: Note[]; voice: boolean; systemNotify: boolean; aiAuto: boolean };
 
 export const NOTES_KEY = "a-stock-radar:notes:v1";
 export const MAX_NOTES = 1000;
 export const MAX_NOTE_LENGTH = 2000;
-export const EMPTY_NOTES: NotesStore = { notes: [], voice: true, systemNotify: true };
+export const EMPTY_NOTES: NotesStore = { notes: [], voice: true, systemNotify: true, aiAuto: false };
 export const REPEAT_LABELS: Record<NoteRepeat, string> = { none: "不重复", tradingDays: "每个交易日", daily: "每天", weekly: "每周" };
 
 const CN_OFFSET = 8 * 3600_000;
@@ -217,6 +228,52 @@ export function detectStockCode(text: string): string | null {
   return match ? match[1]! : null;
 }
 
+// ---------- 价格条件 ----------
+
+const PRICE = "(\\d{1,5}(?:\\.\\d{1,3})?)(?![0-9.])";
+/**
+ * 识别「跌破 10.2」「跌到10元以下」「涨到 1500」「突破 12.5」「涨幅超过 5%」「跌超3%」这类价格条件。
+ * 「跌破5日线」「跌破均价线」「突破前高」不是具体价位，不识别（可以交给 AI 看）。
+ */
+export function parseCondition(text: string): NoteCondition | null {
+  const s = text.replace(/\s+/g, "").replace(/％/g, "%");
+  const pct = s.match(new RegExp(`(涨幅|跌幅|涨|跌)(?:超过|超|大于|达到|到|过|了)?${PRICE}%(?:以上)?`));
+  if (pct) {
+    const value = Number(pct[2]);
+    if (value > 0 && value <= 30) return pct[1]!.startsWith("涨") ? { field: "changePct", op: "gte", value } : { field: "changePct", op: "lte", value: -value };
+  }
+  const down = s.match(new RegExp(`(?:跌破|跌到|跌至|跌回|回落到|回落至|回调到|回调至|低于|小于|掉到|砸到)${PRICE}(?![0-9.]*(?:日|线|%|点|个|只|万|亿|股|天|分钟|小时))(?:元)?`));
+  const up = s.match(new RegExp(`(?:突破|涨到|涨至|涨回|冲到|冲上|站上|站稳|高于|大于|拉到|升到)${PRICE}(?![0-9.]*(?:日|线|%|点|个|只|万|亿|股|天|分钟|小时))(?:元)?`));
+  const pick = [down && { m: down, op: "lte" as const }, up && { m: up, op: "gte" as const }].filter(Boolean)
+    .sort((a, b) => a!.m.index! - b!.m.index!)[0];
+  if (!pick) return null;
+  const value = Number(pick.m[1]);
+  // 6 位数是股票代码，不是价格。
+  if (!(value > 0) || /^\d{6}$/.test(pick.m[1]!)) return null;
+  return { field: "latest", op: pick.op, value };
+}
+
+export function describeCondition(condition: NoteCondition): string {
+  if (condition.field === "changePct") return condition.op === "gte" ? `涨幅 ≥ ${condition.value}%` : `跌幅 ≥ ${Math.abs(condition.value)}%`;
+  return condition.op === "lte" ? `价格 ≤ ${condition.value}` : `价格 ≥ ${condition.value}`;
+}
+
+export function normalizeCondition(value: unknown): NoteCondition | null {
+  if (!isRecord(value)) return null;
+  const field = value.field === "changePct" ? "changePct" : value.field === "latest" ? "latest" : null;
+  const op = value.op === "lte" || value.op === "gte" ? value.op : null;
+  const number = Number(value.value);
+  if (!field || !op || !Number.isFinite(number)) return null;
+  if (field === "latest" && (number <= 0 || number > 100000)) return null;
+  if (field === "changePct" && Math.abs(number) > 30) return null;
+  return { field, op, value: Math.round(number * 1000) / 1000 };
+}
+
+/** 还在盯的价格条件（没完成、没触发、关联了股票）。 */
+export function watchingConditions(notes: Note[]): Note[] {
+  return notes.filter(note => !note.done && note.condition && note.stock && !note.conditionHit);
+}
+
 /** 常用快捷提醒时间。 */
 export function presetTimes(now = Date.now()): Array<{ id: string; label: string; at: number }> {
   const today = cnParts(now);
@@ -248,7 +305,21 @@ export function normalizeNote(value: unknown): Note | null {
   const remindAt = iso(value.remindAt);
   return {
     id: String(value.id || createdAt).slice(0, 40), text, createdAt, updatedAt: iso(value.updatedAt) || createdAt,
-    remindAt, repeat: remindAt ? repeat : "none", stock, done: value.done === true, firedFor: iso(value.firedFor)
+    remindAt, repeat: remindAt ? repeat : "none", stock, done: value.done === true, firedFor: iso(value.firedFor),
+    condition: stock ? normalizeCondition(value.condition) : null,
+    conditionHit: isRecord(value.conditionHit) && iso(value.conditionHit.at) ? { at: iso(value.conditionHit.at)!, detail: String(value.conditionHit.detail || "").slice(0, 120) } : null,
+    ai: normalizeAi(value.ai)
+  };
+}
+
+function normalizeAi(value: unknown): NoteAi | null {
+  if (!isRecord(value) || typeof value.conversationId !== "string" || !value.conversationId) return null;
+  const status = value.status === "running" || value.status === "done" || value.status === "error" ? value.status : "error";
+  return {
+    conversationId: value.conversationId.slice(0, 80), runId: typeof value.runId === "string" ? value.runId.slice(0, 80) : null, status,
+    answer: String(value.answer || "").slice(0, 8000), stance: String(value.stance || "").slice(0, 12),
+    at: typeof value.at === "string" && Number.isFinite(Date.parse(value.at)) ? value.at : new Date(0).toISOString(),
+    trigger: value.trigger === "auto" ? "auto" : "manual"
   };
 }
 
@@ -258,7 +329,7 @@ export function normalizeNotes(value: unknown): NotesStore {
   const notes = (Array.isArray(value.notes) ? value.notes : []).map(normalizeNote)
     .filter((note): note is Note => Boolean(note) && !seen.has(note!.id) && Boolean(seen.add(note!.id)))
     .slice(0, MAX_NOTES);
-  return { notes, voice: value.voice !== false, systemNotify: value.systemNotify !== false };
+  return { notes, voice: value.voice !== false, systemNotify: value.systemNotify !== false, aiAuto: value.aiAuto === true };
 }
 
 /** 到期且还没提醒过的。 */
@@ -267,7 +338,11 @@ export function dueToFire(notes: Note[], now: number): Note[] {
 }
 /** 提醒过、还等你处理的（不重复的提醒）。 */
 export function awaiting(notes: Note[]): Note[] {
-  return notes.filter(note => !note.done && note.remindAt && note.firedFor === note.remindAt);
+  return notes.filter(isAwaiting);
+}
+/** 等你处理：时间提醒已到（不重复的），或价格条件已触发。 */
+export function isAwaiting(note: Note): boolean {
+  return !note.done && (Boolean(note.remindAt && note.firedFor === note.remindAt) || Boolean(note.conditionHit));
 }
 
 /** 提醒发出后：不重复的停在「已提醒、待处理」；重复的直接排到下一次。 */
@@ -286,7 +361,29 @@ export function snooze(note: Note, at: number): Note {
 
 /** 列表顺序：等你处理的 → 有提醒的按时间先后 → 没提醒的按新到旧 → 已完成。 */
 export function sortNotes(notes: Note[]): Note[] {
-  const rank = (note: Note) => note.done ? 3 : note.remindAt && note.firedFor === note.remindAt ? 0 : note.remindAt ? 1 : 2;
+  const rank = (note: Note) => note.done ? 3 : isAwaiting(note) ? 0 : note.remindAt || note.condition ? 1 : 2;
   return [...notes].sort((a, b) => rank(a) - rank(b)
-    || (rank(a) === 1 ? Date.parse(a.remindAt!) - Date.parse(b.remindAt!) : Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
+    || (rank(a) === 1 ? (a.remindAt ? Date.parse(a.remindAt) : Infinity) - (b.remindAt ? Date.parse(b.remindAt) : Infinity) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+      : Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
+}
+
+const cnClock = (iso: string) => { const { date, minutes } = cnParts(Date.parse(iso)); return `${date} ${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`; };
+
+/** 「让 AI 看看」发给 AI 问股的问题：原文、记录时间、提醒/条件状态，请它结合实时行情判断现在怎么做。 */
+export function aiQuestion(note: Note, now = Date.now()): string {
+  const lines = [`这是我之前在「随心记」里记下的一件事（记于 ${cnClock(note.createdAt)}，北京时间）：`, `「${note.text}」`];
+  if (note.stock) lines.push(`关联股票：${note.stock.name} ${note.stock.code}。`);
+  if (note.conditionHit) lines.push(`我设的价格条件已经触发：${note.conditionHit.detail}（${cnClock(note.conditionHit.at)}）。`);
+  else if (note.condition) lines.push(`我设的价格条件（${describeCondition(note.condition)}）还没触发。`);
+  if (note.firedFor && note.firedFor === note.remindAt) lines.push(`提醒时间 ${cnClock(note.firedFor)} 已到。`);
+  lines.push(`现在是 ${cnClock(new Date(now).toISOString())}。请读取实时行情和相关数据，判断这件事现在该怎么做：`,
+    "先用一句话给结论（照计划做 / 先别做 / 再等等，以及原因），再列出依据，最后写清楚接下来要盯的价位或条件。",
+    "如果我记的前提已经变了（比如条件已满足或已失效、已经收盘、不是交易日），请直接指出。没有的数据就说没有，不要编。");
+  return lines.join("\n");
+}
+
+/** A 股连续竞价时段（交易日 9:30–11:30、13:00–15:00）。 */
+export function inTradingSession(now = Date.now()): boolean {
+  const { date, minutes } = cnParts(now);
+  return isTradingDay(date) && ((minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60));
 }

@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld("stockApi", {
     summary: (input = {}) => invoke("ai:summary", input),
     cached: (input = {}) => invoke("ai:cached", input),
     draftStrategy: (input = {}) => invoke("ai:strategy-draft", input),
+    parseNote: (input = {}) => invoke("ai:note-parse", input),
     test: (input = {}) => invoke("ai:test", input),
     profiles: () => invoke("ai:profiles"),
     saveProfile: (input = {}) => invoke("ai:profile-save", input),
@@ -127,6 +128,7 @@ contextBridge.exposeInMainWorld("stockApi", {
   setTheme: (theme) => invoke("app:set-theme", theme),
   controlWindow: (action) => invoke("app:window-control", action),
   notify: (message) => invoke("app:notify", message),
+  notesWatch: (input) => invoke("notes:watch-sync", input),
   backup: {
     status: () => invoke("backup:status"),
     chooseFolder: () => invoke("backup:choose-folder"),
