@@ -51,6 +51,7 @@ const { number, fmt, pct, unit, money } = createNumberFormatters(nullableNumber,
 
 const providerLabel = (value: unknown) => {
   const provider = String(value || "").toLowerCase();
+  if (provider.includes("fuyao") || provider.includes("扶摇")) return "同花顺扶摇行情";
   if (provider.includes("ths") || provider.includes("同花顺")) return "同花顺";
   if (provider.includes("tencent") || provider.includes("腾讯")) return "腾讯行情";
   if (provider.includes("eastmoney") || provider.includes("东方财富")) {

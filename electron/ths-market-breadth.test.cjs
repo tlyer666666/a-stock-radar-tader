@@ -14,7 +14,7 @@ function load({ fetchJson, quote = async () => ({ changePct: -2.67 }), history =
   const filename = path.join(__dirname, 'services.cjs'), module = { exports: {} }, realRequire = createRequire(filename);
   const ths = { ...realRequire('./ths-free-market.cjs'), thsFreeQuote: quote, thsFreeDailyHistory: history };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8') + `
-    module.exports.probe = { wholeMarketSnapshot, marketEmotionSnapshot, topicPoolForDate, recentTradingDates,
+    module.exports.probe = { wholeMarketSnapshot, marketEmotionSnapshot, topicPoolForDate, recentTradingDates, fuyao,
       setFetch(fn) { fetchJson = fn; } };`, {
     module, exports: module.exports, require: (id) => id === './ths-free-market.cjs' ? ths : realRequire(id), __dirname,
     __filename: filename, process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, Buffer
@@ -234,4 +234,21 @@ test('a Fuyao snapshot is merged as a new daily bar only when its previous close
   assert.equal(fuyaoQuoteBelongsAfter(rows, quote(10, '2026-10-22'), '2026-10-22'), true, 'same-day refresh checks against the bar before');
   assert.equal(fuyaoQuoteBelongsAfter(rows, quote(10.5), '2026-10-20'), false, 'older snapshots are ignored');
   assert.equal(fuyaoQuoteBelongsAfter(rows, { preClose: 10.5, latest: 10.8, open: 0 }, '2026-10-23'), false, 'no open yet');
+});
+
+test('the THS open-limit pool has no open-board count, so it is filled from the fuyao limit-break pool when a key is set', async () => {
+  const s = load({ fetchJson: async () => ({ status_code: 0, data: { date: '20261021', page: { total: 2 }, info: [
+    { code: '301486', name: '致尚科技', latest: 209.72, change_rate: 17.1, last_limit_up_time: '1792548621', change_tag: 'LIMIT_FAILED', open_board_count: null },
+    { code: '600001', name: '演示一', latest: 10, change_rate: 5, last_limit_up_time: '1792548621', change_tag: 'LIMIT_FAILED', open_board_count: null }] } }) });
+  const calls = [];
+  s.probe.fuyao.configured = () => true;
+  s.probe.fuyao.limitBreakPool = async (options) => { calls.push(options.date); return { rows: [{ code: '301486', openTimes: 3 }], total: 1 }; };
+  try {
+    const pool = await s.probe.topicPoolForDate('2026-10-21', 'failed', { forceRefresh: true });
+    assert.deepEqual(calls, ['2026-10-21']);
+    assert.equal(pool.pool.find(row => row.code === '301486').openBoardCount, 3);
+    assert.equal(pool.pool.find(row => row.code === '600001').openBoardCount, null, 'a stock fuyao does not list stays unknown');
+    await s.probe.topicPoolForDate('2026-10-21', 'failed', { forceRefresh: true });
+    assert.equal(calls.length, 1, 'the billed fuyao pool is cached');
+  } finally { await s.shutdownServiceResources(); }
 });

@@ -3246,3 +3246,6 @@ html .terminal-shell .member-row.no-funds {
   min-width: 120px;
   white-space: normal;
 }
+
+/* 多股同列：风险项用警示色，不用跌色（绿色在 A 股里容易被看成「没问题」）。 */
+.compare-risk-copy { color: var(--warn); }

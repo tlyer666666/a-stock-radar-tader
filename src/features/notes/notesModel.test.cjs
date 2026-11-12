@@ -28,6 +28,11 @@ test("识别常用说法：明天开盘前、下个交易日竞价、周五尾�
   assert.equal(at("11月20日 看财报"), iso("2026-11-20T09:15:00"));
   assert.equal(at("今晚八点复盘"), iso("2026-11-12T20:00:00"));
   assert.equal(model.parseRemind("这只票的逻辑是供给收缩", NOW), null, "没有时间说法就不提醒");
+  assert.equal(model.parseRemind("跌破5日线就减仓，20日均线是支撑", NOW), null, "5日线不是 5 号");
+  assert.equal(model.parseRemind("10日内涨幅超过30%要小心", NOW), null);
+  assert.equal(model.parseRemind("大盘跌了20点，3200点位有支撑", NOW), null, "点数不是钟点");
+  assert.equal(at("明天跌破5日线就卖"), iso("2026-11-13T09:15:00"), "有日期时照常识别");
+  assert.equal(at("15号看一下"), iso("2026-11-15T09:15:00"));
 });
 
 test("交易日规则：周末和节假日跳过；周五说「明天开盘」落到下周一", () => {
