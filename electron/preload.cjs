@@ -126,6 +126,7 @@ contextBridge.exposeInMainWorld("stockApi", {
   testProvider: (settings) => invoke("settings:test-provider", settings),
   setTheme: (theme) => invoke("app:set-theme", theme),
   controlWindow: (action) => invoke("app:window-control", action),
+  notify: (message) => invoke("app:notify", message),
   openExternal: (url) => invoke("shell:open-external", url),
   getPlatform: () => process.platform,
   getVersion: () => invoke("app:version"),

@@ -14,6 +14,7 @@ export function simpleAnalysisOrigin(view: WorkspaceView): { view: WorkspaceView
     "ai-picks": "返回 AI 选股",
     "ai-agent": "返回 AI 问股",
     "t-assistant": "返回做T助手",
+    notes: "返回随心记",
     compare: "返回多股同列",
     review: "返回专业复盘",
     settings: "返回数据源设置",
