@@ -127,6 +127,15 @@ contextBridge.exposeInMainWorld("stockApi", {
   setTheme: (theme) => invoke("app:set-theme", theme),
   controlWindow: (action) => invoke("app:window-control", action),
   notify: (message) => invoke("app:notify", message),
+  backup: {
+    status: () => invoke("backup:status"),
+    chooseFolder: () => invoke("backup:choose-folder"),
+    configure: (patch) => invoke("backup:configure", patch),
+    run: (local, options) => invoke("backup:run", local, options),
+    inspect: (name, password) => invoke("backup:inspect", name, password),
+    restore: (name, password) => invoke("backup:restore", name, password),
+    relaunch: () => invoke("backup:relaunch")
+  },
   openExternal: (url) => invoke("shell:open-external", url),
   getPlatform: () => process.platform,
   getVersion: () => invoke("app:version"),

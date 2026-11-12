@@ -84,3 +84,25 @@
   .notes-actions { justify-content: flex-start; }
   .notes-search { margin-left: 0; width: 100%; }
 }
+
+/* 数据备份（设置 → 数据备份，1.6.64） */
+.backup-settings-card { display: flex; flex-direction: column; gap: var(--space-md); }
+.backup-section { display: flex; flex-direction: column; gap: var(--space-xs); padding-top: var(--space-sm); border-top: 1px solid var(--line-1); }
+.backup-section h4 { margin: 0; color: var(--ink-1); font-size: var(--fs-sm); }
+.backup-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); }
+.backup-folder { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 0; color: var(--ink-2); font-size: var(--fs-xs); }
+.backup-folder > svg { color: var(--accent); }
+.backup-folder code { padding: 1px 6px; border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-1); font-size: var(--fs-2xs); overflow-wrap: anywhere; }
+.backup-actions { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; }
+.backup-toggle, .backup-keep, .backup-state { display: inline-flex; align-items: center; gap: 6px; color: var(--ink-2); font-size: var(--fs-xs); }
+.backup-keep select, .backup-password { height: var(--control-h-sm); padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-1); font: inherit; font-size: var(--fs-xs); }
+.backup-password { width: 240px; }
+.backup-password:focus, .backup-keep select:focus { outline: none; border-color: var(--accent); }
+.backup-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.backup-table th, .backup-table td { padding: 5px 6px; border-bottom: 1px solid var(--line-1); text-align: left; color: var(--ink-1); }
+.backup-table th { color: var(--ink-3); font-weight: 500; }
+.backup-table td:last-child { text-align: right; }
+.backup-table .link-btn { display: inline-flex; align-items: center; gap: 4px; margin-left: 0; }
+.backup-message { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: var(--fs-xs); }
+.backup-message.ok { color: var(--accent); }
+.backup-message.error { color: var(--danger); }

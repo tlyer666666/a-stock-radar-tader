@@ -1895,3 +1895,18 @@ test("optional live-bar allowance does not exceed the verified raw source capaci
   assert.equal(rows.actualAdjustment, 0);
   assert.equal(rows.provenance.amountUnit, "CNY");
 });
+
+test('Sina minute fallback keeps every intraday timestamp instead of deduplicating by day', async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const day = recentDate();
+  const candles = Array.from({ length: 24 }, (_, index) => ({ day: `${day} ${String(9 + Math.floor((35 + index * 5) / 60)).padStart(2, '0')}:${String((35 + index * 5) % 60).padStart(2, '0')}:00`, open: '10', high: '11', low: '9', close: '10.5', volume: '10000' }));
+  global.fetch = async () => mockJsonResponse({ result: { data: [...candles, candles[0], { ...candles[0], day: `${day} 25:00:00` }] } });
+  const rows = await require('./services.cjs').sinaKline({ code: '000657', secid: '0.000657' }, '5', 24);
+  assert.equal(rows.length, 24);
+  assert.equal(rows[0].date, `${day} 09:35`);
+  assert.equal(rows.at(-1).date, `${day} 11:30`);
+  assert.equal(rows[0].volume, 100);
+  assert.equal(rows.dataSource, 'sina_5m');
+  assert.equal(rows.actualAdjustment, 0);
+});

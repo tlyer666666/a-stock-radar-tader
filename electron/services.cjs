@@ -1416,6 +1416,7 @@ async function sinaKline(security, interval = "101", limit = 160) {
     turnover: null
   })), {
     source: "sina",
+    preserveTime: Number(frame) > 0 && Number(frame) < 100,
     minimumRows: Math.min(20, Math.max(1, Number(limit) || 1))
   });
   Object.defineProperty(rows, "dataSource", {
@@ -1450,7 +1451,10 @@ function validateHistoryRows(rows, options = {}) {
   const seenDates = new Set();
   const usable = (Array.isArray(rows) ? rows : [])
     .map((row) => {
-      const date = String(row?.date || "").slice(0, 10);
+      // Minute candles must retain their timestamp: deduplicating by date alone
+      // collapses a full trading day to one bar and rejects valid fallback data.
+      const rawDate = String(row?.date || "").replace("T", " ");
+      const date = rawDate.slice(0, options.preserveTime ? 16 : 10);
       const open = Number(row?.open);
       const close = Number(row?.close);
       const high = Number(row?.high);
@@ -1459,7 +1463,11 @@ function validateHistoryRows(rows, options = {}) {
       const volume = rawVolume === null || rawVolume === undefined || rawVolume === ""
         ? Number.NaN
         : Number(rawVolume);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+      if (options.preserveTime) {
+        if (!/^\d{4}-\d{2}-\d{2} (?:[01]\d|2[0-3]):[0-5]\d$/.test(date)) return null;
+        const day = date.slice(0, 10), parsed = Date.parse(`${day}T00:00:00Z`);
+        if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== day) return null;
+      } else if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
       if (![open, close, high, low, volume].every(Number.isFinite)) return null;
       if (open <= 0 || close <= 0 || high <= 0 || low <= 0 || volume < 0) return null;
       if (low > Math.min(open, close) || high < Math.max(open, close) || high < low) return null;

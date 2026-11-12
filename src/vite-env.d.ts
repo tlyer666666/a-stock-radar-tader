@@ -481,6 +481,8 @@ interface Window {
     ): Promise<{ ok: boolean; maximized: boolean }>;
     /** 系统通知（随心记提醒）；旧版本没有这个接口。 */
     notify?(message: { title: string; body?: string }): Promise<{ shown: boolean }>;
+    /** 数据备份（1.6.64）；类型见 src/features/backup/backupClient.ts。 */
+    backup?: import("./features/backup/backupClient").BackupApi;
     openExternal(url: string): Promise<void>;
     getPlatform(): "win32" | "darwin" | "linux" | string;
     getVersion(): Promise<string>;
