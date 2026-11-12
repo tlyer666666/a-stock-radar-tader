@@ -91,3 +91,13 @@ test("the entire roster is returned before background quotes finish, with monoto
   const final = await source.load();
   assert.equal(final.members.length, 351); assert.equal(final.quoteCoverage.loaded, 351); assert.equal(final.quoteCoverage.pending, false);
 });
+test("Beijing limit-up status comes from the 30% limit price when THS gives the previous close", async () => {
+  const result = await createBeijingSectorSource({ readUniverse: async () => ({ ...roster(3), members: [member(0), member(1), { ...member(2), name: "N北交新" }] }), readQuote: async code => (
+    code === "920000" ? { ...quote(code), latest: 13, preClose: 10, changePct: 30 }
+      : code === "920001" ? { ...quote(code), latest: 12.9, preClose: 10, changePct: 29 }
+        : { ...quote(code), latest: 40, preClose: 10, changePct: 300 }) }).load();
+  const row = code => result.members.find(item => item.code === code);
+  assert.equal(row("920000").isLimitUp, true); assert.equal(row("920000").limitStatusKnown, true);
+  assert.equal(row("920001").isLimitUp, false); assert.equal(row("920001").limitStatusKnown, true);
+  assert.equal(row("920002").limitStatusKnown, false, "new listings have no price limit");
+});

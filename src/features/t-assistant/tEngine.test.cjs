@@ -121,3 +121,54 @@ test("开盘头 20 分钟不判单边", () => {
   assert.equal(result.regime, "range");
   assert.match(result.regimeText, /方向还没走出来/);
 });
+
+test("净亏损方向按双边费用判断，分批平仓分摊开仓费用", () => {
+  const result = engine.settleTrades([
+    { id: '1', side: 'buy', price: 10, shares: 200, time: '10:00' },
+    { id: '2', side: 'sell', price: 10.01, shares: 100, time: '10:10' },
+    { id: '3', side: 'sell', price: 10.02, shares: 100, time: '10:20' }
+  ], config());
+  assert.equal(result.stats.lost.forward, true);
+  assert.ok(result.stats.lastClosed.profit < 0);
+});
+
+test("小额正T的盈利目标必须覆盖最低佣金和净价差", () => {
+  const prices = [...Array(60).fill(2), 2.06, 2.05, 2.04];
+  const result = engine.analyzeT(share(prices, { preClose: 2 }), ctx, config({ tShares: 100, minSpreadPct: 1 }), [{ id: '1', side: 'buy', price: 2, shares: 100, time: '10:00' }]);
+  assert.ok(result.levels.sellTarget > 2.12);
+  assert.notEqual(result.signal.action, 'sellBack');
+});
+
+test("开新T不能仅凭走平确认，也不能忽略回到均价的成本空间", () => {
+  const plateau = [...Array(50).fill(10), 10.25, 10.23, 10.23];
+  assert.notEqual(engine.analyzeT(share(plateau), ctx, config({ style: 'active' }), []).signal.action, 'sell');
+  const small = [...Array(50).fill(2), 2.04, 2.035, 2.03];
+  assert.equal(engine.analyzeT(share(small, { preClose: 2 }), ctx, config({ tShares: 100, style: 'active', minSpreadPct: 0.3 }), []).signal.action, 'wait');
+});
+
+test("止损触价即提示，无需再等均价线或趋势确认", () => {
+  const prices = [...Array(60).fill(9.5), 9.85, 9.8, 9.79];
+  const result = engine.analyzeT(share(prices), ctx, config(), [{ id: '1', side: 'buy', price: 10, shares: 1000, time: '10:00' }]);
+  assert.equal(result.signal.action, 'stopSellBack');
+});
+
+test("正T在尾盘涨停也提示收尾，不继续等待开板", () => {
+  const prices = [...Array(225).fill(10), 11, 11, 11];
+  const result = engine.analyzeT(share(prices), ctx, config(), [{ id: '1', side: 'buy', price: 10, shares: 1000, time: '10:00' }]);
+  assert.equal(result.signal.action, 'closeSellBack');
+});
+
+test("手填做T股数也遵循申报单位，剩余可卖不足一手不再开新T", () => {
+  assert.equal(config({ tShares: 199 }).tShares, 100);
+  const prices = [...Array(50).fill(10), 10.4, 10.38, 10.36];
+  const result = engine.analyzeT(share(prices), ctx, config({ sellableShares: 50, tShares: 100 }), []);
+  assert.equal(result.signal.action, 'wait');
+});
+
+test('尾盘倒T涨停不能假定接回成交；正T接近跌停但未封死仍提示止损', () => {
+  const sealed = engine.analyzeT(share([...Array(225).fill(10), 11, 11]), ctx, config(), [{id:'s',side:'sell',price:10,shares:1000,time:'10:00'}]);
+  assert.equal(sealed.signal.action, 'wait');
+  assert.match(sealed.signal.title, /未完成/);
+  const falling = engine.analyzeT(share([...Array(60).fill(10), 9.2, 9.1, 9.08]), ctx, config(), [{id:'b',side:'buy',price:10,shares:1000,time:'10:00'}]);
+  assert.equal(falling.signal.action, 'stopSellBack');
+});

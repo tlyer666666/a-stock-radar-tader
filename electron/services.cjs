@@ -161,6 +161,7 @@ function shutdownServiceResources() {
     chartRuntime.shutdown(serviceController.signal.reason),
     shutdownNewsService(),
     stockIndustryIndex.shutdown(serviceController.signal.reason),
+    sectorLimitCounts.shutdown(serviceController.signal.reason),
     shutdownDataFederation(),
     workerRunner.shutdown(serviceController.signal.reason),
     sectorExplorer.dispose(),
@@ -926,6 +927,7 @@ function publicQuoteWithFallback(security, timeoutMs = 12000) {
 
 function configureFuyao({ getApiKey } = {}) {
   fuyaoApiKeyProvider = typeof getApiKey === "function" ? getApiKey : () => "";
+  sectorLimitCounts.clear();
 }
 
 function getMarketSourceHealth() {
@@ -1046,7 +1048,11 @@ function fuyaoDataMayChange(now = Date.now()) {
  * 没有 Key 时返回 { available: false }；每一块独立失败，不拖累其他块和复盘主体。
  */
 async function getFuyaoReviewData(options = {}) {
-  if (!fuyao.configured()) return { available: false, reason: "未配置同花顺扶摇 API Key（数据源设置里填写后即可显示）" };
+  return (await getFuyaoReviewSnapshot(options)).review;
+}
+
+async function getFuyaoReviewSnapshot(options = {}) {
+  if (!fuyao.configured()) return { review: { available: false, reason: "未配置同花顺扶摇 API Key（数据源设置里填写后即可显示）" }, industryPool: null };
   const signal = serviceSignal();
   // 交易时段 60 秒刷新；收盘后、午休和休市日数据不再变化，改为 20 分钟，避免页面定时刷新反复调用按次计费的扶摇接口。
   // 两种时段各用一个固定键：开盘时不沿用休市缓存或订阅尚未完成的休市请求。
@@ -1087,7 +1093,7 @@ async function getFuyaoReviewData(options = {}) {
     const limitUpRows = (value.limitUp?.rows || []).filter((row) => !row.isSt);
     const hotLists = await fuyaoHotLists(value, signal);
     const maxBoards = limitUpRows.reduce((max, row) => Math.max(max, Number(row.boards) || 0), 0);
-    return {
+    const review = {
       available: true,
       source: "同花顺扶摇官方数据接口",
       fetchedAt: new Date().toISOString(),
@@ -1125,6 +1131,11 @@ async function getFuyaoReviewData(options = {}) {
       anomalies: value.anomalies ? value.anomalies.rows.slice(0, 30) : null,
       warnings
     };
+    // 行业成分明细也显示 ST 股；行业榜用完整池，复盘摘要维持原来的筛选和条数。
+    return { review, industryPool: value.limitUp ? {
+      total: value.limitUp.total,
+      stocks: value.limitUp.rows.map(({ code, name, boards, reason, isSt }) => ({ code, name, boards, reason, isSt }))
+    } : null };
   }, { forceRefresh: options?.forceRefresh === true });
 }
 
@@ -4634,8 +4645,10 @@ async function loadSectorStrength(industryOrSector, context = {}) {
     : null;
   const options = context.options && typeof context.options === "object" ? context.options : {};
   const thsConfigured = Boolean(String(options.refreshToken || "").trim());
+  const selectedConcept = industryOrSector?.boardType === "concept";
+  const conceptCid = selectedConcept && /^\d+$/.test(String(industryOrSector.conceptCid || "")) ? String(industryOrSector.conceptCid) : "";
   let thsMembers = null;
-  if (thsConfigured && !providerCircuitOpen("ths-sector")) {
+  if (!selectedConcept && thsConfigured && !providerCircuitOpen("ths-sector")) {
     try {
       thsMembers = await loadThsSectorMembers(sector?.name || requestedName, options);
       recordSectorProviderResult("ths-sector", true);
@@ -4643,7 +4656,7 @@ async function loadSectorStrength(industryOrSector, context = {}) {
       recordSectorProviderResult("ths-sector", false);
     }
   }
-  if (!sector && !providerCircuitOpen("eastmoney-sector-search")) {
+  if (!selectedConcept && !sector && !providerCircuitOpen("eastmoney-sector-search")) {
     try {
       sector = await findSector(requestedName);
       if (sector) recordSectorProviderResult("eastmoney-sector-search", true);
@@ -4709,11 +4722,14 @@ async function loadSectorStrength(industryOrSector, context = {}) {
         (typeof industryOrSector === "object" && industryOrSector?.boardType === "concept");
       if (conceptWanted) {
         try {
-          const concept = await thsOfficial.findThsConcept(fetchWithPolicy, /^(?:885|886)\d{3}$/.test(String(baseSector.code)) ? baseSector.code : conceptNeedle, { signal: serviceSignal() });
+          const concept = conceptCid ? { cid: conceptCid, name: requestedName,
+            platecode: /^(?:885|886)\d{3}$/.test(String(baseSector.code)) ? baseSector.code : "",
+            changePct: industryOrSector.changePct, netInflow: industryOrSector.netInflow
+          } : await thsOfficial.findThsConcept(fetchWithPolicy, /^(?:885|886)\d{3}$/.test(String(baseSector.code)) ? baseSector.code : conceptNeedle, { signal: serviceSignal() });
           if (concept) {
             const [conceptMembers, conceptHistory] = await Promise.all([
               thsOfficial.fetchThsSectorMembers(fetchWithPolicy, { kind: "concept", cid: concept.cid }, { signal: serviceSignal() }),
-              thsOfficial.fetchThsDailyHistory(fetchWithPolicy, concept.platecode, { market: "48", limit: 30, signal: serviceSignal() }).catch(() => [])
+              concept.platecode ? thsOfficial.fetchThsDailyHistory(fetchWithPolicy, concept.platecode, { market: "48", limit: 30, signal: serviceSignal() }).catch(() => []) : []
             ]);
             if (conceptMembers.length) {
               recordSectorProviderResult("ths-official-sector", true);
@@ -4735,9 +4751,10 @@ async function loadSectorStrength(industryOrSector, context = {}) {
             }
           }
         } catch (conceptError) {
-          void conceptError;
+          if (selectedConcept) throw conceptError;
         }
       }
+      if (selectedConcept) return null;
       // 先定位板块代码（板块名 → 881xxx）。榜单页给出 code，之后全部走行情网关。
       // Known THS codes from the ranking can load stocks directly; a separate
       // ranking-page failure must not block their member endpoint.
@@ -4841,6 +4858,7 @@ async function loadSectorStrength(industryOrSector, context = {}) {
     }
   }
 
+  if (selectedConcept) return null;
   if (sector?.code) {
     try {
       const east = await loadEastSectorMembers(sector);
@@ -4956,7 +4974,10 @@ async function analyzeSector(input, options = {}) {
     const beijingOptions = { ...options, forceRefresh: options.forceRefresh === true || input?.forceRefresh === true, waitForQuotes: input?.waitForQuotes !== false };
     const result = await loadBeijingSector(beijingOptions);
     const funds = await sectorFundFlows.load(result.constituents, beijingOptions);
-    return { ...result, constituents: funds.rows, fundFlow: funds.fundFlow, leaders: funds.rows.slice(0, 8) };
+    // 实时行情覆盖后按覆盖后的价格重判涨停（北交所 30%；涨停池不含北交所，只按价格判断）。
+    const rows = markMemberLimitUps(funds.rows, null);
+    const limitUps = rows.filter((item) => item?.isLimitUp).length;
+    return { ...result, constituents: rows, limitUps, fundFlow: funds.fundFlow, leaders: rows.slice(0, 8) };
   }
   // IPC callers pass either a query string or a ranking row. Preserve the row's
   // identity even if a fallback source did not supply a code.
@@ -4966,7 +4987,8 @@ async function analyzeSector(input, options = {}) {
   if (!query) throw new Error("请输入板块名称或代码");
   let sector = objectInput
     ? { code: String(objectInput.code || ""), name: query, secid: String(objectInput.secid || ""), memberCount: finiteOrNull(objectInput.memberCount),
-        ...(objectInput.boardType === "concept" ? { boardType: "concept" } : {}) }
+        ...(objectInput.boardType === "concept" ? { boardType: "concept", conceptCid: objectInput.conceptCid,
+          changePct: finiteOrNull(objectInput.returns?.r1), netInflow: finiteOrNull(objectInput.netInflow) } : {}) }
     : null;
   if (!sector) {
     const matches = await searchSectors(query).catch(() => []);
@@ -5004,14 +5026,32 @@ async function analyzeSector(input, options = {}) {
   // 资金流请求顺带取实时行情：同花顺成分页开盘前后还是上一交易日的成交额，以实时行情覆盖后再判断涨停、排序。
   const funds = await sectorFundFlows.load(result.constituents, options);
   funds.rows = markMemberLimitUps(funds.rows, ladderPools).sort((left, right) => (finiteOrNull(right.changePct) ?? -Infinity) - (finiteOrNull(left.changePct) ?? -Infinity));
+  const isConcept = sector.boardType === "concept" || result.boardType === "concept";
+  const identity = { boardType: isConcept ? "concept" : "industry", name: result.name || sector.name,
+    code: String(result.code || sector.code || ""), conceptCid: isConcept ? String(result.conceptCid || sector.conceptCid || "") : "",
+    memberCount: result.memberCount ?? sector.memberCount ?? null };
+  const supportsCount = isConcept ? Boolean(identity.conceptCid) : /^881\d{3}$/.test(identity.code);
+  const count = supportsCount ? await getSectorLimitUpCount(identity, options).catch(() => null) : null;
+  if (count?.limitUps !== null && count?.limitUps !== undefined) {
+    const codes = new Set(count.limitUpStocks.map(stock => stock.code));
+    const have = new Set(funds.rows.map(stock => stock.code));
+    for (const stock of count.limitUpStocks) {
+      if (!have.has(stock.code)) funds.rows.push({ ...stock, ...canonicalSecurityIdentifiers(stock.code, "stock"), quoteStatus: "unavailable" });
+    }
+    funds.rows = funds.rows.map(stock => ({ ...stock, isLimitUp: codes.has(stock.code), limitStatusKnown: true }));
+  }
+  const limitUpStocks = funds.rows.filter((item) => item.isLimitUp);
+  const limitUps = count ? count.limitUps : funds.rows.length ? limitUpStocks.length : result.limitUps;
   return {
     ...result,
     constituents: funds.rows,
     fundFlow: funds.fundFlow,
-    // 拿到今天的实时行情时，涨停家数按成分股实时价格数（与表格「涨停」标记一致）。
-    ...(funds.fundFlow?.quotes?.loaded ? { limitUps: funds.rows.filter((item) => item.isLimitUp).length } : {}),
-    poolLimitUps: result.limitUps,
-    poolShare: ladderPools.currentPool.length ? result.limitUps / ladderPools.currentPool.length : 0,
+    limitCount: count,
+    countComplete: count?.countComplete ?? false,
+    limitUpStocks,
+    limitUps,
+    poolLimitUps: limitUps,
+    poolShare: limitUps != null && ladderPools.currentPool.length ? limitUps / ladderPools.currentPool.length : null,
     totalPool: ladderPools.currentPool.length,
     allMarketReturns,
     marketSnapshot,
@@ -7654,34 +7694,58 @@ function sectorMatchName(value) {
   return String(value || "").replace(/\s+/g, "").replace(/(?:概念股?|板块|指数)$/u, "").toLowerCase();
 }
 
+const sectorLimitCounts = require("./sector-limit-counts.cjs").createSectorLimitCounts({
+  loadMembers: async (sector, { signal }) => {
+    const indexCode = sector.indexCode || (/^88[156]\d{3}$/.test(sector.code) ? sector.code : "");
+    if (fuyao.configured() && indexCode) {
+      const members = await fuyao.constituents(`${indexCode}.TI`, { signal });
+      if (!members.length) throw new Error("板块成分名单为空");
+      return { members, complete: sector.memberCount === null || members.length >= sector.memberCount };
+    }
+    const members = await thsOfficial.fetchThsSectorMembers(fetchWithPolicy,
+      sector.boardType === "concept" ? { kind: "concept", cid: sector.conceptCid } : { kind: "industry", code: sector.code },
+      { signal, maxPages: 5 });
+    return { members, complete: sector.memberCount !== null && members.length >= sector.memberCount };
+  },
+  loadPool: async ({ signal }) => {
+    if (!fuyao.configured()) throw new Error("实时涨停池尚未配置");
+    const result = await fuyao.limitUpPool({ signal });
+    const stamp = Date.parse(result.fetchedAt);
+    const asOfDate = Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 10) : "";
+    return { stocks: result.rows, complete: new Set(result.rows.map(row => row.code)).size === result.total,
+      asOfDate, fetchedAt: result.fetchedAt };
+  }
+});
+
+function getSectorLimitUpCount(input, options = {}) {
+  return sectorLimitCounts.count(input, { ...options, signal: serviceSignal(options.signal) });
+}
+
 /**
  * 板块强度（1.6.43）：行业 + 概念两张榜、今日涨停主线。
- * - 行业：同花顺行业资金流（90 个），涨停家数按涨停池里个股所属行业统计；
- * - 概念：同花顺概念行情（涨幅、净流入），涨停家数按同花顺涨停原因（扶摇）里与概念同名的部分统计；
+ * - 行业：同花顺行业资金流（90 个），家数通过按需成分股计数接口补齐；
+ * - 概念：同花顺概念行情（涨幅、净流入），同样按真实成分与实时池求交集；
  * - 主线：同花顺涨停原因按「+」拆开计数（扶摇未配置时为空）。
  * 每一块独立失败，不拖累其他块。
  */
 async function getSectorStrengthBoard(options = {}) {
   const forceRefresh = options.forceRefresh === true;
+  if (forceRefresh) sectorLimitCounts.clear();
   const [industries, catalog, quotes, review] = await Promise.allSettled([
     getLimitUpSectorBoard({ ...options, forceRefresh }),
     sectorExplorer.getSectorCatalog({}),
     sectorExplorer.getSectorQuotes(forceRefresh ? { forceRefresh: true } : {}),
-    getFuyaoReviewData(options)
+    getFuyaoReviewSnapshot(options)
   ]);
   const warnings = [];
-  const fuyaoData = review.status === "fulfilled" && review.value?.available ? review.value : null;
-  if (!fuyaoData) warnings.push(review.status === "fulfilled" ? String(review.value?.reason || "同花顺扶摇未配置，概念的涨停家数与今日主线暂缺") : `今日主线暂不可用：${review.reason?.message || review.reason}`);
-  // 涨停股按原因拆分：{ 归一后的原因 → [{code,name,boards}] }
-  const byReason = new Map();
-  for (const [code, row] of Object.entries(fuyaoData?.limitUp?.byCode || {})) {
-    for (const part of String(row?.reason || "").split(/[+＋、,，;；]/).map((text) => text.trim()).filter(Boolean)) {
-      const key = sectorMatchName(part);
-      if (!key) continue;
-      const list = byReason.get(key) || [];
-      if (!list.some((item) => item.code === code)) list.push({ code, name: String(row?.name || code), boards: Number(row?.boards) || 1 });
-      byReason.set(key, list);
-    }
+  const fuyaoData = review.status === "fulfilled" && review.value?.review.available ? review.value.review : null;
+  if (!fuyaoData) warnings.push(review.status === "fulfilled" ? String(review.value?.review.reason || "同花顺扶摇未配置，概念的涨停家数与今日主线暂缺") : `今日主线暂不可用：${review.reason?.message || review.reason}`);
+  const industryPool = review.status === "fulfilled" ? review.value.industryPool : null;
+  const poolStocks = new Map((industryPool?.stocks || []).map(stock => [stock.code, stock]));
+  const completePool = !!industryPool && poolStocks.size === industryPool.total;
+  if (fuyaoData && !completePool) warnings.push("涨停池数据不完整，概念涨停家数暂缺");
+  for (const warning of fuyaoData?.warnings || []) {
+    if (warning.startsWith("涨停池本次刷新失败")) warnings.push(warning);
   }
   const concepts = [];
   if (catalog.status === "fulfilled" && quotes.status === "fulfilled") {
@@ -7691,11 +7755,10 @@ async function getSectorStrengthBoard(options = {}) {
       const quote = quoteMap[entry.id];
       const changePct = finiteOrNull(quote?.changePct);
       if (changePct === null) continue;
-      const stocks = (byReason.get(sectorMatchName(entry.name)) || []).slice().sort((a, b) => b.boards - a.boards);
       concepts.push({
         kind: "concept", id: entry.id, code: String(entry.code || ""), conceptCid: String(entry.code || ""), indexCode: String(quote?.indexCode || ""),
         name: String(entry.name || ""), changePct, netInflow: finiteOrNull(quote?.netInflow), memberCount: finiteOrNull(quote?.companyCount),
-        leaderName: String(quote?.leaderName || ""), limitUps: fuyaoData ? stocks.length : null, limitUpStocks: stocks.slice(0, 8)
+        leaderName: String(quote?.leaderName || ""), limitUps: null, limitUpStocks: [], countComplete: false
       });
     }
     concepts.sort((a, b) => b.changePct - a.changePct || a.name.localeCompare(b.name, "zh-CN"));
@@ -7711,34 +7774,18 @@ async function getSectorStrengthBoard(options = {}) {
     const concept = conceptNames.get(sectorMatchName(group.reason));
     return { reason: group.reason, count: group.count, stocks: group.stocks || [], ...(concept ? { concept: { name: concept.name, code: concept.code, conceptCid: concept.conceptCid } } : {}) };
   });
-  // 行业的涨停家数：有扶摇实时涨停池时，用个股所属同花顺二级行业（与行业榜同一套 90 个行业）重新统计。
-  // 原来按涨停专题池里的行业字段分组，开盘初期专题池更新慢、行业归类口径也不同，会出现「板块写 0、展开却有涨停」。
-  let industryRows = industries.status === "fulfilled" ? industries.value : [];
-  const limitEntries = Object.entries(fuyaoData?.limitUp?.byCode || {});
-  if (industryRows.length && limitEntries.length) {
-    const industryOf = await resolveStockIndustries(limitEntries.map(([code]) => code)).catch(() => new Map());
-    if (industryOf.size) {
-      const groups = new Map();
-      for (const [code, row] of limitEntries) {
-        const industry = industryOf.get(code);
-        if (!industry) continue;
-        if (!groups.has(industry)) groups.set(industry, []);
-        groups.get(industry).push({ code, name: String(row?.name || code), boards: Number(row?.boards) || 1 });
-      }
-      industryRows = industryRows.map((row) => {
-        const stocks = (groups.get(row.name) || []).sort((a, b) => b.boards - a.boards);
-        return { ...row, poolLimitUps: stocks.length, limitUps: stocks.length, poolShare: limitEntries.length ? stocks.length / limitEntries.length : 0,
-          leaders: stocks.slice(0, 5).map((item) => ({ code: item.code, name: item.name })), limitUpSource: "同花顺实时涨停池（扶摇）" };
-      });
-    }
-  }
+  // Count each visible board from its own constituent list through getSectorLimitUpCount.
+  // Industry-name indices and theme text are insufficient evidence for a membership count.
+  const industryRows = (industries.status === "fulfilled" ? industries.value : []).map(row => ({
+    ...row, boardType: "industry", poolLimitUps: null, limitUps: null, leaders: [], countComplete: false
+  }));
   return {
     fetchedAt: new Date().toISOString(),
     industries: industryRows,
     concepts,
     themes,
-    limitUpTotal: fuyaoData?.limitUp?.count ?? null,
-    conceptLimitUpSource: fuyaoData ? "同花顺涨停原因（扶摇）与概念同名的部分" : "",
+    limitUpTotal: completePool ? fuyaoData?.limitUp?.count ?? null : null,
+    conceptLimitUpSource: "同花顺板块成分与实时涨停池",
     warnings
   };
 }
@@ -7824,10 +7871,11 @@ async function getLimitUpSectorBoardUncached(options = {}) {
   };
   const grouped = new Map();
   for (const item of limitUps) {
-    if (!item.industry || item.industry === "未分类") continue;
-    const list = grouped.get(item.industry) || [];
+    const industry = stockIndustryIndex.lookup(item.code) || item.industry;
+    if (!industry || industry === "未分类") continue;
+    const list = grouped.get(industry) || [];
     list.push(item);
-    grouped.set(item.industry, list);
+    grouped.set(industry, list);
   }
   // 榜单口径：优先用同花顺免费公开行业榜（全量 90 个板块，天然按涨幅降序）。
   // 原实现只取「涨停池里出现过的行业」前 15 个 —— 榜单会缺失大量当日未涨停但
@@ -7954,6 +8002,8 @@ async function getLimitUpSectorBoardUncached(options = {}) {
   // 这是「板块强度」榜单的首选口径：涨幅、上涨/下跌家数、成交额都由官方给出，
   // 且天然按涨幅降序。历史类指标（1/3/5 日超额、延续性）仍需东财历史，缺失时显示 --。
   if (publicTable?.length) {
+    const mappedCount = publicTable.reduce((count, item) => count + (groupedByIndustry.get(item.name)?.length || 0), 0);
+    const fullyMapped = Boolean(limitUpSnapshot.meta?.dataDate) && mappedCount === limitUps.length;
     for (const item of publicTable) {
       // 资金流源没有涨跌家数，用「公司家数」作为板块规模；
       // 榜单页源有 rising/falling，可算真实广度。两者取各自能给的。
@@ -8016,7 +8066,7 @@ async function getLimitUpSectorBoardUncached(options = {}) {
         state: sectorStateFromScore(boardScore),
         dataCoveragePercent: coverage,
         leadershipQualityScore: boardScore,
-        poolLimitUps: poolStocks.length,
+        poolLimitUps: poolStocks.length || (fullyMapped ? 0 : null),
         poolShare: limitUps.length ? poolStocks.length / limitUps.length : 0,
         leaders: poolStocks.slice(0, 5).map((x) => ({
           code: x.code, name: x.name, changePct: x.changePct, turnover: x.turnover
@@ -9785,6 +9835,7 @@ module.exports = {
   scanStrategySignals,
   getLimitUpSectorBoard,
   getSectorStrengthBoard,
+  getSectorLimitUpCount,
   searchSectors,
   getConceptChain,
   analyzeSector,

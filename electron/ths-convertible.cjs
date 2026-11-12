@@ -207,8 +207,10 @@ function createConvertibleSource({
           if (quote.quoteDate >= cutoff && quote.quoteDate <= today) {
             found.push({ code: candidate.code, name: quote.name || candidate.code, market: candidate.market, stockCode: "", stockName: "", listingDate: "", expireDate: "", source: "discovered" });
           }
-        } catch {
-          failures += 1;
+        } catch (error) {
+          // 「没有这个代码」（404，或返回里没有该券的价格）是核对的正常结果，不算失败；限流、超时、断网才算。
+          const absent = Number(error?.status || 0) === 404 || /^同花顺可转债行情/.test(String(error?.message || ""));
+          if (!absent) failures += 1;
         }
         checked += 1;
         if (checked % 50 === 0) report(checked, candidates.length, found.length);
@@ -218,6 +220,8 @@ function createConvertibleSource({
     signal.throwIfAborted();
     // 全部失败多半是网络或限流，不是「没有可转债」：不覆盖旧名单。
     if (checked > 0 && failures >= checked) throw new Error("同花顺可转债代码核对全部失败，可能是网络或访问受限");
+    // 失败过半时结果不可靠：不拿它覆盖旧名单，下次再核对。
+    if (failures > checked / 2) throw new Error(`同花顺可转债代码核对有 ${failures}/${checked} 个请求失败，可能被限流`);
     return { found, checked, total: candidates.length };
   }
 
@@ -294,15 +298,41 @@ function createConvertibleSource({
       return [...byCode.values()].sort((a, b) => a.code.localeCompare(b.code));
     };
     const needsDiscovery = !discoveredAt || now() - Date.parse(discoveredAt) > DISCOVERY_TTL_MS;
+    // 逐只读行情：已有行情的跳过；先用较高并发读一遍，再用 2 个并发补一遍失败的。
+    const loadQuotes = async (bonds, discovery, note = "") => {
+      const progress = () => publish(snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery, pending: true,
+        warnings: [...warnings, `正在逐只读取同花顺可转债行情：${quotes.size}/${bonds.length}${note}`] }));
+      progress();
+      let cursor = 0;
+      let finished = 0;
+      const worker = async () => {
+        while (!signal.aborted && cursor < bonds.length) {
+          const bond = bonds[cursor++];
+          if (quotes.has(bond.code)) continue;
+          try {
+            quotes.set(bond.code, await readQuote(bond.market, bond.code, signal));
+          } catch {
+            signal.throwIfAborted();
+          }
+          finished += 1;
+          if (finished % 20 === 0) progress();
+        }
+      };
+      await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, 8, bonds.length || 1)) }, worker));
+      cursor = 0;
+      await Promise.all(Array.from({ length: Math.min(2, bonds.length || 1) }, worker));
+      signal.throwIfAborted();
+    };
     if (needsDiscovery) {
+      // 先把手头名单（上次核对的 + 新券）的行情读出来，再去核对在市老券；核对要 2–3 分钟，不能让行情一直空着等它。
+      if (bondsNow().length) await loadQuotes(bondsNow(), { discoveredAt }, discoveredAt ? "；随后重新核对在市名单（每 7 天一次）" : "；随后核对在市老券");
       const discovering = { checked: 0, total: 0, found: 0 };
       publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, pending: true,
         warnings: [...warnings, discoveredAt ? "正在用同花顺重新核对在市可转债（每 7 天一次），先显示上次名单" : "首次使用：正在用同花顺逐个核对在市可转债代码，约需 2–3 分钟；新券已先显示"] }));
       try {
         const result = await discover(feed.listed, signal, (checked, total, found) => {
           Object.assign(discovering, { checked, total, found });
-          publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, pending: true,
-            warnings: [...warnings, `正在用同花顺核对可转债代码：${checked}/${total}，已发现 ${found} 只在市老券`] }));
+          publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, pending: true, warnings }));
         });
         discovered = result.found;
         discoveredAt = new Date(now()).toISOString();
@@ -315,29 +345,7 @@ function createConvertibleSource({
       saveRoster({ schema: ROSTER_SCHEMA, discoveredAt, bonds: bondsNow() });
     }
     const bonds = bondsNow();
-    publish(snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery: { discoveredAt }, pending: true,
-      warnings: [...warnings, `正在逐只读取同花顺可转债行情：0/${bonds.length}`] }));
-    let cursor = 0;
-    let finished = 0;
-    const worker = async () => {
-      while (!signal.aborted && cursor < bonds.length) {
-        const bond = bonds[cursor++];
-        if (quotes.has(bond.code)) continue;
-        try {
-          quotes.set(bond.code, await readQuote(bond.market, bond.code, signal));
-        } catch {
-          signal.throwIfAborted();
-        }
-        finished += 1;
-        if (finished % 20 === 0) {
-          publish(snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery: { discoveredAt }, pending: true,
-            warnings: [...warnings, `正在逐只读取同花顺可转债行情：${quotes.size}/${bonds.length}`] }));
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, 8, bonds.length || 1)) }, worker));
-    cursor = 0;
-    await Promise.all(Array.from({ length: Math.min(2, bonds.length || 1) }, worker));
+    await loadQuotes(bonds, { discoveredAt });
     signal.throwIfAborted();
     const missing = bonds.length - quotes.size;
     if (missing > 0) warnings.push(`${missing} 只可转债本轮未取到同花顺行情，仍保留在列表中`);

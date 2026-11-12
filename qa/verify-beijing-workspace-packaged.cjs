@@ -58,7 +58,7 @@ async function verify(appPath) {
     assert.equal(await stocks.count(), firstPage, 'clearing the filter resets the member table to the first page');
     await region.locator('.member-load-more').waitFor();
     const coverageText = await region.locator('.panel-title').innerText();
-    const warning = await region.locator('.warning-banner').innerText();
+    const warning = await region.locator('.beijing-coverage-note').innerText();
     await page.screenshot({ path: path.join(output, 'packaged-sidebar-light.png') });
     await page.getByRole('button', { name: '黑夜', exact: true }).click();
     await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');

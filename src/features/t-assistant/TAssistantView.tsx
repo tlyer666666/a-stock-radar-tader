@@ -1,12 +1,15 @@
-import { useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { lazy, Suspense, useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { ArrowDownUp, CircleAlert, Eye, EyeOff, MessagesSquare, Plus, RefreshCw, Search, Trash2, Volume2, VolumeX, WalletCards, X } from "lucide-react";
 import { fmt, fmtMoney } from "../../domain/formatters";
-import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
 import { TIME_SHARE_SLOTS, timeShareSlot, type TimeShare } from "../market/timeShareModel";
 import { paperRoundShares } from "../paper-simulation/paperTradingRules";
 import { MAX_ROUNDS, STYLE_LABELS, actionSide, isActionable, type TAnalysis, type TConfig, type TMarker, type TStyle, type TTrade } from "./tEngine";
 import { MAX_T_ITEMS, inTradingSession, secidForCode, shanghaiClock, type TItem } from "./tStore";
 import type { TAssistantApi, TRuntime } from "./useTAssistant";
+
+import TToolbox from "./TToolbox";
+
+const InlineAiAgent = lazy(() => import("../ai-agent/AiAgentView"));
 
 type Props = {
   api: TAssistantApi;
@@ -33,7 +36,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
 
   const add = (security: Security) => {
     const holding = holdings.find(entry => entry.code === security.code);
-    const message = api.addStock(security, holding ? { baseShares: holding.shares, sellableShares: holding.shares, costPrice: holding.costPrice } : undefined);
+    const message = api.addStock(security, holding ? { baseShares: holding.shares, sellableShares: store.items.find(item => item.code === holding.code)?.config.sellableShares ?? 0, costPrice: holding.costPrice } : undefined);
     if (message) onToast(message);
     else setSelected(security.code);
   };
@@ -43,10 +46,10 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
     let added = 0;
     for (const entry of candidates) {
       if (store.items.length + added >= MAX_T_ITEMS && !store.items.some(itemEntry => itemEntry.code === entry.code)) break;
-      const message = api.addStock(entry, { baseShares: entry.shares, sellableShares: entry.shares, costPrice: entry.costPrice });
+      const message = api.addStock(entry, { baseShares: entry.shares, sellableShares: store.items.find(item => item.code === entry.code)?.config.sellableShares ?? 0, costPrice: entry.costPrice });
       if (!message) added += 1;
     }
-    onToast(`已从持仓导入 ${added} 只，底仓和成本按持仓股填写，今日可卖股数请按实际核对`);
+    onToast(`已从持仓导入 ${added} 只，底仓和成本按持仓股填写，请按券商核对今日开盘可卖股数后填写（不能把今日买入算作可卖）`);
     if (!selected && candidates[0]) setSelected(candidates[0].code);
   };
 
@@ -54,7 +57,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
     <header className="panel t-assistant-head">
       <div className="t-assistant-title">
         <h2><ArrowDownUp size={18} />做T助手</h2>
-        <p>用当天分时的均价线和波动带跟踪底仓股，冲高提示高抛、回落提示接回。只给提示，不会下单。</p>
+        <p>结合历史K线、画线、量能动能与当日分时分析底仓股，跟踪高抛低吸及未完成的T。只给提示，不会下单。</p>
       </div>
       <div className="t-assistant-actions">
         <StockAdder onAdd={add} />
@@ -76,7 +79,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
       <aside className="panel t-assistant-list" aria-label="跟踪的股票">
         {store.items.map(entry => <StockRow key={entry.code} item={entry} runtime={runtimes[entry.code]} active={entry.code === selected} onSelect={() => setSelected(entry.code)} />)}
       </aside>
-      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} showReplay={store.showReplay} onOpenStock={onOpenStock} />}
+      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} />}
     </div>}
   </div>;
 }
@@ -98,14 +101,16 @@ function StockRow({ item, runtime, active, onSelect }: { item: TItem; runtime: T
   </button>;
 }
 
-function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TItem; runtime: TRuntime; api: TAssistantApi; showReplay: boolean; onOpenStock: (security: Security) => void }) {
+function StockDetail({ item, runtime, api, live, showReplay, onOpenStock }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void }) {
   const { analysis, share, replay } = runtime;
   const day = share?.date || "";
   const trades = day ? api.store.trades[day]?.[item.code] || [] : [];
   const [draft, setDraft] = useState<{ side: "buy" | "sell"; price: string; shares: string; time: string } | null>(null);
   const security: Security = { code: item.code, name: item.name, secid: item.secid || secidForCode(item.code), assetType: "stock" };
 
-  const stale = staleNote(share?.date, analysis?.time);
+  const [aiOpened, setAiOpened] = useState(false), [aiVisible, setAiVisible] = useState(false);
+  const stale = runtime.signalNote;
+  const [tradeError, setTradeError] = useState("");
 
   const startDraft = (fromSignal: boolean) => {
     const signal = analysis?.signal;
@@ -124,8 +129,9 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
     if (!draft || !day) return;
     const price = Number(draft.price), shares = Math.floor(Number(draft.shares));
     if (!(price > 0) || !(shares > 0) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.time)) return;
-    api.addTrade(day, item.code, { side: draft.side, price, shares, time: draft.time });
-    setDraft(null);
+    const error = api.addTrade(day, item.code, { side: draft.side, price, shares, time: draft.time });
+    setTradeError(error);
+    if (!error) setDraft(null);
   };
 
   return <section className="t-assistant-main" aria-label={`${item.name} 做T`}>
@@ -144,16 +150,23 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
         <small>更新于 {clockOf(runtime.updatedAt)}{runtime.source ? ` · ${runtime.source}` : ""}</small>
         <button type="button" className="link-btn" onClick={() => void api.refresh(item.code)} disabled={runtime.loading}><RefreshCw size={14} />刷新</button>
         <button type="button" className="link-btn" onClick={() => onOpenStock(security)}>个股详情</button>
-        {canOpenAgent() && <button type="button" className="link-btn" onClick={() => openAgentFor(security, "intraday")}><MessagesSquare size={14} />问 AI 做T思路</button>}
+        <button type="button" className="link-btn" aria-expanded={aiVisible} onClick={() => { setAiOpened(true); setAiVisible(true); }}><MessagesSquare size={14} />问 AI 做T思路</button>
         <button type="button" className="link-btn danger" onClick={() => api.removeStock(item.code)}><X size={14} />不再跟踪</button>
       </div>
     </div>
 
+    {aiOpened && <section className="panel t-inline-ai" aria-label="做T AI分析" hidden={!aiVisible}>
+      <div className="t-inline-ai-actions"><button type="button" className="link-btn" onClick={() => setAiVisible(false)}>收起AI分析</button></div>
+      <Suspense fallback={<p role="status">正在打开AI分析…</p>}><InlineAiAgent embeddedFocus={{ code: item.code, name: item.name }} /></Suspense>
+    </section>}
+    <TToolbox security={security} live={live} analysis={analysis} />
+
+    {runtime.previousOpenNote && <div className="warning-banner" role="alert"><CircleAlert size={17} />{runtime.previousOpenNote}</div>}
     {stale && <div className="warning-banner" role="alert"><CircleAlert size={17} />{stale}</div>}
     {runtime.error && <div className="warning-banner" role="alert"><CircleAlert size={17} />分时读取失败：{runtime.error}{share ? "（显示上次成功读取的数据）" : ""}</div>}
     {!analysis ? <div className="panel t-assistant-loading">{runtime.loading ? "正在读取分时…" : "暂无分时数据"}</div> : <>
       <div className="t-assistant-grid">
-        <SignalCard analysis={analysis} onRecord={() => startDraft(true)} />
+        <SignalCard analysis={analysis} referenceNote={runtime.signalNote} onRecord={() => startDraft(true)} />
         <LevelsCard analysis={analysis} />
       </div>
       <div className="panel t-assistant-chart-panel">
@@ -163,8 +176,9 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
           <button type="button" className="link-btn" onClick={() => api.setShowReplay(!showReplay)}>{showReplay ? <EyeOff size={14} /> : <Eye size={14} />}{showReplay ? "隐藏回放" : "显示回放"}</button>
         </div>
         {share && <TChart share={share} analysis={analysis} trades={trades} markers={showReplay ? replay?.markers || [] : []} />}
-        {replay && item.config.sellableShares > 0 && <p className="t-assistant-note">信号回放：如果今天从开盘起完全按提示做（每次 {item.config.tShares} 股），共完成 {replay.rounds} 次T，模拟盈亏 <b className={toneOf(replay.realized)}>{signed(replay.realized, 0)} 元</b>（已扣手续费）{replay.open ? `，还有${replay.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${replay.open.shares} 股` : ""}。回放只用来检验参数，不代表真实成交。</p>}
+        {replay && item.config.sellableShares > 0 && <p className="t-assistant-note">信号回放：如果今天从开盘起完全按提示做（每次 {item.config.tShares} 股），共完成 {replay.rounds} 次T，模拟盈亏 <b className={toneOf(replay.realized)}>{signed(replay.realized, 0)} 元</b>（已扣模型手续费，未计滑点和排队）{replay.open ? `，还有${replay.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${replay.open.shares} 股` : ""}。回放按分钟报价假设成交，仅核对规则，不是收益预测；未完成T的浮动盈亏未计入。</p>}
       </div>
+      {tradeError && <p className="warning-banner" role="alert">{tradeError}</p>}
       <div className="t-assistant-grid">
         <TradesCard analysis={analysis} trades={trades} day={day} item={item} draft={draft} setDraft={setDraft} startDraft={() => startDraft(false)} submitDraft={submitDraft} onRemove={id => api.removeTrade(day, item.code, id)} />
         <ConfigCard item={item} onChange={patch => api.updateConfig(item.code, patch)} />
@@ -174,25 +188,13 @@ function StockDetail({ item, runtime, api, showReplay, onOpenStock }: { item: TI
   </section>;
 }
 
-/** 盘中分时没跟上（数据源延迟或还停在上一个交易日）时提醒，避免按旧信号操作。 */
-function staleNote(date: string | undefined, time: string | undefined, now = new Date()): string {
-  if (!date || !time || !inTradingSession(now)) return "";
-  const clock = shanghaiClock(now);
-  if (clock < "09:33") return "";
-  const today = new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
-  if (date !== today) return `还没读到今天的分时（现在显示的是 ${date}），下面的提示不是当前行情；若今天休市可忽略`;
-  const minutes = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
-  const lag = minutes(clock) - minutes(time) - (clock >= "13:00" && time <= "11:30" ? 90 : 0);
-  return lag > 3 ? `分时数据停在 ${time}，比现在慢了 ${lag} 分钟，提示可能已经过时，可以点「刷新」重试` : "";
-}
-
-function SignalCard({ analysis, onRecord }: { analysis: TAnalysis; onRecord: () => void }) {
+function SignalCard({ analysis, referenceNote, onRecord }: { analysis: TAnalysis; referenceNote: string; onRecord: () => void }) {
   const { signal } = analysis;
-  const actionable = isActionable(signal);
+  const actionable = !referenceNote && isActionable(signal);
   const side = actionable ? actionSide(signal.action) : null;
   return <div className={`panel t-assistant-signal ${sideTone(side)} ${signal.strength}`} aria-live="polite">
     <div className="t-assistant-signal-top">
-      <span className="t-assistant-signal-kicker">{actionable ? (signal.strength === "strong" ? "强提示" : "提示") : signal.strength === "normal" ? "留意" : "当前"}</span>
+      <span className="t-assistant-signal-kicker">{referenceNote ? "历史参考 / 待核对" : actionable ? (signal.strength === "strong" ? "强提示" : "提示") : signal.strength === "normal" ? "留意" : "当前"}</span>
       <h3>{signal.title}</h3>
       {actionable && <p className="t-assistant-signal-order">{side === "sell" ? "卖出" : "买入"} <b>{signal.shares}</b> 股 · 参考价 <b>{fmt(signal.price)}</b></p>}
     </div>
@@ -288,10 +290,10 @@ function ConfigCard({ item, onChange }: { item: TItem; onChange: (patch: Partial
     <h4>持仓与参数</h4>
     <div className="t-assistant-fields">
       {field("baseShares", "底仓股数", "现在持有的总股数")}
-      {field("sellableShares", "今日可卖", "昨天及以前买入的股数（T+1）")}
+      {field("sellableShares", "今日可卖", "填今日开盘可卖股数，登记的卖出会自动扣除；当天买入不可卖")}
       {field("costPrice", "成本价", "用来算做T后的新成本，可不填")}
       {field("tShares", "每次做T股数", suggest > 0 ? `建议底仓的三分之一左右，约 ${suggest} 股` : "一般取底仓的三分之一")}
-      {field("minSpreadPct", "最小价差 %", "一卖一买至少要差多少才做，含手续费余量")}
+      {field("minSpreadPct", "最小净价差 %", "扣双边费用后的目标；最低佣金按每笔5元计算，未计滑点")}
       <label>
         <span>风格</span>
         <select value={config.style} onChange={event => onChange({ style: event.target.value as TStyle })}>
@@ -300,6 +302,7 @@ function ConfigCard({ item, onChange }: { item: TItem; onChange: (patch: Partial
         <small>{config.style === "steady" ? "波动带更宽、信号更少，每天最多 2 次" : config.style === "active" ? "波动带更窄、信号更多，每天最多 4 次" : "默认，每天最多 3 次"}</small>
       </label>
     </div>
+    <p className="t-assistant-muted">开盘15分钟不新开T；回到均价的空间须覆盖费用与净价差，连续两次价格转向才确认。止损按价格风险触发，不保证成交；请每日核对可卖底仓。</p>
   </div>;
 }
 

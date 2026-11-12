@@ -459,3 +459,19 @@ test("没有扶摇 Key 时复盘不变，只附带说明", () => {
   assert.equal(JSON.stringify(review.evidence), before);
   assert.equal(review.fuyao.available, false);
 });
+
+test("review breadth evidence and risk alerts agree with verified rising and falling counts", () => {
+  const snapshot = buildProfessionalReviewSnapshot({ market: { stockCount: 100, upCount: 60, downCount: 30, flatCount: 10 } });
+  assert.equal(snapshot.market.breadth, 0.6);
+  assert.match(snapshot.evidence.join(" "), /上涨广度 60.0%/);
+  assert.doesNotMatch(snapshot.riskSignals.join(" "), /上涨广度不足45%/);
+});
+
+test("a missing ladder pool retains confirmed market totals without manufacturing zero board heights", () => {
+  const review = buildProfessionalReviewSnapshot({ emotion: { limitUpCount: 6 } });
+  const e = review.ecology;
+  assert.equal(e.limitUpCount, 6);
+  assert.deepEqual([e.limitDownCount, e.firstBoards, e.continuationBoards, e.maxHeight], [null, null, null, null]);
+  const empty = buildProfessionalReviewSnapshot({ ladderPools: { currentPool: [] }, emotion: { limitDownCount: 0 } }).ecology;
+  assert.deepEqual([empty.limitUpCount, empty.limitDownCount, empty.firstBoards, empty.continuationBoards, empty.maxHeight], [0, 0, 0, 0, 0]);
+});

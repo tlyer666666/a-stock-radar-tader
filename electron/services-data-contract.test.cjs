@@ -255,3 +255,49 @@ for (const stage of ['industry list', 'industry members']) test(`actual industry
   assert.equal(sourceSignal.aborted, true); assert.equal(drained, false, 'async parser/client must not hide raw transport cleanup');
   release(); await task.drained;
 });
+
+test('concept board leaves counts pending until actual membership is counted', async () => {
+  const source = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const start = source.indexOf('async function getSectorStrengthBoard(');
+  const fn = source.slice(start, source.indexOf('async function getIndustrySectorBoard(', start)).trim();
+  let pool = null;
+  const board = vm.runInNewContext('(' + fn + ')', {
+    getLimitUpSectorBoard: async () => [],
+    getFuyaoReviewSnapshot: async () => ({ industryPool: pool, review: { available: true,
+      limitUp: pool && { count: pool.stocks.length, byCode: {}, reasons: [] } } }),
+    sectorExplorer: { getSectorCatalog: async () => ({ entries: [{ kind: 'concept', id: 'x', name: '芯片' }] }),
+      getSectorQuotes: async () => ({ quotes: { x: { changePct: 1 } } }) },
+    finiteOrNull: n => n ?? null, sectorMatchName: name => name
+  });
+  const missing = await board();
+  assert.equal(missing.concepts[0].limitUps, null);
+  assert.equal(missing.conceptLimitUpSource, '同花顺板块成分与实时涨停池');
+  pool = { total: 0, stocks: [] };
+  assert.equal((await board()).concepts[0].limitUps, null);
+  const stocks = Array.from({ length: 301 }, (_, i) => ({ code: String(600000 + i), reason: i === 300 ? '芯片' : '其他' }));
+  pool = { total: stocks.length, stocks };
+  assert.equal((await board()).concepts[0].limitUps, null);
+  pool = { total: 100, stocks: [] };
+  assert.equal((await board()).concepts[0].limitUps, null);
+});
+
+test('a selected concept loads members by its catalog ID and never falls through to a similarly named industry', async () => {
+  const src = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const fn = src.slice(src.indexOf('async function loadSectorStrength('), src.indexOf('async function sectorStrength(')).trim();
+  const requested = [];
+  let available = true;
+  const load = vm.runInNewContext('(' + fn + ')', {
+    providerCircuitOpen: () => false, fetchWithPolicy() {}, serviceSignal() {}, recordSectorProviderResult() {},
+    isBeijingSector: () => false, buildSectorStrengthFromData: options => options.sector,
+    thsOfficial: { fetchThsSectorMembers: async (_fetch, query) => {
+      requested.push(query.cid);
+      return available ? [{ code: '600001' }] : [];
+    } }
+  });
+  const row = { name: '白酒', boardType: 'concept', conceptCid: '301111' };
+  const context = { benchmark: [{}], options: { refreshToken: 'fixture' } };
+  assert.equal((await load(row, context)).conceptCid, '301111');
+  available = false;
+  assert.equal(await load(row, context), null);
+  assert.deepEqual(requested, ['301111', '301111']);
+});

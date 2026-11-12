@@ -2,7 +2,7 @@
 const { fetchArrayBufferWithPolicy } = require("./http-client.cjs");
 const { thsHeaders, unwrapJsonp, normalizeRealhead } = require("./ths-quote.cjs");
 const { getHexinToken } = require("./ths-hexin-v.cjs");
-const { isBseAshareCode } = require("./price-limit-rules.cjs");
+const { isBseAshareCode, isLimitUpPrice, upperLimitPrice } = require("./price-limit-rules.cjs");
 const { loadBeijingUniverse, normalizeListing, MAX_STOCKS } = require("./beijing-universe.cjs");
 const bundledRoster = require("./beijing-roster.cjs");
 const BEIJING_BOARD = Object.freeze({ code: "THS:BJ", name: "北交所", secid: "", type: "交易所", boardType: "exchange",
@@ -106,9 +106,12 @@ function createBeijingSectorSource({ readUniverse = loadBeijingUniverse, readQuo
         try {
           const quote = await readQuote(identity.code, signal);
           if (quote.code !== identity.code || !(quote.latest > 0) || !Number.isFinite(quote.changePct) || !/^\d{4}-\d{2}-\d{2}/.test(quote.quoteAsOf || "")) throw new Error("同花顺行情身份或字段缺失");
+          // 北交所涨跌幅 30%：同花顺快照带昨收，可以按涨停价判断；新股（N/C 开头）不设涨跌幅，判断不了。
+          const limitPrice = upperLimitPrice(quote.preClose, { preClose: quote.preClose, name: identity.name }, identity.code, identity.name);
           members[index] = { ...identity, ...quote, ...identity, latest: quote.latest, changePct: quote.changePct,
             amount: quote.amount ?? null, turnover: quote.turnover ?? null, quoteAsOf: quote.quoteAsOf || "",
-            quoteSource: "同花顺", quoteStatus: "ready", limitStatusKnown: false };
+            quoteSource: "同花顺", quoteStatus: "ready", limitPrice,
+            isLimitUp: limitPrice !== null && isLimitUpPrice(quote.latest, limitPrice), limitStatusKnown: limitPrice !== null };
         } catch (error) {
           if (callerSignal?.aborted) throw callerSignal.reason || error;
           // Keep the stock in the full roster even when its quote fails.

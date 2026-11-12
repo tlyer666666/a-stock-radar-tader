@@ -1,4 +1,4 @@
-import { normalizeTConfig, type TAction, type TConfig, type TSide, type TTrade } from "./tEngine";
+import { normalizeTConfig, settleTrades, type TAction, type TConfig, type TSide, type TTrade } from "./tEngine";
 
 /** 做T助手的本地数据：跟踪的股票和各自参数、按交易日登记的成交、提醒开关。只存在本机。 */
 export type TItem = { code: string; name: string; secid: string; config: TConfig; addedAt: string };
@@ -12,6 +12,7 @@ export type TStore = {
 export const T_STORE_KEY = "a-stock-radar:t-assistant:v1";
 export const MAX_T_ITEMS = 12;
 const KEEP_DAYS = 10;
+export const MAX_T_TRADES = 1000;
 
 export const EMPTY_T_STORE: TStore = { items: [], trades: {}, voice: true, showReplay: true };
 export const secidForCode = (code: string) => `${code.startsWith("6") || code.startsWith("9") ? "1" : "0"}.${code}`;
@@ -24,7 +25,7 @@ export function normalizeTrade(value: unknown): TTrade | null {
   const side: TSide | null = value.side === "buy" || value.side === "sell" ? value.side : null;
   const price = Number(value.price), shares = Math.floor(Number(value.shares));
   const time = String(value.time || "");
-  if (!side || !(price > 0) || !(shares > 0) || !TIME.test(time)) return null;
+  if (!side || !Number.isFinite(price) || !Number.isFinite(shares) || !(price > 0) || !(shares > 0) || !TIME.test(time)) return null;
   return { id: String(value.id || `${time}-${side}-${price}-${shares}`).slice(0, 40), side, price: Math.round(price * 1000) / 1000, shares, time };
 }
 
@@ -53,7 +54,7 @@ export function normalizeTStore(value: unknown): TStore {
     if (!isRecord(byCode)) continue;
     const entries = Object.entries(byCode)
       .filter(([code]) => /^\d{6}$/.test(code))
-      .map(([code, list]) => [code, (Array.isArray(list) ? list : []).map(normalizeTrade).filter((trade): trade is TTrade => Boolean(trade)).slice(0, 60)] as const)
+      .map(([code, list]) => [code, (Array.isArray(list) ? list : []).map(normalizeTrade).filter((trade): trade is TTrade => Boolean(trade))] as const)
       .filter(([, list]) => list.length > 0);
     if (entries.length) trades[day] = Object.fromEntries(entries);
   }
@@ -62,7 +63,8 @@ export function normalizeTStore(value: unknown): TStore {
 
 export function withTrades(store: TStore, day: string, code: string, update: (trades: TTrade[]) => TTrade[]): TStore {
   const current = store.trades[day]?.[code] || [];
-  const next = update(current).slice(0, 60);
+  const next = update(current);
+  if (next.length > MAX_T_TRADES && next.length > current.length) throw new Error(`当日单股成交登记已达 ${MAX_T_TRADES} 条上限，请先核对已有记录`);
   const dayTrades = { ...(store.trades[day] || {}) };
   if (next.length) dayTrades[code] = next; else delete dayTrades[code];
   const trades = { ...store.trades };
@@ -82,15 +84,38 @@ export function shanghaiClock(now = new Date()): string {
   return new Date(now.getTime() + 8 * 3600_000).toISOString().slice(11, 16);
 }
 
-export type AlertMemory = Record<string, { action: TAction; at: number }>;
+export function shanghaiDay(now = new Date()): string {
+  return new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+/** 以行情所属日和行情分钟为准，不把请求成功的时间误当作行情时间。 */
+export function isFreshTQuote(date: string | undefined, time: string | undefined, now = new Date()): boolean {
+  if (date !== shanghaiDay(now) || !time || !TIME.test(time)) return false;
+  const minutes = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
+  const lag = minutes(shanghaiClock(now)) - minutes(time);
+  return lag >= 0 && lag <= 2;
+}
+
+export type AlertMemory = Record<string, { action: TAction; at: number; date?: string; signalTime?: string }>;
 /**
  * 同一只股票同一个动作 5 分钟内只提醒一次；动作变了（比如从「高抛」变成「接回」）马上提醒。
  * 只提醒最新一分钟内出现的信号，打开软件时看到的旧信号不响。
  */
-export function shouldAlert(memory: AlertMemory, code: string, action: TAction, signalTime: string, nowMs: number, nowClock: string): boolean {
-  if (action === "wait") return false;
+export function shouldAlert(memory: AlertMemory, code: string, action: TAction, signalTime: string, nowMs: number, nowClock: string, signalDate = shanghaiDay(new Date(nowMs))): boolean {
+  if (action === "wait" || !isFreshTQuote(signalDate, signalTime, new Date(nowMs))) return false;
   const toMinutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
   if (!TIME.test(signalTime) || !TIME.test(nowClock) || Math.abs(toMinutes(nowClock) - toMinutes(signalTime)) > 2) return false;
   const last = memory[code];
+  if (last?.date && last.date !== signalDate) return true;
+  if (last?.action === action && last.signalTime === signalTime) return false;
   return !last || last.action !== action || nowMs - last.at >= 5 * 60_000;
+}
+
+/** 仅核对最近一个已登记交易日；不把昨日买卖混入今日 T+1 可卖计算。 */
+export function previousOpenT(store: TStore, code: string, day: string) {
+  const item = store.items.find(entry => entry.code === code);
+  const date = Object.keys(store.trades).filter(date => date < day && store.trades[date]?.[code]?.length).sort().at(-1);
+  if (!item || !date) return null;
+  const { open } = settleTrades(store.trades[date]?.[code] || [], item.config);
+  return open ? { date, open } : null;
 }

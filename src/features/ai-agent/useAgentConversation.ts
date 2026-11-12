@@ -12,12 +12,19 @@ const runningRun = (runId: string, conversationId: string): AgentRun => ({ runId
 let rememberedConversation: string | null = null;
 let rememberedFocus: AgentFocus | null = null;
 
-export function useAgentConversation(api: AgentApi | undefined) {
+// Embedded T conversations are isolated from the standalone AI page and other
+// stocks. The bounded map also lets a late accepted request be resumed safely.
+const tConversations = new Map<string, string>();
+function rememberTConversation(code: string, id: string) {
+  tConversations.delete(code); tConversations.set(code, id);
+  while (tConversations.size > 50) tConversations.delete(tConversations.keys().next().value!);
+}
+export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: AgentFocus) {
   const [state, setStateValue] = useState<AgentState | null>(null);
   const [loadError, setLoadError] = useState("");
-  const [activeId, setActiveId] = useState<string | null>(rememberedConversation);
+  const [activeId, setActiveId] = useState<string | null>(embeddedFocus ? tConversations.get(embeddedFocus.code) || null : rememberedConversation);
   const [thread, setThread] = useState<AgentConversation | null>(null);
-  const [focus, setFocus] = useState<AgentFocus | null>(rememberedFocus);
+  const [focus, setFocus] = useState<AgentFocus | null>(embeddedFocus || rememberedFocus);
   const [draft, setDraft] = useState("");
   const [run, setRunValue] = useState<AgentRun | null>(null);
   const [error, setError] = useState("");
@@ -42,8 +49,8 @@ export function useAgentConversation(api: AgentApi | undefined) {
     mounted.current = true;
     return () => { mounted.current = false; generation.current += 1; sendOwner.current = null; };
   }, []);
-  useEffect(() => { rememberedConversation = activeId; }, [activeId]);
-  useEffect(() => { rememberedFocus = focus; }, [focus]);
+  useEffect(() => { if (!embeddedFocus) rememberedConversation = activeId; }, [activeId, embeddedFocus]);
+  useEffect(() => { if (!embeddedFocus) rememberedFocus = focus; }, [focus, embeddedFocus]);
 
   const refreshState = useCallback(async () => {
     if (!api || !mounted.current) return null;
@@ -86,6 +93,7 @@ export function useAgentConversation(api: AgentApi | undefined) {
     setSending(true); setSaving(false); setError("");
     try {
       const started = await api.start({ message, ...(target ? { conversationId: target } : {}), focus: stock, ...(options.title ? { title: options.title } : {}), ...(skillIds ? { skillIds } : {}) });
+      if (embeddedFocus) rememberTConversation(embeddedFocus.code, started.conversationId);
       // The service may have accepted A after the user selected B. Keep A in the
       // sidebar, but never adopt its ID, draft, history or send lock in B.
       if (mounted.current) void refreshState();
@@ -101,7 +109,7 @@ export function useAgentConversation(api: AgentApi | undefined) {
       if (ownsSend() && value?.id === started.conversationId) setThread(value);
     } catch (reason) { if (ownsSend()) setError(errorText(reason)); }
     finally { if (ownsSend()) { sendOwner.current = null; setSending(false); } }
-  }, [api, focus, isCurrent, refreshState, setRun, skillIds]);
+  }, [api, focus, isCurrent, refreshState, setRun, skillIds, embeddedFocus]);
 
   useEffect(() => {
     if (!api) return;
@@ -110,6 +118,16 @@ export function useAgentConversation(api: AgentApi | undefined) {
     void (async () => {
       const value = await refreshState();
       if (cancelled || !isCurrent(owner)) return;
+      if (embeddedFocus) {
+        const id = tConversations.get(embeddedFocus.code) || value?.conversations.find(item => item.focus?.code === embeddedFocus.code && item.title.endsWith(`做T · ${embeddedFocus.code}`))?.id;
+        if (id && value?.conversations.some(item => item.id === id)) { void openConversation(id); return; }
+        if (value?.configured && !handoffDone.current) {
+          handoffDone.current = true;
+          const task = QUICK_TASKS.find(item => item.id === 'intraday')!;
+          void send(`${task.prompt(embeddedFocus)} 同时结合历史日K与可获取的分钟K线，检查支撑压力、量能和动能；注明数据日期与周期，历史或缺失数据不得当作当前盘中信号。`, { focus: embeddedFocus, conversationId: null, title: `做T · ${embeddedFocus.code}` });
+        }
+        return;
+      }
       const handoff = handoffDone.current ? null : takeAgentHandoff();
       handoffDone.current = true;
       if (handoff) {

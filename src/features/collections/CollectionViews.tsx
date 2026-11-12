@@ -397,7 +397,7 @@ export function WatchlistView({
                   <td className="watch-security-code">{item.code}<small>{item.thscode?.split(".")[1] || "A"}</small></td>
                   <td><span className="watch-day-badge">{nodeFor(item)}</span></td>
                   <td>{item.limitDate || (item.createdAt ? new Date(item.createdAt).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" }) : "—")}</td>
-                  <td>{Number(item.consecutiveBoards) > 1 ? <b className="watch-board-count">{item.consecutiveBoards} 板</b> : "—"}</td>
+                  <td>{Number(item.consecutiveBoards) > 1 ? <b className="watch-board-count">{item.consecutiveBoards} 板</b> : Number(item.consecutiveBoards) === 1 ? "首板" : "—"}</td>
                   <td><div className="watch-row-actions"><button onClick={() => onOpen(item)} aria-label={`分析${item.name}`}>分析</button><button onClick={() => onRemove(item)} title="移出观察池" aria-label={`移出观察池${item.name}`}><X size={14} /></button></div></td>
                 </tr>)}</tbody>
               </table>

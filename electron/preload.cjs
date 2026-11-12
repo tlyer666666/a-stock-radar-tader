@@ -98,6 +98,7 @@ contextBridge.exposeInMainWorld("stockApi", {
   cancelTrendScan: () => invoke("trend-screener:cancel"),
   getLimitUpSectorBoard: (options = {}) => invoke("market:limit-up-sectors", options),
   getSectorStrengthBoard: (options = {}) => invoke("market:sector-strength", options),
+  getSectorLimitUpCount: (input, options = {}) => invoke("market:sector-limit-count", input, options),
   getSectorClassifications: (options) => invoke("sector:classifications", options),
   getSectorCatalog: (options = {}) => invoke("sector:catalog", options),
   getSectorQuotes: (options = {}) => invoke("sector:quotes", options),

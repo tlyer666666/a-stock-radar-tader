@@ -798,3 +798,19 @@ test("unsaved answers remain pinned until a successful full-state save acknowled
   assert.equal(service.poll(run.runId).persistenceError, undefined, "a later full-state save acknowledges the pending answer");
   await service.shutdown();
 });
+
+test("sector AI preserves missing counts and reflects confirmed member limit-ups", async () => {
+  for (const [members, official, expected] of [
+    [[], null, null], [[{ code: "600001", isLimitUp: true, changePct: 10 }], 0, 1],
+    [[{ code: "600001", isLimitUp: false, changePct: 1 }], null, null]
+  ]) {
+    const { sources } = fakeSources({
+      industry: async () => "样本行业",
+      sectorDetail: async () => ({ name: "样本行业", constituents: members }),
+      sectorBoard: async () => ({ industries: [{ name: "样本行业", poolLimitUps: official, memberCount: 4 }] })
+    });
+    const result = await createStockAgentTools(sources).runTool("sector", { code: "600001" });
+    assert.equal(result.data.limitUps, expected);
+    if (!members.length) assert.deepEqual([result.data.rising, result.data.falling], [null, null]);
+  }
+});

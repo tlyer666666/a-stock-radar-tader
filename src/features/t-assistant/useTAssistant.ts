@@ -4,7 +4,7 @@ import { whenVisible } from "../../visiblePolling";
 import { buildTimeShare, type TimeShare } from "../market/timeShareModel";
 import { analyzeT, isActionable, normalizeTConfig, replayT, type TAnalysis, type TConfig, type TReplay, type TTrade } from "./tEngine";
 import {
-  EMPTY_T_STORE, MAX_T_ITEMS, T_STORE_KEY, inTradingSession, normalizeTStore, secidForCode, shanghaiClock, shouldAlert, withTrades,
+  EMPTY_T_STORE, MAX_T_ITEMS, T_STORE_KEY, inTradingSession, normalizeTStore, secidForCode, shanghaiClock, shanghaiDay, isFreshTQuote, previousOpenT, shouldAlert, withTrades,
   type AlertMemory, type TItem, type TStore
 } from "./tStore";
 
@@ -16,6 +16,8 @@ export type TRuntime = {
   error: string;
   updatedAt: number | null;
   source: string;
+  signalNote: string;
+  previousOpenNote: string;
 };
 export type TAssistantApi = ReturnType<typeof useTAssistant>;
 
@@ -30,6 +32,7 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
   const [store, setStore] = useState<TStore>(() => normalizeTStore(loadSafeLocalJson<unknown>(T_STORE_KEY, EMPTY_T_STORE, isStore)));
   const [shares, setShares] = useState<Record<string, { share: TimeShare | null; loading: boolean; error: string; updatedAt: number | null; source: string }>>({});
   const [saveError, setSaveError] = useState(false);
+  const [clockTick, setClockTick] = useState(Date.now);
   const storeRef = useRef(store);
   const alerted = useRef<AlertMemory>({});
   const onAlertRef = useRef(onAlert);
@@ -82,18 +85,20 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
 
   useEffect(() => {
     if (!live || !codes) return;
-    const tick = whenVisible(() => { if (inTradingSession()) void loadAll(true); });
+    const tick = whenVisible(() => { setClockTick(Date.now()); if (inTradingSession()) void loadAll(true); });
     const timer = window.setInterval(tick, REFRESH_MS);
     return () => window.clearInterval(timer);
   }, [live, codes, loadAll]);
 
   const runtimes = useMemo(() => {
     const result: Record<string, TRuntime> = {};
+    const now = new Date();
     for (const item of store.items) {
       const entry = shares[item.code];
       const share = entry?.share || null;
       const trades = share ? store.trades[share.date]?.[item.code] || [] : [];
       const context = { code: item.code, name: item.name };
+      const prior = share ? previousOpenT(store, item.code, share.date) : null;
       result[item.code] = {
         share,
         analysis: analyzeT(share, context, item.config, trades),
@@ -101,11 +106,18 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
         loading: entry?.loading ?? true,
         error: entry?.error || "",
         updatedAt: entry?.updatedAt ?? null,
-        source: entry?.source || ""
+        source: entry?.source || "",
+        previousOpenNote: prior ? `${prior.date} 登记的${prior.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${prior.open.shares} 股。请核对券商实际持仓及今日可卖；旧成交不会自动转成今天的操作。` : "",
+        signalNote: !live ? "已暂停实时刷新，下面保留上次分析供参考"
+          : entry?.error ? "行情读取失败，暂停操作提示；下面保留上次分析供参考"
+          : share && share.date !== shanghaiDay(now) ? `历史参考：${share.date} 分时，不是当前交易日的操作信号`
+          : !inTradingSession(now) ? "非交易时段参考：不发实时操作提醒"
+          : share && !isFreshTQuote(share.date, share.points.at(-1)?.time, now) ? "行情延迟或时间异常，暂停操作提示，请刷新核对"
+          : ""
       };
     }
     return result;
-  }, [store, shares]);
+  }, [store, shares, clockTick, live]);
 
   // 新信号提醒：只在交易时段、只提醒最新一分钟的信号。
   useEffect(() => {
@@ -113,11 +125,12 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
     const nowMs = Date.now(), clock = shanghaiClock();
     const messages: string[] = [];
     for (const item of store.items) {
-      const analysis = runtimes[item.code]?.analysis;
-      if (!analysis || !isActionable(analysis.signal)) continue;
+      const runtime = runtimes[item.code];
+      const analysis = runtime?.analysis;
+      if (!analysis || runtime.signalNote || !isActionable(analysis.signal)) continue;
       const { signal } = analysis;
-      if (!shouldAlert(alerted.current, item.code, signal.action, analysis.time, nowMs, clock)) continue;
-      alerted.current[item.code] = { action: signal.action, at: nowMs };
+      if (!shouldAlert(alerted.current, item.code, signal.action, analysis.time, nowMs, clock, runtime.share?.date)) continue;
+      alerted.current[item.code] = { action: signal.action, at: nowMs, date: runtime.share?.date || "", signalTime: analysis.time };
       messages.push(`${item.name}：${signal.title} ${signal.shares} 股，参考价 ${signal.price.toFixed(2)}`);
     }
     if (!messages.length) return;
@@ -148,6 +161,7 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
 
   const removeStock = useCallback((code: string) => {
     commit(current => ({ ...current, items: current.items.filter(item => item.code !== code) }));
+    delete alerted.current[code];
     setShares(current => { const next = { ...current }; delete next[code]; return next; });
   }, [commit]);
 
@@ -156,7 +170,12 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
   }, [commit]);
 
   const addTrade = useCallback((day: string, code: string, trade: Omit<TTrade, "id">) => {
-    commit(current => withTrades(current, day, code, list => [...list, { ...trade, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` }]));
+    try {
+      commit(current => withTrades(current, day, code, list => [...list, { ...trade, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` }]));
+      return "";
+    } catch (error) {
+      return error instanceof Error ? error.message : "成交登记失败";
+    }
   }, [commit]);
 
   const removeTrade = useCallback((day: string, code: string, id: string) => {

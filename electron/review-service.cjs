@@ -126,6 +126,7 @@ function marketSession(generatedAt) {
 
 function buildLimitEcology(emotion, ladderPools) {
   const nonRisk = rows => (rows || []).filter(item => !services.isRiskStockName(item.name || ""));
+  const currentAvailable = Array.isArray(ladderPools?.currentPool);
   const current = nonRisk(ladderPools?.currentPool);
   const previous = nonRisk(ladderPools?.previousPool);
   const failedAvailable = ladderPools?.failedPoolAvailable !== false && Array.isArray(ladderPools?.failedPool);
@@ -133,20 +134,21 @@ function buildLimitEcology(emotion, ladderPools) {
   const currentCodes = new Set(current.map(item => String(item.code)));
   const previousCodes = new Set(previous.map(item => String(item.code)));
   const previousAvailable = previousCodes.size > 0 || Boolean(ladderPools?.previousDate && ladderPools.previousDate !== ladderPools.currentDate);
-  const promoted = previousAvailable ? [...previousCodes].filter(code => currentCodes.has(code)).length : null;
-  const promotionRate = previousAvailable && previousCodes.size ? promoted / previousCodes.size : previousAvailable ? 0 : null;
-  const failedRate = failedAvailable ? (current.length + failed.length ? failed.length / (current.length + failed.length) : 0) : null;
+  const promoted = currentAvailable && previousAvailable ? [...previousCodes].filter(code => currentCodes.has(code)).length : null;
+  const promotionRate = promoted === null ? null : previousCodes.size ? promoted / previousCodes.size : 0;
+  const failedRate = currentAvailable && failedAvailable ? (current.length + failed.length ? failed.length / (current.length + failed.length) : 0) : null;
   const knownHeight = item => item.consecutiveBoards !== null && item.consecutiveBoards !== undefined && Number.isFinite(Number(item.consecutiveBoards)) && Number(item.consecutiveBoards) >= 1;
   const known = current.filter(knownHeight);
-  const firstBoards = known.filter(item => Number(item.consecutiveBoards) === 1).length;
-  const continuationBoards = known.filter(item => Number(item.consecutiveBoards) > 1).length;
-  const maxHeight = known.length ? Math.max(...known.map(item => Number(item.consecutiveBoards))) : current.length ? null : 0;
+  const firstBoards = currentAvailable ? known.filter(item => Number(item.consecutiveBoards) === 1).length : null;
+  const continuationBoards = currentAvailable ? known.filter(item => Number(item.consecutiveBoards) > 1).length : null;
+  const maxHeight = known.length ? Math.max(...known.map(item => Number(item.consecutiveBoards))) : currentAvailable && !current.length ? 0 : null;
   const heightDistribution = [...new Set(known.map(item => Number(item.consecutiveBoards)))].sort((a,b) => b-a).map(height => ({height,count:known.filter(item => Number(item.consecutiveBoards) === height).length}));
-  const limitUpCount = Array.isArray(ladderPools?.currentPool) ? current.length : Number(emotion?.limitUpCount || 0);
-  const limitDownCount = Number(emotion?.limitDownCount || 0);
-  const complete = failedAvailable && previousAvailable && known.length === current.length;
+  const countOrNull = value => (typeof value === "number" || typeof value === "string" && value.trim() !== "") && Number.isInteger(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+  const limitUpCount = currentAvailable ? current.length : countOrNull(emotion?.limitUpCount);
+  const limitDownCount = countOrNull(emotion?.limitDownCount);
+  const complete = currentAvailable && limitDownCount !== null && failedAvailable && previousAvailable && known.length === current.length;
   const score = complete ? Math.round(clamp(42 + (limitUpCount - limitDownCount) * 0.16 + promotionRate * 25 - failedRate * 32 + Math.min(maxHeight,7)*3)) : 50;
-  return {score,available:complete,limitUpCount,limitDownCount,previousLimitUpCount:previous.length,firstBoards,continuationBoards,maxHeight,promoted,promotionRate,failedBoards:failedAvailable ? failed.length : null,failedRate,heightDistribution,unknownHeightCount:current.length-known.length};
+  return {score,available:complete,limitUpCount,limitDownCount,previousLimitUpCount:previousAvailable ? previous.length : null,firstBoards,continuationBoards,maxHeight,promoted,promotionRate,failedBoards:failedAvailable ? failed.length : null,failedRate,heightDistribution,unknownHeightCount:currentAvailable ? current.length-known.length : null};
 }
 
 function leadingStocks(ladderPools) {
@@ -187,7 +189,7 @@ function classifyRegime({ score, breadthScore, emotionScore, ecology, indices })
   if (score >= 58 && risingIndices >= 3) {
     return { id: "repair", name: "修复轮动", tone: "repair", posture: "控制节奏，只做强于市场" };
   }
-  if (score < 43 || ecology.limitDownCount > ecology.limitUpCount * 0.45) {
+  if (score < 43 || (ecology.limitUpCount !== null && ecology.limitDownCount !== null && ecology.limitDownCount > ecology.limitUpCount * 0.45)) {
     return { id: "retreat", name: "退潮防守", tone: "defense", posture: "现金优先，等待风险释放" };
   }
   return { id: "rotation", name: "混沌震荡", tone: "neutral", posture: "小仓试错，快进快出" };
@@ -281,12 +283,12 @@ function buildProfessionalReviewSnapshot(input) {
     indices
   });
   const riskSignals = [];
-  if (marketAvailable && Number(market.breadth || 0) < 0.45) {
+  if (measuredBreadth !== null && measuredBreadth < 0.45) {
     riskSignals.push("上涨广度不足45%，赚钱效应偏弱");
   }
   if (ecology.failedRate === null) riskSignals.push("炸板池不可用，炸板数量与炸板率待确认");
   if (ecology.failedRate > 0.32) riskSignals.push("炸板率超过32%，高位接力容错率下降");
-  if (ecology.limitDownCount > ecology.limitUpCount * 0.4) riskSignals.push("跌停/涨停比偏高，风险扩散");
+  if (ecology.limitUpCount !== null && ecology.limitDownCount !== null && ecology.limitDownCount > ecology.limitUpCount * 0.4) riskSignals.push("跌停/涨停比偏高，风险扩散");
   if (
     availableIndices.length >= 3 &&
     availableIndices.filter((item) => item.close < item.ma20).length >= Math.ceil(availableIndices.length / 2)
@@ -340,15 +342,15 @@ function buildProfessionalReviewSnapshot(input) {
     riskSignals,
     evidence: [
       marketAvailable
-        ? `全市场上涨 ${Number(market.upCount || 0)} 家、下跌 ${Number(market.downCount || 0)} 家，上涨广度 ${(Number(market.breadth || 0) * 100).toFixed(1)}%。`
+        ? `全市场上涨 ${Number(market.upCount || 0)} 家、下跌 ${Number(market.downCount || 0)} 家，上涨广度 ${(measuredBreadth * 100).toFixed(1)}%。`
         : "全市场涨跌家数接口暂时降级，本次广度维度按中性50分处理，不用缺失数据推断强弱。",
-      `涨停 ${ecology.limitUpCount} 家、跌停 ${ecology.limitDownCount} 家、炸板 ${ecology.failedBoards ?? "待确认"} 家，晋级率 ${ecology.promotionRate === null ? "待确认" : `${(ecology.promotionRate * 100).toFixed(1)}%`}。`,
-      `最高 ${ecology.maxHeight ?? "待确认"} 连板，首板 ${ecology.firstBoards} 家、连板 ${ecology.continuationBoards} 家。`,
+      `涨停 ${ecology.limitUpCount ?? "待确认"} 家、跌停 ${ecology.limitDownCount ?? "待确认"} 家、炸板 ${ecology.failedBoards ?? "待确认"} 家，晋级率 ${ecology.promotionRate === null ? "待确认" : `${(ecology.promotionRate * 100).toFixed(1)}%`}。`,
+      `最高 ${ecology.maxHeight ?? "待确认"} 连板，首板 ${ecology.firstBoards ?? "待确认"} 家、连板 ${ecology.continuationBoards ?? "待确认"} 家。`,
       `${availableIndices.length} 个可用核心指数中 ${availableIndices.filter((item) => item.returns.r1 > 0).length} 个收涨，${availableIndices.filter((item) => item.close >= item.ma20).length} 个位于MA20上方。`,
       `趋势确认 ${confirmationScore} 分、成交参与 ${liquidityScore} 分、主线扩散 ${diffusionScore} 分；三项作为市场一致性校验。`
     ],
     nextPlan: {
-      focus: focusSectors.slice(0, 3).map((item) => `${item.name}：${item.verdict}，强度 ${Math.round(item.score || 0)} 分`),
+      focus: focusSectors.slice(0, 3).map((item) => `${item.name}：${item.verdict}，强度 ${item.score == null ? "待确认" : `${Math.round(item.score)} 分`}`),
       observe: focusSectors.slice(3, 6).map((item) => `${item.name}：等待量价与涨停梯队继续确认`),
       avoid: [
         ecology.failedRate > 0.3 ? "高位反复炸板且回封弱的后排股" : "无板块扩散、仅个股脉冲的孤立涨停",
@@ -505,23 +507,18 @@ async function loadProfessionalReview(options) {
   const [emotion, market, ladderPools, sectors, limitUpSnapshot, indices] = await Promise.all([
     services.marketEmotionSnapshot(marketOptions).catch(() => null),
     services.wholeMarketSnapshot(marketOptions).catch(() => null),
-    services.currentLadderPools(marketOptions).catch(() => ({
-      currentPool: [],
-      previousPool: [],
-      failedPool: null,
-      failedPoolAvailable: false
-    })),
+    services.currentLadderPools(marketOptions).catch(() => null),
     services.getLimitUpSectorBoard(marketOptions).catch(() => []),
-    services.discoverLimitUps(marketOptions).catch(() => ({ rows: [], meta: null })),
+    services.discoverLimitUps(marketOptions).catch(() => null),
     Promise.all(indexPromises)
   ]);
   const limitUps = Array.isArray(limitUpSnapshot?.rows) ? limitUpSnapshot.rows : [];
   const fallbackDate = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); // 北京时间日期
   const safeEmotion = emotion || {
     date: fallbackDate,
-    limitUpCount: limitUps.length,
-    limitDownCount: 0,
-    previousLimitUpCount: 0,
+    limitUpCount: Array.isArray(limitUpSnapshot?.rows) ? limitUps.length : null,
+    limitDownCount: null,
+    previousLimitUpCount: null,
     score: limitUps.length >= 70 ? 68 : limitUps.length >= 35 ? 55 : 45,
     state: "数据降级"
   };

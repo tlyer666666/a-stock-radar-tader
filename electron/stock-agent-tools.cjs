@@ -311,13 +311,20 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
       const indexChange = finite(detail?.returns?.r1);
       // 板块指数的近 5 日只有在它的「最近一日」和今日行业榜一致时才可信。
       const indexCurrent = officialChange === null || (indexChange !== null && Math.abs(indexChange - officialChange) <= 1.5);
-      const rising = finite(official?.rising) ?? quoted.filter(item => item.changePct > 0).length;
-      const falling = finite(official?.falling) ?? quoted.filter(item => item.changePct < 0).length;
+      const rising = finite(official?.rising) ?? (quoted.length ? quoted.filter(item => item.changePct > 0).length : null);
+      const falling = finite(official?.falling) ?? (quoted.length ? quoted.filter(item => item.changePct < 0).length : null);
+      const memberCount = finite(official?.memberCount) ?? finite(detail?.memberCount);
+      const sealed = members.filter(item => item.isLimitUp === true).length;
+      const fullLiveRoster = memberCount > 0 && members.length === memberCount &&
+        members.every(item => item.quoteStatus === "live" && item.preClose > 0 && item.latest > 0 && typeof item.isLimitUp === "boolean");
+      const reported = finite(official?.poolLimitUps ?? official?.limitUps);
+      const observed = Math.max(sealed, finite(detail?.limitUps) ?? 0);
+      const limitUps = fullLiveRoster ? sealed : observed > 0 ? Math.max(reported ?? 0, observed) : reported;
       const data = {
         industry: clip(official?.name || detail?.name || industry, 12),
         changePct: officialChange ?? memberAverage, changeSource: officialChange !== null ? "同花顺行业榜" : "成分股平均",
-        memberAverageChangePct: memberAverage, rising, falling, memberCount: finite(official?.memberCount) ?? detail?.memberCount ?? members.length,
-        limitUps: finite(official?.poolLimitUps) ?? finite(detail?.limitUps) ?? members.filter(item => item.isLimitUp).length,
+        memberAverageChangePct: memberAverage, rising, falling, memberCount: memberCount ?? (members.length || null),
+        limitUps,
         netInflowYi: yi(finite(official?.netInflow)),
         industryRank: official ? `${officialIndex + 1}/${industries.length}` : null,
         ...(indexCurrent && finite(detail?.returns?.r5) !== null ? { return5: round(detail.returns.r5) } : {}),
@@ -325,7 +332,7 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
         leaders: sorted.slice(0, 6).map(item => ({ code: item.code, name: clip(item.name, 8), changePct: round(item.changePct), limitUp: item.isLimitUp === true })),
         laggards: sorted.slice(-3).map(item => ({ name: clip(item.name, 8), changePct: round(item.changePct) }))
       };
-      return { summary: `${data.industry} 今日 ${data.changePct ?? "--"}%（${data.industryRank ? `行业第 ${data.industryRank}，` : ""}涨 ${rising} 跌 ${falling}），涨停 ${data.limitUps ?? "--"}${data.rankInSector ? `，个股排第 ${data.rankInSector}` : ""}`, data };
+      return { summary: `${data.industry} 今日 ${data.changePct ?? "--"}%（${data.industryRank ? `行业第 ${data.industryRank}，` : ""}涨 ${rising ?? "--"} 跌 ${falling ?? "--"}），涨停 ${data.limitUps ?? "--"}${data.rankInSector ? `，个股排第 ${data.rankInSector}` : ""}`, data };
     },
 
     async announcements(args) {

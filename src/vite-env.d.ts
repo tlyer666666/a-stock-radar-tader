@@ -227,6 +227,7 @@ type SectorLimitStock = { code: string; name: string; boards?: number | undefine
 type SectorConceptRow = { kind: "concept"; id: string; code: string; conceptCid: string; indexCode: string; name: string; changePct: number; netInflow: number | null;
   memberCount: number | null; leaderName: string; limitUps: number | null; limitUpStocks: SectorLimitStock[] };
 type SectorTheme = { reason: string; count: number; stocks: SectorLimitStock[]; concept?: { name: string; code: string; conceptCid: string } | undefined };
+type SectorLimitCount = { limitUps: number | null; limitUpStocks: { code: string; name: string }[]; memberCount: number | null; countComplete: boolean; asOfDate: string | null; fetchedAt: string; source: string; warning: string };
 type SectorStrengthBoard = { fetchedAt: string; industries: any[]; concepts: SectorConceptRow[]; themes: SectorTheme[]; limitUpTotal: number | null; conceptLimitUpSource: string; warnings: string[] };
 type AiSelectionInput = { asOfDate: string; picks: AiPick[]; strategyCounts?: { name: string; count: number }[]; force?: boolean; only?: string[] | undefined };
 type AiRankItem = { fallback?: boolean | undefined; code: string; name: string; score: number; rating: "重点关注" | "关注" | "观望" | "回避"; highlights: string; risks: string; nextDay: string;
@@ -379,6 +380,7 @@ interface Window {
     discoverRecentLimitUps(days?: number, options?: { forceRefresh?: boolean }): Promise<any[]>;
     getLimitUpSectorBoard(options?: { forceRefresh?: boolean }): Promise<any[]>;
     getSectorStrengthBoard?(options?: { forceRefresh?: boolean }): Promise<SectorStrengthBoard>;
+    getSectorLimitUpCount?(input: { boardType: "industry" | "concept"; name: string; code?: string; indexCode?: string; conceptCid?: string; memberCount?: number | null }, options?: { forceRefresh?: boolean }): Promise<SectorLimitCount>;
     searchSectors(query: string): Promise<any[]>;
     getConceptChain(query: string | Record<string, any>): Promise<any>;
     analyzeSector(sector: any): Promise<any>;
