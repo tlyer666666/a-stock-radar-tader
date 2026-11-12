@@ -103,3 +103,28 @@ test("remaining years are measured from today", () => {
   assert.equal(bonds.remainingYears("2027-10-23", "2026-10-23"), 1);
   assert.equal(bonds.remainingYears("", "2026-10-23"), null);
 });
+
+test("a stale roster is quoted first; the weekly re-check of codes runs after the quotes are in", async () => {
+  const previous = { schema: 1, discoveredAt: new Date(NOW - 8 * 86400000).toISOString(), bonds: [{ code: "113052", name: "旧券", market: 19, stockCode: "", stockName: "", listingDate: "", expireDate: "", source: "discovered" }] };
+  let saved = null;
+  const { s, calls } = source({ store: { read: () => previous, write: (value) => { saved = value; } } });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.deepEqual(calls.slice(0, 2).sort(), ["19_113052", "35_123288"], "known bonds are quoted before any code probing");
+  assert.ok(calls.length > 100, "the re-check still runs afterwards");
+  assert.deepEqual(snapshot.members.map((bond) => bond.code), ["113052", "123288", "128136"]);
+  assert.equal(snapshot.quoteCoverage.complete, true);
+  assert.ok(saved && Date.parse(saved.discoveredAt) === NOW);
+});
+
+test("no older bonds beyond the feed is a finished check, not a failure: it is cached and not repeated", async () => {
+  let saved = null;
+  const store = { read: () => saved, write: (value) => { saved = value; } };
+  const first = source({ store, active: [], stale: [] });
+  const snapshot = await first.s.load({ waitForQuotes: true });
+  assert.deepEqual(snapshot.members.map((bond) => bond.code), ["123288"]);
+  assert.doesNotMatch(snapshot.warnings.join(), /核对未完成/);
+  assert.ok(saved?.discoveredAt, "the finished check is remembered");
+  const second = source({ store, active: [], stale: [] });
+  await second.s.load({ waitForQuotes: true });
+  assert.ok(second.calls.length <= 2, "codes are not probed again within 7 days");
+});

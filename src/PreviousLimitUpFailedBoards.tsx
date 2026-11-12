@@ -19,6 +19,8 @@ type Props = {
 const providerLabel = (providers?: string[]) => {
   const labels: Record<string, string> = {
     ths_public_limit_up: "同花顺公开涨停池",
+    ths_public_open_limit: "同花顺公开炸板池",
+    eastmoney: "东方财富",
     eastmoney_topic_pool: "东方财富专题池",
     preview: "浏览器模拟数据"
   };

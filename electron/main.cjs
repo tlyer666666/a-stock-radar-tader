@@ -85,6 +85,7 @@ const {
   evaluateTrendResearch,
   getLimitUpSectorBoard,
   getSectorStrengthBoard,
+  getSectorLimitUpCount,
   getSectorCatalog,
   getSectorQuotes,
   getSectorClassifications,
@@ -1329,6 +1330,9 @@ if (!hasSingleInstanceLock) {
   );
   handleTrustedIpc("market:sector-strength", (_, options = {}) =>
     getSectorStrengthBoard({ ...settingsForService(), forceRefresh: options?.forceRefresh === true })
+  );
+  handleTrustedIpc("market:sector-limit-count", (_, input, options = {}) =>
+    getSectorLimitUpCount(input, { forceRefresh: options?.forceRefresh === true })
   );
   handleTrustedIpc("market:search-sectors", (_, query) => searchSectors(query));
   handleTrustedIpc("market:concept-chain", (_, query) =>

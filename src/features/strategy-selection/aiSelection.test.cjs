@@ -372,3 +372,14 @@ test('a failed profile save leaves the pending initial list read available for r
   initial.resolve({profiles:[saved],activeId:saved.id,max:8});await h.flush();button(h.tree,'取消').props.onClick();await h.flush();
   assert.match(text(h.tree),/已有模型配置/);assert.match(text(h.tree),/save failed/);
 });
+
+test('sector interpretation restores its saved headline without rendering the metadata caption', async t => {
+  const stored = { headline: '已保存的行业解读', asOfDate: '2026-11-10', model: 'fixture-model', cached: true,
+    generatedAt: '2026-11-10T06:00:00Z', points: [], risks: [], watch: [] };
+  const { h, text } = asyncPanelHarness(t, '../ai-review/AiInterpretPanel.tsx', 'AiInterpretPanel',
+    { kind: 'sectors', getData: () => ({}) },
+    { status: async () => ({ configured: true }), cachedInterpret: async () => stored, interpret: async () => assert.fail() });
+  await h.flush();
+  assert.match(text(h.tree), /已保存的行业解读/);
+  assert.doesNotMatch(text(h.tree), /fixture-model|本机已保存|数据日/);
+});

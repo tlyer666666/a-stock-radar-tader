@@ -162,3 +162,72 @@
   .t-assistant-row { min-width: 180px; }
   .t-assistant-grid { grid-template-columns: 1fr; }
 }
+
+/* 单股历史与量价工具箱 */
+.t-toolbox { min-width: 0; padding: var(--space-md) var(--space-lg); display: flex; flex-direction: column; gap: var(--space-sm); }
+.toolbox-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--space-sm); }
+.toolbox-heading h3 { margin: 0; font-size: var(--fs-md); color: var(--ink-1); }
+.toolbox-heading p { margin: 4px 0 0; font-size: var(--fs-xs); color: var(--ink-3); }
+.toolbox-timeframes, .toolbox-indicators, .toolbox-draw-toolbar, .t-toolbox-window, .toolbox-drawing-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.t-toolbox button { border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-2); padding: 5px 9px; min-height: 30px; font-size: var(--fs-xs); cursor: pointer; }
+.t-toolbox button:hover { background: var(--hover-bg); }
+.t-toolbox button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); background: var(--selected-bg); }
+.t-toolbox button:disabled { opacity: .5; cursor: default; }
+.t-toolbox button:focus-visible, .t-toolbox input:focus-visible, .t-toolbox select:focus-visible, .t-toolbox-chart:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toolbox-timeframes label, .toolbox-draw-toolbar label { display: flex; align-items: center; gap: 5px; color: var(--ink-3); font-size: var(--fs-xs); }
+.t-toolbox input, .t-toolbox select { min-width: 0; width: 100px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-1); padding: 5px 6px; font: inherit; }
+.toolbox-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 4px 0; }
+.toolbox-summary > div { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid var(--line-1); background: var(--surface-2); border-radius: var(--radius-sm); }
+.toolbox-summary span { color: var(--ink-3); font-size: var(--fs-xs); }
+.toolbox-summary b { color: var(--ink-1); font-size: var(--fs-md); font-variant-numeric: tabular-nums; }
+.toolbox-summary small { color: var(--ink-3); font-size: var(--fs-2xs); line-height: 1.5; }
+.toolbox-reading { border-left: 3px solid var(--accent); padding: 8px 12px; background: var(--selected-bg); border-radius: var(--radius-sm); color: var(--ink-2); font-size: var(--fs-xs); line-height: 1.7; }
+.toolbox-reading b { color: var(--ink-1); }
+.toolbox-reading p { margin: 3px 0; }
+.toolbox-reading small { color: var(--ink-3); }
+.toolbox-draw-toolbar { padding: 9px 0; border-top: 1px solid var(--line-1); border-bottom: 1px solid var(--line-1); }
+.toolbox-quote, .toolbox-legend { display: flex; flex-wrap: wrap; gap: 5px 12px; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; color: var(--ink-2); margin: 7px 0; }
+.toolbox-quote b { color: var(--ink-1); }
+.t-toolbox-window > span, .toolbox-drawing-list > span { color: var(--ink-3); font-size: var(--fs-2xs); }
+.t-toolbox-chart-wrap { min-width: 0; }
+.t-toolbox-chart { display: block; width: 100%; height: auto; overflow: hidden; touch-action: pan-y; cursor: crosshair; }
+.t-toolbox-chart text { fill: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; pointer-events: none; }
+.toolbox-grid { stroke: var(--line-1); stroke-width: 1; }
+.toolbox-candle.is-up, .toolbox-bar.is-up { fill: var(--up); stroke: var(--up); }
+.toolbox-candle.is-down, .toolbox-bar.is-down { fill: var(--down); stroke: var(--down); }
+.toolbox-series { fill: none; stroke-width: 1.4; pointer-events: none; }
+.toolbox-line-5 { color: var(--warn); stroke: var(--warn); }
+.toolbox-line-10 { color: var(--accent); stroke: var(--accent); }
+.toolbox-line-20 { color: var(--up); stroke: var(--up); }
+.toolbox-line-60 { color: var(--down); stroke: var(--down); }
+.toolbox-line-boll { color: var(--ink-3); stroke: var(--ink-3); stroke-dasharray: 4 3; }
+.toolbox-crosshair { stroke: var(--ink-4); stroke-dasharray: 3 3; pointer-events: none; }
+.toolbox-drawing { cursor: pointer; }
+.toolbox-drawing line { stroke: var(--accent); stroke-width: 1.8; }
+.toolbox-drawing text { fill: var(--accent); }
+.toolbox-drawing rect { fill: var(--selected-bg); stroke: var(--accent); stroke-dasharray: 3 3; }
+.toolbox-drawing .toolbox-hit-line { stroke: var(--accent); stroke-opacity: 0; stroke-width: 14; pointer-events: stroke; }
+.toolbox-drawing.is-selected > line:not(.toolbox-hit-line) { stroke-width: 3; }
+.toolbox-pending { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; pointer-events: none; }
+.toolbox-help, .toolbox-meta, .toolbox-formulas { color: var(--ink-3); font-size: var(--fs-2xs); line-height: 1.65; margin: 0; }
+.toolbox-meta { display: flex; flex-direction: column; gap: 3px; }
+.toolbox-formulas { border-top: 1px solid var(--line-1); padding-top: 8px; }
+.toolbox-formulas summary { cursor: pointer; color: var(--ink-2); }
+.toolbox-formulas p { margin: 8px 0; }
+.toolbox-warning { color: var(--warn); background: var(--warn-soft); border-radius: var(--radius-sm); padding: 8px 12px; font-size: var(--fs-xs); overflow-wrap: anywhere; }
+.toolbox-empty { padding: var(--space-xl); text-align: center; color: var(--ink-3); }
+@media (max-width: 1100px) { .toolbox-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .t-toolbox { padding: var(--space-sm); } .toolbox-summary { grid-template-columns: minmax(0, 1fr); } .toolbox-draw-toolbar button { min-height: 36px; } }
+
+/* Keep period switching available while inspecting the chart. */
+.toolbox-timeframes { position: sticky; top: 0; z-index: 5; padding: 8px 0; background: var(--surface-1); border-bottom: 1px solid var(--line-2); }
+.t-toolbox-chart { touch-action: none; user-select: none; }
+.t-toolbox-chart.can-pan { cursor: grab; }
+.t-toolbox-chart.is-dragging { cursor: grabbing; }
+
+.t-inline-ai { min-width: 0; padding: var(--space-sm); }
+.t-inline-ai[hidden] { display: none; }
+.t-inline-ai-actions { display: flex; justify-content: flex-end; }
+.t-inline-ai .ai-agent-layout { display: flex; flex-direction: column; min-height: 0; }
+.t-inline-ai .ai-agent-chat { min-height: 360px; max-height: 720px; }
+.t-inline-ai .ai-agent-stream { min-height: 180px; max-height: 440px; }

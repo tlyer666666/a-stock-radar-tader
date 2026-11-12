@@ -51,7 +51,7 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
     </header>
     {error && <div className="test-result fail" role="alert"><span />{error}</div>}
     {value && <article className="ai-summary">
-      <h3>{value.headline || `${value.title}解读`}<small>{value.asOfDate ? `数据日 ${value.asOfDate} · ` : ""}{value.model} · {new Date(value.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}{value.cached ? " · 本机已保存" : ""}</small></h3>
+      <h3>{value.headline || `${value.title}解读`}{kind !== "sectors" && <small>{value.asOfDate ? `数据日 ${value.asOfDate} · ` : ""}{value.model} · {new Date(value.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}{value.cached ? " · 本机已保存" : ""}</small>}</h3>
       {!!value.points.length && <div className="ai-summary-row"><b>要点</b><ul>{value.points.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {!!value.risks.length && <div className="ai-summary-row"><b>风险</b><ul>{value.risks.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
       {!!value.watch.length && <div className="ai-summary-row"><b>接下来看</b><ul>{value.watch.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}

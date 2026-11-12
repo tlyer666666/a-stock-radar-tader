@@ -3047,7 +3047,7 @@ const buildBacktestExecutionPlan = (
                 原来这里放的是板块目录浏览，榜单被藏在默认收起的折叠块里，
                 用户进入「板块强度」根本看不到排行 —— 现已对调。 */}
             <Suspense fallback={<LoadingState />}><SectorView rows={sectorBoard} extra={sectorExtra} loading={sectorBoardLoading} loadError={sectorBoardError}
-              aiPanel={<AiInterpretPanel kind="sectors" disabled={!sectorBoard.length} getData={() => sectorsForAi(sectorBoard, sectorExtra)} />}
+              aiPanel={<AiInterpretPanel kind="sectors" disabled={!sectorBoard.length && !sectorExtra?.concepts.length} getData={() => sectorsForAi(sectorBoard, sectorExtra)} />}
               onRefresh={() => loadSectorBoard(true)} onOpenStock={(stock: Security) => openAnalysis(stock, { view: "sectors", label: "返回板块强度" })} /></Suspense>
             <details className="sector-legacy-details" open={sectorLegacyOpen} onToggle={event => setSectorLegacyOpen(event.currentTarget.open)}>
               <summary>板块目录 · 按行业分类浏览、股票查所属行业</summary>

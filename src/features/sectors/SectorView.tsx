@@ -119,7 +119,7 @@ const normalizeSectorViewRow = (value: any, index = 0) => {
   const constituents = rawConstituents
     .filter((member: any) => member && typeof member === "object")
     .map(normalizeMember);
-  const poolLimitUps = nullableNumber(item.poolLimitUps) ?? nullableNumber(item.limitUps) ?? 0;
+  const poolLimitUps = nullableNumber(item.poolLimitUps) ?? nullableNumber(item.limitUps);
   const memberCount = nullableNumber(item.memberCount) ??
     (typeof item.members === "number" ? nullableNumber(item.members) : constituents.length || null);
 
@@ -140,7 +140,7 @@ const normalizeSectorViewRow = (value: any, index = 0) => {
     memberCount,
     limitUps: nullableNumber(item.limitUps) ?? poolLimitUps,
     poolLimitUps,
-    poolShare: safeNumber(item.poolShare),
+    poolShare: nullableNumber(item.poolShare),
     breadth: nullableNumber(item.breadth),
     memberAverageReturn: nullableNumber(item.memberAverageReturn),
     relativeReturn: nullableNumber(item.relativeReturn),
@@ -328,9 +328,9 @@ export function formatSectorFlow(value: unknown) {
   return amount === 0 ? "0" : `${sign}${Math.round(absolute)}`;
 }
 
-/** 涨停家数（来自当日涨停池 / 同花顺涨停原因）；悬停显示是哪几只。 */
+/** 涨停家数来自真实成分名单与当日涨停池交集；悬停显示是哪几只。 */
 const limitUpCount = (item: any): number | null => nullableNumber(item?.poolLimitUps ?? item?.limitUps);
-const limitUpNames = (item: any): string => (Array.isArray(item?.leaders) ? item.leaders : []).map((stock: any) => stock?.name).filter(Boolean).slice(0, 8).join("、");
+const limitUpNames = (item: any): string => (item?.rankLimitUpStocks ?? item?.leaders ?? []).map((stock: any) => stock?.name).filter(Boolean).slice(0, 8).join("、");
 
 /** B-09：板块涨幅排行表（原生 table；展开的个股明细作为整行 <td> 附属行）。 */
 export function SectorGainersTable({
@@ -340,7 +340,8 @@ export function SectorGainersTable({
   detailOrigin,
   expandedRowRef,
   onToggle,
-  renderDetail
+  renderDetail,
+  onCountVisible
 }: {
   rows: any[];
   /** 只显示排序后的前 limit 行（概念榜很长，分批显示）。 */
@@ -350,6 +351,7 @@ export function SectorGainersTable({
   expandedRowRef: { current: HTMLButtonElement | null };
   onToggle: (item: any, expanded: boolean) => void;
   renderDetail: () => ReactNode;
+  onCountVisible?: ((item: any) => void | Promise<void>) | undefined;
 }) {
   // 排名固定为当日涨幅名次；点表头只改变显示顺序。
   const [sort, setSort] = useState<ColumnSort<GainerSortKey>>({ key: "change", direction: "desc" });
@@ -357,6 +359,38 @@ export function SectorGainersTable({
     const ordered = sortRowsBy(rows, (item: any) => gainerValue(item, sort.key), sort.direction);
     return limit ? ordered.slice(0, limit) : ordered;
   }, [rows, sort, limit]);
+  const bodyRef = useRef<HTMLTableSectionElement | null>(null);
+  useEffect(() => {
+    if (!onCountVisible || (sort.key !== "limitUps" && sort.key !== "memberCount")) return;
+    // Sorting a lazy column needs the entire board, including concepts beyond
+    // the first rendered page. Two consumers prevent an IPC request burst.
+    let active = true;
+    const queue = [...rows];
+    const drain = async () => {
+      while (active && queue.length) {
+        const row = queue.shift();
+        if (row) await onCountVisible(row);
+      }
+    };
+    void Promise.all([drain(), drain()]);
+    return () => { active = false; };
+  }, [sort.key, rows, onCountVisible]);
+  useEffect(() => {
+    if (!onCountVisible || !bodyRef.current) return;
+    if (typeof IntersectionObserver === "undefined") {
+      sorted.slice(0, 12).forEach(onCountVisible);
+      return;
+    }
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const item = sorted[Number((entry.target as HTMLElement).dataset.countIndex)];
+        if (item) onCountVisible(item);
+      }
+    }, { rootMargin: "180px" });
+    bodyRef.current.querySelectorAll("[data-count-index]").forEach(row => observer.observe(row));
+    return () => observer.disconnect();
+  }, [sorted, onCountVisible]);
   const onSort = (key: GainerSortKey) => setSort((current) => toggleColumnSort(current, key));
   return (
     <table className="sector-comparison-table" style={TABLE_BLOCK}>
@@ -371,8 +405,8 @@ export function SectorGainersTable({
           <th scope="col" style={TABLE_HEAD_CELL}>个股明细</th>
         </tr>
       </thead>
-      <tbody style={TABLE_SECTION}>
-        {sorted.map((item: any) => {
+      <tbody ref={bodyRef} style={TABLE_SECTION}>
+        {sorted.map((item: any, countIndex: number) => {
           const expanded = detailOrigin === "board" && expandedName === item.name;
           const change = item.returns.r1 ?? item.memberAverageReturn;
           const detailId = `sector-gainers-detail-${item.rank}`;
@@ -381,6 +415,7 @@ export function SectorGainersTable({
           return (
             <Fragment key={`${item.code || ""}:${item.name}`}>
               <tr
+                data-count-index={countIndex}
                 className={`sector-row sector-gainers-row ${expanded ? "active" : ""}`}
                 aria-expanded={expanded}
                 aria-label={`${item.name}，${expanded ? "收起" : "展开"}个股`}
@@ -390,8 +425,8 @@ export function SectorGainersTable({
                   <small>{item.displayCode || item.code || (item.boardType === "concept" ? "同花顺概念" : "代码待补")}{item.boardType === "exchange" ? ` · ${item.state}` : ""}</small>
                 </td>
                 <td style={TABLE_CELL}><b className={change == null ? "" : change > 0 ? "red" : change < 0 ? "green" : ""}>{change == null ? "--" : `${change > 0 ? "+" : ""}${fmt(change)}%`}</b></td>
-                <td style={TABLE_CELL} className="sector-limit-cell" title={names ? `涨停：${names}` : undefined}>
-                  {limits == null ? <span className="muted">--</span> : limits > 0 ? <><b className="red">{limits} 家</b>{names && <small>{names}</small>}</> : <span className="muted">0</span>}
+                <td style={TABLE_CELL} className="sector-limit-cell" title={item.limitCount?.warning || (names ? `涨停：${names}` : undefined)}>
+                  {limits == null ? <span className="muted">--</span> : limits > 0 ? <><b className="red">{item.limitCount?.countComplete === false ? "≥" : ""}{limits} 家</b>{names && <small>{names}</small>}</> : <span className="muted">0</span>}
                 </td>
                 <td style={TABLE_CELL} className={item.netInflow == null ? "" : item.netInflow > 0 ? "red" : item.netInflow < 0 ? "green" : ""}>{formatSectorFlow(item.netInflow)}</td>
                 <td style={TABLE_CELL}>{item.memberCoverage && !item.memberCoverage.complete ? `已取 ${item.memberCoverage.loaded} 只` : (item.memberCount == null ? "--" : `${item.memberCount} 只`)}</td>
@@ -478,9 +513,9 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     return () => window.cancelAnimationFrame(frame);
   }, [expandedName, sectorAnalyzing, customSector?.name]);
 
-  const [boardKind, setBoardKind] = useState<"industry" | "concept">("industry");
+  const [preferredBoardKind, setBoardKind] = useState<"industry" | "concept">("industry");
   const [conceptLimit, setConceptLimit] = useState(CONCEPT_PAGE);
-  const conceptRows = useMemo(() => conceptBoardRows(extra?.concepts), [extra?.concepts]);
+  const rawConceptRows = useMemo(() => conceptBoardRows(extra?.concepts), [extra?.concepts]);
   const [memberFilter, setMemberFilter] = useState("all");
   const [memberQuery, setMemberQuery] = useState("");
   const [showAnalysis, setShowAnalysis] = useState(false);
@@ -489,12 +524,18 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   const sectorSearchTimer = useRef<number | undefined>(undefined);
   const sectorSearchRequest = useRef(0);
   const sectorAnalysisRequest = useRef(0);
+  const selectedSnapshot = useRef<any[] | undefined>(undefined);
   const selectedSectorRequest = useRef<Record<string, unknown> | null>(null);
   const conceptChainRequest = useRef(0);
+  const [detailCounts, setDetailCounts] = useState<{ snapshot: any[]; byName: Map<string, { count: number | null; stocks: any[]; limitCount?: SectorLimitCount | null }> } | null>(null);
   const normalizedRows = useMemo(
     () => (Array.isArray(rows) ? rows : [])
       .filter((item) => item && item.code !== "THS:BJ" && item.name !== "北交所")
-      .map((item, index) => normalizeSectorViewRow(item, index))
+      .map((item, index) => {
+        const row = normalizeSectorViewRow(item, index);
+        const detail = detailCounts?.snapshot === rows ? detailCounts.byName.get(row.name) : undefined;
+        return detail ? { ...row, poolLimitUps: detail.count, limitUps: detail.count, rankLimitUpStocks: detail.stocks, limitCount: detail.limitCount, memberCount: detail.limitCount?.memberCount ?? row.memberCount } : row;
+      })
       .sort((a, b) => {
         const left = a.returns.r1 ?? a.memberAverageReturn;
         const right = b.returns.r1 ?? b.memberAverageReturn;
@@ -503,10 +544,47 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
         return right - left || a.name.localeCompare(b.name, "zh-CN");
       })
       .map((item, index) => ({ ...item, rank: index + 1 })),
-    [rows]
+    [rows, detailCounts]
   );
 
+  const conceptRows = useMemo(() => rawConceptRows.map(row => {
+    const detail = detailCounts?.snapshot === rawConceptRows ? detailCounts.byName.get(row.name) : undefined;
+    return detail ? { ...row, poolLimitUps: detail.count, limitUps: detail.count, rankLimitUpStocks: detail.stocks, limitCount: detail.limitCount, memberCount: detail.limitCount?.memberCount ?? row.memberCount } : row;
+  }), [rawConceptRows, detailCounts]);
+  const boardKind = !normalizedRows.length && conceptRows.length ? "concept"
+    : !conceptRows.length ? "industry" : preferredBoardKind;
+  const boardSnapshot = boardKind === "concept" ? rawConceptRows : rows;
+  const boardRows = boardKind === "concept" ? conceptRows : normalizedRows;
+
+  const countRequests = useRef<{ snapshot: any[]; requests: Map<string, Promise<void>> } | null>(null);
+  const currentBoardSnapshot = useRef(boardSnapshot);
+  currentBoardSnapshot.current = boardSnapshot;
+  const countRevision = useRef(new Map<string, number>());
+  const countVisible = useCallback((item: any) => {
+    const api = window.stockApi.getSectorLimitUpCount;
+    if (!api || dedicatedSector) return;
+    if (countRequests.current?.snapshot !== boardSnapshot) {
+      countRequests.current = { snapshot: boardSnapshot, requests: new Map() };
+      countRevision.current.clear();
+    }
+    const pending = countRequests.current.requests.get(item.name);
+    if (pending) return pending;
+    const revision = countRevision.current.get(item.name) ?? 0;
+    const request = api({ boardType: item.boardType === "concept" ? "concept" : "industry", name: item.name,
+      code: item.code, conceptCid: item.conceptCid, memberCount: item.memberCount }).then(result => {
+      if (currentBoardSnapshot.current !== boardSnapshot || (countRevision.current.get(item.name) ?? 0) !== revision) return;
+      setDetailCounts(previous => {
+        const byName = new Map(previous?.snapshot === boardSnapshot ? previous.byName : []);
+        byName.set(item.name, { count: result.limitUps, stocks: result.limitUpStocks, limitCount: result });
+        return { snapshot: boardSnapshot, byName };
+      });
+    }).catch(() => { /* A fresh board snapshot permits another attempt. */ });
+    countRequests.current.requests.set(item.name, request);
+    return request;
+  }, [boardSnapshot, dedicatedSector]);
+
   useEffect(() => () => {
+    currentBoardSnapshot.current = [];
     sectorSearchRequest.current += 1;
     sectorAnalysisRequest.current += 1;
     conceptChainRequest.current += 1;
@@ -545,7 +623,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     };
   }, [sectorQuery]);
 
-  const openSector = useCallback(async (item: any, origin: "board" | "search" = "search") => {
+  const openSector = useCallback(async (item: any, origin: "board" | "search" = "search", snapshot?: any[], background = false) => {
     const requestedName = typeof item === "string"
       ? item
       : String(item?.name || item?.query || item?.code || "");
@@ -556,15 +634,18 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     };
     const requestId = ++sectorAnalysisRequest.current;
     selectedSectorRequest.current = request;
+    selectedSnapshot.current = snapshot;
     setDetailOrigin(origin);
-    setShowAnalysis(false);
     setSelectedName(requestedName);
     setExpandedName(origin === "board" ? requestedName : "");
-    setCustomSector(null);
-    setMemberFilter("all");
-    setMemberQuery("");
-    setSectorAnalyzing(true);
-    setSectorSearchFocused(false);
+    if (!background) {
+      setShowAnalysis(false);
+      setCustomSector(null);
+      setMemberFilter("all");
+      setMemberQuery("");
+      setSectorAnalyzing(true);
+      setSectorSearchFocused(false);
+    }
     setSectorError("");
     setSectorSuggestions([]);
     try {
@@ -576,6 +657,19 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
       };
       if (requestId !== sectorAnalysisRequest.current) return;
       setCustomSector(normalizedDetail);
+      if (snapshot && origin === "board" && Array.isArray(detail.constituents)) {
+        const stocks = detail.constituents.filter((stock: any) => stock?.isLimitUp);
+        const fullLiveRoster = item.memberCount > 0 && detail.constituents.length >= item.memberCount &&
+          detail.constituents.every((stock: any) => stock?.quoteStatus === "live" && stock.latest > 0 && stock.preClose > 0);
+        if (detail.limitCount || fullLiveRoster || stocks.length > (limitUpCount(item) ?? 0)) {
+          countRevision.current.set(requestedName, (countRevision.current.get(requestedName) ?? 0) + 1);
+          setDetailCounts(previous => {
+            const byName = new Map(previous?.snapshot === snapshot ? previous.byName : []);
+            byName.set(requestedName, { count: detail.limitCount ? detail.limitCount.limitUps : stocks.length, stocks: detail.limitCount?.limitUpStocks ?? stocks, limitCount: detail.limitCount });
+            return { snapshot, byName };
+          });
+        }
+      }
       if (origin === "search" && !dedicatedSector) changeSectorQuery(normalizedDetail.name);
     } catch (error) {
       if (requestId === sectorAnalysisRequest.current) {
@@ -585,6 +679,21 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
       if (requestId === sectorAnalysisRequest.current) setSectorAnalyzing(false);
     }
   }, [dedicatedSector, changeSectorQuery]);
+
+  useEffect(() => {
+    if (detailOrigin !== "board" || !expandedName || selectedSnapshot.current === boardSnapshot) return;
+    const sameKind = (selectedSectorRequest.current?.boardType === "concept") === (boardKind === "concept");
+    const row = sameKind && boardRows.find(item => item.name === expandedName);
+    if (row) {
+      void openSector(row, "board", boardSnapshot, true);
+    } else {
+      sectorAnalysisRequest.current += 1;
+      setExpandedName("");
+      setCustomSector(null);
+      setSectorAnalyzing(false);
+      setSectorError("");
+    }
+  }, [boardSnapshot, boardRows, boardKind, expandedName, detailOrigin, openSector]);
 
   useEffect(() => {
     if (dedicatedSector) void openSector({ name: dedicatedSector, code: "THS:BJ" });
@@ -618,6 +727,8 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     setSectorAnalyzing(false);
     const refreshed = await onRefresh();
     if (refreshed === false) return;
+    sectorAnalysisRequest.current += 1;
+    setSectorAnalyzing(false);
     setCustomSector(null);
     setExpandedName("");
     changeSectorQuery("");
@@ -668,10 +779,10 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
 
   const memberPanel = sector ? (
 <div className="panel sector-members-panel">
-              <PanelTitle title={dedicatedSector ? "北交所个股行情" : `${sector.name} 成分股明细`} subtitle={dedicatedSector ? "名单：新浪财经北交所名录 · 行情：同花顺逐股快照 · 可搜索全部股票" : "按个股涨幅排序；点击股票打开分析"} icon={LayoutDashboard} badge={sector.quoteCoverage ? `名单 ${sector.constituents.length}${sector.memberCoverage?.complete ? `/${sector.memberCoverage.total}` : " · 最新总数待核验"} 只 · 同花顺行情 ${sector.quoteCoverage.loaded}/${sector.quoteCoverage.total} 只${sector.quoteCoverage.pending ? " · 读取中" : ""}` : sector.memberCoverage && !sector.memberCoverage.complete
+              <PanelTitle title={dedicatedSector ? "北交所个股行情" : `${sector.name} 成分股明细`} subtitle={dedicatedSector ? "名单：新浪财经北交所名录 · 行情：实时行情优先，取不到时用同花顺逐股快照 · 涨停按 30% 涨停价判断 · 可搜索全部股票" : "按个股涨幅排序；点击股票打开分析"} icon={LayoutDashboard} badge={sector.quoteCoverage ? `名单 ${sector.constituents.length}${sector.memberCoverage?.complete ? `/${sector.memberCoverage.total}` : " · 最新总数待核验"} 只 · 同花顺行情 ${sector.quoteCoverage.loaded}/${sector.quoteCoverage.total} 只${sector.quoteCoverage.pending ? " · 读取中" : ""}` : sector.memberCoverage && !sector.memberCoverage.complete
                 ? `已加载 ${sector.constituents.length} 只 · 非全量`
                 : `已加载 ${sector.constituents.length} 只${sector.memberCount > sector.constituents.length ? ` / 板块 ${sector.memberCount} 只` : ""}`} />
-              {sector.boardType === "exchange" && <div className="warning-banner">{sector.warning || `名单总数及全部分页已核验。${sector.quoteBasis}`} {sector.quoteCoverage?.asOf && `行情日期：${sector.quoteCoverage.asOf}。`}</div>}
+              {sector.boardType === "exchange" && <div className={`beijing-coverage-note ${sector.warning ? "warning-banner" : "sector-fund-flow-source"}`} role="status">{sector.warning || `名单总数及全部分页已核验。${sector.quoteBasis}`} {sector.quoteCoverage?.asOf && `行情日期：${sector.quoteCoverage.asOf}。`}</div>}
               {sector.fundFlow?.quotes && <p className="sector-fund-flow-source" role="status">
                 {sector.fundFlow.quotes.loaded > 0
                   ? `个股行情：${sector.fundFlow.quotes.source} 实时 · ${sector.fundFlow.quotes.loaded}/${sector.fundFlow.quotes.total} 只 · 行情时间 ${formatFundFlowTime(sector.fundFlow.quotes.asOf)}${sector.fundFlow.quotes.loaded < sector.fundFlow.quotes.total ? "；其余股票显示同花顺成分页数据（开盘前可能是上一交易日）" : ""}`
@@ -685,11 +796,11 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
                 <div>
                   {[
                     { id: "all", label: "全部" },
-                    { id: "limitUp", label: `涨停 ${memberLimitStatusKnown ? sector.limitUps : "--"}` },
+                    { id: "limitUp", label: `涨停 ${memberLimitStatusKnown ? `${sector.limitCount?.countComplete === false && sector.limitUps != null ? "≥" : ""}${sector.limitUps ?? "--"}` : "--"}` },
                     { id: "up", label: "上涨" },
                     { id: "down", label: "下跌" }
                   ].map((item) => <button key={item.id} disabled={item.id === "limitUp" && !memberLimitStatusKnown} aria-pressed={memberFilter === item.id} className={memberFilter === item.id ? "active" : ""} onClick={() => setMemberFilter(item.id)}>{item.label}</button>)}
-                  <button type="button" onClick={() => void openSector({ code: sector.code, name: sector.name, secid: sector.secid, memberCount: sector.memberCount, forceRefresh: true }, detailOrigin)}>刷新个股数据</button>
+                  <button type="button" onClick={() => reloadSelectedSector(true)}>刷新个股数据</button>
                 </div>
                 <label><Search size={15} /><input value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} aria-label="筛选当前板块个股" placeholder="筛选股票名称或代码" /></label>
               </div>
@@ -706,9 +817,9 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
             </div>
   ) : null;
 
-  const retrySelectedSector = () => void openSector(
-    { ...(selectedSectorRequest.current || {}), name: selectedName,
-      ...(selectedName === "北交所" ? { code: "THS:BJ", forceRefresh: true } : {}) }, detailOrigin
+  const reloadSelectedSector = (forceRefresh = false) => void openSector(
+    { ...(selectedSectorRequest.current || {}), name: selectedName, ...(forceRefresh ? { forceRefresh: true } : {}),
+      ...(selectedName === "北交所" ? { code: "THS:BJ", forceRefresh: true } : {}) }, detailOrigin, detailOrigin === "board" ? boardSnapshot : undefined
   );
 
   // B-09：整行不再是 button，展开/收起由行内按钮触发；行的 aria-expanded 仅作状态说明。
@@ -719,7 +830,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
       setExpandedName("");
       setSectorError("");
     } else {
-      void openSector(item, "board");
+      void openSector(item, "board", boardSnapshot);
     }
   };
 
@@ -735,7 +846,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
               <b>暂未取得 {selectedName} 的板块行情</b>
               <span>可能是网络连接或行情数据暂不完整。请检查或更换板块名称或代码，或稍后重试。</span>
             </div>
-            <button onClick={retrySelectedSector}>重试加载个股</button>
+            <button onClick={() => reloadSelectedSector()}>重试加载个股</button>
           </div>
           <details className="sector-technical-details">
             <summary>技术详情</summary>
@@ -745,7 +856,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
       ) : (
         <>
           {memberPanel}
-          {!sector?.constituents.length && <div className="sector-members-feedback"><button onClick={retrySelectedSector}>重试加载个股</button></div>}
+          {!sector?.constituents.length && <div className="sector-members-feedback"><button onClick={() => reloadSelectedSector()}>重试加载个股</button></div>}
         </>
       )}
     </section>
@@ -780,7 +891,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
         </details>
       </div>}
       {!!extra?.themes.length && <SectorThemeStrip themes={extra.themes} total={extra.limitUpTotal} onOpen={theme =>
-        void openSector(theme.concept ? { name: theme.concept.name, code: conceptRows.find(row => row.name === theme.concept?.name)?.code || "", boardType: "concept" } : theme.reason, "search")} />}
+        void openSector(theme.concept ? conceptRows.find(row => row.conceptCid === theme.concept?.conceptCid) ?? { name: theme.concept.name, conceptCid: theme.concept.conceptCid, boardType: "concept" } : theme.reason, "search")} />}
       <div className="panel sector-search-panel">
         <div className="sector-search-copy">
           <Search size={22} />
@@ -821,27 +932,25 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
           {detailPanel}
         </div>
       )}
-      {loading && !normalizedRows.length ? <div className="loading-state" role="status" aria-live="polite"><Radar size={42} /><h2>正在加载板块涨幅排行</h2><p>正在读取板块行情与当日涨幅，请稍候。</p></div> : normalizedRows.length ? (
+      {loading && !boardRows.length ? <div className="loading-state" role="status" aria-live="polite"><Radar size={42} /><h2>正在加载板块涨幅排行</h2><p>正在读取板块行情与当日涨幅，请稍候。</p></div> : boardRows.length ? (
         <div className="panel sector-board-panel sector-gainers-panel">
           <div className="sector-board-head">
             <div className="sector-board-tabs" role="tablist" aria-label="板块类别">
-              <button type="button" role="tab" aria-selected={boardKind === "industry"} className={boardKind === "industry" ? "active" : ""} onClick={() => setBoardKind("industry")}>行业<small>{normalizedRows.length}</small></button>
+              <button type="button" role="tab" aria-selected={boardKind === "industry"} disabled={!normalizedRows.length} className={boardKind === "industry" ? "active" : ""} onClick={() => setBoardKind("industry")}>行业<small>{normalizedRows.length}</small></button>
               <button type="button" role="tab" aria-selected={boardKind === "concept"} className={boardKind === "concept" ? "active" : ""} disabled={!conceptRows.length} onClick={() => setBoardKind("concept")}>概念<small>{conceptRows.length || "--"}</small></button>
             </div>
-            <small className="sector-board-note">{boardKind === "industry"
-              ? "同花顺行业：当日涨幅、主力净流入；涨停家数按同花顺实时涨停池、个股所属同花顺行业统计（交易时段每分钟自动刷新）。点表头可换排序，点板块展开个股。"
-              : `同花顺概念：当日涨幅、主力净流入；涨停家数${extra?.conceptLimitUpSource ? `按${extra.conceptLimitUpSource}统计` : "需要同花顺扶摇 Key（数据源设置），暂缺"}。`}</small>
           </div>
           {!!extra?.warnings.length && <p className="sector-board-warning" role="status">{extra.warnings.slice(0, 2).join("；")}</p>}
           <SectorGainersTable
             key={boardKind}
-            rows={boardKind === "concept" ? conceptRows : normalizedRows}
+            rows={boardRows}
             limit={boardKind === "concept" ? conceptLimit : undefined}
             expandedName={expandedName}
             detailOrigin={detailOrigin}
             expandedRowRef={expandedRow}
             onToggle={toggleSectorRow}
             renderDetail={() => detailPanel}
+            onCountVisible={countVisible}
           />
           {boardKind === "concept" && conceptRows.length > conceptLimit && <button type="button" className="member-load-more" onClick={() => setConceptLimit(value => value + CONCEPT_PAGE)}>
             显示更多概念（还有 {conceptRows.length - conceptLimit} 个，共 {conceptRows.length} 个）</button>}
@@ -858,7 +967,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
 
           <div className="market-summary-grid">
             <div className="panel"><span>板块成分股</span><b>{sector.memberCount}</b><small>{sector.name}</small></div>
-            <div className="panel"><span>板块涨停股</span><b>{sector.limitUps ?? sector.poolLimitUps}</b><small>当前交易日</small></div>
+            <div className="panel"><span>板块涨停股</span><b>{sector.limitUps ?? "--"}</b><small>当前交易日</small></div>
             <div className="panel"><span>{sector.marketProxy || "全A基准"} 1日</span><b className={sector.allMarketReturns?.r1 == null ? "" : sector.allMarketReturns.r1 > 0 ? "red" : sector.allMarketReturns.r1 < 0 ? "green" : ""}>{sector.allMarketReturns?.r1 == null ? "--" : `${sector.allMarketReturns.r1 > 0 ? "+" : ""}${fmt(sector.allMarketReturns.r1)}%`}</b><small>全市场代理基准</small></div>
             <div className="panel"><span>沪深300 1日</span><b className={sector.benchmarkReturns?.r1 == null ? "" : sector.benchmarkReturns.r1 > 0 ? "red" : sector.benchmarkReturns.r1 < 0 ? "green" : ""}>{sector.benchmarkReturns?.r1 == null ? "--" : `${sector.benchmarkReturns.r1 > 0 ? "+" : ""}${fmt(sector.benchmarkReturns.r1)}%`}</b><small>大盘权重基准</small></div>
           </div>
@@ -950,7 +1059,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
               <div className="detail-factor-grid">
                 <div><span>板块上涨广度</span><b>{sector.breadth == null ? "--" : `${fmt(sector.breadth * 100, 1)}%`}</b><small>{sector.memberCount ?? "--"} 只成分股内部比较</small></div>
                 <div><span>成分股平均涨幅</span><b>{sector.memberAverageReturn == null ? "--" : `${sector.memberAverageReturn > 0 ? "+" : ""}${fmt(sector.memberAverageReturn)}%`}</b><small>相对{marketReturnLabel(sector.marketSnapshot)} {sector.relativeReturn == null ? "--" : `${sector.relativeReturn > 0 ? "+" : ""}${fmt(sector.relativeReturn)}%`}</small></div>
-                <div><span>涨停扩散</span><b>{sector.limitUps} 家</b><small>占全市场涨停池 {fmt((sector.poolShare || 0) * 100, 1)}%</small></div>
+                <div><span>涨停扩散</span><b>{sector.limitUps == null ? "--" : `${sector.limitUps} 家`}</b><small>占全市场涨停池 {sector.poolShare == null ? "--" : `${fmt(sector.poolShare * 100, 1)}%`}</small></div>
                 <div><span>成交热度</span><b>{sector.amountHeat == null ? "--" : `${fmt(sector.amountHeat)}x`}</b><small>板块成交额 / 15日均额</small></div>
                 <div><span>五日持续性</span><b>{sector.persistence == null ? "--" : `${fmt(sector.persistence * 100, 0)}%`}</b><small>5日板块指数收涨比率</small></div>
                 <div><span>成分平均换手</span><b>{sector.memberAverageTurnover == null ? "--" : `${fmt(sector.memberAverageTurnover)}%`}</b><small>用于识别热度是否过高</small></div>

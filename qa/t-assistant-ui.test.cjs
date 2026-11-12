@@ -28,8 +28,11 @@ describe('做T助手 page in the actual renderer', () => {
         { code: '510300', name: '沪深300ETF', secid: '1.510300', assetType: 'etf', shares: 1000, costPrice: 4, createdAt: '', updatedAt: '' }
       ];
       function Host() {
-        const api = useTAssistant({ live: true, onAlert: message => window.calls.toasts.push(message) });
-        return React.createElement(TAssistantView, { api, holdings, live: true, onOpenStock: stock => window.calls.opened.push(stock.code), onToast: message => window.calls.toasts.push(message) });
+        const [live, setLive] = React.useState(true);
+        window.setTLive = setLive;
+        const api = useTAssistant({ live, onAlert: message => window.calls.toasts.push(message) });
+        window.tApi = api;
+        return React.createElement(TAssistantView, { api, holdings, live, onOpenStock: stock => window.calls.opened.push(stock.code), onToast: message => window.calls.toasts.push(message) });
       }
       createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode, null,
         React.createElement('div', { className: 'app-shell terminal-shell', 'data-workspace': 't-assistant' },
@@ -127,6 +130,7 @@ describe('做T助手 page in the actual renderer', () => {
       assert.match(await page.locator('.t-assistant-row').innerText(), /平安银行/);
       const fields = page.locator('.t-assistant-fields input');
       assert.equal(await fields.nth(0).inputValue(), '2000');
+      assert.equal(await fields.nth(1).inputValue(), '', '持仓导入不能假定当日买入的股份可卖');
       assert.equal(await fields.nth(2).inputValue(), '12.3');
       assert.equal(await fields.nth(3).inputValue(), '600');
       assert.match((await page.evaluate(() => window.calls.toasts)).join(), /已从持仓导入 1 只/);
@@ -134,4 +138,36 @@ describe('做T助手 page in the actual renderer', () => {
       await page.getByRole('button', { name: /语音提醒关/ }).waitFor();
     });
   });
+  test('旧日分时保留历史信号，禁止当日提醒；更新为新鲜行情后只提醒一次', async () => {
+    await pageTest(async page => {
+      await page.clock.setFixedTime(new Date('2026-11-09T10:22:00+08:00'));
+      await page.evaluate(() => {
+        window.quoteDay = '2026-11-06';
+        window.stockApi.getChart = async () => ({ preClose: 10, rows: [...Array(50).fill(10), 10.4, 10.38, 10.36].map((close, slot) => ({
+          date: window.quoteDay + ' ' + String(Math.floor((570 + slot) / 60)).padStart(2, '0') + ':' + String((570 + slot) % 60).padStart(2, '0'),
+          open: 10, close, volume: 100
+        })) });
+        window.tApi.addStock({code: '600000', name: '浦发银行'}, {baseShares: 3000, sellableShares: 3000, tShares: 1000});
+      });
+      await page.locator('.t-assistant-signal').waitFor();
+      assert.match(await page.locator('.t-assistant-signal').innerText(), /历史参考/);
+      assert.match(await page.locator('.t-assistant-signal').innerText(), /高抛/);
+      assert.equal(await page.getByRole('button', {name: '我已成交，登记一笔'}).count(), 0);
+      assert.deepEqual(await page.evaluate(() => window.calls.toasts), []);
+      await page.evaluate(async () => { window.quoteDay = '2026-11-09'; await window.tApi.refresh(); });
+      await page.getByRole('button', {name: '我已成交，登记一笔'}).waitFor();
+      await page.waitForFunction(() => window.calls.toasts.some(message => message.includes('做T提示')));
+      await page.evaluate(async () => { await window.tApi.refresh(); window.tApi.setVoice(false); });
+      assert.equal((await page.evaluate(() => window.calls.toasts.filter(message => message.includes('做T提示')))).length, 1);
+      await page.evaluate(() => window.setTLive(false));
+      await page.getByText(/已暂停实时刷新（顶部/).waitFor();
+      assert.equal(await page.getByRole('button', {name: '我已成交，登记一笔'}).count(), 0, 'paused quotes must not offer an actionable signal');
+      await page.evaluate(() => window.setTLive(true));
+      await page.getByRole('button', {name: '我已成交，登记一笔'}).waitFor();
+      await page.evaluate(async () => { window.stockApi.getChart = async () => { throw new Error('行情连接断开'); }; await window.tApi.refresh(); });
+      await page.getByText(/分时读取失败：行情连接断开/).waitFor();
+      assert.equal(await page.getByRole('button', {name: '我已成交，登记一笔'}).count(), 0);
+    });
+  });
+
 });

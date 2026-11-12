@@ -108,7 +108,7 @@ test("sector ranking uses a native table with aria-sort and an in-row expand but
   assert.match(html, /<tr class="sector-row sector-row-head sector-gainers-row">/);
   assert.match(html, /<th scope="col"[^>]*aria-sort="descending"[^>]*><button type="button" class="column-sort-button active"[^>]*>板块涨幅 ▾<\/button><\/th>/);
   assert.match(html, /aria-sort="none"[^>]*><button type="button" class="column-sort-button"[^>]*>资金净流入<\/button>/);
-  assert.match(html, /<tr class="sector-row sector-gainers-row active" aria-expanded="true" aria-label="半导体，收起个股">/);
+  assert.match(html, /<tr[^>]*class="sector-row sector-gainers-row active" aria-expanded="true" aria-label="半导体，收起个股">/);
   assert.match(html, /<button type="button" class="sector-expand-label" aria-expanded="true" aria-label="半导体，收起个股" aria-controls="sector-gainers-detail-1"/);
   assert.match(html, /成分股明细/);
   assert.doesNotMatch(html, /<button[^>]*class="sector-row/, "ranking rows must not be giant buttons any more");
@@ -155,7 +155,7 @@ test("column sort toggles largest-first then smallest-first and keeps missing va
   assert.equal(ariaSortOf({ key: "amount", direction: "asc" }, "changePct"), "none");
 });
 
-async function sectorSearchFixture(run, api = {}, rows = []) {
+async function sectorSearchFixture(run, api = {}, rows = [], extra) {
   const previousWindow = global.window;
   const timers = new Map();
   let timerId = 0;
@@ -166,9 +166,8 @@ async function sectorSearchFixture(run, api = {}, rows = []) {
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {}
   };
-  const harness = createHookHarness(SectorView, { props: {
-    rows, loading: false, loadError: "", onRefresh: async () => false, onOpenStock() {}
-  } });
+  const props = { rows, extra, loading: false, loadError: "", onRefresh: async () => false, onOpenStock() {} };
+  const harness = createHookHarness(SectorView, { props });
   const field = () => find(harness.tree, node => node.type === "input" && node.props.placeholder?.startsWith("输入 PCB"));
   const edit = value => { field().props.onChange({ target: { value } }); harness.render(); };
   const submit = () => find(harness.tree, node => node.type === "form").props.onSubmit({ preventDefault() {} });
@@ -177,7 +176,7 @@ async function sectorSearchFixture(run, api = {}, rows = []) {
     for (const callback of callbacks) await callback();
     await harness.flush();
   };
-  try { harness.render(); await harness.flush(); await run({ harness, field, edit, submit, runSearchTimer }); }
+  try { harness.render(); await harness.flush(); await run({ props, harness, field, edit, submit, runSearchTimer }); }
   finally { harness.dispose(); global.window = previousWindow; }
 }
 
@@ -303,4 +302,110 @@ test("sector flows drop false precision and concept rows open as concept boards"
   const markup = renderToStaticMarkup(React.createElement(SectorGainersTable, { rows: [row], expandedName: "", detailOrigin: "board", expandedRowRef: { current: null }, onToggle: () => {}, renderDetail: () => null }));
   assert.match(markup, /2 家/);
   assert.match(markup, /\+8\.00 亿/);
+});
+
+test("industry ranking reflects confirmed limit-ups after opening and collapsing a row", async () => {
+  const rows = [{ code: "881121", name: "半导体", returns: { r1: 4 }, poolLimitUps: 0, memberCount: 5 }];
+  await sectorSearchFixture(async ({ harness }) => {
+    const table = () => find(harness.tree, node => node.type === SectorGainersTable).props;
+    assert.equal(table().rows[0].poolLimitUps, 0);
+    assert.doesNotMatch(text(harness.tree), /同花顺行业：当日涨幅/);
+    table().onToggle(table().rows[0], false);
+    await harness.flush();
+    assert.equal(table().rows[0].poolLimitUps, 2);
+    assert.deepEqual(table().rows[0].rankLimitUpStocks.map(stock => stock.name), ["甲", "乙"]);
+    table().onToggle(table().rows[0], true);
+    await harness.flush();
+    assert.equal(table().rows[0].poolLimitUps, 2);
+  }, { analyzeSector: async () => ({ name: "半导体", constituents: [
+    { code: "600001", name: "甲", isLimitUp: true }, { code: "600002", name: "乙", isLimitUp: true }
+  ] }) }, rows);
+});
+
+test("concept-only board stays usable and refreshing its members keeps the concept identity", async () => {
+  const concept = { name: "芯片", conceptCid: "42", code: "42", indexCode: "", changePct: 1, limitUps: null, limitUpStocks: [] };
+  const calls = [];
+  await sectorSearchFixture(async ({ harness }) => {
+    const table = find(harness.tree, node => node.type === SectorGainersTable).props;
+    assert.equal(table.rows[0].name, concept.name);
+    table.onToggle(table.rows[0], false);
+    await harness.flush();
+    button(find(harness.tree, node => node.type === SectorGainersTable).props.renderDetail(), "刷新个股数据").props.onClick();
+    await harness.flush();
+    assert.equal(calls[1].boardType, "concept");
+    assert.equal(calls[1].conceptCid, "42");
+    assert.equal(calls[1].forceRefresh, true);
+  }, { analyzeSector: async request => {
+    calls.push(request);
+    return { name: request.name, constituents: [{ code: "600001", isLimitUp: true }] };
+  } }, [], { concepts: [concept], themes: [], warnings: [], limitUpTotal: null, conceptLimitUpSource: "" });
+});
+
+test("refreshing industry members replaces an earlier count including a confirmed zero", async () => {
+  let sealed = true;
+  await sectorSearchFixture(async ({ harness }) => {
+    const table = () => find(harness.tree, node => node.type === SectorGainersTable).props;
+    table().onToggle(table().rows[0], false);
+    await harness.flush();
+    assert.equal(table().rows[0].poolLimitUps, 1);
+    sealed = false;
+    button(find(harness.tree, node => node.type === SectorGainersTable).props.renderDetail(), "刷新个股数据").props.onClick();
+    await harness.flush();
+    assert.equal(table().rows[0].poolLimitUps, 0);
+  }, { analyzeSector: async () => ({ name: "行业甲", memberCount: 1, constituents: [
+    { code: "600001", name: "甲", isLimitUp: sealed, latest: 10, preClose: 10, quoteStatus: "live" }
+  ] }) }, [{ name: "行业甲", memberCount: 1, poolLimitUps: 0 }]);
+});
+
+test("an open industry follows a new board snapshot and discards the previous in-flight detail", async () => {
+  let finishOld, calls = 0;
+  const row = { name: "行业甲", memberCount: 2, poolLimitUps: 0 };
+  await sectorSearchFixture(async ({ props, harness }) => {
+    const table = () => find(harness.tree, node => node.type === SectorGainersTable).props;
+    table().onToggle(table().rows[0], false);
+    props.rows = [{ ...row, poolLimitUps: 1 }];
+    harness.render();
+    await harness.flush();
+    assert.equal(calls, 2);
+    finishOld({ name: row.name, constituents: [] });
+    await harness.flush();
+    assert.equal(table().rows[0].poolLimitUps, 2);
+    assert.equal(table().expandedName, row.name);
+  }, { analyzeSector: () => ++calls === 1 ? new Promise(resolve => { finishOld = resolve; })
+    : Promise.resolve({ name: row.name, constituents: [{ code: "600001", isLimitUp: true }, { code: "600002", isLimitUp: true }] }) }, [row]);
+});
+
+for (const kind of ["industry", "concept"]) {
+  test(`${kind} ranking loads membership counts without expansion and opening details updates the count`, async () => {
+    const row = { name: "测试板块", code: kind === "industry" ? "881121" : "885998", indexCode: "885998", conceptCid: "308977", memberCount: 2, poolLimitUps: null, limitUps: null };
+    let finishCount;
+    const requests = [];
+    const result = count => ({ limitUps: count, limitUpStocks: count ? [{ code: "600001", name: "甲" }] : [], memberCount: 2, countComplete: true, asOfDate: "2026-11-11" });
+    await sectorSearchFixture(async ({ harness }) => {
+      const table = () => find(harness.tree, node => node.type === SectorGainersTable).props;
+      table().onCountVisible(table().rows[0]);
+      finishCount(result(1));
+      await harness.flush();
+      assert.equal(table().rows[0].poolLimitUps, 1);
+      assert.equal(table().expandedName, "");
+      assert.equal(requests[0].boardType, kind);
+      table().onCountVisible(table().rows[0]);
+      assert.equal(requests.length, 1, "rerender must not refetch the same snapshot");
+      table().onToggle(table().rows[0], false);
+      await harness.flush();
+      assert.equal(table().rows[0].poolLimitUps, 0, "confirmed fresh zero replaces earlier positive count");
+    }, {
+      getSectorLimitUpCount: input => { requests.push(input); return new Promise(resolve => { finishCount = resolve; }); },
+      analyzeSector: async () => ({ name: row.name, limitCount: result(0), constituents: [{ code: "600001", name: "甲", isLimitUp: false }] })
+    }, kind === "industry" ? [row] : [], kind === "concept" ? { concepts: [row], themes: [], warnings: [], limitUpTotal: null, conceptLimitUpSource: "" } : undefined);
+  });
+}
+
+test("incomplete counts show a lower bound and unavailable counts never render zero", () => {
+  const markup = renderToStaticMarkup(React.createElement(SectorGainersTable, {
+    rows: [{ name: "部分", returns: {}, leaders: [], limitUps: 2, limitCount: { countComplete: false } }, { name: "缺失", returns: {}, leaders: [], limitUps: null }],
+    expandedName: "", detailOrigin: "board", expandedRowRef: { current: null }, onToggle() {}, renderDetail: () => null
+  }));
+  assert.match(markup, /≥2 家/);
+  assert.match(markup, /class="muted">--/);
 });

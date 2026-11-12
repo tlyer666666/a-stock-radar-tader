@@ -158,5 +158,6 @@ test('live quotes from the same request replace the member page values (pre-open
   assert.equal(old.quoteStatus, undefined);
   assert.deepEqual([result.fundFlow.quotes.loaded, result.fundFlow.quotes.total], [1, 2]);
   assert.equal(result.constituents[0].code, '600519', 'members are re-sorted by the live change');
-  assert.equal(result.limitUps, 1);
+  assert.equal(result.limitUps, null, 'individual live quotes cannot establish the full sector count without a complete membership/pool snapshot');
+  assert.equal(result.countComplete, false);
 });

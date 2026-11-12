@@ -145,6 +145,73 @@ test('sector strength excludes the Beijing shortcut and legacy ranking row; the 
 }));
 
 
+test('industry and concept viewport counts load before expansion and agree with the limit-up filter', async () => {
+  const app = await createPreview();
+  const page = await app.browser.newPage({ viewport: { width: 1480, height: 960 } });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  try {
+    await page.goto(app.url + '?populated=1');
+    await page.locator('.workspace-navigation').waitFor();
+    await page.evaluate(() => {
+      const count = { limitUps: 2, limitUpStocks: [{ code: '600001', name: '甲' }, { code: '600002', name: '乙' }], memberCount: 3, countComplete: true };
+      window.__countCalls = [];
+      window.stockApi.getSectorStrengthBoard = async () => ({
+        industries: [{ name: '测试行业', code: '881121', returns: { r1: 3 }, memberCount: 3, limitUps: null }],
+        concepts: [{ name: '测试概念', code: '308977', conceptCid: '308977', indexCode: '885998', changePct: 3, memberCount: 3, limitUps: null }],
+        themes: [], warnings: [], limitUpTotal: 2, conceptLimitUpSource: ''
+      });
+      window.stockApi.getSectorLimitUpCount = async input => { window.__countCalls.push(input); return count; };
+      window.stockApi.analyzeSector = async input => ({ ...input, limitCount: count, limitUps: 2, leaders: [], constituents: [
+        ...count.limitUpStocks.map(stock => ({ ...stock, isLimitUp: true, latest: 11, preClose: 10, changePct: 10 })),
+        { code: '600003', name: '丙', isLimitUp: false, latest: 10, preClose: 10, changePct: 0 }
+      ] });
+    });
+    await openView(page, 'sectors', '板块强度');
+    for (const [kind, name] of [['industry', '测试行业'], ['concept', '测试概念']]) {
+      if (kind === 'concept') await page.getByRole('tab', { name: /^概念/ }).click();
+      const row = page.locator('.sector-gainers-row[aria-expanded]').filter({ hasText: name });
+      await page.waitForFunction(name => [...document.querySelectorAll('.sector-gainers-row[aria-expanded]')].some(row => row.textContent.includes(name) && row.querySelector('.sector-limit-cell')?.textContent.includes('2 家')), name);
+      assert.equal(await page.locator('.sector-inline-detail').count(), 0);
+      await row.getByRole('button', { name: `${name}，展开个股`, exact: true }).click();
+      const region = page.getByRole('region', { name: `${name} 成分股`, exact: true });
+      await region.getByRole('button', { name: '涨停 2', exact: true }).click();
+      assert.equal(await region.locator('.member-row:not(.member-head)').count(), 2);
+      assert.match(await row.locator('.sector-limit-cell').innerText(), /2 家/);
+      await row.getByRole('button', { name: `${name}，收起个股`, exact: true }).click();
+    }
+    assert.deepEqual(await page.evaluate(() => window.__countCalls.map(call => call.boardType)), ['industry', 'concept']);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); await app.close(); }
+});
+
+test('sorting by limit-ups includes concepts outside the first sixty and does not flood requests', async () => {
+  const app = await createPreview();
+  const page = await app.browser.newPage({ viewport: { width: 1480, height: 960 } });
+  page.setDefaultTimeout(8000);
+  try {
+    await page.goto(app.url + '?populated=1');
+    await page.locator('.workspace-navigation').waitFor();
+    await page.evaluate(() => {
+      window.__pendingCounts = 0; window.__peakCounts = 0;
+      window.stockApi.getSectorStrengthBoard = async () => ({ industries: [], concepts: Array.from({ length: 75 }, (_, i) => ({
+        name: `概念${i}`, code: String(300000 + i), conceptCid: String(300000 + i), indexCode: String(885000 + i), changePct: 75 - i, limitUps: null
+      })), themes: [], warnings: [] });
+      window.stockApi.getSectorLimitUpCount = async input => {
+        window.__peakCounts = Math.max(window.__peakCounts, ++window.__pendingCounts);
+        await new Promise(resolve => setTimeout(resolve, 15));
+        window.__pendingCounts--;
+        return { limitUps: input.name === '概念74' ? 12 : 1, limitUpStocks: [], countComplete: true, memberCount: 100 };
+      };
+    });
+    await openView(page, 'sectors', '板块强度');
+    await page.getByRole('button', { name: '按涨停从大到小排序', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.sector-gainers-row[aria-expanded]')?.getAttribute('aria-label') === '概念74，展开个股', null, { timeout: 8000 });
+    assert.match(await page.locator('.sector-gainers-row[aria-expanded]').first().innerText(), /12 家/);
+    assert.ok(await page.evaluate(() => window.__peakCounts <= 12), 'full sorting must not issue every board request at once');
+  } finally { await page.close(); await app.close(); }
+});
+
 test('live THS ranking row opens actual stocks through the browser', { skip: process.env.THS_LIVE !== '1', timeout: 180000 }, async () => {
   const svc = require('../electron/services.cjs');
   const rows = await svc.getLimitUpSectorBoard({ forceRefresh: true });

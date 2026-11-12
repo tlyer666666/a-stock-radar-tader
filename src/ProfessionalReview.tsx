@@ -1411,11 +1411,11 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
             <div className="review-sector-row" key={`${item.name}-${item.reviewRank}`}>
               <span><b>#{item.reviewRank} {item.name}</b><small>{item.state || "板块跟踪"}</small></span>
               <span><em>{item.verdict}</em></span>
-              <span>{item.poolLimitUps ?? item.limitUps ?? 0}只</span>
+              <span>{unit(item.poolLimitUps ?? item.limitUps, 0, "只")}</span>
               <span>{fmt(item.returns?.r1)} / {fmt(item.returns?.r3)} / {fmt(item.returns?.r5)}</span>
-              <span>{fmt(number(item.breadth) * 100, 0)}%</span>
+              <span>{nullableNumber(item.breadth) === null ? "--" : unit(Number(item.breadth) * 100, 0, "%")}</span>
               <span>{fmt(item.amountHeat, 2)}x</span>
-              <span><strong>{Math.round(number(item.score))}</strong></span>
+              <span><strong>{fmt(item.score, 0)}</strong></span>
             </div>
           ))}
         </div>
@@ -1815,7 +1815,7 @@ function ReviewTitle({ icon: Icon, title, subtitle }: any) {
 }
 
 function ReviewMetric({ label, value, tone = "" }: any) {
-  return <div className={`review-metric ${tone}`}><span>{label}</span><b>{value}</b></div>;
+  return <div className={`review-metric ${tone}`}><span>{label}</span><b>{value ?? "--"}</b></div>;
 }
 
 function ReviewPlanGroup({ title, items, tone }: any) {

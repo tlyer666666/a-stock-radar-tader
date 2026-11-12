@@ -20,12 +20,12 @@ const toSecurity = (focus: AgentFocus): Security => ({ code: focus.code, name: f
  * 框架打分、软件研判、涨停与龙虎榜、板块、公告、资讯、市场情绪），查完再写分析；可以连续追问。
  * 对话保存在本机；打开页面不会调用模型，发问题才调用。
  */
-export default function AiAgentView({ onOpenStock, onOpenSettings }: {
-  onOpenStock?: ((security: Security) => void) | undefined; onOpenSettings?: (() => void) | undefined;
+export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus }: {
+  onOpenStock?: ((security: Security) => void) | undefined; onOpenSettings?: (() => void) | undefined; embeddedFocus?: AgentFocus;
 }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai?.agent;
   const { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, run, error, setError, sending, saving,
-    persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api);
+    persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api, embeddedFocus);
   const streamRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
 
@@ -71,9 +71,9 @@ export default function AiAgentView({ onOpenStock, onOpenSettings }: {
   const messages = thread?.messages || [];
   const lastAnswer = [...messages].reverse().find(item => item.role === "assistant");
 
-  return <div className="ai-agent-view">
-    <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查数据（实时行情、日线体检、K线、分时、策略信号、框架打分、软件研判、涨停与龙虎榜、所属板块、公告、资讯、市场情绪），再给出结论、关键价位和操作思路，可以连续追问。发给模型的只有公开行情数据和你写的问题，不含持仓和密钥；对话只保存在本机。"
-      actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={onOpenSettings} />} />
+  return <div className={`ai-agent-view${embeddedFocus ? " ai-agent-embedded" : ""}`}>
+    {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · AI做T分析</b>{state && <ModelPicker state={state} onChoose={chooseProfile} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查数据（实时行情、日线体检、K线、分时、策略信号、框架打分、软件研判、涨停与龙虎榜、所属板块、公告、资讯、市场情绪），再给出结论、关键价位和操作思路，可以连续追问。发给模型的只有公开行情数据和你写的问题，不含持仓和密钥；对话只保存在本机。"
+      actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={onOpenSettings} />} />}
     {loadError && <div className="warning-banner" role="alert"><CircleAlert size={17} />{loadError}<button type="button" className="secondary-btn" onClick={() => void refreshState()}>重试</button></div>}
     {persistenceError && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>{persistenceError}。回答仍在本次运行中，关闭软件前请重试保存。</span>
       <button type="button" className="secondary-btn" disabled={saving} onClick={() => void retryPersistence()}>{saving ? "保存中…" : "重试保存"}</button></div>}
@@ -81,7 +81,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings }: {
       {onOpenSettings && <button type="button" className="secondary-btn" onClick={onOpenSettings}><Settings size={15} />去设置</button>}</div>}
 
     <div className="ai-agent-layout">
-      <aside className="panel ai-agent-sidebar" aria-label="对话列表">
+      {!embeddedFocus && <aside className="panel ai-agent-sidebar" aria-label="对话列表">
         <button type="button" className="primary-btn ai-agent-new" onClick={() => void openConversation(null)}><Plus size={16} />新对话</button>
         <div className="ai-agent-threads" role="list">
           {!state?.conversations.length && <p className="ai-agent-muted">还没有对话。选一只股票，点下面的快捷问题或直接提问。</p>}
@@ -95,13 +95,13 @@ export default function AiAgentView({ onOpenStock, onOpenSettings }: {
           </div>)}
         </div>
         {state && <MemoryEditor value={state.memory} onSave={async memory => { try { setState(await api.settings({ memory })); return true; } catch (reason) { setError(errorText(reason)); return false; } }} />}
-      </aside>
+      </aside>}
 
       <section className="panel ai-agent-chat" aria-label="AI 问股对话">
-        <div className="ai-agent-chat-head">
+        {!embeddedFocus && <div className="ai-agent-chat-head">
           <StockPicker focus={focus} onChange={setFocus} disabled={running} />
           {focus && onOpenStock && <button type="button" className="link-btn ai-agent-open-stock" onClick={() => onOpenStock(toSecurity(focus))}><ExternalLink size={14} />看个股详情</button>}
-        </div>
+        </div>}
 
         {state?.skills && <SkillBar catalog={state.skills} tools={state.tools} selected={skillIds || []} disabled={running} onChange={chooseSkills}
           onSave={api.saveSkill ? async input => { const value = await api.saveSkill!(input); setState(value); return value.savedSkillId || ""; } : undefined}
