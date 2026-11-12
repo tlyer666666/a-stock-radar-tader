@@ -22,6 +22,7 @@ import { whenVisible } from "../../visiblePolling";
 import { formatShanghaiDateTime } from "../../dateUtils";
 import { averageAt, calculateBollingerBands, calculatePriceMovingAverages } from "../../priceChartSeries";
 import TimeShareChart from "./TimeShareChart";
+import QuickNote from "../notes/QuickNote";
 
 function MiniBar({ label, value }: { label: string; value: number }) {
   return <div className="mini-bar"><span>{label}<b>{value}</b></span><i><em style={{ width: `${value}%` }} /></i></div>;
@@ -83,7 +84,8 @@ export function Dashboard({
   closePaperTradeForCurrent,
   closePaperTradeForCode,
   closeAllPaperTrades,
-  onRetry
+  onRetry,
+  notes
 }: any) {
   const [showFullExecutionDecisionLog, setShowFullExecutionDecisionLog] = useState(false);
   if (mode === "analysis" && !payload) {
@@ -309,6 +311,8 @@ export function Dashboard({
               {isWatched ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}
               {isWatched ? "已加入自选" : "加入自选"}
             </button>
+            {notes && !assetLabel && /^\d{6}$/.test(String(security?.code || "")) && <QuickNote api={notes}
+              stock={{ code: security.code, name: String(quote.name || security.name || security.code).slice(0, 16), secid: String(security.secid || `${/^[69]/.test(security.code) ? "1" : "0"}.${security.code}`) }} />}
             <button className="secondary-btn" onClick={() => onOpenBacktest(security)}>
               <LineChart size={17} />
               运行回测

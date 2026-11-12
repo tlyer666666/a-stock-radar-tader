@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { whenVisible } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
-import { QUICK_TASKS, takeAgentHandoff } from "./agentModel";
+import { QUICK_TASKS, openAgentPage, takeAgentHandoff } from "./agentModel";
 
 type AgentApi = NonNullable<NonNullable<Window["stockApi"]["ai"]>["agent"]>;
 const POLL_MS = 800;
@@ -11,6 +11,11 @@ const runningRun = (runId: string, conversationId: string): AgentRun => ({ runId
 // here. Reopening it reads runningRunId and resumes progress polling.
 let rememberedConversation: string | null = null;
 let rememberedFocus: AgentFocus | null = null;
+/** 从别的页面（如随心记）打开 AI 问股里的某段对话接着追问。 */
+export function openAgentConversation(id: string) {
+  rememberedConversation = id; rememberedFocus = null;
+  return openAgentPage();
+}
 
 // Embedded T conversations are isolated from the standalone AI page and other
 // stocks. The bounded map also lets a late accepted request be resumed safely.

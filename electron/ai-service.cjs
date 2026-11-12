@@ -13,6 +13,7 @@ const { createAiSelection, sanitizePicks } = require("./ai-selection.cjs");
 const sanitizeCodes = values => [...new Set((Array.isArray(values) ? values : []).map(value => String(value || "").trim()).filter(code => /^\d{6}$/.test(code)))];
 const { resolveFramework, frameworkSignature, CAP_SCORE } = require("./ai-frameworks.cjs");
 const { createAiReview } = require("./ai-review.cjs");
+const { createNoteParser } = require("./ai-notes.cjs");
 const { createServiceRuntime, semanticKey } = require("./service-runtime.cjs");
 const { producerContext } = require("./service-context.cjs");
 
@@ -33,6 +34,7 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
   const activeConfig = () => { try { return getConfig() || {}; } catch { return {}; } };
   const ai = createAiClient({ ...clientOptions, getConfig: activeConfig });
   const selection = createAiSelection({ ai });
+  const noteParser = createNoteParser({ ai });
   const shared = (key, produce) => {
     const signal = runtime.signal();
     return runtime.track(() => producerContext.run(undefined, () => sharedRuntime.run("scan", key, { signal }, async () => {
@@ -337,6 +339,7 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
     cachedRank,
     cachedSummary: input => cachedOnly("summary", input, activeConfig()),
     draftStrategy: input => selection.draftStrategy(input),
+    parseNote: input => noteParser.parseNote(input),
     /** 设置页「测试 AI 连接」：用草稿里的地址、模型、Key 发一条极短的请求。 */
     async test(config) {
       const probe = clientFor(config);
@@ -345,7 +348,7 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
       return { ok: result?.ok === true || Boolean(result), latency: Math.max(0, now() - started), model: probe.model() };
     }
   };
-  for (const method of ["rank", "rankCustom", "review", "summary", "marketReview", "lookback", "interpret", "draftStrategy", "test"]) {
+  for (const method of ["rank", "rankCustom", "review", "summary", "marketReview", "lookback", "interpret", "draftStrategy", "parseNote", "test"]) {
     const produce = service[method];
     service[method] = (input, request = {}) => {
       let key;

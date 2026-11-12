@@ -2959,6 +2959,7 @@ const buildBacktestExecutionPlan = (
               error={error}
               isWatched={isFavorite}
               onToggleWatch={() => toggleFavorite()}
+              notes={notes}
               onDiscover={discover}
               discovering={discovering}
               limitUps={limitUps}

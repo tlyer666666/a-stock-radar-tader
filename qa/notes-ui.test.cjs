@@ -19,17 +19,28 @@ describe('随心记 page in the actual renderer', () => {
       import { createRoot } from 'react-dom/client';
       import NotesView, { NoteReminderStack } from '/src/features/notes/NotesView.tsx';
       import { useNotes } from '/src/features/notes/useNotes.ts';
+      import QuickNote from '/src/features/notes/QuickNote.tsx';
       ${cssImports}
       import { createPreviewApi } from '/src/previewApi.ts';
       window.calls = { notify: [], opened: [], spoken: [] };
       const api = createPreviewApi();
       api.notify = async message => { window.calls.notify.push(message); return { shown: true }; };
+      window.calls.watch = []; window.calls.agent = []; window.nextHits = [];
+      api.notesWatch = async input => { window.calls.watch.push(input); const hits = window.nextHits; window.nextHits = []; return { hits, watching: input.items.length, session: true }; };
+      api.ai = { ...(api.ai || {}),
+        parseNote: async input => { window.calls.parse = input; return { text: '明天开盘看比亚迪 002594，跌破 280 减仓', when: '2026-11-13 09:30', repeat: 'none', code: '002594',
+          condition: { field: 'latest', op: 'lte', value: 280 }, note: '跌破均价线要自己看', model: 'demo' }; },
+        agent: { ...(api.ai?.agent || {}),
+          start: async input => { window.calls.agent.push(input); return { runId: 'r' + window.calls.agent.length, conversationId: 'c1' }; },
+          poll: async runId => ({ runId, conversationId: 'c1', status: 'done', steps: [], startedAt: '', elapsedMs: 10, model: 'demo',
+            message: { id: 'm1', role: 'assistant', content: '**先别急着减仓**\\n\\n现价离 280 还有空间，盯住 275。', stance: '中性', at: new Date().toISOString() } }) } };
       window.stockApi = api;
       Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: { speak: utterance => window.calls.spoken.push(utterance.text), cancel() {} } });
       function Host() {
         const notes = useNotes();
         const open = stock => window.calls.opened.push(stock.code);
         return React.createElement(React.Fragment, null,
+          React.createElement('div', { className: 'quick-note-host' }, React.createElement(QuickNote, { api: notes, stock: { code: '600519', name: '贵州茅台', secid: '1.600519' } })),
           React.createElement(NotesView, { api: notes, onOpenStock: open }),
           React.createElement(NoteReminderStack, { api: notes, onOpenNotes: () => {}, onOpenStock: open }));
       }
@@ -116,6 +127,82 @@ describe('随心记 page in the actual renderer', () => {
       await page.reload();
       await page.getByRole('tab', { name: /全部/ }).click();
       assert.equal(await page.locator('.notes-card').count(), 2, '保存在本机，重开还在');
+    });
+  });
+
+  test('价格条件：识别「跌破 280」、交给主进程盯；触发后弹提醒、自动让 AI 看，结论显示在卡片里', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('002594 跌破 280 提醒我减仓');
+      await page.locator('.notes-condition-chip', { hasText: '盯盘：价格 ≤ 280' }).waitFor();
+      await page.getByRole('button', { name: /到点自动让 AI 先看：关/ }).click();
+      await input.press('Enter');
+      const card = page.locator('.notes-card', { hasText: '跌破 280' });
+      await card.locator('.notes-badge', { hasText: '盯盘：价格 ≤ 280' }).waitFor();
+      await page.locator('.notes-watch-status', { hasText: '盘中盯着 1 个价格条件' }).waitFor();
+      const watched = await page.evaluate(() => window.calls.watch.at(-1));
+      assert.deepEqual(watched.items[0].condition, { field: 'latest', op: 'lte', value: 280 });
+      assert.equal(watched.items[0].code, '002594');
+
+      await page.evaluate(id => { window.nextHits = [{ id, at: new Date().toISOString(), detail: '比亚迪 现价 279.5，已跌到 280 以下' }]; }, watched.items[0].id);
+      await page.clock.fastForward('00:16');
+      await page.locator('.notes-popup', { hasText: '价格条件到了' }).waitFor();
+      assert.match(await page.locator('.notes-popup-detail').innerText(), /现价 279\.5/);
+      assert.equal(await page.locator('.notes-watch-status').count(), 0, '触发后不再盯');
+      await card.locator('.notes-ai.done').waitFor();
+      const asked = await page.evaluate(() => window.calls.agent);
+      assert.equal(asked.length, 1, '开了自动让 AI 先看');
+      assert.deepEqual(asked[0].focus?.code, '002594');
+      assert.match(asked[0].message, /已经触发：比亚迪 现价 279\.5/);
+      assert.match(await card.locator('.notes-ai').innerText(), /先别急着减仓/);
+      assert.match(await card.locator('.notes-ai').innerText(), /中性/);
+      const notify = await page.evaluate(() => window.calls.notify);
+      assert.ok(notify.some(item => /AI 看过了/.test(item.title) && /先别急着减仓/.test(item.body)), 'AI 看完再发一条通知');
+      await page.screenshot({ path: path.join(screenshotDir, 'notes-condition-ai.png'), fullPage: true });
+
+      // 再问一次接着同一段对话；重新盯会再次交给主进程。
+      await page.locator('.notes-popup').getByRole('button', { name: '收起这条提醒' }).click();
+      await card.getByRole('button', { name: '再问一次 AI' }).click();
+      await page.waitForFunction(() => window.calls.agent.length === 2);
+      assert.equal(await page.evaluate(() => window.calls.agent[1].conversationId), 'c1');
+      await card.getByRole('button', { name: /重新盯/ }).click();
+      await page.locator('.notes-watch-status', { hasText: '盘中盯着 1 个价格条件' }).waitFor();
+    });
+  });
+
+  test('AI 整理：识别时间、股票和条件，确认后保存；可以撤销', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('明早开盘瞅一眼比亚迪跌破280就减');
+      await page.getByRole('button', { name: 'AI 整理' }).click();
+      await page.locator('.notes-condition-chip', { hasText: '盯盘：价格 ≤ 280' }).waitFor();
+      assert.equal(await input.inputValue(), '明天开盘看比亚迪 002594，跌破 280 减仓');
+      assert.match(await page.locator('.notes-composer .notes-hint[role="status"]').innerText(), /明天 09:30 提醒；盘中价格 ≤ 280时提醒/);
+      const sent = await page.evaluate(() => window.calls.parse);
+      assert.match(sent.now, /^2026-11-12 14:00 周四$/);
+      assert.equal(sent.tradingDays[1], '2026-11-13');
+      await page.getByRole('button', { name: '撤销 AI 整理' }).click();
+      assert.equal(await input.inputValue(), '明早开盘瞅一眼比亚迪跌破280就减');
+      await page.getByRole('button', { name: 'AI 整理' }).click();
+      await page.locator('.notes-condition-chip').waitFor();
+      await page.getByRole('button', { name: '记下来' }).click();
+      const card = page.locator('.notes-card', { hasText: '跌破 280 减仓' });
+      assert.match(await card.innerText(), /明天 09:30 提醒/);
+      assert.match(await card.innerText(), /盯盘：价格 ≤ 280/);
+    });
+  });
+
+  test('个股页「记一笔」：自动关联股票，识别价格条件，记进随心记', async () => {
+    await pageTest(async page => {
+      await page.getByRole('button', { name: '记一笔' }).click();
+      const box = page.getByLabel('记一笔内容');
+      await box.fill('跌破 1500 减仓');
+      await page.locator('.quick-note-foot', { hasText: '盘中价格 ≤ 1500时提醒' }).waitFor();
+      await box.press('Enter');
+      await page.getByRole('button', { name: '已记到随心记' }).waitFor();
+      const card = page.locator('.notes-card', { hasText: '贵州茅台 600519：跌破 1500 减仓' });
+      await card.locator('.notes-badge', { hasText: '盯盘：价格 ≤ 1500' }).waitFor();
+      assert.equal(await page.locator('.quick-note-pop').count(), 0);
     });
   });
 

@@ -622,6 +622,33 @@ function scheduleRendererRecovery(reason, targetWindow = mainWindow) {
   }, RENDERER_RECOVERY_DELAY_MS);
 }
 
+function showSystemNotification(input) {
+  const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+  const title = String(value.title || "").trim().slice(0, 60);
+  const body = String(value.body || "").trim().slice(0, 240);
+  if (!title) throw new Error("通知标题为空");
+  if (process.platform === "darwin" && app.dock && mainWindow && !mainWindow.isFocused()) app.dock.bounce("informational");
+  if (!Notification.isSupported()) return { shown: false };
+  const notification = new Notification({ title, body, silent: false });
+  notification.on("click", () => focusMainWindow());
+  notification.show();
+  return { shown: true };
+}
+
+let noteWatcherInstance = null;
+function noteWatcher() {
+  if (!noteWatcherInstance) {
+    const { createNoteWatcher, inTradingSession } = require("./note-watch.cjs");
+    const { tradingDateStatus } = require("./market-time-rules.cjs");
+    noteWatcherInstance = createNoteWatcher({
+      getQuote: security => getQuoteSnapshot(security, settingsForService()),
+      notify: message => showSystemNotification(message),
+      inSession: ms => inTradingSession(ms, date => tradingDateStatus(date) !== false)
+    });
+  }
+  return noteWatcherInstance;
+}
+
 function focusMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -1198,6 +1225,12 @@ if (!hasSingleInstanceLock) {
   handleTrustedIpc("ai:custom-cached", () => aiService().cachedCustom(readAiCustomList().map(item => item.code)));
   handleTrustedIpc("ai:history-day", (_, asOfDate) => aiService().historyDay(String(asOfDate || "").slice(0, 10)));
   handleTrustedIpc("ai:strategy-draft", (_, input) => aiService().draftStrategy(aiPayload(input)));
+  // 随心记「AI 整理」：只发这段文字、当前时间和接下来的交易日。
+  handleTrustedIpc("ai:note-parse", (_, input) => {
+    const payload = aiPayload(input);
+    return aiService().parseNote({ text: String(payload.text ?? "").slice(0, 600), now: String(payload.now ?? "").slice(0, 40),
+      tradingDays: Array.isArray(payload.tradingDays) ? payload.tradingDays.slice(0, 15).map(day => String(day).slice(0, 10)) : [] });
+  });
   handleTrustedIpc("ai:profiles", () => aiProfiles().list());
   handleTrustedIpc("ai:profile-save", (_, input) => aiProfiles().save(aiPayload(input)));
   handleTrustedIpc("ai:profile-delete", (_, id) => aiProfiles().remove(String(id || "")));
@@ -1499,17 +1532,11 @@ if (!hasSingleInstanceLock) {
   });
 
   // 随心记提醒：用系统通知，窗口在后台或最小化时也能看到；点通知回到软件。只接受短文本。
-  handleTrustedIpc("app:notify", (_, input) => {
+  handleTrustedIpc("app:notify", (_, input) => showSystemNotification(input));
+  // 随心记的价格条件：主进程在交易时段盯报价，满足就发系统通知；页面同步时取走触发记录。
+  handleTrustedIpc("notes:watch-sync", (_, input) => {
     const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
-    const title = String(value.title || "").trim().slice(0, 60);
-    const body = String(value.body || "").trim().slice(0, 240);
-    if (!title) throw new Error("通知标题为空");
-    if (process.platform === "darwin" && app.dock && mainWindow && !mainWindow.isFocused()) app.dock.bounce("informational");
-    if (!Notification.isSupported()) return { shown: false };
-    const notification = new Notification({ title, body, silent: false });
-    notification.on("click", () => focusMainWindow());
-    notification.show();
-    return { shown: true };
+    return noteWatcher().sync({ items: Array.isArray(value.items) ? value.items.slice(0, 60) : [], systemNotify: value.systemNotify !== false });
   });
   handleTrustedIpc("settings:test-provider", (_, next) => {
     const input = next && typeof next === "object" && !Array.isArray(next) ? next : {};
@@ -1558,6 +1585,7 @@ app.on("before-quit", (event) => {
   cancelRendererRecovery();
   trendScanOwner = undefined;
   trendScreener.cancel();
+  noteWatcherInstance?.stop();
   finishShutdown(event);
 });
 

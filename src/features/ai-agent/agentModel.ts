@@ -82,6 +82,8 @@ let pending: Handoff | null = null;
 let opener: (() => void) | null = null;
 export function registerAgentOpener(open: (() => void) | null) { opener = open; }
 export function canOpenAgent() { return Boolean(opener); }
+/** 只切到 AI 问股页（要打开哪段对话由调用方事先记好）。 */
+export function openAgentPage() { if (!opener) return false; opener(); return true; }
 export function openAgentFor(security: { code: string; name: string }, task = "full") {
   const focus = focusFromSecurity({ ...security, assetType: "stock" });
   if (!focus || !opener) return false;

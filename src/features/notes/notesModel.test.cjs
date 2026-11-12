@@ -88,3 +88,58 @@ test("显示：今天/明天/周几/日期", () => {
   assert.equal(model.formatRemind(iso("2026-11-16T10:30:00"), NOW), "11月16日（周一） 10:30");
   assert.ok(model.presetTimes(NOW).every(item => item.at > NOW));
 });
+
+test("价格条件：具体价位和涨跌幅才识别，均线、均价线、股票代码不算", () => {
+  assert.deepEqual(model.parseCondition("002594 跌破 280 提醒我减仓"), { field: "latest", op: "lte", value: 280 });
+  assert.deepEqual(model.parseCondition("600519 涨到1500.5元就卖一半"), { field: "latest", op: "gte", value: 1500.5 });
+  assert.deepEqual(model.parseCondition("突破12.3加仓"), { field: "latest", op: "gte", value: 12.3 });
+  assert.deepEqual(model.parseCondition("跌到10元以下止损"), { field: "latest", op: "lte", value: 10 });
+  assert.deepEqual(model.parseCondition("涨幅超过5%先走"), { field: "changePct", op: "gte", value: 5 });
+  assert.deepEqual(model.parseCondition("跌超 3% 就止损"), { field: "changePct", op: "lte", value: -3 });
+  assert.equal(model.parseCondition("跌破5日线就卖"), null);
+  assert.equal(model.parseCondition("跌破均价线减仓"), null);
+  assert.equal(model.parseCondition("突破前高再说"), null);
+  assert.equal(model.parseCondition("突破600519"), null, "6 位数是代码");
+  assert.equal(model.parseCondition("今天看一下"), null);
+  assert.equal(model.describeCondition({ field: "changePct", op: "lte", value: -3 }), "跌幅 ≥ 3%");
+  // 先出现的条件为准
+  assert.deepEqual(model.parseCondition("跌破 10 止损，涨到 12 止盈"), { field: "latest", op: "lte", value: 10 });
+});
+
+test("价格条件存储：没股票不存条件；触发后算待处理；重新盯清掉触发记录", () => {
+  const store = model.normalizeNotes({ notes: [
+    { id: "a", text: "跌破280", createdAt: iso("2026-11-12T09:00:00"), stock: { code: "002594", name: "比亚迪" }, condition: { field: "latest", op: "lte", value: 280 } },
+    { id: "b", text: "没股票", createdAt: iso("2026-11-12T09:00:00"), condition: { field: "latest", op: "lte", value: 280 } },
+    { id: "c", text: "坏条件", createdAt: iso("2026-11-12T09:00:00"), stock: { code: "600519" }, condition: { field: "latest", op: "lte", value: -1 } },
+    { id: "d", text: "已触发", createdAt: iso("2026-11-12T09:00:00"), stock: { code: "600519" }, condition: { field: "changePct", op: "gte", value: 5 },
+      conditionHit: { at: iso("2026-11-12T10:00:00"), detail: "贵州茅台 涨跌幅 +5.2%" },
+      ai: { conversationId: "c1", runId: null, status: "done", answer: "**先别追**", stance: "中性", at: iso("2026-11-12T10:01:00"), trigger: "auto" } }
+  ], aiAuto: true });
+  assert.ok(store.notes[0].condition);
+  assert.equal(store.notes[1].condition, null);
+  assert.equal(store.notes[2].condition, null);
+  assert.equal(store.aiAuto, true);
+  assert.deepEqual(model.watchingConditions(store.notes).map(n => n.id), ["a"]);
+  assert.deepEqual(model.awaiting(store.notes).map(n => n.id), ["d"]);
+  assert.equal(store.notes[3].ai.trigger, "auto");
+  assert.equal(model.sortNotes(store.notes)[0].id, "d", "触发的排最前");
+  assert.equal(model.normalizeNotes({ notes: [] }).aiAuto, false, "默认不自动问 AI");
+});
+
+test("让 AI 看看：问题里带原文、股票、条件状态和当前时间", () => {
+  const [note] = model.normalizeNotes({ notes: [{ id: "d", text: "涨超5%就卖一半", createdAt: iso("2026-11-12T09:00:00"), stock: { code: "600519", name: "贵州茅台" },
+    condition: { field: "changePct", op: "gte", value: 5 }, conditionHit: { at: iso("2026-11-12T10:00:00"), detail: "贵州茅台 涨跌幅 +5.2%，已涨超 5%" } }] }).notes;
+  const text = model.aiQuestion(note, cn("2026-11-12T10:01:00"));
+  assert.match(text, /「涨超5%就卖一半」/);
+  assert.match(text, /贵州茅台 600519/);
+  assert.match(text, /已经触发：贵州茅台 涨跌幅 \+5\.2%/);
+  assert.match(text, /现在是 2026-11-12 10:01/);
+  assert.match(text, /记于 2026-11-12 09:00/);
+});
+
+test("交易时段：交易日 9:30–11:30、13:00–15:00", () => {
+  assert.equal(model.inTradingSession(cn("2026-11-12T10:00:00")), true);
+  assert.equal(model.inTradingSession(cn("2026-11-12T12:00:00")), false);
+  assert.equal(model.inTradingSession(cn("2026-11-12T15:30:00")), false);
+  assert.equal(model.inTradingSession(cn("2026-11-14T10:00:00")), false, "周六");
+});
