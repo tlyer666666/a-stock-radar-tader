@@ -9,7 +9,8 @@ const {
   WebContentsView,
   safeStorage,
   dialog,
-  session
+  session,
+  Notification
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -1433,6 +1434,19 @@ if (!hasSingleInstanceLock) {
       throw new Error("不支持的窗口操作");
     }
     return { ok: true, maximized: window.isMaximized() };
+  });
+  // 随心记提醒：用系统通知，窗口在后台或最小化时也能看到；点通知回到软件。只接受短文本。
+  handleTrustedIpc("app:notify", (_, input) => {
+    const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const title = String(value.title || "").trim().slice(0, 60);
+    const body = String(value.body || "").trim().slice(0, 240);
+    if (!title) throw new Error("通知标题为空");
+    if (process.platform === "darwin" && app.dock && mainWindow && !mainWindow.isFocused()) app.dock.bounce("informational");
+    if (!Notification.isSupported()) return { shown: false };
+    const notification = new Notification({ title, body, silent: false });
+    notification.on("click", () => focusMainWindow());
+    notification.show();
+    return { shown: true };
   });
   handleTrustedIpc("settings:test-provider", (_, next) => {
     const input = next && typeof next === "object" && !Array.isArray(next) ? next : {};

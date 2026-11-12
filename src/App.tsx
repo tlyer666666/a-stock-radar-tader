@@ -54,6 +54,7 @@ import {
   Coins,
   ArrowLeftRight,
   ArrowDownUp,
+  NotebookPen,
   Bot,
   LineChart,
   MessagesSquare,
@@ -78,6 +79,8 @@ import { FormEvent, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRe
 import { AiInterpretPanel } from "./features/ai-review/AiInterpretPanel";
 import { registerAgentOpener } from "./features/ai-agent/agentModel";
 import { useTAssistant } from "./features/t-assistant/useTAssistant";
+import { useNotes } from "./features/notes/useNotes";
+import { NoteReminderStack } from "./features/notes/NotesView";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 import DisplayDensityControl from "./components/terminal/DisplayDensityControl";
 import PreviousLimitUpFailedBoards from "./PreviousLimitUpFailedBoards";
@@ -150,6 +153,7 @@ const HsgtWebView = lazy(() => import("./features/hsgt/HsgtWebView"));
 const AiPicksView = lazy(() => import("./features/ai-picks/AiPicksView"));
 const AiAgentView = lazy(() => import("./features/ai-agent/AiAgentView"));
 const TAssistantView = lazy(() => import("./features/t-assistant/TAssistantView"));
+const NotesView = lazy(() => import("./features/notes/NotesView"));
 
 /** 交给 AI 解读的板块强度榜：每个板块只留数字和文字字段，成分股只留前 3 个名称。 */
 function sectorsForAi(rows: any[], extra?: SectorStrengthExtra | null) {
@@ -2608,6 +2612,7 @@ const buildBacktestExecutionPlan = (
     onAlert: alert => showToast(`${alert.name}（${alert.code}）：${alert.detail}`)
   });
   const tAssistant = useTAssistant({ live, onAlert: message => showToast(message) });
+  const notes = useNotes();
   const compareCandidates = useMemo(() => {
     const merged = new Map<string, Security>();
     const add = (item: any) => {
@@ -2760,6 +2765,7 @@ const buildBacktestExecutionPlan = (
     { id: "bonds" as View, label: "可转债", icon: Coins },
     { id: "hsgt" as View, label: "沪深港通", icon: ArrowLeftRight },
     { id: "news" as View, label: "资讯中心", icon: Newspaper },
+    { id: "notes" as View, label: "随心记", icon: NotebookPen },
     { id: "signals" as View, label: "策略选股", icon: TrendingUp },
     { id: "ai-picks" as View, label: "AI 选股", icon: Bot },
     { id: "ai-agent" as View, label: "AI 问股", icon: MessagesSquare },
@@ -2806,7 +2812,7 @@ const buildBacktestExecutionPlan = (
     <div className="app-shell terminal-shell" data-workspace={view} data-nav-collapsed={navigationCollapsed}>
       <WindowTitleBar />
       <WorkspaceNavigation items={navItems} active={view}
-        counts={{ favorites: favoriteItems.length, holdings: holdings.length, watchlist: observationItems.length }}
+        counts={{ favorites: favoriteItems.length, holdings: holdings.length, watchlist: observationItems.length, notes: notes.awaitingCount }}
         collapsed={navigationCollapsed} onCollapse={() => setNavigationCollapsed(value => !value)}
         onNavigate={id => id === "backtest" ? openBacktest() : navigateTo(id as View)} />
 
@@ -3101,6 +3107,11 @@ const buildBacktestExecutionPlan = (
               />
             </Suspense>
           )}
+          {view === "notes" && (
+            <Suspense fallback={<LoadingState />}>
+              <NotesView api={notes} onOpenStock={(stock: Security) => openAnalysis(stock, { view: "notes", label: "返回随心记" })} />
+            </Suspense>
+          )}
           {view === "t-assistant" && (
             <Suspense fallback={<LoadingState />}>
               <TAssistantView
@@ -3226,6 +3237,8 @@ const buildBacktestExecutionPlan = (
         </footer>
       </main>
       {toast && <div className="toast" role="status" aria-live="polite"><ShieldCheck size={17} />{toast}</div>}
+      <NoteReminderStack api={notes} onOpenNotes={() => navigateTo("notes")}
+        onOpenStock={(stock: Security) => openAnalysis(stock, originForView(view))} />
       <ConfirmDialog request={confirmRequest} onResolve={resolveConfirm} />
     </div>
   );

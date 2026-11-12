@@ -17,5 +17,6 @@ export type WorkspaceView =
   | "ai-picks"
   | "ai-agent"
   | "t-assistant"
+  | "notes"
   | "trend-screener"
   | "compare";

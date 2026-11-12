@@ -4,7 +4,7 @@ type Item = { id: string; label: string; icon: LucideIcon };
 const groups = [
   { label: '选股研究', ids: ['signals', 'ai-picks', 'ai-agent', 'sectors'] },
   { label: '行情跟踪', ids: ['dashboard', 't-assistant', 'beijing', 'bonds', 'hsgt', 'previous-limit-up-failed', 'watchlist', 'favorites', 'holdings'] },
-  { label: '复盘与信息', ids: ['review', 'compare', 'backtest', 'news'] }
+  { label: '复盘与信息', ids: ['notes', 'review', 'compare', 'backtest', 'news'] }
 ];
 
 export default function WorkspaceNavigation({ items, active, counts, collapsed, onCollapse, onNavigate }: {

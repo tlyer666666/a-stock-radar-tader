@@ -1496,6 +1496,9 @@ export function createPreviewApi(): Window["stockApi"] {
     async controlWindow() {
       return { ok: true, maximized: false };
     },
+    async notify() {
+      return { shown: false };
+    },
     async openExternal() {
       // External navigation is disabled in browser preview mode.
     },

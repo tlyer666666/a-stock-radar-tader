@@ -479,6 +479,8 @@ interface Window {
     controlWindow(
       action: "minimize" | "toggle-maximize" | "close"
     ): Promise<{ ok: boolean; maximized: boolean }>;
+    /** 系统通知（随心记提醒）；旧版本没有这个接口。 */
+    notify?(message: { title: string; body?: string }): Promise<{ shown: boolean }>;
     openExternal(url: string): Promise<void>;
     getPlatform(): "win32" | "darwin" | "linux" | string;
     getVersion(): Promise<string>;
