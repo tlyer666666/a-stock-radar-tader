@@ -123,6 +123,7 @@ const { createReviewSkills } = require("./review-skills.cjs");
 const { createAiProfileStore, isAiProfileStore, sameOrigin } = require("./ai-profile-store.cjs");
 const { createAiClient } = require("./ai-client.cjs");
 const { createStockAgentService, isAgentStore } = require("./stock-agent.cjs");
+const { createBackupService } = require("./data-backup.cjs");
 const { createStockAgentTools } = require("./stock-agent-tools.cjs");
 const trendScreener = createTrendScreenerService(createTrendMarketData({ ths: trendThsLane, dailyStore: dailyBarStore, asOf: dailyBarAsOf }));
 const reviewWindows = createReviewWindowManager({ BrowserWindow, root: path.join(__dirname, '..'), packaged: app.isPackaged, devUrl: process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173', hidden: process.env.A_STOCK_E2E_HIDDEN === '1', openExternal: url => shell.openExternal(url), onError: error => debugLog(`review external ${error.message}`) });
@@ -1435,6 +1436,68 @@ if (!hasSingleInstanceLock) {
     }
     return { ok: true, maximized: window.isMaximized() };
   });
+  // 数据备份（1.6.64）：写到用户选的文件夹（网盘同步文件夹即可上传到网盘）。文件夹只能从系统对话框或推荐列表来。
+  const backupValidators = {
+    settings: isSettingsRecord, watchlist: usableWatchlist, holdings: usableHoldings, "custom-strategies": isCustomStrategyStore,
+    "ai-profiles": isAiProfileStore, "ai-framework": isAiFrameworkState, "ai-custom-stocks": isAiCustomList, "ai-selection": isAiStore, "stock-agent": isAgentStore
+  };
+  const backup = createBackupService({
+    readStore: name => readJson(name, null, backupValidators[name]),
+    writeStore: (name, value) => {
+      if (!backupValidators[name](value)) throw Object.assign(new Error(`备份里的「${name}」数据格式不对，已跳过恢复`), { code: "BACKUP_INVALID" });
+      writeJson(name, value, backupValidators[name], true);
+    },
+    readConfig: () => readJson("backup-config", {}, isSettingsRecord),
+    writeConfig: value => writeJson("backup-config", value, isSettingsRecord),
+    encryptSecret, decryptSecret, appVersion: app.getVersion()
+  });
+  const backupStatus = () => ({ ...backup.status(), suggestions: backup.suggestions() });
+  const backupLocal = input => {
+    const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const local = {};
+    let bytes = 0;
+    for (const [key, item] of Object.entries(value)) {
+      if (typeof item !== "string" || key.length > 120) continue;
+      bytes += key.length + item.length;
+      if (bytes > 48 * 1024 * 1024) throw Object.assign(new Error("本地数据过大，无法备份"), { code: "BACKUP_TOO_LARGE" });
+      local[key] = item;
+    }
+    return local;
+  };
+  handleTrustedIpc("backup:status", () => backupStatus());
+  handleTrustedIpc("backup:choose-folder", async () => {
+    const result = await dialog.showOpenDialog(mainWindow, { title: "选择备份文件夹（选网盘的同步文件夹会自动上传到网盘）", properties: ["openDirectory", "createDirectory"] });
+    if (result.canceled || !result.filePaths?.[0]) return backupStatus();
+    backup.configure({ folder: result.filePaths[0] });
+    return backupStatus();
+  });
+  handleTrustedIpc("backup:configure", (_, input) => {
+    const patch = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+    const next = {};
+    if (typeof patch.suggestedFolder === "string") {
+      const hit = backup.suggestions().find(item => item.path === patch.suggestedFolder);
+      if (!hit) throw Object.assign(new Error("这个文件夹不在推荐列表里，请用「选择文件夹」"), { code: "BACKUP_FOLDER" });
+      next.folder = hit.path;
+    }
+    if (typeof patch.auto === "boolean") next.auto = patch.auto;
+    if (patch.keep !== undefined) next.keep = patch.keep;
+    if (typeof patch.password === "string") next.password = patch.password;
+    backup.configure(next);
+    return backupStatus();
+  });
+  handleTrustedIpc("backup:run", (_, local, options) => {
+    const reason = options && options.reason === "auto" ? "auto" : "manual";
+    return { ...backup.run(backupLocal(local), { reason }), status: backupStatus() };
+  });
+  handleTrustedIpc("backup:inspect", (_, name, password) => backup.inspect(String(name || ""), typeof password === "string" ? password : ""));
+  handleTrustedIpc("backup:restore", (_, name, password) => backup.restore(String(name || ""), typeof password === "string" ? password : ""));
+  handleTrustedIpc("backup:relaunch", async () => {
+    // 恢复后重启：先把渲染进程刚写的本地存储刷到磁盘。
+    try { await mainWindow?.webContents.session.flushStorageData(); } catch { /* 刷盘失败也继续重启 */ }
+    setTimeout(() => { app.relaunch(); app.quit(); }, 200);
+    return { ok: true };
+  });
+
   // 随心记提醒：用系统通知，窗口在后台或最小化时也能看到；点通知回到软件。只接受短文本。
   handleTrustedIpc("app:notify", (_, input) => {
     const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};

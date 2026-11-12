@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { CircleAlert, Database, Gauge, LoaderCircle, ShieldAlert, ShieldCheck, SlidersHorizontal, Target, Wifi } from "lucide-react";
 import { PageHeading, PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { AiSettingsCard } from "./AiSettingsCard";
+import { BackupSettingsCard } from "../backup/BackupSettingsCard";
 import { quickStrategyPresets as strategyPresets } from "../../quickStrategyPresets";
 import { clampNumber, normalizeRiskProfile, riskProfilePresets, sameStrategySet, strategyOptions } from "../../domain/settings";
 import { sourceStatusLabel } from "../market/marketSourceHealth";
@@ -196,7 +197,7 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
     <div className="settings-workspace">
       <PageHeading eyebrow="THREE-LINE MARKET DATA" title="数据源设置" description="同花顺免费行情为主源，无需 Token；东方财富与腾讯并行校验和故障接力。QuantAPI Refresh Token 为可选项，只加密保存在本机。" />
       {loadState !== "ready" && <div role="alert" className="test-result fail">{loadState === "loading" ? "正在读取本地设置，完成前暂不可保存。" : "本地设置读取失败，已禁止保存以保护原配置。请重新加载软件后重试。"}</div>}
-      <nav className="settings-category-tabs" aria-label="设置分类">{[{ id: "sources", label: "行情连接" }, { id: "monitoring", label: "监控与提醒" }, { id: "execution", label: "执行参数" }, { id: "strategies", label: "策略组合" }, { id: "ai", label: "AI 助手" }].map(item => <button type="button" key={item.id} aria-pressed={category === item.id} aria-controls={`settings-${item.id}`} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav>
+      <nav className="settings-category-tabs" aria-label="设置分类">{[{ id: "sources", label: "行情连接" }, { id: "monitoring", label: "监控与提醒" }, { id: "execution", label: "执行参数" }, { id: "strategies", label: "策略组合" }, { id: "ai", label: "AI 助手" }, { id: "backup", label: "数据备份" }].map(item => <button type="button" key={item.id} aria-pressed={category === item.id} aria-controls={`settings-${item.id}`} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav>
       <div className="settings-grid">
         <div className="panel settings-card" id="settings-sources" hidden={category !== "sources"}>
           <PanelTitle title="行情主数据源" subtitle="同花顺免费行情为主，三线并存" icon={Database} />
@@ -512,6 +513,7 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           {saveError && <div className="test-result fail" role="alert"><span />{saveError}</div>}
         </div>
 
+        <BackupSettingsCard hidden={category !== "backup"} />
         <AiSettingsCard hidden={category !== "ai"} draft={draft} setDraft={setDraft} onSave={() => void saveDraft()} saving={saving} saveError={saveError} loadState={loadState} />
       </div>
     </div>

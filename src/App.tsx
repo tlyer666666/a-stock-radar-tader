@@ -80,6 +80,7 @@ import { AiInterpretPanel } from "./features/ai-review/AiInterpretPanel";
 import { registerAgentOpener } from "./features/ai-agent/agentModel";
 import { useTAssistant } from "./features/t-assistant/useTAssistant";
 import { useNotes } from "./features/notes/useNotes";
+import { useAutoBackup } from "./features/backup/backupClient";
 import { NoteReminderStack } from "./features/notes/NotesView";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 import DisplayDensityControl from "./components/terminal/DisplayDensityControl";
@@ -2613,6 +2614,7 @@ const buildBacktestExecutionPlan = (
   });
   const tAssistant = useTAssistant({ live, onAlert: message => showToast(message) });
   const notes = useNotes();
+  useAutoBackup(message => showToast(message));
   const compareCandidates = useMemo(() => {
     const merged = new Map<string, Security>();
     const add = (item: any) => {
