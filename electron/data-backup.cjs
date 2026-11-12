@@ -7,6 +7,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const nodePath = path;
 
 const FORMAT = "a-stock-radar-backup";
 const VERSION = 1;
@@ -113,6 +114,8 @@ function backupFileName(now = Date.now()) {
 
 /** 常见网盘同步文件夹（存在才列出）。 */
 function suggestFolders({ home = os.homedir(), platform = process.platform, exists = fs.existsSync, readdir = fs.readdirSync } = {}) {
+  // 按目标系统拼路径（测试里在 Windows 上也能模拟 macOS 的目录）。
+  const path = platform === "win32" ? nodePath.win32 : nodePath.posix;
   const list = [];
   const add = (label, dir) => { if (dir && exists(dir)) list.push({ label, path: path.join(dir, "A股雷达备份") }); };
   if (platform === "darwin") {
