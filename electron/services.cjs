@@ -2682,6 +2682,10 @@ async function thsTopicPoolForDate(compactDate, type = "limit") {
     rows.push(...items);
     page += 1;
   } while (rows.length < total && page <= 10);
+  const pool = rows
+    .map((item) => normalizeThsLimitUpItem(item, date, endpoint.provider))
+    .filter((item) => item && isAStockCode(item.code) && !isRiskStockName(item.name));
+  if (type === "failed" && pool.length) await fillFailedOpenCounts(pool, date);
   return {
     date,
     serverTradingDate: rows.length ? date : "",
@@ -2690,10 +2694,28 @@ async function thsTopicPoolForDate(compactDate, type = "limit") {
     fetchedAt: new Date().toISOString(),
     total,
     provider: endpoint.provider,
-    pool: rows
-      .map((item) => normalizeThsLimitUpItem(item, date, endpoint.provider))
-      .filter((item) => item && isAStockCode(item.code) && !isRiskStockName(item.name))
+    pool
   };
+}
+
+// 同花顺公开炸板池不给开板次数（open_board_count 恒为 null），页面整列都是「--」。
+// 配了扶摇 Key 时用扶摇炸板池的 open_times 按代码补上；扶摇按次计费，盘中 60 秒、其余 20 分钟才查一次。
+const fuyaoOpenCountCache = new BoundedCache({ maxEntries: 8, maxBytes: 512 * 1024, staleTtlMs: 0, now: () => Date.now() });
+async function fillFailedOpenCounts(pool, date) {
+  if (!fuyao.configured() || !pool.some((item) => item.openBoardCount === null)) return;
+  try {
+    const live = date === displayDate(todayInShanghai()) && fuyaoDataMayChange();
+    const counts = await serviceRuntime.cached(fuyaoOpenCountCache, `${date}:${live ? "live" : "closed"}`, () => (live ? 60 * 1000 : 20 * 60 * 1000), async () => {
+      const result = await serviceRuntime.track(() => trackServiceRequest(fuyao.limitBreakPool({ date, signal: serviceSignal() })));
+      return Object.fromEntries(result.rows.filter((row) => Number.isInteger(row.openTimes) && row.openTimes > 0).map((row) => [row.code, row.openTimes]));
+    });
+    for (const item of pool) {
+      if (item.openBoardCount !== null || !counts[item.code]) continue;
+      item.openBoardCount = counts[item.code];
+      item.openBoardCountProvider = "fuyao_limit_break_pool";
+      if (item.raw && typeof item.raw === "object") item.raw = { ...item.raw, zbc: counts[item.code] };
+    }
+  } catch { /* 扶摇不可用时开板次数仍为未知 */ }
 }
 
 async function topicPoolForDate(date, type = "limit", options = {}) {

@@ -450,8 +450,9 @@ nav { flex: 1; }
 .source-lane { min-height: 64px; padding: 10px; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--hover-bg); display: flex; flex-direction: column; gap: 5px; }
 .source-lane b { font-size: var(--fs-2xs); color: var(--text); }
 .source-lane small { font-size: var(--fs-2xs); line-height: 1.45; color: var(--muted); }
-.source-lane-primary { border-color: var(--down-border); background: var(--down-soft); }
-.source-lane-primary b { color: var(--green); }
+/* 首选线路用强调色标出：不用涨跌红绿（旧写法是绿底配 --green，而 --green 实为涨红）。 */
+.source-lane-primary { border-color: var(--accent); background: var(--accent-soft); }
+.source-lane-primary b { color: var(--accent); }
 .field { display: flex; flex-direction: column; gap: 7px; margin: 16px 0; }
 .field > span { font-size: var(--fs-2xs); color: var(--ink-2); display: flex; justify-content: space-between; }
 .field > span b { color: var(--green); }

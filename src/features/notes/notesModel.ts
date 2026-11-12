@@ -126,7 +126,8 @@ export function parseRemind(text: string, now = Date.now()): ParsedRemind | null
   let date: string | null = null;
   let dateLabel = "";
   let tradingDate = false;
-  const md = s.match(new RegExp(`(?:(${NUM})月)?(${NUM})[日号]`));
+  // 「5日线」「20日均线」「10日内」「3日涨幅」是行情说法，不是日期。
+  const md = s.match(new RegExp(`(?<![0-9零〇一二两三四五六七八九十])(?:(${NUM})月)?(${NUM})[日号](?![线均内涨跌量平K以])`));
   const week = s.match(/(下个?|这个?|本)?(?:周|星期|礼拜)([一二三四五六日天])/);
   if (/下一?个交易日|下个交易日/.test(s)) { date = nextTradingDay(today.date); dateLabel = "下个交易日"; tradingDate = true; }
   else if (/大后天/.test(s)) { date = addDays(today.date, 3); dateLabel = "大后天"; }
@@ -157,7 +158,8 @@ export function parseRemind(text: string, now = Date.now()): ParsedRemind | null
   let minutes: number | null = null;
   let timeLabel = "";
   const clock = s.match(/([01]?\d|2[0-3])[:：]([0-5]\d)/);
-  const dian = s.match(new RegExp(`(早上|上午|中午|下午|晚上|今晚|明晚|傍晚)?(${NUM})点(半|(${NUM})分?|一刻|三刻)?`));
+  // 「涨了20点」「指数跌30点」「跌破3点支撑」里的「点」是点数，不是钟点。
+  const dian = s.match(new RegExp(`(早上|上午|中午|下午|晚上|今晚|明晚|傍晚)?(?<![涨跌升降了破到过数0-9零〇一二两三四五六七八九十])(${NUM})点(?![位数支压])(半|(${NUM})分?|一刻|三刻)?`));
   if (clock) { minutes = Number(clock[1]) * 60 + Number(clock[2]); }
   else if (dian) {
     let hour = cnNumber(dian[2]!);

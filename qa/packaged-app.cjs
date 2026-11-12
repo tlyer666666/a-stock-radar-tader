@@ -314,7 +314,7 @@ async function run() {
     // 1.5.7 起主源文案从「同花顺 QuantAPI」改为「同花顺免费行情」（免 Token 网关），
     // 两种形态都是合法产品状态：无条件要求三线顺序与单选，文案二选一。
     const allowedPrimary = ["① 同花顺", "① 同花顺免费行情"];
-    const allowedSelected = ["同花顺免费行情 · 主源", "同花顺 QuantAPI · 主源"];
+    const allowedSelected = ["同花顺免费行情 · 主源", "同花顺扶摇行情 · 主源", "同花顺 QuantAPI · 主源"];
     const lanesOrdered =
       providerTopology.lanes.length >= 3 &&
       providerTopology.lanes[0].startsWith("① 同花顺") &&

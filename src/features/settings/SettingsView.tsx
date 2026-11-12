@@ -125,6 +125,8 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
     }));
   };
   const activeRiskProfile = riskProfilePresets.find((item) => item.id === draft.riskProfile) || riskProfilePresets[0]!;
+  const riskProfileCustomized = Object.entries(activeRiskProfile.settings)
+    .some(([key, value]) => typeof value === "number" && Number((draft as unknown as Record<string, unknown>)[key]) !== value);
   const saveDraft = async () => {
     if (saving || loadState !== "ready") return;
     const normalizedDraft: Settings = {
@@ -200,12 +202,14 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
       <nav className="settings-category-tabs" aria-label="设置分类">{[{ id: "sources", label: "行情连接" }, { id: "monitoring", label: "监控与提醒" }, { id: "execution", label: "执行参数" }, { id: "strategies", label: "策略组合" }, { id: "ai", label: "AI 助手" }, { id: "backup", label: "数据备份" }].map(item => <button type="button" key={item.id} aria-pressed={category === item.id} aria-controls={`settings-${item.id}`} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav>
       <div className="settings-grid">
         <div className="panel settings-card" id="settings-sources" hidden={category !== "sources"}>
-          <PanelTitle title="行情主数据源" subtitle="同花顺免费行情为主，三线并存" icon={Database} />
+          <PanelTitle title="行情主数据源" subtitle={draft.fuyaoApiKey ? "同花顺扶摇行情为主，免费行情、东方财富、腾讯接力" : "同花顺免费行情为主，三线并存"} icon={Database} />
           <div className="provider-options">
             <label className="selected">
               <input type="radio" checked readOnly />
               <span className="provider-icon ths">同</span>
-              <span><b>同花顺免费行情 · 主源</b><small>同花顺个股页自身的公开行情接口，无需 Token；用于实时报价，并作为日K线接力</small></span>
+              {draft.fuyaoApiKey
+                ? <span><b>同花顺扶摇行情 · 主源</b><small>已填扶摇 API Key：实时报价和日K线优先走扶摇，同花顺免费行情负责分时与分钟K线并作为第一接力</small></span>
+                : <span><b>同花顺免费行情 · 主源</b><small>同花顺个股页自身的公开行情接口，无需 Token；用于实时报价，并作为日K线接力</small></span>}
               <i />
             </label>
             <label>
@@ -338,7 +342,8 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           <div className="api-note">
             <ShieldAlert size={18} />
             <p>
-              <b>{activeRiskProfile.name}</b>：切换后会一次性覆盖以上执行参数。你可在下方继续手动微调，避免与个人风格偏差。
+              <b>{activeRiskProfile.name}{riskProfileCustomized ? "（已手动调整，和预设值不同）" : ""}</b>
+              点选上方预设会一次性把下面的执行参数改成该预设的值；之后仍可手动微调。
             </p>
           </div>
           <label className="field">
