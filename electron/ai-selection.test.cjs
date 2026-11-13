@@ -650,3 +650,51 @@ test('删光模型配置后重启不会把旧设置里的 Key 迁移回来', () 
   first.remove(migrated.profiles[0].id);
   assert.equal(make().list().profiles.length, 0); // 新进程（重启）
 });
+
+test('a missing model response stays retryable and its base score does not count as an AI vote', () => {
+  const { combineRankings } = require('./ai-service.cjs');
+  const response = items => ({ status: 'fulfilled', value: { items, evaluated: items.length } });
+  const ranked = combineRankings([
+    { profile: { id: 'a', name: 'A' }, outcome: response([
+      { code: '600001', name: '甲', score: 90, base: 90, fallback: true, highlights: '兜底文本' },
+      { code: '600002', name: '乙', score: 55, base: 55, reason: 'AI 没有评估这只，按基础分' },
+    ]) },
+    { profile: { id: 'b', name: 'B' }, outcome: response([
+      { code: '600001', name: '甲', score: 70, base: 65, highlights: '模型点评' },
+    ]) },
+  ], {});
+  const [mixed, missing] = ranked.items;
+  assert.equal(mixed.code, '600001');
+  assert.equal(mixed.score, 70);
+  assert.deepEqual(mixed.scores.map(score => score.id), ['b']);
+  assert.equal(mixed.highlights, '模型点评');
+  assert.equal(mixed.disagreement, false);
+  assert.equal(missing.fallback, true);
+  assert.deepEqual(missing.scores, []);
+  assert.equal(ranked.evaluated, 1);
+});
+
+test('a partial response reports omitted stocks and retries just those stocks on the same data day', async () => {
+  let stored;
+  const requests = [];
+  const profiles = [
+    { code: '600519', name: '甲', latest: 10, changePct: 1 },
+    { code: '000001', name: '乙', latest: 12, changePct: 2 }
+  ];
+  const service = createAiService({ getConfig: () => config, getFramework: () => ({ active: 'technical' }),
+    store: { read: () => stored, write: value => { stored = value; } },
+    fetchImpl: async (_url, options) => {
+      const { stocks } = JSON.parse(JSON.parse(options.body).messages[1].content);
+      requests.push(stocks.map(stock => stock.code));
+      return reply({ items: [{ code: stocks[0].code, score: 65 }] });
+    }
+  });
+  const input = { asOfDate: '2026-11-13', profiles };
+  const first = await service.rankCustom(input);
+  assert.equal(first.evaluated, 1);
+  assert.equal(first.models[0].missed, 1);
+  assert.equal(first.items.find(item => item.code === '000001').fallback, true);
+  const second = await service.rankCustom(input);
+  assert.deepEqual(requests, [['600519', '000001'], ['000001']]);
+  assert.equal(second.evaluated, 2);
+});

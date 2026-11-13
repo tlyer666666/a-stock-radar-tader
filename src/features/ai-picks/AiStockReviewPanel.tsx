@@ -84,8 +84,8 @@ export function AiStockReviewPanel({ security, context }: { security: { code: st
     {failed.length > 0 && item && <div className="test-result fail" role="alert"><span />{failed.map(model => `${model.name} 点评失败：${model.error || "未知原因"}`).join("；")}</div>}
     {item && review && <div className="ai-stock-review-body">
       <div className="ai-stock-review-score">
-        <span className={`ai-score-badge large ${ratingTone(item.rating)}`}>{item.score}</span>
-        <b>{item.rating}</b>
+        <span className={`ai-score-badge large ${item.fallback ? "" : ratingTone(item.rating)}`}>{item.score}</span>
+        <b>{item.fallback ? "仅基础分 · AI 待补" : item.rating}</b>
         {multi && <span className="ai-model-scores">{(item.scores || []).map(score => <span key={score.id} className={ratingTone(score.rating)}>{score.name} <b>{score.score}</b></span>)}</span>}
         {item.disagreement && <em className="ai-disagreement" title={`各模型分差 ${item.spread} 分`}>模型分歧</em>}
         <small>{stamp(review)}</small>

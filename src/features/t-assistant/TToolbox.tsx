@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { loadSafeLocalJson, saveSafeLocalJson } from '../../safeStorage';
-import { DRAWINGS_KEY, T_FRAMES, drawingKey, drawingReferences, drawingReferenceStatus, normalizeDrawings, summarizeToolbox, toolboxIndicators, toolboxHistoryNote, type TChartData, type TDrawing, type TFrame, type TDrawingReference } from './tToolboxModel';
-import TToolboxChart, { chartNumber, type TPane, type TTool } from './TToolboxChart';
+import { DRAWINGS_KEY, T_FRAMES, T_OVERLAYS, T_PANES, drawingKey, drawingReferences, drawingReferenceStatus, normalizeDrawings, summarizeToolbox, toolboxIndicators, toolboxHistoryNote, type TChartData, type TChartPreferences, type TDrawing, type TDrawingReference, type TOverlay, type TPane } from './tToolboxModel';
+import TToolboxChart, { chartNumber, type TTool } from './TToolboxChart';
 import { useTToolbox } from './useTToolbox';
 import type { TAnalysis } from './tEngine';
 
@@ -14,7 +14,7 @@ function persistDrawingEntry(contextKey: string, next: DrawingEntry) {
 }
 const toolLabels: { id: TTool; label: string }[] = [{ id: 'cursor', label: '十字光标' }, { id: 'horizontal', label: '水平线' }, { id: 'trend', label: '趋势线' }, { id: 'measure', label: '区间测量' }];
 
-function DrawingWorkspace({ data, contextKey, overlays, panes }: { data: TChartData; contextKey: string; overlays: string[]; panes: TPane[] }) {
+function DrawingWorkspace({ data, contextKey, overlays, panes }: { data: TChartData; contextKey: string; overlays: TOverlay[]; panes: TPane[] }) {
   const [entry, setEntry] = useState<DrawingEntry>(() => {
     const saved = storedEntries()[contextKey];
     const basis = saved?.basis && typeof saved.basis.date === 'string' && Number.isFinite(saved.basis.close) ? saved.basis : null;
@@ -67,9 +67,22 @@ function DrawingWorkspace({ data, contextKey, overlays, panes }: { data: TChartD
   </>;
 }
 
-export default function TToolbox({ security, live, analysis }: { security: Security; live: boolean; analysis: TAnalysis | null }) {
-  const [frame, setFrame] = useState<TFrame>('101'), [dailyAdjustment, setAdjustment] = useState('front');
-  const [overlays, setOverlays] = useState(['MA']), [panes, setPanes] = useState<TPane[]>(['VOL']);
+export type TToolboxDisplay = {
+  preferences: TChartPreferences;
+  setPreferences: Dispatch<SetStateAction<TChartPreferences>>;
+};
+
+export default function TToolbox({ security, live, analysis, display }: {
+  security: Security; live: boolean; analysis: TAnalysis | null; display: TToolboxDisplay;
+}) {
+  const { preferences, setPreferences } = display;
+  const { frame, dailyAdjustment, overlays, panes } = preferences;
+  const toggleOverlay = (id: TOverlay) => setPreferences(current => ({
+    ...current, overlays: current.overlays.includes(id) ? current.overlays.filter(overlay => overlay !== id) : [...current.overlays, id]
+  }));
+  const togglePane = (id: TPane) => setPreferences(current => ({
+    ...current, panes: current.panes.includes(id) ? current.panes.filter(pane => pane !== id) : [...current.panes, id]
+  }));
   const adjustment = Number(frame) < 100 ? 'none' : dailyAdjustment;
   const { selected, daily, refresh } = useTToolbox(security, frame, adjustment, live);
   const current = useMemo(() => selected.data ? summarizeToolbox(selected.data.rows) : null, [selected.data]);
@@ -88,8 +101,8 @@ export default function TToolbox({ security, live, analysis }: { security: Secur
     : `日线${history.trend}，${label}${momentum}。先划定支撑压力区间，再核对分时是否企稳或转弱。`;
   return <section className="panel t-toolbox" aria-label={`${security.name} 个股分析工具箱`}>
     <header className="toolbox-heading"><div><h3>个股分析工具箱</h3><p>历史定结构 · K线看量价 · 分时找时机</p></div><button type="button" className="secondary-btn" disabled={selected.loading || daily.loading} onClick={refresh}>{selected.loading || daily.loading ? '读取K线…' : '刷新K线'}</button></header>
-    <div className="toolbox-timeframes" role="group" aria-label="K线周期">{T_FRAMES.map(f => <button key={f.id} type="button" aria-pressed={frame === f.id} onClick={() => setFrame(f.id)}>{f.label}</button>)}
-      {Number(frame) >= 100 && <label>复权 <select aria-label="K线复权方式" value={dailyAdjustment} onChange={e => setAdjustment(e.target.value)}><option value="front">前复权</option><option value="none">不复权</option></select></label>}
+    <div className="toolbox-timeframes" role="group" aria-label="K线周期">{T_FRAMES.map(f => <button key={f.id} type="button" aria-pressed={frame === f.id} onClick={() => setPreferences(current => ({ ...current, frame: f.id }))}>{f.label}</button>)}
+      {Number(frame) >= 100 && <label>复权 <select aria-label="K线复权方式" value={dailyAdjustment} onChange={e => { const dailyAdjustment = e.target.value === 'none' ? 'none' : 'front'; setPreferences(current => ({ ...current, dailyAdjustment })); }}><option value="front">前复权</option><option value="none">不复权</option></select></label>}
     </div>
     <div className="toolbox-summary">
       <div><span>日线背景</span><b>{daily.error || historyAdjustmentWarning ? '数据待核对' : history?.trend || '读取中'}</b><small>{historyDate || '历史日线'} · {daily.data?.adjustment || '待确认口径'}</small></div>
@@ -100,8 +113,8 @@ export default function TToolbox({ security, live, analysis }: { security: Secur
     </div>
     <div className="toolbox-reading"><b>多周期观察</b><p>{warnings.length ? '行情时效或口径待核对，暂停当前多周期判断；图表保留供历史参考。' : plan}</p>{analysis && <small>分时模块：{analysis.signal.title} · {analysis.time}。历史关键位与分钟动能用于核对该触发的背景，指标不代表成交或胜率。</small>}</div>
     <div className="toolbox-indicators" role="group" aria-label="技术指标">
-      {['MA', 'BOLL'].map(id => <button key={id} type="button" aria-pressed={overlays.includes(id)} onClick={() => setOverlays(list => list.includes(id) ? list.filter(v => v !== id) : [...list, id])}>{id}</button>)}
-      {(['VOL', 'MACD', 'KDJ', 'RSI'] as TPane[]).map(id => <button key={id} type="button" aria-pressed={panes.includes(id)} onClick={() => setPanes(list => list.includes(id) ? list.filter(v => v !== id) : [...list, id])}>{id === 'VOL' ? '成交量' : id}</button>)}
+      {T_OVERLAYS.map(id => <button key={id} type="button" aria-pressed={overlays.includes(id)} onClick={() => toggleOverlay(id)}>{id}</button>)}
+      {T_PANES.map(id => <button key={id} type="button" aria-pressed={panes.includes(id)} onClick={() => togglePane(id)}>{id === 'VOL' ? '成交量' : id}</button>)}
     </div>
     {warnings.map(w => <p className="toolbox-warning" role="alert" key={w}>{w}</p>)}
     {selected.data ? <DrawingWorkspace key={drawingKey(security.code, frame, selected.data.adjustment)} contextKey={drawingKey(security.code, frame, selected.data.adjustment)} data={selected.data} overlays={overlays} panes={panes} />

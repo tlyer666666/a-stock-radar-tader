@@ -7,6 +7,33 @@ export const T_FRAMES: { id: TFrame; label: string; range: string }[] = [
   { id: '1', label: '1分', range: '5d' }, { id: '5', label: '5分', range: '10d' }, { id: '15', label: '15分', range: '20d' },
   { id: '30', label: '30分', range: '1m' }, { id: '60', label: '60分', range: '1m' }, { id: '101', label: '日K', range: '1y' }, { id: '102', label: '周K', range: '5y' }
 ];
+
+export const T_OVERLAYS = ['MA', 'BOLL'] as const;
+export const T_PANES = ['VOL', 'MACD', 'KDJ', 'RSI'] as const;
+export type TOverlay = typeof T_OVERLAYS[number];
+export type TPane = typeof T_PANES[number];
+export type TChartPreferences = {
+  frame: TFrame;
+  dailyAdjustment: 'front' | 'none';
+  overlays: TOverlay[];
+  panes: TPane[];
+};
+
+export const DEFAULT_CHART_PREFERENCES: TChartPreferences = {
+  frame: '101', dailyAdjustment: 'front', overlays: ['MA'], panes: ['VOL']
+};
+
+export function isTChartPreferences(value: unknown): value is TChartPreferences {
+  if (!value || typeof value !== 'object') return false;
+  const { frame, dailyAdjustment, overlays, panes } = value as Partial<TChartPreferences>;
+  return T_FRAMES.some(item => item.id === frame)
+    && (dailyAdjustment === 'front' || dailyAdjustment === 'none')
+    && Array.isArray(overlays) && overlays.length <= T_OVERLAYS.length
+    && overlays.every(overlay => T_OVERLAYS.includes(overlay)) && new Set(overlays).size === overlays.length
+    && Array.isArray(panes) && panes.length <= T_PANES.length
+    && panes.every(pane => T_PANES.includes(pane)) && new Set(panes).size === panes.length;
+}
+
 const number = (v: unknown): number | null => v !== null && v !== undefined && String(v).trim() !== '' && Number.isFinite(Number(v)) ? Number(v) : null;
 const validTime = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}(?: [0-2]\d:[0-5]\d)?$/.test(value)) return false;

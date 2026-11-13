@@ -24,7 +24,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
   onOpenStock?: ((security: Security) => void) | undefined; onOpenSettings?: (() => void) | undefined; embeddedFocus?: AgentFocus;
 }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai?.agent;
-  const { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, run, error, setError, sending, saving,
+  const { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, hasDraft, run, error, setError, sending, saving,
     persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api, embeddedFocus);
   const streamRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -88,7 +88,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
           {state?.conversations.map(item => <div role="listitem" key={item.id} className={`ai-agent-thread ${item.id === activeId ? "active" : ""}`}>
             <button type="button" className="ai-agent-thread-open" aria-current={item.id === activeId ? "true" : undefined} onClick={() => void openConversation(item.id)} title={item.title}>
               <span className="ai-agent-thread-title">{item.running && <LoaderCircle size={13} className="spin" aria-label="分析中" />}{item.title}</span>
-              <small>{item.focus ? `${item.focus.code} · ` : ""}{item.turns} 问 · {shortTime(item.updatedAt)}{item.stance && item.stance !== "不适用" && <em className={`agent-stance-dot ${stanceTone(item.stance)}`}>{item.stance}</em>}</small>
+              <small>{item.focus ? `${item.focus.code} · ` : ""}{item.turns} 问 · {shortTime(item.updatedAt)}{hasDraft(item.id) && " · 有草稿"}{item.stance && item.stance !== "不适用" && <em className={`agent-stance-dot ${stanceTone(item.stance)}`}>{item.stance}</em>}</small>
             </button>
             <button type="button" className={`ai-agent-thread-delete ${confirmDelete === item.id ? "confirm" : ""}`} aria-label={confirmDelete === item.id ? `确认删除「${item.title}」` : `删除「${item.title}」`}
               title={confirmDelete === item.id ? "再点一次确认删除" : "删除对话"} onClick={() => void remove(item.id)}>{confirmDelete === item.id ? "确认" : <Trash2 size={14} />}</button>
@@ -99,7 +99,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
 
       <section className="panel ai-agent-chat" aria-label="AI 问股对话">
         {!embeddedFocus && <div className="ai-agent-chat-head">
-          <StockPicker focus={focus} onChange={setFocus} disabled={running} />
+          <StockPicker focus={focus} onChange={setFocus} disabled={running || sending} />
           {focus && onOpenStock && <button type="button" className="link-btn ai-agent-open-stock" onClick={() => onOpenStock(toSecurity(focus))}><ExternalLink size={14} />看个股详情</button>}
         </div>}
 
@@ -124,7 +124,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
             disabled={(task.needsStock && !focus) || !state?.configured || sending} title={task.hint} onClick={() => useTask(task)}>{task.label}</button>)}
         </div>}
         <Composer refEl={composerRef} value={draft} onChange={setDraft} focus={focus} running={running} sending={sending} disabled={!state?.configured}
-          onSend={() => void send(draft)} onStop={() => void stop()} />
+          onSend={() => void send(draft, { fromDraft: true })} onStop={() => void stop()} />
       </section>
     </div>
   </div>;

@@ -1,12 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { TAnchor, TChartData, TDrawing, TIndicators } from './tToolboxModel';
+import type { TAnchor, TChartData, TDrawing, TIndicators, TOverlay, TPane } from './tToolboxModel';
 
 export type TTool = 'cursor' | 'horizontal' | 'trend' | 'measure';
-export type TPane = 'VOL' | 'MACD' | 'KDJ' | 'RSI';
 export const chartNumber = (v: number | null | undefined, digits = 2) => v == null || !Number.isFinite(v) ? '—' : v.toFixed(digits);
 const quantity = (v: number | null) => v === null ? '—' : v >= 1e8 ? `${(v / 1e8).toFixed(2)}亿` : v >= 1e4 ? `${(v / 1e4).toFixed(2)}万` : v.toFixed(0);
 
-type Props = { data: TChartData; indicators: TIndicators; overlays: string[]; panes: TPane[]; tool: TTool;
+type Props = { data: TChartData; indicators: TIndicators; overlays: TOverlay[]; panes: TPane[]; tool: TTool;
   drawings: TDrawing[]; selectedDrawing: string; onSelect: (id: string) => void; onDraw: (value: Omit<TDrawing, 'id'>) => void };
 export default function TToolboxChart({ data, indicators, overlays, panes, tool, drawings, selectedDrawing, onSelect, onDraw }: Props) {
   const [range, setRange] = useState(60), [offset, setOffset] = useState(0);

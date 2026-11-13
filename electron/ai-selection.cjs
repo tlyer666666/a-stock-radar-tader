@@ -200,7 +200,10 @@ const ratingOf = score => score >= 75 ? "重点关注" : score >= 60 ? "关注" 
  * AI 漏掉的股票按基础分给出，并注明。
  */
 function validateFrameworkRanking(result, list, evaluations) {
-  const byCode = new Map((Array.isArray(result?.items) ? result.items : []).map(raw => [String(raw?.code || "").match(/\d{6}/)?.[0] || "", raw]));
+  const byCode = new Map((Array.isArray(result?.items) ? result.items : []).filter(raw => {
+    const value = raw?.score;
+    return (typeof value === "number" || (typeof value === "string" && value.trim())) && Number.isFinite(Number(value));
+  }).map(raw => [String(raw.code || "").match(/\d{6}/)?.[0] || "", raw]));
   const answered = list.filter(stock => byCode.has(stock.code)).length;
   if (!answered) throw Object.assign(new Error("AI 没有给出可用的评分，请重试或换一个模型"), { code: "AI_BAD_OUTPUT" });
   return list.map(stock => {
@@ -211,6 +214,7 @@ function validateFrameworkRanking(result, list, evaluations) {
     return {
       code: stock.code, name: stock.name, score, rating: ratingOf(score),
       highlights: clip(raw?.highlights, 60), risks: clip(raw?.risks, 60), nextDay: clip(raw?.nextDay, 60),
+      ...(raw ? {} : { fallback: true }),
       reason: raw ? clip(raw?.reason, 50) : "AI 没有评估这只，按基础分",
       ...frameworkFields(evaluation, score)
     };
@@ -293,7 +297,7 @@ function createAiSelection({ ai }) {
       return validateRanking(result, batch);
     });
     const items = outcomes.flatMap(item => item.ok ? item.value : []).sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
-    const missed = outcomes.filter(item => !item.ok).reduce((sum, item) => sum + item.batch.length, 0);
+    const missed = list.length - items.length;
     return { asOfDate: String(asOfDate || ""), model: ai.model(), generatedAt: new Date().toISOString(), items, evaluated: items.length, ...(missed ? { missed } : {}) };
   }
 
@@ -361,7 +365,7 @@ function createAiSelection({ ai }) {
       return { code: stock.code, name: stock.name, score, rating: ratingOf(score), highlights: "", risks: "", nextDay: "", reason: "AI 这一批没有返回，按基础分",
         fallback: true, ...frameworkFields(evaluation, score) };
     }) : []).sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
-    const missed = outcomes.filter(item => !item.ok).reduce((sum, item) => sum + item.batch.length, 0);
+    const missed = list.length - items.filter(item => !item.fallback).length;
     return { asOfDate: String(asOfDate || ""), model: ai.model(), generatedAt: new Date().toISOString(), items, evaluated: list.length - missed,
       ...(missed ? { missed } : {}), ...(framework ? { framework: framework.name } : {}) };
   }

@@ -76,7 +76,7 @@ test("the score button scores the ticked stocks, then the unscored ones, then ev
   const total = ["600001", "600002", "600003"];
   assert.deepEqual(scoreAction({ selected: ["600002"], scored: new Set(["600001"]), total }), { label: "给勾选的 1 只打分", force: true, only: ["600002"] });
   assert.deepEqual(scoreAction({ selected: [], scored: new Set(), total }), { label: "AI 打分", force: false, only: undefined });
-  assert.deepEqual(scoreAction({ selected: [], scored: new Set(["600001"]), total }), { label: "给未打分的 2 只打分", force: false, only: undefined });
+  assert.deepEqual(scoreAction({ selected: [], scored: new Set(["600001"]), total }), { label: "补齐 2 只打分", force: false, only: ["600002", "600003"] });
   assert.deepEqual(scoreAction({ selected: [], scored: new Set(total), total }), { label: "全部重新打分", force: true, only: undefined });
 });
 
@@ -382,4 +382,56 @@ test('sector interpretation restores its saved headline without rendering the me
   await h.flush();
   assert.match(text(h.tree), /已保存的行业解读/);
   assert.doesNotMatch(text(h.tree), /fixture-model|本机已保存|数据日/);
+});
+
+test('a candidate with an incomplete model set stays in the targeted retry', async t => {
+  const store = require('./selectionReportStore.ts');
+  const previous = store.getSelectionReport();
+  store.setSelectionReport({ asOfDate: '2026-11-12', strategies: [{ id: 'a', name: '样例', stocks: [
+    { code: '600001', name: '甲' }, { code: '600002', name: '乙' }
+  ] }] });
+  t.after(() => store.setSelectionReport(previous));
+  const modelScores = [{ id: 'a' }, { id: 'b' }];
+  const ranked = { items: [{ code: '600001', score: 70, rating: '关注', scores: modelScores },
+    { code: '600002', score: 65, rating: '关注', scores: modelScores.slice(0, 1) }] };
+  const requests = [];
+  const { h, button } = asyncPanelHarness(t, '../ai-picks/AiPicksView.tsx', 'default', { live: false }, {
+    status: async () => ({ configured: true, rankModels: ['A', 'B'] }),
+    cached: async () => ({ rank: ranked, summary: null }),
+    rank: async input => { requests.push(input); return ranked; }
+  });
+  await h.flush();
+  button(h.tree, '补齐 1 只打分').props.onClick();
+  await h.flush();
+  assert.equal(requests[0].force, false);
+  assert.deepEqual(requests[0].only, ['600002']);
+});
+
+
+test('refreshing candidates keeps the current round visible and reports refresh failures', async t => {
+  const originalDocument = global.document;
+  global.document = { hidden: false };
+  t.after(() => { global.document = originalDocument; });
+  const store = require('./selectionReportStore.ts');
+  const previous = store.getSelectionReport();
+  store.setSelectionReport({ asOfDate: '2026-11-12', strategies: [{ id: 'a', name: '样例', stocks: [{ code: '600001', name: '原候选' }] }] });
+  t.after(() => store.setSelectionReport(previous));
+  const { h, button, text } = asyncPanelHarness(t, '../ai-picks/AiPicksView.tsx', 'default', { live: false }, {
+    status: async () => ({ configured: true }),
+    cached: async () => ({ rank: null, summary: null })
+  });
+  const pending = deferredList();
+  let request;
+  window.stockApi.scanStrategySignals = input => { request = input; return pending.promise; };
+  await h.flush();
+  button(h.tree, '刷新候选').props.onClick();
+  await h.flush();
+  assert.equal(request.refresh, true);
+  assert.equal(button(h.tree, 'AI 打分').props.disabled, true);
+  assert.match(text(h.tree), /原候选/);
+  pending.reject(Error('刷新行情失败'));
+  await h.flush();
+  assert.match(text(h.tree), /刷新行情失败/);
+  assert.match(text(h.tree), /原候选/);
+  assert.equal(button(h.tree, 'AI 打分').props.disabled, false);
 });
