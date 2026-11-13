@@ -25,6 +25,7 @@ test('AI 整理：请求里只有文字、时间和交易日；结果逐字段�
 test('不合格的字段丢掉：坏时间、坏代码、坏条件、非交易日的交易时段', () => {
   const bad = sanitizeNoteParse({ text: 'x', when: '明天', repeat: 'hourly', code: '12345', condition: { field: 'volume', op: 'lte', value: 1 } }, { tradingDays: DAYS });
   assert.deepEqual([bad.when, bad.repeat, bad.code, bad.condition], [null, 'none', null, null]);
+  assert.equal(sanitizeNoteParse({ when: '2026-02-30 10:00' }).when, null);
   assert.equal(sanitizeNoteParse({ when: '2026-11-14 09:30' }, { tradingDays: DAYS }).when, null, '周六的开盘不存在');
   assert.equal(sanitizeNoteParse({ when: '2026-11-14 20:00' }, { tradingDays: DAYS }).when, '2026-11-14 20:00', '周六晚上可以');
   assert.equal(sanitizeNoteParse({ condition: { field: 'changePct', op: 'gte', value: 50 } }).condition, null);

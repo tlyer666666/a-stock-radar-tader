@@ -7,7 +7,7 @@
  */
 const SYSTEM = `你是 A 股交易者的记事助手。用户随手写了一段话，你要从中识别：
 1. 什么时候提醒（北京时间）。A 股交易时段：集合竞价 09:15–09:25，开盘 09:30，上午收盘 11:30，下午开盘 13:00，尾盘约 14:45，收盘 15:00。
-   「开盘前」用 09:15，「开盘」用 09:30，「尾盘」用 14:45，「收盘后」用 15:05。说到交易时段、但那天不是交易日时，顺延到下一个交易日（只能从给出的交易日列表里选）。
+   「开盘前」用 09:15，「开盘」用 09:30，「尾盘」用 14:45，「收盘后」用 15:05。明确写了偏移量时，以实际时刻加减，例如「开盘前半小时」是 09:00，「收盘后十五分钟」是 15:15。说到交易时段、但那天不是交易日时，顺延到下一个交易日（只能从给出的交易日列表里选）。
    没写任何时间、也没写价格条件时，when 填 null。
 2. 是否重复：none / tradingDays（每个交易日）/ daily / weekly。
 3. 提到的 A 股：只填 6 位代码；只写了名称时，只有在你非常确定代码时才填，否则 null。
@@ -23,7 +23,11 @@ const clip = (value, max) => String(value ?? "").replace(/\s+/g, " ").trim().sli
 function sanitize(result, { tradingDays = [] } = {}) {
   const out = { text: clip(result?.text, 120), when: null, repeat: "none", code: null, condition: null, note: clip(result?.note, 120) };
   const when = String(result?.when || "");
-  if (/^\d{4}-\d{2}-\d{2} ([01]\d|2[0-3]):[0-5]\d$/.test(when)) out.when = when;
+  if (/^\d{4}-\d{2}-\d{2} ([01]\d|2[0-3]):[0-5]\d$/.test(when)) {
+    const date = when.slice(0, 10);
+    const midnight = Date.parse(`${date}T00:00:00Z`);
+    if (Number.isFinite(midnight) && new Date(midnight).toISOString().slice(0, 10) === date) out.when = when;
+  }
   if (["tradingDays", "daily", "weekly"].includes(result?.repeat)) out.repeat = result.repeat;
   const code = String(result?.code || "");
   if (/^[03689]\d{5}$/.test(code)) out.code = code;

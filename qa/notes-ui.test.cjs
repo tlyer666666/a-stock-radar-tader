@@ -28,7 +28,7 @@ describe('随心记 page in the actual renderer', () => {
       window.calls.watch = []; window.calls.agent = []; window.nextHits = [];
       api.notesWatch = async input => { window.calls.watch.push(input); const hits = window.nextHits; window.nextHits = []; return { hits, watching: input.items.length, session: true }; };
       api.ai = { ...(api.ai || {}),
-        parseNote: async input => { window.calls.parse = input; return { text: '明天开盘看比亚迪 002594，跌破 280 减仓', when: '2026-11-13 09:30', repeat: 'none', code: '002594',
+        parseNote: async input => { window.calls.parse = input; if (window.holdAi) await new Promise(resolve => { window.finishAi = resolve; }); return { text: '明天开盘看比亚迪 002594，跌破 280 减仓', when: '2026-11-13 09:30', repeat: 'none', code: '002594',
           condition: { field: 'latest', op: 'lte', value: 280 }, note: '跌破均价线要自己看', model: 'demo' }; },
         agent: { ...(api.ai?.agent || {}),
           start: async input => { window.calls.agent.push(input); return { runId: 'r' + window.calls.agent.length, conversationId: 'c1' }; },
@@ -41,7 +41,7 @@ describe('随心记 page in the actual renderer', () => {
         const open = stock => window.calls.opened.push(stock.code);
         return React.createElement(React.Fragment, null,
           React.createElement('div', { className: 'quick-note-host' }, React.createElement(QuickNote, { api: notes, stock: { code: '600519', name: '贵州茅台', secid: '1.600519' } })),
-          React.createElement(NotesView, { api: notes, onOpenStock: open }),
+          React.createElement(NotesView, { api: notes, onOpenStock: open, holdings: [{ code: '600519', name: '贵州茅台' }] }),
           React.createElement(NoteReminderStack, { api: notes, onOpenNotes: () => {}, onOpenStock: open }));
       }
       createRoot(document.getElementById('root')).render(React.createElement(React.StrictMode, null,
@@ -236,4 +236,69 @@ describe('随心记 page in the actual renderer', () => {
       assert.equal(await page.locator('.notes-card', { hasText: '10.20' }).count(), 0);
     });
   });
+
+  test('复合时间和股票全名可直接录入，修改文案后自动重复同步更新', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('每个交易日开盘前半小时看贵州茅台');
+      await page.getByRole('radio', { name: /识别到：明天 09:00/ }).waitFor();
+      assert.equal(await page.getByLabel('重复').inputValue(), 'tradingDays');
+      await page.locator('.notes-stock-chip').filter({ hasText: '贵州茅台 600519' }).waitFor();
+      await input.fill('明天开盘前半小时看贵州茅台');
+      assert.equal(await page.getByLabel('重复').inputValue(), 'none');
+      await input.press('Enter');
+      assert.match(await page.locator('.notes-card').innerText(), /明天 09:00 提醒/);
+
+      await input.fill('11月31日 14:30 看看');
+      await page.getByText(/日期无效/).waitFor();
+      assert.ok(await page.getByRole('button', { name: '记下来' }).isDisabled());
+      await input.press('Enter');
+      assert.equal(await page.locator('.notes-card').count(), 1);
+    });
+  });
+
+  test('多个股票或价格条件须选定后才保存，主进程只收到选中的条件', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      const save = page.getByRole('button', { name: '记下来' });
+      await input.fill('贵州茅台和 002594，跌破 280 或涨幅超过 5% 提醒我');
+      await page.getByText('识别到多只股票，请选择一只').waitFor();
+      assert.ok(await save.isDisabled());
+      await page.getByLabel('关联股票').selectOption('002594');
+      await page.getByText('识别到多个价格条件，请选择一项').waitFor();
+      assert.ok(await save.isDisabled());
+      await page.getByLabel('盯盘条件').selectOption({ label: '涨幅 ≥ 5%' });
+      await save.click();
+      await page.locator('.notes-card').getByText('盯盘：涨幅 ≥ 5%').waitFor();
+      await page.waitForFunction(() => window.calls.watch.at(-1)?.items.length === 1);
+      const [watch] = await page.evaluate(() => window.calls.watch.at(-1).items);
+      assert.equal(watch.code, '002594');
+      assert.deepEqual(watch.condition, { field: 'changePct', op: 'gte', value: 5 });
+    });
+  });
+
+  test('AI 晚返回不能改写新草稿，撤销恢复手选时间和重复设置', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('旧草稿');
+      await page.evaluate(() => { window.holdAi = true; });
+      await page.getByRole('button', { name: 'AI 整理', exact: true }).click();
+      await page.waitForFunction(() => typeof window.finishAi === 'function');
+      await input.fill('新的草稿');
+      await page.evaluate(() => { window.holdAi = false; window.finishAi(); });
+      await page.getByRole('button', { name: 'AI 整理', exact: true }).waitFor();
+      assert.equal(await input.inputValue(), '新的草稿');
+
+      await page.getByRole('radio', { name: '1 小时后' }).click();
+      await page.getByLabel('重复').selectOption('daily');
+      await page.getByRole('button', { name: 'AI 整理', exact: true }).click();
+      await page.getByRole('button', { name: '撤销 AI 整理' }).click();
+      assert.equal(await input.inputValue(), '新的草稿');
+      assert.equal(await page.getByRole('radio', { name: '1 小时后' }).getAttribute('aria-checked'), 'true');
+      assert.equal(await page.getByLabel('重复').inputValue(), 'daily');
+      await page.clock.fastForward('01:00');
+      assert.match(await page.locator('.notes-composer [role="status"]').innerText(), /今天 15:00（每天）/);
+    });
+  });
+
 });

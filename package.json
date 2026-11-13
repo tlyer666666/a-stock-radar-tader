@@ -1,6 +1,6 @@
 {
   "name": "a-stock-monitor",
-  "version": "1.6.66",
+  "version": "1.6.67",
   "packageManager": "pnpm@11.16.0",
   "private": true,
   "engines": {
