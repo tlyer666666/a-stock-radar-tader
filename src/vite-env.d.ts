@@ -379,7 +379,7 @@ interface Window {
       rows: any[];
       meta: { dataDate: string; fetchedAt: string; providers: string[] };
     }>;
-    getPreviousLimitUpFailedBoardSnapshot(options?: { forceRefresh?: boolean }): Promise<PreviousLimitUpFailedBoardSnapshot>;
+    getPreviousLimitUpFailedBoardSnapshot(options?: { forceRefresh?: boolean; refreshDate?: string }): Promise<PreviousLimitUpFailedBoardSnapshot>;
     discoverRecentLimitUps(days?: number, options?: { forceRefresh?: boolean }): Promise<any[]>;
     getLimitUpSectorBoard(options?: { forceRefresh?: boolean }): Promise<any[]>;
     getSectorStrengthBoard?(options?: { forceRefresh?: boolean }): Promise<SectorStrengthBoard>;

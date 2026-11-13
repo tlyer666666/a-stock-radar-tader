@@ -1296,7 +1296,10 @@ if (!hasSingleInstanceLock) {
   handleTrustedIpc("market:previous-limit-up-failed-boards", (_, options = {}) =>
     getPreviousLimitUpFailedBoardSnapshot({
       ...settingsForService(),
-      forceRefresh: options?.forceRefresh === true
+      forceRefresh: options?.forceRefresh === true,
+      refreshDate: typeof options?.refreshDate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(options.refreshDate)
+        ? options.refreshDate
+        : undefined
     })
   );
   handleTrustedIpc("strategy:scan", (event, options = {}) => {

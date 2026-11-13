@@ -29,7 +29,7 @@ function normalizedPoolCode(value = "") {
 }
 
 function sourcePoolItem(raw = {}) {
-  if (raw?.dataProvider === "ths_public_limit_up") {
+  if (raw?.dataProvider === "ths_public_limit_up" || raw?.dataProvider === "ths_public_open_limit") {
     return raw?.raw?.sourceItem && typeof raw.raw.sourceItem === "object"
       ? raw.raw.sourceItem
       : {};
@@ -92,6 +92,21 @@ function poolSnapshotSource(pool, requestedDate) {
   };
 }
 
+function failedMetrics(item) {
+  const hasFuyaoCount = item?.openBoardCountProvider === "fuyao_limit_break_pool" &&
+    Number.isInteger(item.openBoardCount) && item.openBoardCount > 0;
+  const isThs = item?.dataProvider === "ths_public_open_limit";
+  return {
+    latest: nullablePoolMetric(item, "latest", ["latest", "p"]),
+    changePct: nullablePoolMetric(item, "changePct", ["change_rate", "zdp", "changePct"]),
+    amount: nullablePoolMetric(item, "amount", isThs ? ["amount", "turnover"] : ["amount"]),
+    turnover: nullablePoolMetric(item, "turnover", ["turnover_rate", "hs", "turnoverPct", ...(!isThs ? ["turnover"] : [])]),
+    firstSealTime: nullablePoolTime(item, "firstSealTime", ["first_limit_up_time", "fbt", "firstSealTime"]),
+    lastSealTime: nullablePoolTime(item, "lastSealTime", ["last_limit_up_time", "lbt", "lastSealTime"]),
+    openBoardCount: hasFuyaoCount ? item.openBoardCount : nullablePoolMetric(item, "openBoardCount", ["open_board_count", "zbc", "openBoardCount"])
+  };
+}
+
 function failedBoardDaySnapshot(date, pool, error, confirmedDates = new Set()) {
   const requestedDate = displayDate(date);
   if (error) {
@@ -147,13 +162,7 @@ function failedBoardDaySnapshot(date, pool, error, confirmedDates = new Set()) {
       name,
       industry: String(item?.industry || "未分类"),
       consecutiveBoards: nullablePoolMetric(item, "consecutiveBoards", ["high_days", "lbc", "consecutiveBoards"], false),
-      firstSealTime: nullablePoolTime(item, "firstSealTime", ["first_limit_up_time", "fbt", "firstSealTime"]),
-      lastSealTime: nullablePoolTime(item, "lastSealTime", ["last_limit_up_time", "lbt", "lastSealTime"]),
-      openBoardCount: nullablePoolMetric(item, "openBoardCount", ["open_board_count", "zbc", "openBoardCount"]),
-      latest: nullablePoolMetric(item, "latest", ["p", "latest"]),
-      changePct: nullablePoolMetric(item, "changePct", ["zdp", "changePct"]),
-      amount: nullablePoolMetric(item, "amount", ["amount"]),
-      turnover: nullablePoolMetric(item, "turnover", ["hs", "turnover"])
+      ...failedMetrics(item)
     });
   }
   return { date: requestedDate, status: "ready", rows, source, error: null };
@@ -190,15 +199,7 @@ function previousLimitIntersectionRows(previousPool, failedPool) {
         boardType,
         isOneWordBoard: boardType === null ? null : /一字/.test(boardType)
       },
-      today: {
-        latest: nullablePoolMetric(todayItem, "latest", ["p", "latest"]),
-        changePct: nullablePoolMetric(todayItem, "changePct", ["zdp", "changePct"]),
-        amount: nullablePoolMetric(todayItem, "amount", ["amount"]),
-        turnover: nullablePoolMetric(todayItem, "turnover", ["hs", "turnover"]),
-        firstSealTime: nullablePoolTime(todayItem, "firstSealTime", ["fbt", "firstSealTime"]),
-        lastSealTime: nullablePoolTime(todayItem, "lastSealTime", ["lbt", "lastSealTime"]),
-        openBoardCount: nullablePoolMetric(todayItem, "openBoardCount", ["zbc", "openBoardCount"])
-      }
+      today: failedMetrics(todayItem)
     });
   }
   return rows;
@@ -214,7 +215,6 @@ async function getPreviousLimitUpFailedBoardSnapshot(options = {}) {
   }
 
   const current = pools?.[0] || null;
-  const previous = pools?.[1] || null;
   let benchmarkDates = [];
   try {
     benchmarkDates = await recentTradingDates(12);
@@ -244,11 +244,13 @@ async function getPreviousLimitUpFailedBoardSnapshot(options = {}) {
   if (dateConfirmationPool && displayDate(dateConfirmationPool.date) === displayDate(today) && displayDate(dateConfirmationPool.serverTradingDate || "") === displayDate(today)) {
     confirmedDates.add(displayDate(dateConfirmationPool.date));
   }
-  const dayResults = await Promise.all(selectedDates.map(async (date, index) => {
+  const requestedRefreshDate = displayDate(options.refreshDate || "");
+  const refreshDate = selectedDates.find(date => displayDate(date) === requestedRefreshDate) || selectedDates[0];
+  const dayResults = await Promise.all(selectedDates.map(async (date) => {
     try {
       let pool = await topicPoolForDate(date, "failed", {
         ...options,
-        forceRefresh: options.forceRefresh === true && (index === 0 || date === displayDate(todayInShanghai()))
+        forceRefresh: options.forceRefresh === true && date === refreshDate
       });
       // A null payload has no market date of its own. Only independent source
       // evidence plus the benchmark trading calendar can confirm a zero day.
@@ -264,8 +266,9 @@ async function getPreviousLimitUpFailedBoardSnapshot(options = {}) {
     }
   }));
   const failedBoardDays = dayResults.map((result) => result.snapshot);
-  const currentDate = displayDate(current?.date || failedBoardDays[0]?.date || "") || null;
-  const previousDate = displayDate(previous?.date || "") || null;
+  const currentDate = failedBoardDays[0]?.date || null;
+  const previousDate = failedBoardDays[1]?.date || null;
+  const previous = previousDate ? pools.find(pool => displayDate(pool?.date || "") === previousDate) : null;
   const failedByDate = new Map(dayResults.map((result) => [displayDate(result.date), result.pool]));
   const currentFailedDay = failedBoardDays.find((day) => day.date === currentDate) || null;
   const currentFailedPool = failedByDate.get(currentDate || "") || null;
@@ -276,7 +279,7 @@ async function getPreviousLimitUpFailedBoardSnapshot(options = {}) {
   await fillIndustries([rows, ...failedBoardDays.map(day => day.rows)], [currentDate, previousDate, ...failedBoardDays.map(day => day.date)].filter(Boolean), options);
 
   return {
-    status: intersectionReady ? "ready" : currentFailedDay?.status === "unavailable" || !current && !failedBoardDays.length
+    status: intersectionReady ? "ready" : currentFailedDay?.status === "unavailable" || !failedBoardDays.length
       ? "unavailable"
       : "awaiting-confirmation",
     previousDate,

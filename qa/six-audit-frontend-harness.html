@@ -15,7 +15,28 @@ delete api.openProfessionalReviewWindow;
 if(mode==='standalone') {const {default:Boundary}=await import('/src/AppErrorBoundary.tsx'); const Crash=()=>{throw new Error('隔离复盘故障演示');};createRoot(document.getElementById('root')).render(React.createElement(Boundary,null,React.createElement(Crash)));}
 else if(mode==='review') {const {default:View}=await import('/src/ProfessionalReview.tsx'); createRoot(document.getElementById('root')).render(React.createElement(View));}
 else if(mode==='sector') {const {SectorView:View}=await import('/src/features/sectors/SectorView.tsx'); const row={name:'审计板块', constituents:[{code:'600001',name:'缺值样本',changePct:null, mainNetInflow:null}]}; api.analyzeSector=async()=>{window.fixture.calls.push({kind:'sectorAnalyze'});return row;}; createRoot(document.getElementById('root')).render(React.createElement(View,{ rows:[row],loading:false,loadError:'',onRefresh:()=>true,onOpenStock:()=>{} }));}
-else if(mode==='failed') {const {default:View}=await import('/src/PreviousLimitUpFailedBoards.tsx'); const get=api.getPreviousLimitUpFailedBoardSnapshot.bind(api);api.getPreviousLimitUpFailedBoardSnapshot=async(...a)=>{const v=await get(...a);return {...v, rows:v.rows.map(r=>({...r,industry:null})),failedBoardDays:v.failedBoardDays.map(d=>({...d,rows:d.rows.map(r=>({...r,industry:null}))}))};};createRoot(document.getElementById('root')).render(React.createElement(View,{live:false,cachedSnapshot:null,onSnapshot:()=>{},onOpen:()=>{},onAdd:()=>{},isFavorite:()=>false}));}
+else if(mode==='failed') {const {default:View}=await import('/src/PreviousLimitUpFailedBoards.tsx'); const get=api.getPreviousLimitUpFailedBoardSnapshot.bind(api);api.getPreviousLimitUpFailedBoardSnapshot=async(...a)=>{const v=await get(...a);return {...v, rows:v.rows.map(r=>({...r,industry:null})),failedBoardDays:v.failedBoardDays.map(d=>({...d,rows:d.rows.map(r=>({...r,industry:null}))}))};};createRoot(document.getElementById('root')).render(React.createElement(View,{live:false,cache:null,onSnapshot:()=>{},onOpen:()=>{},onAdd:()=>{},isFavorite:()=>false}));}
+else if(mode==='failed-refresh') {
+  const get = api.getPreviousLimitUpFailedBoardSnapshot.bind(api);
+  api.getPreviousLimitUpFailedBoardSnapshot = async options => {
+    window.fixture.calls.push({kind:'failed',options});
+    const result = await get(options);
+    const day = result.failedBoardDays[2];
+    if (window.fixture.failedDateUnavailable) {
+      result.failedBoardDays[2] = {...day,status:'unavailable',rows:[],error:'隔离数据源失败'};
+    } else {
+      const template = day.rows[0];
+      day.rows = [
+        {...template,code:'600001',name:'排序未知',openBoardCount:null},
+        {...template,code:'600002',name:'排序零次',openBoardCount:0},
+        {...template,code:'600003',name:'排序两次',openBoardCount:2}
+      ];
+    }
+    return {...result,isPreview:false};
+  };
+  const {default:App}=await import('/src/App.tsx');
+  createRoot(document.getElementById('root')).render(React.createElement(App));
+}
 else { const {default:App}=await import('/src/App.tsx'); createRoot(document.getElementById('root')).render(React.createElement(App)); }
 await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 window.fixture.ready=true;
