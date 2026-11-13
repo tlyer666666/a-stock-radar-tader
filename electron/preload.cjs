@@ -128,6 +128,7 @@ contextBridge.exposeInMainWorld("stockApi", {
   setTheme: (theme) => invoke("app:set-theme", theme),
   controlWindow: (action) => invoke("app:window-control", action),
   notify: (message) => invoke("app:notify", message),
+  syncNoteIntervals: (input) => invoke("notes:interval-sync", input),
   notesWatch: (input) => invoke("notes:watch-sync", input),
   backup: {
     status: () => invoke("backup:status"),

@@ -10,6 +10,7 @@ const {
   safeStorage,
   dialog,
   session,
+  powerMonitor,
   Notification
 } = require("electron");
 const path = require("path");
@@ -634,6 +635,9 @@ function showSystemNotification(input) {
   notification.show();
   return { shown: true };
 }
+
+const { createIntervalReminderScheduler } = require("./note-watch.cjs");
+const intervalReminders = createIntervalReminderScheduler({ notify: showSystemNotification });
 
 let noteWatcherInstance = null;
 function noteWatcher() {
@@ -1536,6 +1540,8 @@ if (!hasSingleInstanceLock) {
 
   // 随心记提醒：用系统通知，窗口在后台或最小化时也能看到；点通知回到软件。只接受短文本。
   handleTrustedIpc("app:notify", (_, input) => showSystemNotification(input));
+  handleTrustedIpc("notes:interval-sync", (_, input) => intervalReminders.sync(input));
+  powerMonitor.on("resume", intervalReminders.tick);
   // 随心记的价格条件：主进程在交易时段盯报价，满足就发系统通知；页面同步时取走触发记录。
   handleTrustedIpc("notes:watch-sync", (_, input) => {
     const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
@@ -1589,6 +1595,7 @@ app.on("before-quit", (event) => {
   trendScanOwner = undefined;
   trendScreener.cancel();
   noteWatcherInstance?.stop();
+  intervalReminders.stop();
   finishShutdown(event);
 });
 

@@ -176,3 +176,24 @@ test("无效日期和钟点明确提示，多个股票或价格条件不会只�
   assert.equal(model.parseConditions("跌破5日线，跌破10时再看，跌破10时提醒").length, 1);
   assert.equal(model.parseConditions("不跌破10才继续观察").length, 0);
 });
+
+test("识别分钟循环，恢复后保持原频率且不连发积压提醒", () => {
+  for (const text of ["每十五分钟提醒我一次", "每隔 15 分钟提醒我一次", "提醒我每十五分钟看一下"]) {
+    const parsed = model.parseRemind(text, NOW);
+    assert.equal(parsed?.repeat, "interval", text);
+    assert.equal(parsed?.intervalMinutes, 15);
+    assert.equal(parsed?.at, NOW + 15 * 60_000);
+  }
+  assert.equal(model.parseRemind("十五分钟后提醒我一次", NOW).repeat, "none");
+  assert.equal(model.parseRemind("K线每十五分钟更新一次", NOW), null);
+  assert.equal(model.parseRemind("每十五分钟内涨超过3%要观察", NOW), null);
+  assert.equal(model.parseRemind("不用每十五分钟提醒我", NOW), null);
+  assert.match(model.inspectReminder("每0分钟提醒我", NOW).problem, /1.*1440/);
+  const note = model.normalizeNote({ id: "loop", text: "循环", remindAt: new Date(NOW).toISOString(), repeat: "interval", intervalMinutes: 15 });
+  assert.equal(note.intervalMinutes, 15);
+  const fired = model.markFired(note, NOW + 31 * 60_000);
+  assert.equal(Date.parse(fired.remindAt), NOW + 45 * 60_000);
+  assert.equal(model.dueToFire([fired], NOW + 44 * 60_000).length, 0);
+  assert.equal(model.dueToFire([fired], NOW + 45 * 60_000).length, 1);
+  assert.equal(model.normalizeNote({ ...note, intervalMinutes: 0 }).repeat, "none");
+});

@@ -484,6 +484,8 @@ interface Window {
     ): Promise<{ ok: boolean; maximized: boolean }>;
     /** 系统通知（随心记提醒）；旧版本没有这个接口。 */
     notify?(message: { title: string; body?: string }): Promise<{ shown: boolean }>;
+    syncNoteIntervals?(input: { items: Array<{ id: string; text: string; at: number; intervalMinutes: number }>; systemNotify: boolean }):
+      Promise<Array<{ id: string; at: number; lastFiredAt: number; nextAt: number }>>;
     /** 随心记价格条件（1.6.66）：交来要盯的条件，取走已触发的记录。 */
     notesWatch?(input: { items: Array<{ id: string; code: string; name: string; secid: string; text: string; condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } }>; systemNotify: boolean }):
       Promise<{ hits: Array<{ id: string; at: string; detail: string }>; watching: number; session: boolean; error?: string }>;

@@ -77,3 +77,33 @@ test('交易时段判断按北京时间', () => {
   assert.equal(inTradingSession(cn('2026-11-12T14:59:00'), open), true);
   assert.equal(inTradingSession(cn('2026-11-12T10:00:00'), () => false), false);
 });
+
+test("minute reminders run without a renderer tick, survive late sync, and cancel on removal", () => {
+  const { createIntervalReminderScheduler } = require("./note-watch.cjs");
+  let now = cn("2026-11-13T16:00:00");
+  const first = now + 900_000;
+  const item = { id: "minute", text: "15分钟", at: first, intervalMinutes: 15 };
+  const notices = [];
+  let timer = null;
+  const scheduler = createIntervalReminderScheduler({
+    now: () => now, notify: value => notices.push(value),
+    setTimer(fn, delay) { timer = { fn, delay }; return timer; },
+    clearTimer() { timer = null; }
+  });
+  assert.deepEqual(scheduler.sync({ items: [item], systemNotify: true }), []);
+  assert.equal(timer.delay, 900_000);
+  now = first;
+  timer.fn();
+  now += 900_000;
+  timer.fn();
+  assert.equal(notices.length, 2);
+  assert.deepEqual(scheduler.sync({ items: [item], systemNotify: true }), [{ id: item.id, at: first, lastFiredAt: now, nextAt: now + 900_000 }]);
+  assert.equal(notices.length, 2);
+  assert.deepEqual(scheduler.sync({ items: [{ ...item, at: now + 900_000 }], systemNotify: false }), []);
+  now += 900_000;
+  timer.fn();
+  assert.equal(notices.length, 2, "系统通知关闭后仍记触发，界面可以取到");
+  assert.equal(scheduler.sync({ items: [{ ...item, at: now }] })[0].lastFiredAt, now);
+  scheduler.sync({ items: [] });
+  assert.equal(timer, null);
+});
