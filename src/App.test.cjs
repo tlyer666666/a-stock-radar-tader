@@ -13,6 +13,7 @@ let selectFailedBoardDay;
 let FailedBoardDayTabs;
 let mergeGoodFailedBoardDays;
 let failedBoardDaysForDisplay;
+let failedBoardSessionLabel;
 let resolveInformationCenterRoute;
 let priceChartSeries;
 let restoreTypeScript;
@@ -34,6 +35,7 @@ before(() => {
   FailedBoardDayTabs = failedBoardModule.FailedBoardDayTabs;
   mergeGoodFailedBoardDays = failedBoardModule.mergeGoodFailedBoardDays;
   failedBoardDaysForDisplay = failedBoardModule.failedBoardDaysForDisplay;
+  failedBoardSessionLabel = failedBoardModule.failedBoardSessionLabel;
   resolveInformationCenterRoute = appModule.resolveInformationCenterRoute;
   priceChartSeries = require("./priceChartSeries.ts");
 });
@@ -71,7 +73,7 @@ test("failed-board view defaults to one independent latest day and exposes five 
   };
   const html = renderToStaticMarkup(React.createElement(PreviousLimitUpFailedBoards, {
     live: false,
-    cachedSnapshot: snapshot,
+    cache: { latestResponse: snapshot, lastGoodSnapshot: snapshot, lastGoodDailyDays: daily, failureMessage: "", lastAttemptAt: null },
     onSnapshot() {},
     onOpen() {},
     onAdd() {},
@@ -83,6 +85,7 @@ test("failed-board view defaults to one independent latest day and exposes five 
   assert.ok(html.includes(dates[0]));
   for (const date of dates.slice(1)) assert.equal(html.includes(date), false, `default view mixed in ${date}`);
   assert.match(html, /仅2026-10-16炸板/);
+  assert.match(html, /class="puf-sort-button"[^>]*>开板次数/);
   assert.doesNotMatch(html, /仅2026-10-15炸板|仅旧交集/);
   assert.equal(selectFailedBoardDay(daily, "today").date, dates[0]);
   assert.equal(selectFailedBoardDay(daily, "five-days", dates[2]).date, dates[2]);
@@ -107,8 +110,26 @@ test("last-good daily snapshots retain each successful date across partial resul
   assert.deepEqual(retained.map(day => day.rows[0].name), days.map(day => day.rows[0].name));
   assert.deepEqual(mergeGoodFailedBoardDays(retained, []), retained, "a later global request failure must leave per-day successes available");
   assert.deepEqual(failedBoardDaysForDisplay(null, retained), retained);
-  assert.deepEqual(failedBoardDaysForDisplay({ failedBoardDays: [] }, retained), retained);
-  assert.deepEqual(failedBoardDaysForDisplay({ failedBoardDays: partial }, retained), partial);
+  assert.ok(failedBoardDaysForDisplay({ failedBoardDays: [] }, retained).every(day => day.staleReason));
+  const [fallback] = failedBoardDaysForDisplay({ failedBoardDays: partial }, retained);
+  assert.equal(fallback.date, partial[0].date);
+  assert.equal(fallback.status, "ready");
+  assert.deepEqual(fallback.rows, days[0].rows);
+  assert.equal(fallback.staleReason, "源失败");
+  assert.deepEqual(failedBoardDaysForDisplay({ failedBoardDays: partial }, []).map(day => day.status), ["unavailable"]);
+  const confirmedEmpty = { ...days[0], rows: [] };
+  assert.deepEqual(failedBoardDaysForDisplay({ failedBoardDays: [confirmedEmpty] }, retained), [confirmedEmpty]);
+  const nextDay = { date: "2026-10-19", status: "unavailable", rows: [], source: null, error: "源失败" };
+  assert.deepEqual(failedBoardDaysForDisplay({ failedBoardDays: [nextDay] }, retained), [nextDay]);
+});
+
+test("failed-board close status requires a snapshot fetched after the same trading day's close", () => {
+  const date = "2026-10-16";
+  assert.equal(failedBoardSessionLabel(date, "2026-10-16T06:55:00Z", new Date("2026-10-17T01:00:00Z")), "盘中快照");
+  assert.equal(failedBoardSessionLabel(date, "2026-10-16T06:55:00Z", new Date("2026-10-16T06:59:00Z")), "盘中暂未回封");
+  assert.equal(failedBoardSessionLabel(date, "2026-10-16T07:05:00Z", new Date("2026-10-16T07:10:00Z")), "收盘未回封");
+  assert.equal(failedBoardSessionLabel(date, "2026-10-17T01:00:00Z"), "收盘未回封");
+  assert.equal(failedBoardSessionLabel(date, null), "快照时点未知");
 });
 
 after(() => {

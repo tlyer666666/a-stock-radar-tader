@@ -84,7 +84,7 @@ import { useAutoBackup } from "./features/backup/backupClient";
 import { NoteReminderStack } from "./features/notes/NotesView";
 import WorkspaceNavigation from "./WorkspaceNavigation";
 import DisplayDensityControl from "./components/terminal/DisplayDensityControl";
-import PreviousLimitUpFailedBoards from "./PreviousLimitUpFailedBoards";
+import PreviousLimitUpFailedBoards, { type FailedBoardCache, type FailedBoardViewState } from "./PreviousLimitUpFailedBoards";
 import { createLatestSettingsWriter } from "./latestSettingsWriter";
 import { createCollectionWriter } from "./collectionWriter";
 import { saveSafeLocalJson } from "./safeStorage";
@@ -628,7 +628,10 @@ function App() {
     count: 0,
     trigger: "startup"
   });
-  const [previousLimitUpFailedSnapshot, setPreviousLimitUpFailedSnapshot] = useState<PreviousLimitUpFailedBoardSnapshot | null>(null);
+  const failedBoardCache = useRef<FailedBoardCache | null>(null);
+  const failedBoardViewState = useRef<FailedBoardViewState | undefined>(undefined);
+  const rememberFailedBoardCache = useCallback((value: FailedBoardCache) => { failedBoardCache.current = value; }, []);
+  const rememberFailedBoardViewState = useCallback((value: FailedBoardViewState) => { failedBoardViewState.current = value; }, []);
   const [discovering, setDiscovering] = useState(false);
   const [backtestDraft, setBacktestDraft] = useState<BacktestDraft>({
     securityCode: "",
@@ -2993,8 +2996,10 @@ const buildBacktestExecutionPlan = (
           {view === "previous-limit-up-failed" && (
             <PreviousLimitUpFailedBoards
               live={live}
-              cachedSnapshot={previousLimitUpFailedSnapshot}
-              onSnapshot={setPreviousLimitUpFailedSnapshot}
+              cache={failedBoardCache.current}
+              onSnapshot={rememberFailedBoardCache}
+              viewState={failedBoardViewState.current}
+              onViewStateChange={rememberFailedBoardViewState}
               onOpen={(stock) => openAnalysis(stock, {
                 view: "previous-limit-up-failed",
                 label: "返回炸板观察"

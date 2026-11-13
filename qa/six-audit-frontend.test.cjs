@@ -29,3 +29,48 @@ assert.equal(stored.formal.length,1,'正式复盘档案不得被预览快照污�
 assert.ok(stored.preview.some(record=>record.id===written[0]?.id),'预览快照应落在隔离键中');}finally{await context.close();}});
 test('P1-33/34 light action tokens and semantic states are consistent',async()=>{const {page}=await fixture();try{const colors=await page.evaluate(()=>{const host=document.querySelector('.app-shell');host.insertAdjacentHTML('beforeend','<div class="timeline-node passed"><span id="audit-passed">通过</span></div>');const style=getComputedStyle(document.documentElement);return {passed:getComputedStyle(document.getElementById('audit-passed')).color,down:style.getPropertyValue('--down').trim(),indicator:style.getPropertyValue('--navigation-indicator').trim(),accent:style.getPropertyValue('--accent').trim(),fill:style.getPropertyValue('--action-fill').trim()};});assert.equal(colors.fill,'#2563EB');assert.equal(colors.indicator,colors.accent);assert.equal(colors.passed,'rgb(9, 112, 73)');}finally{await page.close();}});
 test('P1-35 standalone review error fallback is styled without introducing a sidebar grid',async()=>{const {page}=await fixture('standalone');try{const card=page.locator('.app-crash-card');await card.waitFor();assert.equal(await page.locator('.app-crash-fallback').evaluate(el=>getComputedStyle(el).display),'grid');assert.ok(await card.evaluate(el=>el.getBoundingClientRect().width>=400));assert.notEqual(await page.locator('body').evaluate(el=>getComputedStyle(el).display),'grid');}finally{await page.close();}});
+
+test("failed-board history refreshes the selected date and keeps its last good rows and filters", async () => {
+  const { page, errors } = await fixture("failed-refresh");
+  try {
+    await page.getByRole("button", { name: "炸板观察", exact: true }).click();
+    const board = page.getByRole("region", { name: "炸板股票数据，可横向滚动" });
+    const refresh = page.getByRole("button", { name: "刷新", exact: true });
+    await board.getByRole("row").nth(1).waitFor();
+    await page.getByRole("tab", { name: "近五日炸板", exact: true }).click();
+    const dayTabs = page.getByRole("tablist", { name: "选择炸板交易日" });
+    assert.equal(await dayTabs.getByRole("tab").count(), 5);
+    const chosen = dayTabs.getByRole("tab").nth(2);
+    const date = await chosen.locator("span").innerText();
+    await chosen.click();
+    const sort = board.getByRole("button", { name: "开板次数" });
+    const codes = () => board.locator("tbody .puf-stock-cell code").allTextContents();
+    await sort.click();
+    assert.deepEqual(await codes(), ["600003", "600002", "600001"]);
+    await sort.click();
+    assert.deepEqual(await codes(), ["600002", "600003", "600001"]);
+    const search = page.getByRole("textbox", { name: "搜索名称、代码或行业" });
+    await search.fill("排序两次");
+    assert.deepEqual(await codes(), ["600003"]);
+    await page.evaluate(() => { window.fixture.failedDateUnavailable = true; });
+    await refresh.click();
+    await page.getByText(/保留该日上次成功的数据/).waitFor();
+    assert.match(await chosen.innerText(), /3 只.*旧快照/s);
+    const options = await page.evaluate(() => window.fixture.calls.find(call => call.kind === "failed" && call.options.forceRefresh).options);
+    assert.deepEqual(options, { forceRefresh: true, refreshDate: date });
+    assert.deepEqual(await codes(), ["600003"]);
+    await board.getByRole("button", { name: "分析", exact: true }).click();
+    await page.getByRole("button", { name: "返回炸板观察", exact: true }).click();
+    await page.getByText(/保留该日上次成功的数据/).waitFor();
+    assert.equal(await chosen.getAttribute("aria-selected"), "true");
+    assert.equal(await search.inputValue(), "排序两次");
+    assert.deepEqual(await codes(), ["600003"]);
+    await page.evaluate(() => { window.fixture.failedDateUnavailable = false; });
+    await refresh.click();
+    await page.getByText(new RegExp(date + "：刷新完成，3 只")).waitFor();
+    assert.doesNotMatch(await chosen.innerText(), /旧快照/);
+    assert.deepEqual(errors, []);
+  } finally {
+    await page.close();
+  }
+});
