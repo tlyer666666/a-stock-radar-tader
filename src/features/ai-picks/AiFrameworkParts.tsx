@@ -53,12 +53,17 @@ export function AiFrameworkPicker({ catalog, onChoose, disabled = false, inline 
 }
 
 /** 表格里的分数格：最终分、评级、基础分和 AI 调整。 */
-export function AiScoreCell({ item }: { item: AiRankItem }) {
+export function AiScoreCell({ item, expectedModels = 1 }: { item: AiRankItem; expectedModels?: number }) {
   const title = item.dims?.length ? [`${item.framework || "分析框架"} 基础分 ${item.base}`, item.situation?.length ? `情境：${item.situation.join("、")}` : "",
     item.orchestration ? `编排理由：${item.orchestration}` : "", ...(item.plays || []).map(play => `${play.name} ${play.weight}%：该策略基础分 ${play.base}`),
     ...item.dims.map(dim => `${dim.label}（权重 ${dim.weight}）${dim.score} 分：${dim.note}`), ...(item.caps || []).map(cap => `硬规则：${cap}`), item.reason ? `AI 调整：${item.reason}` : ""].filter(Boolean).join("\n") : undefined;
+  if (item.fallback) return <span className="ai-score-cell" title={title}>
+    <b>{item.score}</b><small>仅基础分</small><small>AI 待补</small>
+  </span>;
+  const answered = item.scores?.length ?? 1;
   return <span className="ai-score-cell" title={title}>
     <span className={`ai-score-badge ${ratingTone(item.rating)}`}>{item.score}</span><small>{item.rating}</small>
+    {expectedModels > answered && <small>模型已返回 {answered}/{expectedModels}</small>}
     {typeof item.base === "number" && <small className="ai-score-base">基础 {item.base}{item.adjust ? ` · AI ${item.adjust > 0 ? "+" : ""}${item.adjust}` : ""}</small>}
     {!!item.plays?.length && <small className="ai-score-plays">{item.plays.map(play => item.plays!.length > 1 ? `${play.name}${play.weight}` : play.name).join("+")}</small>}
     {!!item.caps?.length && <small className="ai-score-cap">触发硬规则</small>}

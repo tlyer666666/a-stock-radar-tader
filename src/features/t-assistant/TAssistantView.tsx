@@ -1,14 +1,17 @@
 import { lazy, Suspense, useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { ArrowDownUp, CircleAlert, Eye, EyeOff, MessagesSquare, Plus, RefreshCw, Search, Trash2, Volume2, VolumeX, WalletCards, X } from "lucide-react";
 import { fmt, fmtMoney } from "../../domain/formatters";
+import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
 import { TIME_SHARE_SLOTS, timeShareSlot, type TimeShare } from "../market/timeShareModel";
 import { paperRoundShares } from "../paper-simulation/paperTradingRules";
 import { MAX_ROUNDS, STYLE_LABELS, actionSide, isActionable, type TAnalysis, type TConfig, type TMarker, type TStyle, type TTrade } from "./tEngine";
 import { MAX_T_ITEMS, inTradingSession, secidForCode, shanghaiClock, type TItem } from "./tStore";
 import type { TAssistantApi, TRuntime } from "./useTAssistant";
 
-import TToolbox from "./TToolbox";
+import TToolbox, { type TToolboxDisplay } from "./TToolbox";
+import { DEFAULT_CHART_PREFERENCES, isTChartPreferences } from "./tToolboxModel";
 
+const CHART_PREFERENCES_KEY = "a-stock-radar:t-toolbox-display:v1";
 const InlineAiAgent = lazy(() => import("../ai-agent/AiAgentView"));
 
 type Props = {
@@ -26,6 +29,13 @@ const clockOf = (ms: number | null) => ms ? new Date(ms + 8 * 3600_000).toISOStr
 
 export default function TAssistantView({ api, holdings, live, onOpenStock, onToast }: Props) {
   const { store, runtimes } = api;
+  // Display settings are shared across stocks; the keyed detail still isolates drawings and trade drafts.
+  const [preferences, setPreferences] = useState(() =>
+    loadSafeLocalJson(CHART_PREFERENCES_KEY, DEFAULT_CHART_PREFERENCES, isTChartPreferences)
+  );
+  useEffect(() => {
+    saveSafeLocalJson(CHART_PREFERENCES_KEY, preferences, isTChartPreferences);
+  }, [preferences]);
   const [selected, setSelected] = useState<string>(() => store.items[0]?.code || "");
   useEffect(() => {
     if (!store.items.some(item => item.code === selected)) setSelected(store.items[0]?.code || "");
@@ -79,7 +89,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
       <aside className="panel t-assistant-list" aria-label="跟踪的股票">
         {store.items.map(entry => <StockRow key={entry.code} item={entry} runtime={runtimes[entry.code]} active={entry.code === selected} onSelect={() => setSelected(entry.code)} />)}
       </aside>
-      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} />}
+      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} display={{ preferences, setPreferences }} />}
     </div>}
   </div>;
 }
@@ -101,7 +111,7 @@ function StockRow({ item, runtime, active, onSelect }: { item: TItem; runtime: T
   </button>;
 }
 
-function StockDetail({ item, runtime, api, live, showReplay, onOpenStock }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void }) {
+function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; display: TToolboxDisplay }) {
   const { analysis, share, replay } = runtime;
   const day = share?.date || "";
   const trades = day ? api.store.trades[day]?.[item.code] || [] : [];
@@ -159,7 +169,7 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock }: { it
       <div className="t-inline-ai-actions"><button type="button" className="link-btn" onClick={() => setAiVisible(false)}>收起AI分析</button></div>
       <Suspense fallback={<p role="status">正在打开AI分析…</p>}><InlineAiAgent embeddedFocus={{ code: item.code, name: item.name }} /></Suspense>
     </section>}
-    <TToolbox security={security} live={live} analysis={analysis} />
+    <TToolbox security={security} live={live} analysis={analysis} display={display} />
 
     {runtime.previousOpenNote && <div className="warning-banner" role="alert"><CircleAlert size={17} />{runtime.previousOpenNote}</div>}
     {stale && <div className="warning-banner" role="alert"><CircleAlert size={17} />{stale}</div>}

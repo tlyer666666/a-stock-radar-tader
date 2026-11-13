@@ -19,7 +19,7 @@ export function buildAiPicks(rows: AiSourceRow[], limit = AI_MAX_PICKS): AiPick[
 }
 
 export function aiScoreMap(ranking: AiRanking | null | undefined): Map<string, AiRankItem> {
-  return new Map((ranking?.items || []).map(item => [item.code, item]));
+  return new Map((ranking?.items || []).filter(item => !item.fallback).map(item => [item.code, item]));
 }
 
 /** AI 分优先排序：有分数的按分数降序，没有分数的保持原顺序排在后面。 */
@@ -45,7 +45,8 @@ export type AiBoardRow<T extends { code: string; name: string }> = { code: strin
 export function buildAiBoardRows<T extends { code: string; name: string }>(sources: T[], ranking: AiRanking | null | undefined, filter = "全部", onlySources = false): AiBoardRow<T>[] {
   const byCode = new Map(sources.map(row => [row.code, row]));
   // onlySources：只显示当前清单里的股票（被移除/删除的股票即使打过分也不再显示）。
-  const ranked = [...(ranking?.items || [])].filter(item => !onlySources || byCode.has(item.code)).sort((a, b) => b.score - a.score).filter(item => filter === "全部" || item.rating === filter)
+  const ranked = [...(ranking?.items || [])].filter(item => !onlySources || byCode.has(item.code)).sort((a, b) => Number(Boolean(a.fallback)) - Number(Boolean(b.fallback)) || b.score - a.score)
+    .filter(item => filter === "全部" || (!item.fallback && item.rating === filter))
     .map(item => ({ code: item.code, name: item.name, source: byCode.get(item.code), ai: item }));
   if (filter !== "全部") return ranked;
   const scored = new Set((ranking?.items || []).map(item => item.code));

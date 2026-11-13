@@ -3,10 +3,12 @@ import { Bot, ChevronRight, CircleAlert, History, ListChecks, LoaderCircle, Refr
 import { AiCustomBoard } from "./AiCustomBoard";
 import { PageHeading } from "../../components/terminal/TerminalPrimitives";
 import { AiDimChips, AiFrameworkPicker, AiScoreCell, useAiFrameworks } from "./AiFrameworkParts";
-import { AiSelectAllHeader, AiSelectCell, AiSelectionBar, scoreAction, useRowSelection } from "./AiRowSelection";
+import { AiScoringCoverage, AiSelectAllHeader, AiSelectCell, AiSelectionBar, scoreAction, scoringCoverage, useRowSelection } from "./AiRowSelection";
 import { AiCommentRow } from "./AiCommentRow";
 import { normalizeSignalReport, summarizeStocksAcrossStrategies, type StockSummaryRow, type StrategySignalReport } from "../../StrategySignalsView";
 import { createServiceJobScope } from "../../serviceJobClient";
+import { selectionSummaryDataState } from "../../strategySelectionDataState";
+import { whenVisible } from "../../visiblePolling";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -96,7 +98,7 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   useEffect(() => {
     if (!scanning) return;
     const started = Date.now();
-    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    const timer = window.setInterval(whenVisible(() => setElapsed(Math.floor((Date.now() - started) / 1000))), 1000);
     return () => window.clearInterval(timer);
   }, [scanning]);
 
@@ -108,6 +110,10 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   const topRows = useMemo(() => rows.slice(0, AI_MAX_PICKS), [rows]);
   const candidates = useMemo(() => { const removed = new Set(excluded); return topRows.filter(row => !removed.has(row.code)); }, [topRows, excluded]);
   const removedCount = topRows.length - candidates.length;
+  const dataState = selectionSummaryDataState(report, rows.length > 0);
+  const coverageNotice = dataState.state === "unavailable" ? "行情暂不可用，尚不能完成选股。可刷新候选重试。"
+    : dataState.state === "partial" ? "部分行情未取到，本轮候选仅覆盖已成功读取的数据。"
+      : dataState.state === "empty-universe" ? "当前股票池为空，可刷新候选核对数据。" : "";
   const picks = useMemo(() => buildAiPicks(candidates), [candidates]);
   const strategyCounts = useMemo(() => (report?.strategies || []).filter(group => group.stocks.length).map(group => ({ name: group.name, count: group.stocks.length })), [report]);
   const input = useMemo<AiSelectionInput>(() => ({ asOfDate, picks, strategyCounts }), [asOfDate, picks, strategyCounts]);
@@ -145,14 +151,14 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   useEffect(() => { setPage(1); }, [filter, viewing, ranking]);
 
   const run = async (kind: "rank" | "summary", force = false, only?: string[]) => {
-    if (!api || busy || !picks.length) return;
+    if (!api || busy || scanning || !picks.length) return;
     const current = generation.current;
     cacheRevision.current[kind] += 1; // Preserve the independent result from the initial cache read.
     setBusy(kind); setError("");
     try {
       if (kind === "rank") {
         const value = await api.rank({ ...input, force, ...(only?.length ? { only } : {}) });
-        if (generation.current === current) { setRanking(value); if (only?.length) selection.clear(); }
+        if (generation.current === current) { setRanking(value); if (force && only?.length) selection.clear(); }
       }
       else { const value = await api.summary({ ...input, force }); if (generation.current === current) setSummary(value); }
       if (generation.current === current) loadHistory();
@@ -199,8 +205,9 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   const open = (row: { code: string; name: string; secid?: string | undefined }) => onOpen?.(toSecurity(row));
   const candidateCodes = useMemo(() => candidates.map(row => row.code), [candidates]);
   const selection = useRowSelection(isHistory ? [] : candidateCodes);
-  const scoredCodes = useMemo(() => new Set((ranking?.items || []).filter(item => item.fallback !== true).map(item => item.code).filter(code => candidateCodes.includes(code))), [ranking, candidateCodes]);
-  const action = scoreAction({ selected: selection.list, scored: scoredCodes, total: candidateCodes });
+  const expectedModels = rankIds.length || status?.rankModels?.length || 1;
+  const coverage = scoringCoverage(ranking, candidateCodes, expectedModels);
+  const action = scoreAction({ selected: selection.list, scored: coverage.complete, total: candidateCodes, answered: coverage.answered });
   const selectable = !isHistory;
 
   if (!api) return <div className="ai-picks-view"><div className="page-heading"><div><h1>AI 选股</h1><p>AI 打分、每日复盘和大白话建策略需要在桌面版使用。</p></div></div>
@@ -221,9 +228,9 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
       <button type="button" role="tab" aria-selected={custom} className={custom ? "active" : ""} onClick={() => switchTab("custom")}><ListChecks size={15} />我的股票<small>任意股票都能打分</small></button>
     </div>
 
-    {!custom && scanning && <div className="signal-test-status" role="status">正在读取最新一轮策略选股结果… 已耗时 {elapsed} 秒。没有可用缓存时会全市场计算，可能需要数分钟。
+    {!custom && scanning && <div className="signal-test-status" role="status">{report ? "正在刷新策略候选…" : "正在读取最新一轮策略选股结果…"} 已耗时 {elapsed} 秒。没有可用缓存时会全市场计算，可能需要数分钟。
       <button type="button" className="secondary-btn" onClick={() => { scanRevision.current += 1; void jobs.current.cancelAll(); setScanning(false); setScanError("已取消读取选股结果。"); }}>取消</button></div>}
-    {!custom && scanError && !report && <div className="warning-banner" role="alert"><CircleAlert size={17} />{scanError}<button type="button" className="secondary-btn" onClick={() => void scan(false)}>重试</button></div>}
+    {!custom && !isHistory && scanError && <div className="warning-banner" role="alert"><CircleAlert size={17} />{scanError}<button type="button" className="secondary-btn" onClick={() => void scan(Boolean(report))}>重试</button></div>}
     {!custom && !report && !scanning && !scanError && <div className="panel strategy-stock-empty"><Target size={28} /><b>还没有本轮选股结果</b><p>AI 只评估规则选出的股票，请先完成一轮策略选股。</p>
       <button type="button" className="primary-btn" onClick={() => void scan(false)}>开始选股</button></div>}
 
@@ -237,11 +244,14 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
         {frameworks.available && <AiFrameworkPicker inline catalog={frameworks.catalog} onChoose={id => void frameworks.choose(id)} disabled={Boolean(busy)} />}
         {!custom && profiles && profiles.profiles.length > 1 && <label className="ai-profile-select"><span>总结用</span><select aria-label="每日总结使用的模型" value={profiles.activeId} disabled={Boolean(busy)} onChange={event => void switchProfile(event.target.value)}>
           {profiles.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-        {!custom && <><button type="button" className="primary-btn" onClick={() => void run("rank", action.force, action.only)} disabled={!configured || Boolean(busy) || !picks.length}>
+        {!custom && <><button type="button" className="secondary-btn" onClick={() => void scan(true)} disabled={scanning || Boolean(busy)}>
+          <RefreshCw size={15} />刷新候选</button><button type="button" className="primary-btn" onClick={() => void run("rank", action.force, action.only)} disabled={!configured || scanning || Boolean(busy) || !picks.length}>
           {busy === "rank" ? <LoaderCircle size={15} className="spin" /> : action.force && !action.only ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy === "rank" ? "AI 打分中…" : action.label}</button>
-        <button type="button" className="secondary-btn" onClick={() => void run("summary", Boolean(summary))} disabled={!configured || Boolean(busy) || !picks.length}>
+        <button type="button" className="secondary-btn" onClick={() => void run("summary", Boolean(summary))} disabled={!configured || scanning || Boolean(busy) || !picks.length}>
           {busy === "summary" ? <LoaderCircle size={15} className="spin" /> : summary ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy === "summary" ? "AI 总结中…" : summary ? "重新总结" : "AI 总结"}</button></>}
       </div>}
+      {!custom && !isHistory && report && coverageNotice && <div className="test-result fail" role="status"><span />{coverageNotice}</div>}
+      {!custom && !isHistory && ranking && <AiScoringCoverage coverage={coverage} expectedModels={expectedModels} />}
       {frameworks.error && <div className="test-result fail" role="alert"><span />{frameworks.error}</div>}
       {!isHistory && profiles && profiles.profiles.length > 1 && <div className="ai-rank-models" role="group" aria-label="一起打分的模型">
         <span title="选多套时各模型分别打分，综合分取平均；分差 ≥ 20 分标为“模型分歧”。每套各调用一次（各自计费）。">一起打分的模型</span>
@@ -252,7 +262,7 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
       {error && <div className="test-result fail" role="alert"><span />{error}</div>}
     </section>}
 
-    {custom && <AiCustomBoard configured={configured} reload={reload} historyRanking={historyDay?.custom} historyDate={isHistory ? viewing.asOfDate : undefined}
+    {custom && <AiCustomBoard configured={configured} reload={reload} expectedModels={expectedModels} historyRanking={historyDay?.custom} historyDate={isHistory ? viewing.asOfDate : undefined}
       onOpen={onOpen} onChanged={loadHistory} live={live} quoteRefreshSeconds={quoteRefreshSeconds} />}
 
     {!custom && shownSummary && <article className="panel ai-summary" aria-label="AI 每日总结">
@@ -264,14 +274,14 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
     </article>}
 
     {!custom && (report || isHistory) && <section className="panel ai-ranking ai-picks-board" aria-label="AI 打分榜">
-      <div className="ai-ranking-head"><span><b>AI 打分榜</b>{shownRanking ? ` · ${multi ? "多模型综合" : "单模型"} · 已评估 ${shownRanking.evaluated} 只 · ${stamp(shownRanking)}` : isHistory ? " · 这一天没有保存打分" : " · 还没打分，下表是候选股"}</span>
-        {shownRanking && <div role="group" aria-label="按评级筛选">{RATING_FILTERS.map(item => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}{item !== "全部" ? ` ${shownRanking.items.filter(row => row.rating === item).length}` : ""}</button>)}</div>}</div>
+      <div className="ai-ranking-head"><span><b>AI 打分榜</b>{shownRanking ? ` · ${multi ? "多模型评分" : "单模型评分"} · AI 已返回 ${shownRanking.evaluated} 只 · ${stamp(shownRanking)}` : isHistory ? " · 这一天没有保存打分" : " · 还没打分，下表是候选股"}</span>
+        {shownRanking && <div role="group" aria-label="按评级筛选">{RATING_FILTERS.map(item => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}{item !== "全部" ? ` ${shownRanking.items.filter(row => !row.fallback && row.rating === item).length}` : ""}</button>)}</div>}</div>
       {!!shownRanking?.failed?.length && <div className="test-result fail" role="status"><span />{shownRanking.failed.join("、")} 的日线没读到，这次没有参与打分，可稍后再点「AI 打分」补上。</div>}
       {partialModels.length > 0 && <div className="test-result fail" role="status"><span />{partialModels.map(item => `${item.name} 有 ${item.missed} 只这一批没有返回`).join("；")}，这些股票按基础分显示或暂缺 AI 点评，可点「重新打分」再试。</div>}
-      {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}{shownRanking?.items.length ? "。下表只含其他模型的结果。" : ""}</div>}
+      {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}{shownRanking?.items.length ? "。请核对模型完成情况。" : ""}</div>}
       <div className="ai-board-toolbar">
-      {selectable && (!!candidates.length || removedCount > 0) && <AiSelectionBar selection={selection} removeLabel="移除" hint="勾选几只可以只给它们打分；点行首 × 把股票从候选里移除（不影响策略选股结果）"
-        onRemoveSelected={() => { updateExcluded([...excluded, ...selection.list]); selection.clear(); }} removedCount={removedCount} onRestore={() => updateExcluded([])} />}
+      {selectable && (!!candidates.length || removedCount > 0) && <AiSelectionBar selection={selection} removeLabel="移除" removeDisabled={Boolean(busy)} hint="勾选几只可以只给它们打分；点行首 × 把股票从候选里移除（不影响策略选股结果）"
+        onRemoveSelected={() => { if (busy) return; updateExcluded([...excluded, ...selection.list]); selection.clear(); }} removedCount={removedCount} onRestore={() => { if (!busy) updateExcluded([]); }} />}
       {!isHistory && !!pageRows.length && <SelectionQuoteControls total={pageRows.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />}
       </div>
       <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="AI 打分榜表格，可横向滚动">
@@ -279,8 +289,8 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
           {selectable && <AiSelectAllHeader selection={selection} pageCodes={pageRows.map(row => row.code)} />}
           <th scope="col">{multi ? "综合分" : "AI 分"}</th>{multi && <th scope="col">各模型</th>}<th scope="col">股票</th><th scope="col">日K</th>{!isHistory && <th scope="col">现价</th>}{hasDims && <th scope="col">各维度</th>}</tr></thead>
           <tbody>{pageRows.map(row => <Fragment key={row.code}><tr className={`${onOpen ? "clickable" : ""}${selection.selected.has(row.code) ? " selected" : ""}${row.ai ? " has-comment" : ""}`} onClick={() => open({ code: row.code, name: row.name, secid: row.source?.secid })}>
-            {selectable && <AiSelectCell selection={selection} code={row.code} name={row.name} removeLabel="从候选移除" onRemove={() => updateExcluded([...excluded, row.code])} />}
-            <td>{row.ai ? <AiScoreCell item={row.ai} /> : <small>未打分</small>}</td>
+            {selectable && <AiSelectCell selection={selection} code={row.code} name={row.name} removeLabel="从候选移除" removeDisabled={Boolean(busy)} onRemove={() => { if (!busy) updateExcluded([...excluded, row.code]); }} />}
+            <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? 1 : expectedModels} /> : <small>未打分</small>}</td>
             {multi && <td className="ai-model-scores">{(row.ai?.scores || []).map(score => <span key={score.id} className={ratingTone(score.rating)}>{score.name} <b>{score.score}</b></span>)}
               {row.ai?.disagreement && <em className="ai-disagreement" title={`各模型分差 ${row.ai.spread} 分`}>模型分歧</em>}</td>}
             <th scope="row" className="strategy-stock-name"><b>{row.name}</b><small>{row.code}</small>{row.source && <small className="strategy-stock-reasons">{row.source.strategies.map(item => item.name).slice(0, 3).join(" · ")}{row.source.strategies.length > 3 ? ` 等 ${row.source.strategies.length} 个策略` : ""}</small>}</th>
@@ -290,7 +300,7 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
           </tr>
           <AiCommentRow ai={row.ai} colSpan={(selectable ? 1 : 0) + (multi ? 1 : 0) + (isHistory ? 0 : 1) + (hasDims ? 1 : 0) + 3} selected={selection.selected.has(row.code)}
             onOpen={onOpen ? () => open({ code: row.code, name: row.name, secid: row.source?.secid }) : undefined} /></Fragment>)}</tbody></table>
-        {!pageRows.length && <p className="ai-selection-note">{shownRanking && filter !== "全部" ? `没有评级为「${filter}」的股票。` : isHistory ? "这一天没有保存打分结果。" : removedCount ? "候选股都已移除，点上方「恢复」放回来。" : "本轮没有选出股票，暂无可供 AI 评估的内容。"}</p>}
+        {!pageRows.length && <p className="ai-selection-note">{shownRanking && filter !== "全部" ? `没有评级为「${filter}」的股票。` : isHistory ? "这一天没有保存打分结果。" : removedCount ? "候选股都已移除，点上方「恢复」放回来。" : dataState.state === "unavailable" ? "候选数据暂不可用，可刷新候选重试。" : "本轮没有选出股票，暂无可供 AI 评估的内容。"}</p>}
       </div>
       {boardRows.length > PAGE_SIZE && <div className="strategy-stock-pagination" aria-label="AI 打分榜分页"><span role="status" aria-live="polite">共 {boardRows.length} 只 · 第 {currentPage} / {totalPages} 页</span>
         <button type="button" className="secondary-btn" disabled={currentPage === 1} onClick={() => setPage(currentPage - 1)}>上一页</button>

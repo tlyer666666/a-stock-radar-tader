@@ -341,3 +341,36 @@ test("a persistence retry begun during a run cannot erase its newer terminal ans
   assert.deepEqual(h.answers().map(card => card.props.message.content), ["需要保存的回答", "新生成的最终回答"]);
   assert.equal(h.part("Composer").props.running, false);
 });
+
+test("switching conversations restores their own drafts and stock selections", async t => {
+  const h = await agentFixture(t, { existingA: true });
+  await h.open("A");
+  h.part("StockPicker").props.onChange(B_STOCK);
+  h.draft("A 里的宁德时代追问");
+  await h.open("B");
+  assert.equal(h.part("Composer").props.value, "");
+  h.draft("B 的草稿");
+  await h.open("A");
+  assert.equal(h.part("Composer").props.value, "A 里的宁德时代追问");
+  assert.deepEqual(h.part("StockPicker").props.focus, B_STOCK);
+  await h.open("B");
+  assert.equal(h.part("Composer").props.value, "B 的草稿");
+});
+
+test("a delayed acknowledgement only clears the submitted draft and keeps newly typed text", async t => {
+  const pending = deferred();
+  let accept;
+  const h = await agentFixture(t, {
+    start: (input, create) => { accept = () => pending.resolve(create(input)); return pending.promise; }
+  });
+  await h.send("正在发送的提问");
+  h.draft("下一条还没写完");
+  accept();
+  await h.flush();
+  assert.equal(h.part("Composer").props.value, "下一条还没写完");
+  assert.deepEqual(h.bubbles(), ["正在发送的提问"]);
+  await h.open("B");
+  assert.equal(h.part("Composer").props.value, "");
+  await h.open("A");
+  assert.equal(h.part("Composer").props.value, "下一条还没写完");
+});

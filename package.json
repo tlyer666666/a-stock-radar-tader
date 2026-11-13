@@ -1,6 +1,6 @@
 {
   "name": "a-stock-monitor",
-  "version": "1.6.67",
+  "version": "1.6.68",
   "packageManager": "pnpm@11.16.0",
   "private": true,
   "engines": {
@@ -51,7 +51,7 @@
     "qa:sector:ui": "node --test qa/sector-panel.test.cjs",
     "qa:sector": "node qa/run-sector-v144-smoke.cjs",
     "qa:workflow": "node --test qa/workspace-v145.test.cjs",
-    "qa:fullstack:ui": "node --test --test-concurrency=1 qa/frontend-persistence.test.cjs src/StockMonitorEditor.test.cjs src/ProfessionalReviewBrowser.test.cjs qa/personal-monitor-ui.test.cjs qa/trend-research-tools.test.cjs qa/research-workspace-v150.test.cjs qa/frontend-v150.test.cjs qa/six-audit-frontend.test.cjs qa/sector-gainers-ui.test.cjs qa/beijing-workspace.test.cjs qa/ai-agent-ui.test.cjs qa/t-assistant-ui.test.cjs qa/t-toolbox-ui.test.cjs qa/notes-ui.test.cjs qa/backup-ui.test.cjs",
+    "qa:fullstack:ui": "node --test --test-concurrency=1 qa/frontend-persistence.test.cjs src/StockMonitorEditor.test.cjs src/ProfessionalReviewBrowser.test.cjs qa/personal-monitor-ui.test.cjs qa/trend-research-tools.test.cjs qa/research-workspace-v150.test.cjs qa/frontend-v150.test.cjs qa/six-audit-frontend.test.cjs qa/sector-gainers-ui.test.cjs qa/beijing-workspace.test.cjs qa/ai-agent-ui.test.cjs qa/ai-picks-ui.test.cjs qa/t-assistant-ui.test.cjs qa/t-toolbox-ui.test.cjs qa/notes-ui.test.cjs qa/backup-ui.test.cjs",
     "verify:fullstack": "pnpm typecheck && pnpm typecheck:review && pnpm test && pnpm qa:fullstack:ui && pnpm qa:modules:independent && pnpm qa:ui-remediation && pnpm build:web && pnpm build:review && PYTHONPATH=qa python3 -m unittest qa/delivery_contract_test.py",
     "verify:dependencies": "node qa/verify-dependencies.cjs",
     "verify:dependencies:security": "node qa/verify-dependencies.cjs --audit",

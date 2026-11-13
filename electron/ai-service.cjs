@@ -178,7 +178,7 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
     if (input?.force === true) return list;
     const board = readBoard(kind, String(input?.asOfDate || ""), config, displayCodes(input));
     // 按基础分兜底的（那一批 AI 没返回）不算打过分，下次不强制也会重试。
-    const have = new Set((board?.items || []).filter(item => item.fallback !== true).map(item => item.code));
+    const have = new Set((board?.items || []).filter(item => !baseOnly(item)).map(item => item.code));
     return list.filter(item => !have.has(String(item.code)));
   }
   async function scoreBoard(kind, config, input) {
@@ -375,6 +375,11 @@ const ratingFor = score => score >= 75 ? "重点关注" : score >= 60 ? "关注"
  * 文字点评取排在最前面的模型（当前使用的那套优先）；分差 ≥ 20 标为「模型分歧」。
  * 单模型时结构相同，models 只有一项。
  */
+// Older saved boards used only a fixed reason to identify omitted rows.
+function baseOnly(item) {
+  return item.fallback === true || item.reason === "AI 没有评估这只，按基础分";
+}
+
 function combineRankings(results, input) {
   const models = results.map(({ profile, outcome }) => ({
     id: String(profile.id || ""), name: String(profile.name || profile.model || "模型"), model: String(profile.model || ""),
@@ -387,28 +392,34 @@ function combineRankings(results, input) {
   results.forEach(({ outcome }, index) => {
     if (outcome.status !== "fulfilled") return;
     for (const item of outcome.value.items || []) {
-      const row = byCode.get(item.code) || { code: item.code, name: item.name, scores: [], text: null, bases: [], caps: [] };
-      row.scores.push({ id: models[index].id, name: models[index].name, score: item.score, rating: item.rating });
-      if (Number.isFinite(item.base)) row.bases.push(item.base);
-      for (const cap of Array.isArray(item.caps) ? item.caps : []) if (!row.caps.some(known => JSON.stringify(known) === JSON.stringify(cap))) row.caps.push(cap);
-      if (!row.text) row.text = item;
-      byCode.set(item.code, row);
+      const rows = byCode.get(item.code) || [];
+      rows.push({ item, model: models[index] });
+      byCode.set(item.code, rows);
     }
   });
-  const items = [...byCode.values()].map(row => {
-    const values = row.scores.map(item => item.score);
-    // 多模型合并（1.6.52）：各模型可能选了不同策略、基础分和硬规则不同。基础分取各模型平均，
-    // 硬规则取并集；任一模型命中硬规则，合并分也最多“观望”（59），调整幅度相对平均基础分计算。
+  const items = [...byCode.values()].map(rows => {
+    const answered = rows.filter(({ item }) => !baseOnly(item));
+    const effective = answered.length ? answered : rows;
+    const primary = effective[0].item;
+    const scores = answered.map(({ item, model }) => ({ id: model.id, name: model.name, score: item.score, rating: item.rating }));
+    const values = effective.map(({ item }) => item.score);
+    const bases = effective.map(({ item }) => item.base).filter(Number.isFinite);
+    // 本地硬规则仍适用，即使该模型没有返回点评。
+    const caps = [...new Map(rows.flatMap(({ item }) => Array.isArray(item.caps) ? item.caps : [])
+      .map(cap => [JSON.stringify(cap), cap])).values()];
     let score = Math.round(values.reduce((sum, value) => sum + value, 0) / values.length);
-    if (row.caps.length) score = Math.min(score, CAP_SCORE);
-    const spread = values.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
-    const extras = Object.fromEntries(["trend", "volume", "keyLevels", "reason", "framework", "orchestration"].filter(key => typeof row.text[key] === "string").map(key => [key, row.text[key]]));
-    // 自动编排：所选策略与情境标签（多模型时取文字点评那个模型的选择）。
-    for (const key of ["plays", "situation"]) if (Array.isArray(row.text[key])) extras[key] = row.text[key];
-    if (row.bases.length) Object.assign(extras, { base: Math.round(row.bases.reduce((sum, value) => sum + value, 0) / row.bases.length), dims: row.text.dims || [], caps: row.caps });
-    return { code: row.code, name: row.name, score, rating: ratingFor(score), highlights: row.text.highlights, risks: row.text.risks, nextDay: row.text.nextDay,
-      ...extras, ...(Number.isFinite(extras.base) ? { adjust: score - extras.base } : {}), scores: row.scores, spread, disagreement: spread >= 20 };
-  }).sort((a, b) => b.score - a.score || b.scores.length - a.scores.length || a.code.localeCompare(b.code));
+    if (caps.length) score = Math.min(score, CAP_SCORE);
+    const spread = scores.length > 1 ? Math.max(...values) - Math.min(...values) : 0;
+    const extras = Object.fromEntries(["trend", "volume", "keyLevels", "reason", "framework", "orchestration"]
+      .filter(key => typeof primary[key] === "string").map(key => [key, primary[key]]));
+    for (const key of ["plays", "situation"]) if (Array.isArray(primary[key])) extras[key] = primary[key];
+    if (bases.length) Object.assign(extras, { base: Math.round(bases.reduce((sum, value) => sum + value, 0) / bases.length), dims: primary.dims || [] });
+    return { code: primary.code, name: primary.name, score, rating: ratingFor(score),
+      highlights: primary.highlights, risks: primary.risks, nextDay: primary.nextDay, ...extras, caps,
+      ...(Number.isFinite(extras.base) ? { adjust: score - extras.base } : {}), ...(!answered.length ? { fallback: true } : {}),
+      scores, spread, disagreement: spread >= 20 };
+  }).sort((a, b) => Number(Boolean(a.fallback)) - Number(Boolean(b.fallback)) ||
+    b.score - a.score || b.scores.length - a.scores.length || a.code.localeCompare(b.code));
   const ok = models.filter(item => item.ok);
   const firstValue = results.find(item => item.outcome.status === "fulfilled")?.outcome.value || {};
   return {
@@ -417,7 +428,7 @@ function combineRankings(results, input) {
     ...(typeof firstValue.framework === "string" ? { framework: firstValue.framework } : {}),
     asOfDate: String(input?.asOfDate || firstValue.asOfDate || ""), model: ok.map(item => item.name).join(" + "),
     generatedAt: ok.map(item => item.generatedAt).filter(Boolean).sort().at(-1) || new Date().toISOString(),
-    evaluated: Math.max(0, ...ok.map(item => Number(item.evaluated) || 0)), cached: ok.every(item => item.cached),
+    evaluated: items.filter(item => !item.fallback).length, cached: ok.every(item => item.cached),
     models, items
   };
 }

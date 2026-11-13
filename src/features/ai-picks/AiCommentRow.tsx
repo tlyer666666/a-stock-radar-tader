@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 
-type AiComment = { highlights?: string | undefined; risks?: string | undefined; nextDay?: string | undefined; reason?: string | undefined } | null | undefined;
+type AiComment = { fallback?: boolean | undefined; highlights?: string | undefined; risks?: string | undefined; nextDay?: string | undefined; reason?: string | undefined } | null | undefined;
 
 /**
  * AI 点评整行展示（1.6.47）：看点 / 风险 / 次日关注放在股票行下面、横跨整张表，
@@ -9,7 +9,8 @@ type AiComment = { highlights?: string | undefined; risks?: string | undefined; 
 export function AiCommentRow({ ai, colSpan, extra, selected, onOpen }: { ai: AiComment; colSpan: number; extra?: { label: string; text: ReactNode } | undefined; selected?: boolean; onOpen?: (() => void) | undefined }) {
   const blocks: Array<{ key: string; label: string; text: ReactNode; note?: string | undefined; tone?: string | undefined }> = [];
   if (extra) blocks.push({ key: "extra", label: extra.label, text: extra.text, tone: "muted" });
-  if (ai) {
+  if (ai?.fallback) blocks.push({ key: "pending", label: "AI 待补", text: "模型尚未返回点评", tone: "muted" });
+  else if (ai) {
     blocks.push({ key: "highlights", label: "看点", text: ai.highlights || "--", note: ai.reason ? `AI 调分：${ai.reason}` : undefined });
     blocks.push({ key: "risks", label: "风险", text: ai.risks || "--", tone: "risk" });
     blocks.push({ key: "nextDay", label: "次日关注", text: ai.nextDay || "--" });

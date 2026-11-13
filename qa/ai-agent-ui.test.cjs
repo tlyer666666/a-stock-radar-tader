@@ -235,6 +235,31 @@ describe('AI 问股 page in the actual renderer', () => {
     await page.screenshot({ path: path.join(screenshotDir, 'followup-dark-1480.png'), animations: 'disabled' });
   }));
 
+  test('unfinished questions stay with their conversation and survive a suggested follow-up', async () => pageTest(async page => {
+    const composer = page.getByRole('textbox', { name: '向 AI 提问' });
+    await pickStock(page);
+    await composer.fill('先看趋势');
+    await composer.press('Enter');
+    await page.locator('.ai-agent-msg.assistant .agent-markdown').waitFor();
+    const original = page.locator('.ai-agent-thread-open').filter({ hasText: '先看趋势' });
+    await composer.fill('还没写完的茅台问题');
+    assert.match(await original.innerText(), /有草稿/);
+
+    await page.getByRole('button', { name: '新对话' }).click();
+    assert.equal(await composer.inputValue(), '');
+    await composer.fill('新对话草稿');
+    await original.click();
+    assert.equal(await composer.inputValue(), '还没写完的茅台问题');
+
+    await page.locator('.ai-agent-followups').getByRole('button', { name: '明天怎么操作？' }).click();
+    await page.waitForFunction(() => window.calls.start.length === 2);
+    assert.equal(await composer.inputValue(), '还没写完的茅台问题');
+    await page.getByRole('button', { name: '新对话' }).click();
+    assert.equal(await composer.inputValue(), '新对话草稿');
+    await original.click();
+    assert.equal(await composer.inputValue(), '还没写完的茅台问题');
+  }));
+
   test('stop a running analysis, delete a conversation with confirmation and save the analysis preference', async () => pageTest(async page => {
     await page.evaluate(() => { window.slowRuns = true; });
     await pickStock(page);

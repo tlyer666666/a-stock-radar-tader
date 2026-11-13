@@ -7,8 +7,8 @@ type AgentApi = NonNullable<NonNullable<Window["stockApi"]["ai"]>["agent"]>;
 const POLL_MS = 800;
 const errorText = (reason: unknown) => aiErrorMessage(reason).replace(/^\[[A-Z_]+\]\s*/, "").replace(/（可重试）$/, "");
 const runningRun = (runId: string, conversationId: string): AgentRun => ({ runId, conversationId, status: "running", steps: [], startedAt: "", elapsedMs: 0, model: "" });
-// Route changes keep service runs alive; only the selected conversation is kept
-// here. Reopening it reads runningRunId and resumes progress polling.
+// Route changes keep service runs alive. Reopening the selected conversation
+// reads runningRunId and resumes progress polling.
 let rememberedConversation: string | null = null;
 let rememberedFocus: AgentFocus | null = null;
 /** 从别的页面（如随心记）打开 AI 问股里的某段对话接着追问。 */
@@ -24,13 +24,30 @@ function rememberTConversation(code: string, id: string) {
   tConversations.delete(code); tConversations.set(code, id);
   while (tConversations.size > 50) tConversations.delete(tConversations.keys().next().value!);
 }
+// Unsent text stays in the renderer session, separate from persisted messages.
+type Draft = { text: string; focus: AgentFocus | null };
+const drafts = new Map<string, Draft>();
+const draftKey = (id: string | null, stockCode?: string) => stockCode ? `t:${stockCode}` : id ? `conversation:${id}` : "new";
+
+function rememberDraft(key: string, draft?: Draft) {
+  drafts.delete(key);
+  if (draft?.text) drafts.set(key, draft);
+  while (drafts.size > 100) {
+    const oldest = drafts.keys().next().value;
+    if (oldest === undefined) break;
+    drafts.delete(oldest);
+  }
+}
+
 export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: AgentFocus) {
+  const embeddedCode = embeddedFocus?.code;
   const [state, setStateValue] = useState<AgentState | null>(null);
   const [loadError, setLoadError] = useState("");
   const [activeId, setActiveId] = useState<string | null>(embeddedFocus ? tConversations.get(embeddedFocus.code) || null : rememberedConversation);
   const [thread, setThread] = useState<AgentConversation | null>(null);
-  const [focus, setFocus] = useState<AgentFocus | null>(embeddedFocus || rememberedFocus);
-  const [draft, setDraft] = useState("");
+  const initialDraft = drafts.get(draftKey(activeId, embeddedCode));
+  const [focus, setFocusValue] = useState<AgentFocus | null>(embeddedFocus || (initialDraft ? initialDraft.focus : rememberedFocus));
+  const [draft, setDraftValue] = useState(initialDraft?.text ?? "");
   const [run, setRunValue] = useState<AgentRun | null>(null);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
@@ -41,6 +58,7 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
   const transcriptRevision = useRef(0);
   const mounted = useRef(true);
   const active = useRef(activeId);
+  const focusRef = useRef(focus);
   const currentRun = useRef<AgentRun | null>(null);
   const sendOwner = useRef<symbol | null>(null);
   const stateRequest = useRef(0);
@@ -48,6 +66,20 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
 
   const isCurrent = useCallback((owner: number) => mounted.current && generation.current === owner, []);
   const setRun = useCallback((value: AgentRun | null) => { currentRun.current = value; setRunValue(value); }, []);
+  const applyFocus = useCallback((value: AgentFocus | null) => {
+    focusRef.current = value;
+    setFocusValue(value);
+  }, []);
+  const setDraft = useCallback((text: string) => {
+    rememberDraft(draftKey(active.current, embeddedCode), { text, focus: focusRef.current });
+    setDraftValue(text);
+  }, [embeddedCode]);
+  const setFocus = useCallback((value: AgentFocus | null) => {
+    applyFocus(value);
+    const key = draftKey(active.current, embeddedCode);
+    const current = drafts.get(key);
+    if (current) rememberDraft(key, { ...current, focus: value });
+  }, [applyFocus, embeddedCode]);
   const setState = useCallback((value: AgentState) => { if (mounted.current) { stateRequest.current += 1; setStateValue(value); } }, []);
 
   useEffect(() => {
@@ -72,21 +104,41 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
     const owner = ++generation.current;
     const loading = api && id ? Symbol("history") : null;
     sendOwner.current = loading;
+    const key = draftKey(id, embeddedCode);
+    const saved = drafts.get(key);
     active.current = id;
+    setDraftValue(saved?.text ?? "");
+    if (!embeddedCode) {
+      if (saved) applyFocus(saved.focus);
+      else if (id) applyFocus(null);
+    }
     setActiveId(id); setThread(null); setRun(null); setSending(Boolean(loading)); setSaving(false); setConfirmDelete(null); setError("");
     if (!api || !id) return;
     try {
       const value = await api.conversation(id);
       if (!isCurrent(owner)) return;
       // 对话已被删（例如另一个窗口删了）：同时刷新左侧列表，别留下点不开的条目。
-      if (!value || value.id !== id) { active.current = null; setActiveId(null); void refreshState(); return; }
-      setThread(value); setFocus(value.focus);
+      if (!value || value.id !== id) {
+        if (!embeddedCode) rememberDraft(key);
+        void openConversation(null);
+        void refreshState();
+        return;
+      }
+      setThread(value);
+      if (!embeddedCode) {
+        const current = drafts.get(key);
+        if (current && saved) applyFocus(current.focus);
+        else {
+          applyFocus(value.focus);
+          if (current) rememberDraft(key, { ...current, focus: value.focus });
+        }
+      }
       setRun(value.runningRunId ? runningRun(value.runningRunId, value.id) : null);
     } catch (reason) { if (isCurrent(owner)) { setError(errorText(reason)); void refreshState(); } }
     finally { if (isCurrent(owner) && sendOwner.current === loading) { sendOwner.current = null; setSending(false); } }
-  }, [api, isCurrent, setRun, refreshState]);
+  }, [api, applyFocus, embeddedCode, isCurrent, setRun, refreshState]);
 
-  const send = useCallback(async (text: string, options: { focus?: AgentFocus | null; conversationId?: string | null; title?: string } = {}) => {
+  const send = useCallback(async (text: string, options: { focus?: AgentFocus | null; conversationId?: string | null; title?: string; fromDraft?: boolean } = {}) => {
     const message = text.trim();
     if (!api || !mounted.current || !message || sendOwner.current || currentRun.current?.status === "running") return;
     const owner = ++generation.current;
@@ -94,17 +146,31 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
     sendOwner.current = token;
     const ownsSend = () => isCurrent(owner) && sendOwner.current === token;
     const target = options.conversationId === undefined ? active.current : options.conversationId;
-    const stock = options.focus === undefined ? focus : options.focus;
+    const stock = options.focus === undefined ? focusRef.current : options.focus;
+    const sourceKey = draftKey(active.current, embeddedCode);
+    const candidate = options.fromDraft ? drafts.get(sourceKey) : undefined;
+    const submitted = candidate?.text.trim() === message ? candidate : undefined;
     setSending(true); setSaving(false); setError("");
     try {
       const started = await api.start({ message, ...(target ? { conversationId: target } : {}), focus: stock, ...(options.title ? { title: options.title } : {}), ...(skillIds ? { skillIds } : {}) });
-      if (embeddedFocus) rememberTConversation(embeddedFocus.code, started.conversationId);
+      if (embeddedCode) rememberTConversation(embeddedCode, started.conversationId);
+      if (submitted && drafts.get(sourceKey) === submitted) {
+        rememberDraft(sourceKey);
+        if (mounted.current && draftKey(active.current, embeddedCode) === sourceKey) setDraftValue("");
+      }
       // The service may have accepted A after the user selected B. Keep A in the
       // sidebar, but never adopt its ID, draft, history or send lock in B.
       if (mounted.current) void refreshState();
       if (!ownsSend()) return;
       active.current = started.conversationId;
-      setActiveId(started.conversationId); setDraft("");
+      const destinationKey = draftKey(started.conversationId, embeddedCode);
+      const remaining = drafts.get(sourceKey);
+      if (options.conversationId === undefined && sourceKey !== destinationKey && remaining) {
+        rememberDraft(destinationKey, remaining);
+        rememberDraft(sourceKey);
+      }
+      setActiveId(started.conversationId);
+      setDraftValue(drafts.get(destinationKey)?.text ?? "");
       setRun(runningRun(started.runId, started.conversationId));
       const at = new Date().toISOString();
       const question: AgentMessage = { id: `pending-${started.runId}`, role: "user", content: message, at, ...(stock ? { focus: stock } : {}) };
@@ -114,7 +180,7 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
       if (ownsSend() && value?.id === started.conversationId) setThread(value);
     } catch (reason) { if (ownsSend()) setError(errorText(reason)); }
     finally { if (ownsSend()) { sendOwner.current = null; setSending(false); } }
-  }, [api, focus, isCurrent, refreshState, setRun, skillIds, embeddedFocus]);
+  }, [api, embeddedCode, isCurrent, refreshState, setRun, skillIds]);
 
   useEffect(() => {
     if (!api) return;
@@ -136,7 +202,7 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
       const handoff = handoffDone.current ? null : takeAgentHandoff();
       handoffDone.current = true;
       if (handoff) {
-        setFocus(handoff.focus);
+        applyFocus(handoff.focus);
         const task = QUICK_TASKS.find(item => item.id === handoff.task) || QUICK_TASKS[0]!;
         if (value?.configured) void send(task.prompt(handoff.focus), { focus: handoff.focus, conversationId: null, title: task.label });
         else void openConversation(null);
@@ -206,6 +272,7 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
     const owner = generation.current;
     try {
       const value = await api.remove(id);
+      rememberDraft(draftKey(id));
       if (!mounted.current) return;
       setState(value);
       if (active.current === id) void openConversation(null);
@@ -231,6 +298,8 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
   };
   const persistenceError = thread?.persistenceError || thread?.messages.find(message => message.persistenceError)?.persistenceError || run?.persistenceError || state?.persistenceError;
 
-  return { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, run, error, setError, sending, saving, persistenceError, retryPersistence,
+  const hasDraft = (id: string) => Boolean(drafts.get(draftKey(id))?.text.trim());
+
+  return { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, hasDraft, run, error, setError, sending, saving, persistenceError, retryPersistence,
     confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running: run?.status === "running" };
 }

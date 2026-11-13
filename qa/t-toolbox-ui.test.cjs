@@ -51,6 +51,7 @@ test('full app T toolbox loads history, draws and persists lines independently o
     await openView(page,'t-assistant','做T助手');
     await box.locator('.toolbox-drawing').waitFor();
     assert.match(await box.locator('.toolbox-drawing-list').innerText(),/12.34/);
+    assert.equal(await box.locator('.toolbox-indicator-pane').count(),4,'reopening the toolbox restores chosen indicators');
     await page.evaluate(()=>{const original=window.stockApi.getChart;window.stockApi.getChart=async (...args)=>{
       const response=await original(...args);const last=response.rows.at(-1);const day=new Date(last.date.slice(0,10)+'T00:00:00Z');day.setUTCDate(day.getUTCDate()+1);
       return {...response,source:response.source+' · 滚动核对',rows:[...response.rows.slice(1),{...last,date:day.toISOString().slice(0,10)}]};
@@ -110,8 +111,15 @@ test('slow timeframe responses cannot overwrite the latest chart; retry preserve
     await box.getByRole('alert').filter({hasText:'十五分钟源断开'}).waitFor();
     assert.match(await box.locator('.toolbox-meta').innerText(),/测试-15-/);
     assert.ok(await box.locator('.toolbox-candle').count()>0);
+    await box.getByRole('button',{name:'MACD',exact:true}).click();
+    await box.getByRole('button',{name:'BOLL',exact:true}).click();
+    await page.evaluate(()=>{window.failFifteen=false;});
     await page.locator('.t-assistant-row').nth(1).click();
-    await box.getByRole('button',{name:'日K',exact:true}).waitFor();
+    assert.equal(await box.getByRole('button',{name:'15分',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.equal(await box.getByRole('button',{name:'MACD',exact:true}).getAttribute('aria-pressed'),'true');
+    assert.equal(await box.getByRole('button',{name:'BOLL',exact:true}).getAttribute('aria-pressed'),'true');
+    await box.locator('.toolbox-meta').getByText(/测试-15-300750/).waitFor();
+    await box.getByRole('button',{name:'日K',exact:true}).click();
     await box.locator('.toolbox-meta').getByText(/测试-101-300750/).waitFor();
     assert.equal(await box.locator('.toolbox-drawing').count(),0);
     await box.getByLabel('K线复权方式').selectOption('none');
