@@ -368,7 +368,7 @@ function offlineReviewServices({ tencentFallback = false } = {}) {
     if (tencentFallback && endpoint.hostname === 'web.ifzq.gtimg.cn') {
       assert.equal(endpoint.searchParams.get('param'), 'sh000001,day,,,210,');
       return { data: { sh000001: { day: Array.from({length:90}, (_, i) =>
-        [new Date(Date.UTC(2026,6,1+i)).toISOString().slice(0,10), '3100', '3100', '3101', '3099', '1000']) } } };
+        [new Date(Date.now() - (90 - i) * 86400_000).toISOString().slice(0,10), '3100', '3100', '3101', '3099', '1000']) } } };
     }
     assert.equal(endpoint.pathname, '/api/qt/stock/kline/get');
     if (tencentFallback) return { data: { klines: [] } };

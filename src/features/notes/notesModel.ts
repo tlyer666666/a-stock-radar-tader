@@ -105,14 +105,38 @@ function cnNumber(text: string): number | null {
   return text.length === 1 ? CN_NUM[text]! : null;
 }
 const NUM = "[0-9零〇一二两三四五六七八九十]{1,3}";
+const DURATION = `(?:${NUM}个?半(?:小时|钟头)|(?:${NUM}|半)个?(?:分钟|小时|钟头)|[一三]刻钟)`;
+const marketOffset = new RegExp(`(下午开盘|午后开盘|上午收盘|中午收盘|集合竞价|竞价|开盘|收盘)(?:([前后])(${DURATION})|(${DURATION})([前后]))`);
+const marketMinutes: Record<string, number> = {
+  下午开盘: 780, 午后开盘: 780, 上午收盘: 690, 中午收盘: 690, 集合竞价: 555, 竞价: 555, 开盘: 570, 收盘: 900
+};
+function durationMinutes(text: string): number {
+  if (text === "一刻钟") return 15;
+  if (text === "三刻钟") return 45;
+  if (text.startsWith("半")) return text.includes("分钟") ? 0.5 : 30;
+  const amount = cnNumber(text.match(new RegExp(NUM))?.[0] ?? "") ?? 0;
+  return text.endsWith("分钟") ? amount : (amount + (text.includes("半") ? 0.5 : 0)) * 60;
+}
+
+function validDate(date: string): boolean {
+  const ms = Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === date;
+}
+
+/** 解析日期选择器和 AI 建议的北京时间，拒绝 JS 自动进位的非法日期。 */
+export function parseNoteClock(value: string): number | null {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})[T ]([01]\d|2[0-3]):([0-5]\d)$/);
+  return match && validDate(match[1]!) ? cnTime(match[1]!, Number(match[2]) * 60 + Number(match[3])) : null;
+}
 const WEEK: Record<string, number> = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 0, 天: 0 };
 /** 交易时段的常用说法 → 分钟。 */
 const SESSION_WORDS: Array<[RegExp, number, string]> = [
   [/集合竞价|竞价/, 9 * 60 + 15, "集合竞价 09:15"],
+  [/下午开盘前|午后开盘前/, 12 * 60 + 55, "下午开盘前 12:55"],
+  [/午后开盘|下午开盘|午盘|下午一开/, 13 * 60, "下午开盘 13:00"],
   [/开盘前|盘前/, 9 * 60 + 15, "开盘前 09:15"],
   [/开盘后|一开盘|开盘/, 9 * 60 + 30, "开盘 09:30"],
   [/午盘前|上午收盘|中午收盘|午休/, 11 * 60 + 25, "上午收盘前 11:25"],
-  [/午后开盘|下午开盘|午盘|下午一开/, 13 * 60, "下午开盘 13:00"],
   [/尾盘|收盘前/, 14 * 60 + 45, "尾盘 14:45"],
   [/收盘后|盘后|收盘/, 15 * 60 + 5, "收盘后 15:05"]
 ];
@@ -122,15 +146,20 @@ const SESSION_WORDS: Array<[RegExp, number, string]> = [
  * 识别不到返回 null（不提醒）；识别到的只是建议，界面上可以改。
  */
 export function parseRemind(text: string, now = Date.now()): ParsedRemind | null {
-  const s = text.replace(/\s+/g, "");
+  const result = inspectReminder(text, now);
+  return result && "at" in result ? result : null;
+}
+
+export function inspectReminder(text: string, now = Date.now()): ParsedRemind | { problem: string } | null {
+  const normalized = text.normalize("NFKC");
+  // 保留数字之间的分隔，避免把“600519 10分钟后”拼成一个数字。
+  const s = normalized.replace(/(?<!\d)\s+|\s+(?!\d)/g, "");
   const today = cnParts(now);
-  const relative = s.match(new RegExp(`(${NUM}|半)(个)?(分钟|小时|钟头)(以?后|之后)`));
-  if (relative) {
-    const n = relative[1] === "半" ? 0.5 : cnNumber(relative[1]!);
-    if (n && n > 0) {
-      const minutes = relative[3] === "分钟" ? n : n * 60;
-      return { at: now + Math.round(minutes) * 60_000, label: `${relative[1]}${relative[3]}后`, repeat: "none" };
-    }
+  const offset = s.match(marketOffset);
+  if (!offset) {
+    const relative = s.match(new RegExp(`(?<![0-9.零〇一二两三四五六七八九十])(${DURATION})(以?后|之后)`));
+    const minutes = relative ? durationMinutes(relative[1]!) : 0;
+    if (relative && minutes > 0) return { at: now + minutes * 60_000, label: relative[0], repeat: "none" };
   }
   const repeat: NoteRepeat = /每个?交易日/.test(s) ? "tradingDays" : /每天|每日/.test(s) ? "daily" : /每周|每星期|每礼拜/.test(s) ? "weekly" : "none";
 
@@ -140,7 +169,12 @@ export function parseRemind(text: string, now = Date.now()): ParsedRemind | null
   // 「5日线」「20日均线」「10日内」「3日涨幅」是行情说法，不是日期。
   const md = s.match(new RegExp(`(?<![0-9零〇一二两三四五六七八九十])(?:(${NUM})月)?(${NUM})[日号](?![线均内涨跌量平K以])`));
   const week = s.match(/(下个?|这个?|本)?(?:周|星期|礼拜)([一二三四五六日天])/);
-  if (/下一?个交易日|下个交易日/.test(s)) { date = nextTradingDay(today.date); dateLabel = "下个交易日"; tradingDate = true; }
+  const exactDate = normalized.match(/(?<!\d)(\d{4})(?:-|年)(\d{1,2})(?:-|月)(\d{1,2})(?!\d)/);
+  if (exactDate) {
+    const [, year, month, day] = exactDate;
+    date = `${year}-${month!.padStart(2, "0")}-${day!.padStart(2, "0")}`;
+    dateLabel = date;
+  } else if (/下一?个交易日|下个交易日/.test(s)) { date = nextTradingDay(today.date); dateLabel = "下个交易日"; tradingDate = true; }
   else if (/大后天/.test(s)) { date = addDays(today.date, 3); dateLabel = "大后天"; }
   else if (/后天/.test(s)) { date = addDays(today.date, 2); dateLabel = "后天"; }
   else if (/明天|明日|明早|明晚/.test(s)) { date = addDays(today.date, 1); dateLabel = "明天"; }
@@ -163,25 +197,38 @@ export function parseRemind(text: string, now = Date.now()): ParsedRemind | null
       let candidate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
       if (candidate < today.date) { year += md[1] ? 1 : 0; candidate = md[1] ? `${year}${candidate.slice(4)}` : addMonth(candidate); }
       date = candidate; dateLabel = `${month}月${day}日`;
-    }
+    } else return { problem: "日期无效，请修改日期或自选提醒时间" };
   }
+  if (date && !validDate(date)) return { problem: "日期无效，请修改日期或自选提醒时间" };
 
   let minutes: number | null = null;
   let timeLabel = "";
-  const clock = s.match(/([01]?\d|2[0-3])[:：]([0-5]\d)/);
+  const clock = normalized.match(/(?<!\d)(\d{1,2}):(\d{1,2})(?!\d)/);
   // 「涨了20点」「指数跌30点」「跌破3点支撑」里的「点」是点数，不是钟点。
-  const dian = s.match(new RegExp(`(早上|上午|中午|下午|晚上|今晚|明晚|傍晚)?(?<![涨跌升降了破到过数0-9零〇一二两三四五六七八九十])(${NUM})点(?![位数支压])(半|(${NUM})分?|一刻|三刻)?`));
-  if (clock) { minutes = Number(clock[1]) * 60 + Number(clock[2]); }
-  else if (dian) {
+  const dian = s.match(new RegExp(`(早上|上午|中午|下午|晚上|今晚|明晚|傍晚)?(?<![涨跌升降了破到过数0-9零〇一二两三四五六七八九十])(${NUM})点(?![位数支压])(半|一刻|三刻|(${NUM})分?)?`));
+  if (offset) {
+    const duration = durationMinutes(offset[3] ?? offset[4]!);
+    const direction = (offset[2] ?? offset[5]) === "前" ? -1 : 1;
+    minutes = marketMinutes[offset[1]!]! + direction * duration;
+    if (duration <= 0 || !Number.isInteger(minutes) || minutes < 0 || minutes >= 1440) {
+      return { problem: "盘前盘后偏移超出当天，请自选提醒时间" };
+    }
+    tradingDate = true;
+  } else if (clock) {
+    const hour = Number(clock[1]), minute = Number(clock[2]);
+    if (hour >= 24 || minute >= 60 || clock[2]!.length !== 2) return { problem: "钟点无效，请修改时间或自选提醒时间" };
+    minutes = hour * 60 + minute;
+  } else if (dian) {
     let hour = cnNumber(dian[2]!);
-    if (hour !== null && hour <= 24) {
+    if (hour !== null && hour < 24) {
       const part = dian[1] || (/今晚|明晚/.test(s) ? "晚上" : "");
       if ((part === "下午" || part === "晚上" || part === "今晚" || part === "明晚" || part === "傍晚") && hour < 12) hour += 12;
       if (part === "中午" && hour < 6) hour += 12;
       if (!part && hour >= 1 && hour <= 6) hour += 12; // 「3点」默认下午三点（A 股交易时段）
       const extra = dian[3] === "半" ? 30 : dian[3] === "一刻" ? 15 : dian[3] === "三刻" ? 45 : dian[4] ? cnNumber(dian[4]) ?? 0 : 0;
-      minutes = (hour % 24) * 60 + Math.min(59, extra);
-    }
+      if (extra >= 60) return { problem: "钟点无效，请修改时间或自选提醒时间" };
+      minutes = hour * 60 + extra;
+    } else return { problem: "钟点无效，请修改时间或自选提醒时间" };
   }
   if (minutes !== null) timeLabel = `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   else {
@@ -207,7 +254,10 @@ export function parseRemind(text: string, now = Date.now()): ParsedRemind | null
   }
   let at = cnTime(date, minutes);
   // 「周五 14:30」在周五 15 点说：指下周五。
-  if (at <= now && week && !week[1]) at += 7 * DAY;
+  if (at <= now && week && !week[1]) {
+    const next = addDays(date, 7);
+    at = cnTime(tradingDate ? tradingDayOnOrAfter(next) : next, minutes);
+  }
   return { at, label: `${dateLabel ? `${dateLabel} ` : ""}${timeLabel}`.trim(), repeat };
 }
 function addMonth(date: string): string {
@@ -222,35 +272,54 @@ function firstAt(repeat: NoteRepeat, date: string, minutes: number, now: number)
   return at;
 }
 
-/** 文字里的 6 位 A 股代码（第一个）。 */
-export function detectStockCode(text: string): string | null {
-  const match = text.match(/(?<!\d)([03689]\d{5})(?!\d)/);
-  return match ? match[1]! : null;
+export function detectStockCodes(text: string): string[] {
+  return [...new Set(Array.from(text.normalize("NFKC").matchAll(/(?<![\d.])([03689]\d{5})(?!\d)/g), match => match[1]!))];
 }
 
-// ---------- 价格条件 ----------
+/** 只在已有持仓、观察池或笔记中匹配全名，避免把简称猜成其他股票。 */
+export function mentionedStockCodes(text: string, stocks: readonly Pick<NoteStock, "code" | "name">[]): string[] {
+  const normalized = text.normalize("NFKC");
+  const codes = new Set(detectStockCodes(normalized));
+  for (const { code, name } of stocks) {
+    if (name.length >= 2 && name !== code && normalized.includes(name)) codes.add(code);
+  }
+  return [...codes];
+}
+
+/** 兼容使用第一个股票代码的调用方。 */
+export function detectStockCode(text: string): string | null {
+  return detectStockCodes(text)[0] ?? null;
+}
 
 const PRICE = "(\\d{1,5}(?:\\.\\d{1,3})?)(?![0-9.])";
-/**
- * 识别「跌破 10.2」「跌到10元以下」「涨到 1500」「突破 12.5」「涨幅超过 5%」「跌超3%」这类价格条件。
- * 「跌破5日线」「跌破均价线」「突破前高」不是具体价位，不识别（可以交给 AI 看）。
- */
+const PRICE_SUFFIX = "(?!日|线|%|点|个|只|万|亿|股|天|分钟|小时)";
+const pricePatterns = [
+  new RegExp(`(?<![不未没])(涨幅|跌幅|涨|跌)(?:超过|超|大于|达到|到|过|了)?${PRICE}%`, "g"),
+  new RegExp(`(?<![不未没])(?:跌破|跌到|跌至|跌回|回落到|回落至|回调到|回调至|低于|小于|掉到|砸到)${PRICE}${PRICE_SUFFIX}`, "g"),
+  new RegExp(`(?<![不未没])(?:突破|涨到|涨至|涨回|冲到|冲上|站上|站稳|高于|大于|拉到|升到)${PRICE}${PRICE_SUFFIX}`, "g"),
+];
+
+export function parseConditions(text: string): NoteCondition[] {
+  const s = text.normalize("NFKC").replace(/(?<!\d)\s+|\s+(?!\d)/g, "");
+  const matches = pricePatterns.flatMap((pattern, index) => Array.from(s.matchAll(pattern), match => {
+    // A percentage comparison such as “涨幅大于5%” is handled only by the first pattern.
+    const value = Number(match[index === 0 ? 2 : 1]);
+    if (value <= 0 || (index === 0 && value > 30)) return null;
+    const down = index === 1 || (index === 0 && match[1]!.startsWith("跌"));
+    const condition: NoteCondition = {
+      field: index === 0 ? "changePct" : "latest",
+      op: down ? "lte" : "gte",
+      value: index === 0 && down ? -value : value
+    };
+    return { position: match.index, condition };
+  })).filter(item => item !== null).sort((a, b) => a.position - b.position);
+  const unique = new Map<string, NoteCondition>();
+  for (const { condition } of matches) unique.set(describeCondition(condition), condition);
+  return [...unique.values()];
+}
+
 export function parseCondition(text: string): NoteCondition | null {
-  const s = text.replace(/\s+/g, "").replace(/％/g, "%");
-  const pct = s.match(new RegExp(`(涨幅|跌幅|涨|跌)(?:超过|超|大于|达到|到|过|了)?${PRICE}%(?:以上)?`));
-  if (pct) {
-    const value = Number(pct[2]);
-    if (value > 0 && value <= 30) return pct[1]!.startsWith("涨") ? { field: "changePct", op: "gte", value } : { field: "changePct", op: "lte", value: -value };
-  }
-  const down = s.match(new RegExp(`(?:跌破|跌到|跌至|跌回|回落到|回落至|回调到|回调至|低于|小于|掉到|砸到)${PRICE}(?![0-9.]*(?:日|线|%|点|个|只|万|亿|股|天|分钟|小时))(?:元)?`));
-  const up = s.match(new RegExp(`(?:突破|涨到|涨至|涨回|冲到|冲上|站上|站稳|高于|大于|拉到|升到)${PRICE}(?![0-9.]*(?:日|线|%|点|个|只|万|亿|股|天|分钟|小时))(?:元)?`));
-  const pick = [down && { m: down, op: "lte" as const }, up && { m: up, op: "gte" as const }].filter(Boolean)
-    .sort((a, b) => a!.m.index! - b!.m.index!)[0];
-  if (!pick) return null;
-  const value = Number(pick.m[1]);
-  // 6 位数是股票代码，不是价格。
-  if (!(value > 0) || /^\d{6}$/.test(pick.m[1]!)) return null;
-  return { field: "latest", op: pick.op, value };
+  return parseConditions(text)[0] ?? null;
 }
 
 export function describeCondition(condition: NoteCondition): string {
@@ -282,7 +351,7 @@ export function presetTimes(now = Date.now()): Array<{ id: string; label: string
   const list: Array<{ id: string; label: string; at: number }> = [{ id: "1h", label: "1 小时后", at: now + 3600_000 }];
   if (tradeToday && today.minutes < 14 * 60 + 45) list.push({ id: "tail", label: "今天尾盘 14:45", at: cnTime(today.date, 14 * 60 + 45) });
   if (tradeToday && today.minutes < 15 * 60 + 5) list.push({ id: "close", label: "今天收盘后 15:05", at: cnTime(today.date, 15 * 60 + 5) });
-  list.push({ id: "tonight", label: "今晚 20:00", at: cnTime(today.minutes < 20 * 60 ? today.date : addDays(today.date, 1), 20 * 60) });
+  if (today.minutes < 20 * 60) list.push({ id: "tonight", label: "今晚 20:00", at: cnTime(today.date, 20 * 60) });
   list.push({ id: "next-auction", label: `${next === addDays(today.date, 1) ? "明天" : "下个交易日"}竞价 09:15`, at: cnTime(next, 9 * 60 + 15) });
   list.push({ id: "next-close", label: `${next === addDays(today.date, 1) ? "明天" : "下个交易日"}尾盘 14:45`, at: cnTime(next, 14 * 60 + 45) });
   return list.filter(item => item.at > now);

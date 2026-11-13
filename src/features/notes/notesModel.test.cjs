@@ -143,3 +143,36 @@ test("交易时段：交易日 9:30–11:30、13:00–15:00", () => {
   assert.equal(model.inTradingSession(cn("2026-11-12T15:30:00")), false);
   assert.equal(model.inTradingSession(cn("2026-11-14T10:00:00")), false, "周六");
 });
+
+test("盘前盘后偏移按实际开收盘计算，重复和周末顺延保留", () => {
+  const friday = cn("2026-11-13T16:00:00");
+  const cases = [
+    ["每个交易日开盘前半小时提醒我看 600519", "2026-11-16T09:00:00", "tradingDays"],
+    ["明天开盘十分钟后看分时", "2026-11-16T09:40:00", "none"],
+    ["下周一下午开盘后５分钟查看", "2026-11-16T13:05:00", "none"],
+    ["下周一收盘前一刻钟复核", "2026-11-16T14:45:00", "none"],
+    ["11月20日收盘后十五分钟复盘", "2026-11-20T15:15:00", "none"],
+    ["一个半小时后提醒我复盘", "2026-11-13T17:30:00", "none"],
+  ];
+  for (const [text, expected, repeat] of cases) {
+    const parsed = model.parseRemind(text, friday);
+    assert.equal(parsed?.at, cn(expected), text);
+    assert.equal(parsed?.repeat, repeat, text);
+  }
+});
+
+test("无效日期和钟点明确提示，多个股票或价格条件不会只偷偷取第一项", () => {
+  for (const text of ["11月31日 14:30 复核", "明天 25:00 复盘", "明天 14:75 复盘", "2026-02-30 10:00 看看"]) {
+    assert.ok(model.inspectReminder(text, NOW)?.problem, text);
+    assert.equal(model.parseRemind(text, NOW), null);
+  }
+  assert.equal(model.parseRemind("2027-01-08 10:30 复核", NOW)?.at, cn("2027-01-08T10:30:00"));
+  assert.equal(model.parseRemind("2028年1月8日 10:30 复核", NOW)?.at, cn("2028-01-08T10:30:00"));
+  assert.equal(model.parseRemind("600519 10分钟后看", NOW)?.at, NOW + 600_000);
+  assert.deepEqual(model.detectStockCodes("关注 002594 和 600519，再看 002594"), ["002594", "600519"]);
+  assert.deepEqual(model.parseConditions("跌破 10 止损，涨幅超过 5% 时看"), [
+    { field: "latest", op: "lte", value: 10 }, { field: "changePct", op: "gte", value: 5 },
+  ]);
+  assert.equal(model.parseConditions("跌破5日线，跌破10时再看，跌破10时提醒").length, 1);
+  assert.equal(model.parseConditions("不跌破10才继续观察").length, 0);
+});

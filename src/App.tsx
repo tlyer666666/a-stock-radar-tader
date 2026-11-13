@@ -3112,7 +3112,7 @@ const buildBacktestExecutionPlan = (
           )}
           {view === "notes" && (
             <Suspense fallback={<LoadingState />}>
-              <NotesView api={notes} onOpenStock={(stock: Security) => openAnalysis(stock, { view: "notes", label: "返回随心记" })} />
+              <NotesView api={notes} holdings={holdings} watchlist={watchlist} onOpenStock={(stock: Security) => openAnalysis(stock, { view: "notes", label: "返回随心记" })} />
             </Suspense>
           )}
           {view === "t-assistant" && (
