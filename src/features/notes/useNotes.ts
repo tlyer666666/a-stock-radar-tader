@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import {
-  EMPTY_NOTES, MAX_NOTES, MAX_NOTE_LENGTH, NOTES_KEY, aiQuestion, awaiting, dueToFire, markFired, normalizeNotes, snooze, watchingConditions,
+  EMPTY_NOTES, MAX_NOTES, MAX_NOTE_LENGTH, NOTES_KEY, aiQuestion, awaiting, dueToFire, markFired, normalizeIntervalMinutes, normalizeNotes, snooze, watchingConditions,
   type Note, type NoteCondition, type NoteRepeat, type NoteStock, type NotesStore
 } from "./notesModel";
 
@@ -35,6 +35,18 @@ export function useNotes() {
   const [popup, setPopup] = useState<string[]>([]);
   const [watch, setWatch] = useState<{ watching: number; session: boolean; error: string }>({ watching: 0, session: false, error: "" });
   const storeRef = useRef(store);
+  const mountedRef = useRef(true);
+  const soonTimersRef = useRef(new Set<number>());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    const timers = soonTimersRef.current;
+    return () => {
+      mountedRef.current = false;
+      for (const timer of timers) window.clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
 
   const commit = useCallback((update: (current: NotesStore) => NotesStore) => {
     const next = normalizeNotes(update(storeRef.current));
@@ -122,7 +134,8 @@ export function useNotes() {
   // ---------- 到点提醒 ----------
   const check = useCallback(() => {
     const now = Date.now();
-    const due = dueToFire(storeRef.current.notes, now);
+    const background = Boolean(window.stockApi?.syncNoteIntervals);
+    const due = dueToFire(storeRef.current.notes, now).filter(note => !background || note.repeat !== "interval");
     if (!due.length) return;
     const ids = new Set(due.map(note => note.id));
     commit(current => ({ ...current, notes: current.notes.map(note => ids.has(note.id) ? markFired(note, now) : note) }));
@@ -133,6 +146,49 @@ export function useNotes() {
     speak(due.length > 1 ? `随心记，${due.length} 条提醒到了。第一条：${brief(due[0]!.text)}` : `随心记提醒：${brief(due[0]!.text)}`);
     autoAsk(due);
   }, [commit, speak, autoAsk]);
+
+  const syncingIntervals = useRef(false);
+  const intervalsDirty = useRef(false);
+  const syncIntervals = useCallback(async () => {
+    const api = window.stockApi?.syncNoteIntervals;
+    if (!api || !mountedRef.current) return;
+    intervalsDirty.current = true;
+    if (syncingIntervals.current) return;
+    syncingIntervals.current = true;
+    try {
+      while (intervalsDirty.current && mountedRef.current) {
+        intervalsDirty.current = false;
+        const { notes, systemNotify } = storeRef.current;
+        const items = notes.flatMap(note => {
+          if (note.done || note.repeat !== "interval" || !note.remindAt || !note.intervalMinutes) return [];
+          return [{ id: note.id, text: brief(note.text, 80), at: Date.parse(note.remindAt), intervalMinutes: note.intervalMinutes }];
+        });
+        const hits = await api({ items, systemNotify });
+        if (!mountedRef.current || !hits.length) continue;
+        const expected = new Map(items.map(item => [item.id, item.intervalMinutes]));
+        const matches = new Map(hits.map(hit => [hit.id, hit]));
+        const due = storeRef.current.notes.filter(note => {
+          const hit = matches.get(note.id);
+          return hit && !note.done && note.repeat === "interval" && note.intervalMinutes === expected.get(note.id)
+            && note.remindAt !== null && Date.parse(note.remindAt) === hit.at;
+        });
+        if (!due.length) continue;
+        const ids = new Set(due.map(note => note.id));
+        commit(current => ({
+          ...current,
+          notes: current.notes.map(note => {
+            if (!ids.has(note.id)) return note;
+            const hit = matches.get(note.id)!;
+            return { ...note, remindAt: new Date(hit.nextAt).toISOString(), lastFiredAt: new Date(hit.lastFiredAt).toISOString(), firedFor: null };
+          })
+        }));
+        setPopup(current => [...current.filter(id => !ids.has(id)), ...due.map(note => note.id)].slice(-6));
+        speak(`随心记提醒：${brief(due[0]!.text)}`);
+        autoAsk(due);
+      }
+    } catch { /* 应用通信中断时下次同步重试。 */ }
+    finally { syncingIntervals.current = false; }
+  }, [autoAsk, commit, speak]);
 
   // ---------- 价格条件 ----------
   const syncing = useRef(false);
@@ -158,7 +214,7 @@ export function useNotes() {
   }, [commit, speak, autoAsk]);
 
   useEffect(() => {
-    const run = () => { check(); void syncWatch(); };
+    const run = () => { if (!mountedRef.current) return; check(); void syncWatch(); void syncIntervals(); };
     run();
     const timer = window.setInterval(run, CHECK_MS);
     // 电脑睡眠唤醒、窗口切回来时马上看一次，不等下一个 15 秒。
@@ -169,19 +225,30 @@ export function useNotes() {
       window.clearInterval(timer);
       if (canListen) { document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("focus", run); }
     };
-  }, [check, syncWatch]);
-  const soon = useCallback(() => window.setTimeout(() => { check(); void syncWatch(); }, 0), [check, syncWatch]);
+  }, [check, syncWatch, syncIntervals]);
+  const soon = useCallback(() => {
+    const timer = window.setTimeout(() => {
+      soonTimersRef.current.delete(timer);
+      if (!mountedRef.current) return;
+      check();
+      void syncWatch();
+      void syncIntervals();
+    }, 0);
+    soonTimersRef.current.add(timer);
+    return timer;
+  }, [check, syncWatch, syncIntervals]);
 
   // ---------- 增删改 ----------
-  const add = useCallback((input: { text: string; remindAt: number | null; repeat: NoteRepeat; stock: NoteStock | null; condition?: NoteCondition | null }) => {
+  const add = useCallback((input: { text: string; remindAt: number | null; repeat: NoteRepeat; intervalMinutes?: number | null | undefined; stock: NoteStock | null; condition?: NoteCondition | null }) => {
     const text = input.text.trim().slice(0, MAX_NOTE_LENGTH);
     if (!text) return "先写点内容";
+    if (input.repeat === "interval" && !normalizeIntervalMinutes(input.intervalMinutes)) return "请填写有效的重复间隔";
     if (storeRef.current.notes.length >= MAX_NOTES) return `最多保存 ${MAX_NOTES} 条，请先删掉一些已完成的`;
     const now = new Date().toISOString();
     const note: Note = {
       id: newId(), text, createdAt: now, updatedAt: now,
       remindAt: input.remindAt ? new Date(input.remindAt).toISOString() : null,
-      repeat: input.remindAt ? input.repeat : "none", stock: input.stock, done: false, firedFor: null,
+      repeat: input.remindAt ? input.repeat : "none", intervalMinutes: input.intervalMinutes ?? null, stock: input.stock, done: false, firedFor: null, lastFiredAt: null,
       condition: input.stock ? input.condition || null : null, conditionHit: null, ai: null
     };
     commit(current => ({ ...current, notes: [note, ...current.notes] }));
@@ -189,14 +256,14 @@ export function useNotes() {
     return "";
   }, [commit, soon]);
 
-  const update = useCallback((id: string, patch: Partial<Pick<Note, "text" | "remindAt" | "repeat" | "stock" | "done" | "condition">>) => {
+  const update = useCallback((id: string, patch: Partial<Pick<Note, "text" | "remindAt" | "repeat" | "intervalMinutes" | "stock" | "done" | "condition">>) => {
     commit(current => ({
       ...current,
       notes: current.notes.map(note => {
         if (note.id !== id) return note;
         const next = { ...note, ...patch, updatedAt: new Date().toISOString() };
         // 改了提醒时间就重新计时；改了条件就重新盯；完成了就不再提醒。
-        if ("remindAt" in patch) next.firedFor = null;
+        if ("remindAt" in patch || ("repeat" in patch && patch.repeat !== note.repeat)) { next.firedFor = null; next.lastFiredAt = null; }
         if ("condition" in patch) next.conditionHit = null;
         if (!next.remindAt) next.repeat = "none";
         if (!next.stock) next.condition = null;
@@ -224,7 +291,10 @@ export function useNotes() {
   const clearDone = useCallback(() => commit(current => ({ ...current, notes: current.notes.filter(note => !note.done) })), [commit]);
   const dismiss = useCallback((id?: string) => setPopup(current => id ? current.filter(item => item !== id) : []), []);
   const setVoice = useCallback((voice: boolean) => { if (!voice) window.speechSynthesis?.cancel(); commit(current => ({ ...current, voice })); }, [commit]);
-  const setSystemNotify = useCallback((systemNotify: boolean) => commit(current => ({ ...current, systemNotify })), [commit]);
+  const setSystemNotify = useCallback((systemNotify: boolean) => {
+    commit(current => ({ ...current, systemNotify }));
+    soon();
+  }, [commit, soon]);
   const setAiAuto = useCallback((aiAuto: boolean) => commit(current => ({ ...current, aiAuto })), [commit]);
   const clearAi = useCallback((id: string) => patchNote(id, note => ({ ...note, ai: null })), [patchNote]);
 

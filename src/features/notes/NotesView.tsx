@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { AlarmClock, BellRing, Bot, Check, CircleAlert, Clock3, Crosshair, Loader2, MessageSquareText, NotebookPen, Pencil, Repeat2, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import {
-  REPEAT_LABELS, cnParts, cnTime, describeCondition, formatRemind, inspectReminder, isAwaiting, mentionedStockCodes, nextTradingDay, normalizeCondition, parseConditions, parseNoteClock, presetTimes, sortNotes,
+  MAX_INTERVAL_MINUTES, REPEAT_LABELS, cnParts, cnTime, describeCondition, formatRemind, inspectReminder, isAwaiting, mentionedStockCodes, nextTradingDay, normalizeCondition, normalizeIntervalMinutes, parseConditions, parseNoteClock, presetTimes, repeatLabel, sortNotes,
   tradingDayOnOrAfter, type Note, type NoteCondition, type NoteRepeat, type NoteStock
 } from "./notesModel";
 import { AgentMarkdown } from "../ai-agent/AnswerMarkdown";
@@ -127,6 +127,25 @@ function aiClock(now: number) {
 }
 const errorText = (reason: unknown) => aiErrorMessage(reason).replace(/^\[[A-Z_]+\]\s*/, "").replace(/（可重试）$/, "");
 
+function RepeatFields({ repeat, interval, onRepeat, onInterval }: {
+  repeat: NoteRepeat;
+  interval: string;
+  onRepeat: (value: NoteRepeat) => void;
+  onInterval: (value: string) => void;
+}) {
+  return <>
+    <label className="notes-repeat"><Repeat2 size={14} />
+      <select value={repeat} aria-label="重复" onChange={event => onRepeat(event.target.value as NoteRepeat)}>
+        {(Object.keys(REPEAT_LABELS) as NoteRepeat[]).map(key => <option key={key} value={key}>{REPEAT_LABELS[key]}</option>)}
+      </select>
+    </label>
+    {repeat === "interval" && <label className="notes-repeat">
+      <input type="number" min="1" max={MAX_INTERVAL_MINUTES} step="1" value={interval} aria-label="重复间隔（分钟）"
+        onChange={event => onInterval(event.target.value)} />分钟
+    </label>}
+  </>;
+}
+
 /** 确认当前草稿推导出的提醒，手选时间和重复规则优先。 */
 function Composer({ api, now, knownStocks }: {
   api: NotesApi;
@@ -138,10 +157,14 @@ function Composer({ api, now, knownStocks }: {
   const [custom, setCustom] = useState("");
   const [preset, setPreset] = useState<ReturnType<typeof presetTimes>[number] | null>(null);
   const [repeatOverride, setRepeatOverride] = useState<NoteRepeat | null>(null);
+  const [intervalOverride, setIntervalOverride] = useState<string | null>(null);
   const [stockChoice, setStockChoice] = useState<string | null>(null);
   const [conditionChoice, setConditionChoice] = useState<number | null>(null);
   const [message, setMessage] = useState("");
-  const [ai, setAi] = useState<{ code: string | null; condition: NoteCondition | null; note: string; undo: () => void } | null>(null);
+  const [ai, setAi] = useState<{
+    code: string | null; condition: NoteCondition | null; note: string; undo: () => void;
+    intervalMinutes?: number | undefined;
+  } | null>(null);
   const [aiBusy, setAiBusy] = useState(false);
   const draftRevision = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -161,30 +184,42 @@ function Composer({ api, now, knownStocks }: {
   const conditionUnclear = Boolean(linkedStock && conditions.length > 1 && conditionChoice === null);
   const canAi = Boolean(window.stockApi?.ai?.parseNote);
 
-  const repeat = repeatOverride ?? (mode === "auto" ? parsed?.repeat : null) ?? "none";
-  const remindAt = mode === "auto" ? parsed?.at ?? null : mode === "custom" ? fromLocalInput(custom) : preset?.at ?? null;
+  const detectedInterval = ai?.intervalMinutes ?? parsed?.intervalMinutes;
+  const repeat = repeatOverride ?? (mode === "auto" ? detectedInterval ? "interval" : parsed?.repeat : null) ?? "none";
+  const interval = intervalOverride ?? String(detectedInterval ?? 15);
+  const intervalMinutes = repeat === "interval" ? normalizeIntervalMinutes(Number(interval)) : null;
+  const badInterval = repeat === "interval" && intervalMinutes === null;
+  const autoAt = detectedInterval ? now + (intervalMinutes ?? detectedInterval) * 60_000 : parsed?.at ?? null;
+  const remindAt = mode === "auto" ? autoAt : mode === "custom" ? fromLocalInput(custom) : preset?.at ?? null;
   const past = remindAt !== null && remindAt <= Date.now();
   const plan = [
-    remindAt === null ? "" : `${formatRemind(new Date(remindAt).toISOString(), now)}${repeat !== "none" ? `（${REPEAT_LABELS[repeat]}）` : ""} 提醒`,
+    remindAt === null ? "" : `${formatRemind(new Date(remindAt).toISOString(), now)}${repeat !== "none" ? `（${repeatLabel(repeat, intervalMinutes)}）` : ""} 提醒`,
     condition ? `盘中${describeCondition(condition)}时提醒` : ""
   ].filter(Boolean);
   const changeDraft = () => { draftRevision.current += 1; setMessage(""); };
   const save = () => {
     if (!text.trim()) return;
-    if (timeProblem || past || (mode === "custom" && remindAt === null)) {
-      setMessage(timeProblem || (past ? "提醒时间已经过了，换一个时间" : "请填写有效的自选提醒时间"));
+    if (timeProblem || past || (mode === "custom" && remindAt === null) || (remindAt !== null && badInterval)) {
+      setMessage(timeProblem || (badInterval ? "请填写有效的重复间隔" : past ? "提醒时间已经过了，换一个时间" : "请填写有效的自选提醒时间"));
       return;
     }
     if (stockUnclear || conditionUnclear) {
       setMessage(stockUnclear ? "请先选这条记录关联的股票" : "请先选这条记录要盯的价格条件");
       return;
     }
-    const error = api.add({ text, remindAt, repeat: remindAt ? repeat : "none", stock: linkedStock, condition });
+    const firstAt = mode === "auto" && detectedInterval
+      ? Date.now() + (intervalMinutes ?? detectedInterval) * 60_000
+      : remindAt;
+    const error = api.add({ text, remindAt: firstAt, repeat: firstAt ? repeat : "none", intervalMinutes, stock: linkedStock, condition });
     if (error) { setMessage(error); return; }
     changeDraft();
-    setText(""); setMode("auto"); setCustom(""); setPreset(null); setRepeatOverride(null);
+    setText(""); setMode("auto"); setCustom(""); setPreset(null); setRepeatOverride(null); setIntervalOverride(null);
     setStockChoice(null); setConditionChoice(null); setAi(null);
-    setMessage(plan.length ? `已记下，将${plan.join("；")}` : "已记下");
+    const savedPlan = firstAt === null ? plan : [
+      `${formatRemind(new Date(firstAt).toISOString(), now)}${repeat !== "none" ? `（${repeatLabel(repeat, intervalMinutes)}）` : ""} 提醒`,
+      ...plan.slice(1)
+    ];
+    setMessage(savedPlan.length ? `已记下，将${savedPlan.join("；")}` : "已记下");
     inputRef.current?.focus();
   };
   const tidy = async () => {
@@ -196,23 +231,25 @@ function Composer({ api, now, knownStocks }: {
     }
     const revision = draftRevision.current;
     const undo = ai?.undo ?? (() => {
-      setText(text); setMode(mode); setCustom(custom); setPreset(preset); setRepeatOverride(repeatOverride);
+      setText(text); setMode(mode); setCustom(custom); setPreset(preset); setRepeatOverride(repeatOverride); setIntervalOverride(intervalOverride);
       setStockChoice(stockChoice); setConditionChoice(conditionChoice);
     });
     setAiBusy(true); setMessage("");
     try {
       const result = await parse({ text, ...aiClock(Date.now()) });
       if (draftRevision.current !== revision) return;
-      if (result.text) setText(result.text);
-      const at = result.when ? parseNoteClock(result.when) : null;
-      if (result.when) {
+      // AI 可以整理文字或识别股票，用户已经选定的时间和分钟循环沿用本地规则。
+      if (result.text && !timeProblem) setText(result.text);
+      const keepSchedule = mode !== "auto" || Boolean(detectedInterval) || Boolean(timeProblem);
+      const at = !keepSchedule && result.when ? parseNoteClock(result.when) : null;
+      if (!keepSchedule && result.when) {
         setMode("custom");
         setCustom(at === null ? "" : toLocalInput(at));
         setRepeatOverride(result.repeat);
       }
       setStockChoice(null); setConditionChoice(null);
-      setAi({ code: result.code, condition: normalizeCondition(result.condition), note: result.note, undo });
-      setMessage(result.when && (at === null || at <= Date.now())
+      setAi({ code: result.code, condition: normalizeCondition(result.condition), note: result.note, undo, intervalMinutes: detectedInterval });
+      setMessage(!keepSchedule && result.when && (at === null || at <= Date.now())
         ? "AI 建议的时间无效或已过，请核对提醒时间"
         : "AI 整理好了，确认没问题再点「记下来」");
     } catch (reason) {
@@ -238,8 +275,8 @@ function Composer({ api, now, knownStocks }: {
     <div className="notes-remind-row">
       <span className="notes-remind-label"><AlarmClock size={14} />提醒</span>
       <div className="notes-chips" role="radiogroup" aria-label="提醒时间">
-        <button type="button" role="radio" aria-checked={mode === "auto"} className={mode === "auto" ? "active" : ""} onClick={() => { changeDraft(); setMode("auto"); setPreset(null); setRepeatOverride(null); }}>
-          {parsed ? `识别到：${formatRemind(new Date(parsed.at).toISOString(), now)}` : "自动识别"}
+        <button type="button" role="radio" aria-checked={mode === "auto"} className={mode === "auto" ? "active" : ""} onClick={() => { changeDraft(); setMode("auto"); setPreset(null); setRepeatOverride(null); setIntervalOverride(null); }}>
+          {autoAt !== null ? `识别到：${formatRemind(new Date(autoAt).toISOString(), now)}` : "自动识别"}
         </button>
         <button type="button" role="radio" aria-checked={mode === "none"} className={mode === "none" ? "active" : ""} onClick={() => { changeDraft(); setMode("none"); setPreset(null); }}>不按时间提醒</button>
         {(preset && !presets.some(item => item.id === preset.id) ? [...presets, preset] : presets).map(item => <button key={item.id} type="button" role="radio" aria-checked={mode === item.id} className={mode === item.id ? "active" : ""} onClick={() => { changeDraft(); setMode(item.id); setPreset(item); }}>{item.label}</button>)}
@@ -248,11 +285,10 @@ function Composer({ api, now, knownStocks }: {
       </div>
     </div>
     <div className="notes-composer-foot">
-      {remindAt !== null && <label className="notes-repeat"><Repeat2 size={14} />
-        <select value={repeat} aria-label="重复" onChange={event => { changeDraft(); setRepeatOverride(event.target.value as NoteRepeat); }}>
-          {(Object.keys(REPEAT_LABELS) as NoteRepeat[]).map(key => <option key={key} value={key}>{REPEAT_LABELS[key]}</option>)}
-        </select>
-      </label>}
+      {remindAt !== null && <RepeatFields repeat={repeat} interval={interval}
+        onRepeat={value => { changeDraft(); setRepeatOverride(value); }}
+        onInterval={value => { changeDraft(); setIntervalOverride(value); }} />}
+      {remindAt !== null && badInterval && <span className="notes-warn">重复间隔须为 1 至 {MAX_INTERVAL_MINUTES} 分钟</span>}
       {codes.length > 1 ? <label className="notes-repeat">关联股票
         <select aria-label="关联股票" value={stockChoice ?? "choose"} onChange={event => { changeDraft(); setStockChoice(event.target.value === "choose" ? null : event.target.value); setConditionChoice(null); }}>
           <option value="choose">请选择股票</option>
@@ -276,7 +312,7 @@ function Composer({ api, now, knownStocks }: {
       {ai && <button type="button" className="link-btn" onClick={() => { changeDraft(); ai.undo(); setAi(null); setMessage("已恢复原文和提醒设置"); }}>撤销 AI 整理</button>}
       {canAi && <button type="button" className="secondary-btn" disabled={!text.trim() || aiBusy} title="让 AI 识别时间、股票和价格条件，并整理成一句待办" onClick={() => void tidy()}>
         {aiBusy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}{aiBusy ? "AI 整理中…" : "AI 整理"}</button>}
-      <button type="button" className="primary-btn" disabled={!text.trim() || Boolean(timeProblem || past || stockUnclear || conditionUnclear || (mode === "custom" && remindAt === null))} onClick={save}>记下来</button>
+      <button type="button" className="primary-btn" disabled={!text.trim() || Boolean(timeProblem || past || stockUnclear || conditionUnclear || (mode === "custom" && remindAt === null) || (remindAt !== null && badInterval))} onClick={save}>记下来</button>
     </div>
   </section>;
 }
@@ -301,7 +337,8 @@ function NoteCard({ note, now, api, onEdit, onDelete, onOpenStock }: { note: Not
     <div className="notes-meta">
       {note.remindAt && <span className={`notes-badge ${timeFired ? "awaiting" : state === "done" ? "done" : "scheduled"}`}>{timeFired ? <BellRing size={12} /> : <Clock3 size={12} />}
         {timeFired ? `${formatRemind(note.remindAt, now)} 已提醒` : `${formatRemind(note.remindAt, now)} 提醒`}
-        {note.repeat !== "none" && ` · ${REPEAT_LABELS[note.repeat]}`}</span>}
+        {note.repeat !== "none" && ` · ${repeatLabel(note.repeat, note.intervalMinutes)}`}</span>}
+      {note.repeat === "interval" && note.lastFiredAt && <small>上次提醒 {formatRemind(note.lastFiredAt, now)}</small>}
       {note.condition && note.stock && <span className={`notes-badge ${note.conditionHit ? "awaiting" : state === "done" ? "done" : "scheduled"}`}><Crosshair size={12} />
         {note.conditionHit ? `条件已触发：${note.conditionHit.detail}` : `盯盘：${describeCondition(note.condition)}`}</span>}
       {note.stock && <button type="button" className="notes-stock-link" onClick={() => onOpenStock(securityOf(note.stock!))}>{note.stock.name} {note.stock.code}</button>}
@@ -357,11 +394,16 @@ function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; 
   const [text, setText] = useState(note.text);
   const [time, setTime] = useState(note.remindAt ? toLocalInput(Date.parse(note.remindAt)) : "");
   const [repeat, setRepeat] = useState<NoteRepeat>(note.repeat);
+  const [interval, setInterval] = useState(String(note.intervalMinutes ?? 15));
   const [field, setField] = useState<NoteCondition["field"]>(note.condition?.field || "latest");
   const [op, setOp] = useState<NoteCondition["op"]>(note.condition?.op || "lte");
   const [value, setValue] = useState(note.condition ? String(note.condition.field === "changePct" ? Math.abs(note.condition.value) : note.condition.value) : "");
-  const at = time ? fromLocalInput(time) : null;
-  const changedTime = (note.remindAt ? Date.parse(note.remindAt) : null) !== at;
+  const [initialTime] = useState(time);
+  const originalTime = note.remindAt ? Date.parse(note.remindAt) : null;
+  const changedTime = time !== initialTime;
+  const at = changedTime ? (time ? fromLocalInput(time) : null) : originalTime;
+  const intervalMinutes = repeat === "interval" ? normalizeIntervalMinutes(Number(interval)) : null;
+  const badInterval = at !== null && repeat === "interval" && intervalMinutes === null;
   const past = at !== null && changedTime && at <= Date.now();
   const number = Number(value);
   const condition = value.trim() && Number.isFinite(number) ? normalizeCondition({ field, op, value: field === "changePct" ? (op === "gte" ? Math.abs(number) : -Math.abs(number)) : number }) : null;
@@ -369,16 +411,15 @@ function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; 
   const sameCondition = JSON.stringify(condition) === JSON.stringify(note.condition);
   return <form className="notes-card editing" onSubmit={event => {
     event.preventDefault();
-    if (!text.trim() || past || badCondition) return;
-    onSave({ text: text.trim(), ...(changedTime ? { remindAt: at ? new Date(at).toISOString() : null } : {}), repeat: at ? repeat : "none", ...(sameCondition ? {} : { condition }) });
+    if (!text.trim() || past || badCondition || badInterval) return;
+    onSave({ text: text.trim(), ...(changedTime ? { remindAt: at ? new Date(at).toISOString() : null } : {}), repeat: at ? repeat : "none", intervalMinutes, ...(sameCondition ? {} : { condition }) });
   }}>
     <textarea value={text} rows={3} maxLength={2000} aria-label="编辑内容" onChange={event => setText(event.target.value)} />
     <div className="notes-meta">
       <label className="notes-repeat"><AlarmClock size={14} /><input type="datetime-local" value={time} aria-label="提醒时间（北京时间）" onChange={event => setTime(event.target.value)} /></label>
       {time && <button type="button" className="link-btn" onClick={() => setTime("")}>不按时间提醒</button>}
-      {at !== null && <label className="notes-repeat"><Repeat2 size={14} /><select value={repeat} aria-label="重复" onChange={event => setRepeat(event.target.value as NoteRepeat)}>
-        {(Object.keys(REPEAT_LABELS) as NoteRepeat[]).map(key => <option key={key} value={key}>{REPEAT_LABELS[key]}</option>)}
-      </select></label>}
+      {at !== null && <RepeatFields repeat={repeat} interval={interval} onRepeat={setRepeat} onInterval={setInterval} />}
+      {badInterval && <span className="notes-warn">重复间隔须为 1 至 {MAX_INTERVAL_MINUTES} 分钟</span>}
       {past && <span className="notes-warn"><CircleAlert size={13} />这个时间已经过了</span>}
       {at !== null && !past && <small>{formatRemind(new Date(at).toISOString(), now)} 提醒</small>}
     </div>
@@ -394,7 +435,7 @@ function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; 
     </div>}
     <div className="notes-meta">
       <span className="notes-card-actions">
-        <button type="submit" className="primary-btn" disabled={!text.trim() || past || badCondition}>保存</button>
+        <button type="submit" className="primary-btn" disabled={!text.trim() || past || badCondition || badInterval}>保存</button>
         <button type="button" className="secondary-btn" onClick={onCancel}>取消</button>
       </span>
     </div>
@@ -411,7 +452,7 @@ export function NoteReminderStack({ api, onOpenNotes, onOpenStock }: { api: Note
       const byCondition = Boolean(note.conditionHit) && !(note.remindAt && note.firedFor === note.remindAt);
       return <div key={note.id} className="notes-popup">
         <div className="notes-popup-top">{byCondition ? <Crosshair size={15} /> : <BellRing size={15} />}<b>{byCondition ? "价格条件到了" : "随心记提醒"}</b>
-          <small>{byCondition ? formatRemind(note.conditionHit!.at) : note.remindAt ? formatRemind(note.firedFor || note.remindAt) : ""}</small>
+          <small>{byCondition ? formatRemind(note.conditionHit!.at) : (note.lastFiredAt || note.firedFor || note.remindAt) ? formatRemind((note.lastFiredAt || note.firedFor || note.remindAt)!) : ""}</small>
           <button type="button" className="icon-btn" aria-label="收起这条提醒" onClick={() => api.dismiss(note.id)}><X size={14} /></button></div>
         {byCondition && <p className="notes-popup-detail">{note.conditionHit!.detail}</p>}
         <p>{note.text}</p>

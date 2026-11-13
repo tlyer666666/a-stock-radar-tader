@@ -121,4 +121,73 @@ function inTradingSession(ms, isTradingDate) {
   return isTradingDate(date) && ((minute >= 570 && minute <= 690) || (minute >= 780 && minute <= 900));
 }
 
-module.exports = { createNoteWatcher, evaluateCondition, normalizeItem, inTradingSession };
+// 分钟循环由主进程计时，最小化或关闭 macOS 窗口也能通知。
+function createIntervalReminderScheduler({
+  now = Date.now,
+  notify = () => {},
+  setTimer = setTimeout,
+  clearTimer = clearTimeout
+} = {}) {
+  let items = new Map();
+  let timer = null;
+  let systemNotify = true;
+
+  function tick() {
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+    const currentTime = now();
+    let nextWake = Infinity;
+    const due = [];
+    for (const item of items.values()) {
+      if (item.nextAt <= currentTime) {
+        item.lastFiredAt = item.nextAt;
+        item.nextAt += (Math.floor((currentTime - item.nextAt) / item.intervalMs) + 1) * item.intervalMs;
+        due.push(item.text);
+      }
+      nextWake = Math.min(nextWake, item.nextAt);
+    }
+    if (Number.isFinite(nextWake)) {
+      // setTimeout 最长约 24 天。较远的提醒每天醒一次即可。
+      timer = setTimer(tick, Math.min(nextWake - currentTime, 86_400_000));
+      timer?.unref?.();
+    }
+    if (due.length && systemNotify) {
+      try {
+        notify({
+          title: due.length === 1 ? "随心记提醒" : `随心记：${due.length} 条提醒到了`,
+          body: due.join("\n").slice(0, 240)
+        });
+      } catch { /* 系统通知失败时仍保留触发记录，交给应用内提醒。 */ }
+    }
+  }
+
+  function sync(input) {
+    systemNotify = input?.systemNotify !== false;
+    const next = new Map();
+    const submitted = Array.isArray(input?.items) ? input.items.slice(0, 1000) : [];
+    for (const raw of submitted) {
+      const id = typeof raw?.id === "string" ? raw.id.slice(0, 40) : "";
+      const { at, intervalMinutes } = raw || {};
+      if (!id || !Number.isSafeInteger(at) || at <= 0 || at > 8.64e15 - 86_400_000 ||
+          !Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) continue;
+      const intervalMs = intervalMinutes * 60_000;
+      const text = String(raw.text || "").slice(0, 80);
+      const existing = items.get(id);
+      // 渲染进程可能在下一次通知后才确认前一次的排程。
+      const sameSchedule = existing && existing.intervalMs === intervalMs && (
+        existing.at === at || (at >= existing.at && at <= existing.nextAt && (at - existing.at) % intervalMs === 0)
+      );
+      next.set(id, sameSchedule
+        ? { ...existing, text, at, lastFiredAt: existing.lastFiredAt >= at ? existing.lastFiredAt : null }
+        : { id, text, at, intervalMs, nextAt: at, lastFiredAt: null });
+    }
+    items = next;
+    tick();
+    return [...items.values()].filter(item => item.lastFiredAt !== null)
+      .map(({ id, at, lastFiredAt, nextAt }) => ({ id, at, lastFiredAt, nextAt }));
+  }
+
+  return { sync, tick, stop() { items.clear(); tick(); } };
+}
+
+module.exports = { createNoteWatcher, evaluateCondition, normalizeItem, inTradingSession, createIntervalReminderScheduler };

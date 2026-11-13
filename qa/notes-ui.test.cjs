@@ -34,6 +34,17 @@ describe('随心记 page in the actual renderer', () => {
           start: async input => { window.calls.agent.push(input); return { runId: 'r' + window.calls.agent.length, conversationId: 'c1' }; },
           poll: async runId => ({ runId, conversationId: 'c1', status: 'done', steps: [], startedAt: '', elapsedMs: 10, model: 'demo',
             message: { id: 'm1', role: 'assistant', content: '**先别急着减仓**\\n\\n现价离 280 还有空间，盯住 275。', stance: '中性', at: new Date().toISOString() } }) } };
+      if (new URLSearchParams(location.search).has('background')) {
+        // Expose scheduling input and simulated main-process hits to exercise the renderer handoff.
+        window.calls.intervals = [];
+        window.intervalHits = [];
+        api.syncNoteIntervals = async input => {
+          window.calls.intervals.push(input);
+          const hits = window.intervalHits;
+          window.intervalHits = [];
+          return hits;
+        };
+      }
       window.stockApi = api;
       Object.defineProperty(window, 'speechSynthesis', { configurable: true, value: { speak: utterance => window.calls.spoken.push(utterance.text), cancel() {} } });
       function Host() {
@@ -72,7 +83,7 @@ describe('随心记 page in the actual renderer', () => {
 
   after(async () => { await browser?.close(); await server?.close(); });
 
-  async function pageTest(run) {
+  async function pageTest(run, query = "") {
     const page = await browser.newPage({ viewport: { width: 1360, height: 900 } });
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
@@ -81,7 +92,7 @@ describe('随心记 page in the actual renderer', () => {
     try {
       // 北京时间 2026-11-12（周四）14:00。
       await page.clock.install({ time: new Date('2026-11-12T14:00:00+08:00') });
-      await page.goto(base);
+      await page.goto(base + query);
       await page.locator('.notes-view').waitFor();
       await run(page);
       assert.deepEqual(errors, [], 'the renderer must not throw');
@@ -128,6 +139,54 @@ describe('随心记 page in the actual renderer', () => {
       await page.getByRole('tab', { name: /全部/ }).click();
       assert.equal(await page.locator('.notes-card').count(), 2, '保存在本机，重开还在');
     });
+  });
+
+  test('每十五分钟重复两次，重开保留下一次，完成后停止', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('每十五分钟提醒我一次');
+      assert.equal(await page.getByLabel('重复间隔（分钟）').inputValue(), '15');
+      await input.press('Enter');
+      const card = page.locator('.notes-card.scheduled');
+      await card.getByText(/每 15 分钟/).waitFor();
+      await page.clock.fastForward('14:59');
+      assert.equal(await page.locator('.notes-popup').count(), 0);
+      await page.clock.fastForward('00:17');
+      await page.locator('.notes-popup').waitFor();
+      assert.match(await card.innerText(), /14:30 提醒/);
+      await page.getByRole('button', { name: /知道了/ }).click();
+      await page.clock.fastForward('15:00');
+      await page.locator('.notes-popup').waitFor();
+      assert.match(await card.innerText(), /14:45 提醒/);
+      assert.equal(await page.evaluate(() => window.calls.notify.length), 2);
+      await page.reload();
+      await card.getByText(/14:45 提醒/).waitFor();
+      await card.getByRole('button', { name: '完成', exact: true }).click();
+      await page.clock.fastForward('30:00');
+      assert.equal(await page.locator('.notes-popup').count(), 0);
+      assert.equal(await page.evaluate(() => window.calls.notify.length), 0);
+    });
+  });
+
+  test('分钟循环将排程交给主进程并接收触发结果，AI 整理保留循环', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('每隔15分钟提醒我一次');
+      await page.getByRole('button', { name: 'AI 整理', exact: true }).click();
+      await page.getByRole('button', { name: '撤销 AI 整理' }).waitFor();
+      assert.equal(await page.getByLabel('重复', { exact: true }).inputValue(), 'interval');
+      assert.equal(await page.getByLabel('重复间隔（分钟）').inputValue(), '15');
+      await page.getByRole('button', { name: '记下来', exact: true }).click();
+      await page.waitForFunction(() => window.calls.intervals.at(-1)?.items.length === 1);
+      const item = await page.evaluate(() => window.calls.intervals.at(-1).items[0]);
+      assert.equal(item.intervalMinutes, 15);
+      await page.evaluate(item => { window.intervalHits = [{ id: item.id, at: item.at, lastFiredAt: item.at, nextAt: item.at + 900_000 }]; }, item);
+      await page.clock.fastForward('15:16');
+      await page.locator('.notes-popup').waitFor();
+      assert.equal(await page.evaluate(() => window.calls.notify.length), 0, '系统通知由主进程发送');
+      await page.locator('.notes-card.scheduled').getByRole('button', { name: '完成', exact: true }).click();
+      await page.waitForFunction(() => window.calls.intervals.at(-1)?.items.length === 0);
+    }, '?background');
   });
 
   test('价格条件：识别「跌破 280」、交给主进程盯；触发后弹提醒、自动让 AI 看，结论显示在卡片里', async () => {

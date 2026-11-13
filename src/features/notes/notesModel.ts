@@ -4,7 +4,7 @@ import marketCalendar from "../../../config/a-share-market-calendar.json";
  * 随心记：随手记下的想法，可选一个提醒时间（和重复规则）、可关联一只股票。
  * 时间一律按北京时间理解；存储用 ISO 时间戳。只保存在本机。
  */
-export type NoteRepeat = "none" | "tradingDays" | "daily" | "weekly";
+export type NoteRepeat = "none" | "tradingDays" | "daily" | "weekly" | "interval";
 export type NoteStock = { code: string; name: string; secid: string };
 /** 价格条件：盘中软件替你盯着，满足一次就提醒。field = 最新价（元）或涨跌幅（%）。 */
 export type NoteCondition = { field: "latest" | "changePct"; op: "lte" | "gte"; value: number };
@@ -21,10 +21,12 @@ export type Note = {
   /** 下一次提醒时间（ISO）；没有提醒为 null。 */
   remindAt: string | null;
   repeat: NoteRepeat;
+  intervalMinutes: number | null;
   stock: NoteStock | null;
   done: boolean;
   /** 最近一次已经提醒过的那个时间点（ISO）；等于 remindAt 说明这次已提醒、等你处理。 */
   firedFor: string | null;
+  lastFiredAt: string | null;
   condition: NoteCondition | null;
   /** 条件满足、已经提醒的时间（ISO）和当时的说明；为 null 表示还在盯。 */
   conditionHit: { at: string; detail: string } | null;
@@ -36,7 +38,16 @@ export const NOTES_KEY = "a-stock-radar:notes:v1";
 export const MAX_NOTES = 1000;
 export const MAX_NOTE_LENGTH = 2000;
 export const EMPTY_NOTES: NotesStore = { notes: [], voice: true, systemNotify: true, aiAuto: false };
-export const REPEAT_LABELS: Record<NoteRepeat, string> = { none: "不重复", tradingDays: "每个交易日", daily: "每天", weekly: "每周" };
+export const REPEAT_LABELS: Record<NoteRepeat, string> = { none: "不重复", tradingDays: "每个交易日", daily: "每天", weekly: "每周", interval: "按分钟重复" };
+
+export const MAX_INTERVAL_MINUTES = 1440;
+export function normalizeIntervalMinutes(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_INTERVAL_MINUTES ? value : null;
+}
+
+export function repeatLabel(repeat: NoteRepeat, intervalMinutes?: number | null): string {
+  return repeat === "interval" && intervalMinutes ? `每 ${intervalMinutes} 分钟` : REPEAT_LABELS[repeat];
+}
 
 const CN_OFFSET = 8 * 3600_000;
 const DAY = 86400_000;
@@ -68,8 +79,14 @@ export function tradingDayOnOrAfter(date: string): string {
 export const nextTradingDay = (date: string) => tradingDayOnOrAfter(addDays(date, 1));
 
 /** 重复提醒的下一次：严格晚于 after。 */
-export function nextOccurrence(remindAt: number, repeat: NoteRepeat, after: number): number | null {
+export function nextOccurrence(remindAt: number, repeat: NoteRepeat, after: number, intervalMinutes?: number | null): number | null {
   if (repeat === "none") return null;
+  if (repeat === "interval") {
+    const minutes = normalizeIntervalMinutes(intervalMinutes);
+    if (minutes === null) return null;
+    const interval = minutes * 60_000;
+    return remindAt + Math.max(1, Math.floor((after - remindAt) / interval) + 1) * interval;
+  }
   const { date, minutes } = cnParts(remindAt);
   let day = date;
   for (let guard = 0; guard < 800; guard += 1) {
@@ -94,7 +111,7 @@ export function formatRemind(iso: string | null, now = Date.now()): string {
 
 // ---------- 从输入的文字里识别提醒时间和股票 ----------
 
-export type ParsedRemind = { at: number; label: string; repeat: NoteRepeat };
+export type ParsedRemind = { at: number; label: string; repeat: NoteRepeat; intervalMinutes?: number };
 const CN_NUM: Record<string, number> = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
 function cnNumber(text: string): number | null {
   if (/^\d+$/.test(text)) return Number(text);
@@ -106,6 +123,7 @@ function cnNumber(text: string): number | null {
 }
 const NUM = "[0-9零〇一二两三四五六七八九十]{1,3}";
 const DURATION = `(?:${NUM}个?半(?:小时|钟头)|(?:${NUM}|半)个?(?:分钟|小时|钟头)|[一三]刻钟)`;
+const intervalRequest = new RegExp(`(?:^|[，。；、！？,:;!?]|提醒我)(?:请|帮我|给我)?每(?:隔)?(${DURATION})(?:提醒|叫我|通知我|看一下|检查|看看)`);
 const marketOffset = new RegExp(`(下午开盘|午后开盘|上午收盘|中午收盘|集合竞价|竞价|开盘|收盘)(?:([前后])(${DURATION})|(${DURATION})([前后]))`);
 const marketMinutes: Record<string, number> = {
   下午开盘: 780, 午后开盘: 780, 上午收盘: 690, 中午收盘: 690, 集合竞价: 555, 竞价: 555, 开盘: 570, 收盘: 900
@@ -154,6 +172,16 @@ export function inspectReminder(text: string, now = Date.now()): ParsedRemind | 
   const normalized = text.normalize("NFKC");
   // 保留数字之间的分隔，避免把“600519 10分钟后”拼成一个数字。
   const s = normalized.replace(/(?<!\d)\s+|\s+(?!\d)/g, "");
+  const loop = s.match(intervalRequest);
+  if (loop) {
+    const intervalMinutes = normalizeIntervalMinutes(durationMinutes(loop[1]!));
+    if (intervalMinutes === null) return { problem: `重复间隔须为 1 至 ${MAX_INTERVAL_MINUTES} 的整数分钟` };
+    // 含日期或交易时段限定的循环不能当成全天循环保存。
+    if (/明天|后天|每天|每日|每周|开盘|收盘|盘中|盘前|盘后|交易日|直到|截至|为止|到[上下中晚早0-9一二两三四五六七八九十]/.test(s)) {
+      return { problem: "按分钟重复暂不支持指定日期或时段。可手动设置首次提醒时间和间隔。" };
+    }
+    return { at: now + intervalMinutes * 60_000, label: repeatLabel("interval", intervalMinutes), repeat: "interval", intervalMinutes };
+  }
   const today = cnParts(now);
   const offset = s.match(marketOffset);
   if (!offset) {
@@ -364,7 +392,9 @@ export function normalizeNote(value: unknown): Note | null {
   const text = String(value.text ?? "").slice(0, MAX_NOTE_LENGTH);
   if (!text.trim()) return null;
   const iso = (input: unknown) => typeof input === "string" && Number.isFinite(Date.parse(input)) ? new Date(Date.parse(input)).toISOString() : null;
-  const repeat: NoteRepeat = value.repeat === "tradingDays" || value.repeat === "daily" || value.repeat === "weekly" ? value.repeat : "none";
+  const intervalMinutes = value.repeat === "interval" ? normalizeIntervalMinutes(value.intervalMinutes) : null;
+  const repeat: NoteRepeat = intervalMinutes ? "interval" :
+    value.repeat === "tradingDays" || value.repeat === "daily" || value.repeat === "weekly" ? value.repeat : "none";
   const stockRaw = isRecord(value.stock) ? value.stock : null;
   const code = stockRaw ? String(stockRaw.code || "") : "";
   const stock = /^\d{6}$/.test(code)
@@ -374,7 +404,8 @@ export function normalizeNote(value: unknown): Note | null {
   const remindAt = iso(value.remindAt);
   return {
     id: String(value.id || createdAt).slice(0, 40), text, createdAt, updatedAt: iso(value.updatedAt) || createdAt,
-    remindAt, repeat: remindAt ? repeat : "none", stock, done: value.done === true, firedFor: iso(value.firedFor),
+    remindAt, repeat: remindAt ? repeat : "none", intervalMinutes: remindAt ? intervalMinutes : null, stock, done: value.done === true, firedFor: iso(value.firedFor),
+    lastFiredAt: iso(value.lastFiredAt),
     condition: stock ? normalizeCondition(value.condition) : null,
     conditionHit: isRecord(value.conditionHit) && iso(value.conditionHit.at) ? { at: iso(value.conditionHit.at)!, detail: String(value.conditionHit.detail || "").slice(0, 120) } : null,
     ai: normalizeAi(value.ai)
@@ -418,14 +449,14 @@ export function isAwaiting(note: Note): boolean {
 export function markFired(note: Note, now: number): Note {
   if (!note.remindAt) return note;
   if (note.repeat !== "none") {
-    const next = nextOccurrence(Date.parse(note.remindAt), note.repeat, now);
-    return { ...note, remindAt: next ? new Date(next).toISOString() : null, firedFor: null };
+    const next = nextOccurrence(Date.parse(note.remindAt), note.repeat, now, note.intervalMinutes);
+    return { ...note, remindAt: next ? new Date(next).toISOString() : null, firedFor: null, lastFiredAt: note.remindAt };
   }
-  return { ...note, firedFor: note.remindAt };
+  return { ...note, firedFor: note.remindAt, lastFiredAt: note.remindAt };
 }
 
 export function snooze(note: Note, at: number): Note {
-  return { ...note, remindAt: new Date(at).toISOString(), firedFor: null, done: false, updatedAt: new Date().toISOString() };
+  return { ...note, remindAt: new Date(at).toISOString(), firedFor: null, lastFiredAt: null, done: false, updatedAt: new Date().toISOString() };
 }
 
 /** 列表顺序：等你处理的 → 有提醒的按时间先后 → 没提醒的按新到旧 → 已完成。 */

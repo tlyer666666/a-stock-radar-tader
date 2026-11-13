@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { AlarmClock, Crosshair, NotebookPen, X } from "lucide-react";
-import { describeCondition, formatRemind, inspectReminder, mentionedStockCodes, parseConditions, REPEAT_LABELS, type NoteStock } from "./notesModel";
+import { describeCondition, formatRemind, inspectReminder, mentionedStockCodes, parseConditions, repeatLabel, type NoteStock } from "./notesModel";
 import type { NotesApi } from "./useNotes";
 
 /**
@@ -28,7 +28,7 @@ export default function QuickNote({ api, stock }: { api: NotesApi; stock: NoteSt
     : conditions.length > 1 && conditionChoice === null ? "请选择要盯的价格条件" : "";
   const save = () => {
     if (problem) return;
-    const error = api.add({ text: text.includes(stock.code) ? text : `${stock.name} ${stock.code}：${text.trim()}`, remindAt: at, repeat: at ? parsed!.repeat : "none", stock, condition });
+    const error = api.add({ text: text.includes(stock.code) ? text : `${stock.name} ${stock.code}：${text.trim()}`, remindAt: at, repeat: at ? parsed!.repeat : "none", intervalMinutes: parsed?.intervalMinutes, stock, condition });
     if (error) { setMessage(error); return; }
     setText(""); setConditionChoice(null); setOpen(false); setMessage("已记到随心记");
   };
@@ -43,7 +43,7 @@ export default function QuickNote({ api, stock }: { api: NotesApi; stock: NoteSt
       <textarea ref={ref} rows={3} maxLength={2000} value={text} aria-label="记一笔内容" onChange={event => { setText(event.target.value); setConditionChoice(null); }} onKeyDown={onKeyDown}
         placeholder="想到什么就写，例如：明天开盘看是否高开；跌破 10.5 就减仓（回车保存）" />
       <div className="quick-note-foot">
-        {at && !problem && <span className="notes-badge scheduled"><AlarmClock size={12} />{formatRemind(new Date(at).toISOString())}{parsed?.repeat && parsed.repeat !== "none" ? `（${REPEAT_LABELS[parsed.repeat]}）` : ""} 提醒</span>}
+        {at && !problem && <span className="notes-badge scheduled"><AlarmClock size={12} />{formatRemind(new Date(at).toISOString())}{parsed?.repeat && parsed.repeat !== "none" ? `（${repeatLabel(parsed.repeat, parsed.intervalMinutes)}）` : ""} 提醒</span>}
         {conditions.length > 1 && <label className="notes-repeat">盯盘条件
           <select aria-label="盯盘条件" value={conditionChoice ?? -1} onChange={event => setConditionChoice(Number(event.target.value) === -1 ? null : Number(event.target.value))}>
             <option value={-1}>请选择一项</option>
