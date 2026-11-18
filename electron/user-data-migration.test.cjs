@@ -43,7 +43,11 @@ test("migrates business stores, secret key and daily bars while skipping Chromiu
     // Symlink must NOT be followed outside legacyDir.
     const outsideFile = path.join(root, "outside-secret.json");
     write(outsideFile, "outside");
-    fs.symlinkSync(outsideFile, path.join(legacyDir, "backup-config.json"));
+    try {
+      fs.symlinkSync(outsideFile, path.join(legacyDir, "backup-config.json"));
+    } catch (error) {
+      if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+    }
 
     // Existing Chromium cache in target must not block migration when target has no business data.
     write(path.join(targetDir, "Preferences"), "{\"browser\":true}");

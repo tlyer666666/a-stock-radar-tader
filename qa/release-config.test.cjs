@@ -131,7 +131,7 @@ process.exit(tool==='node'&&args[0]==='qa/verify-dependencies.cjs'&&args.include
   const result = spawnSync(packageJson.scripts[script], { shell: true, cwd: root, encoding: "utf8", timeout: 15000, env: { ...process.env, [pathKey]: root + path.delimiter + process.env[pathKey], RELEASE_GATE_EVENTS: eventsPath } });
   assert.ifError(result.error);
   assert.equal(result.status, 23, `${script}: ${result.stderr}`);
-  return fs.readFileSync(eventsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  return fs.readFileSync(eventsPath, "utf8").trim().split(/\r?\n/).map((line) => JSON.parse(line));
 }
 
 for (const script of appBuildEntryPoints) {
@@ -151,7 +151,8 @@ test("web-only builds remain usable offline and fullstack verification includes 
 
 test("six-dimension audit regressions stay in the release test gates", () => {
   // test 脚本自 1.6.72 起改为 qa/test-manifest.cjs 磁盘自动发现，这里校验清单而非脚本字符串
-  const unitTests = execFileSync(process.execPath, [path.join(__dirname, "test-manifest.cjs"), "unit"], { cwd: projectRoot, encoding: "utf8" }).trim().split("\n");
+  const unitTests = execFileSync(process.execPath, [path.join(__dirname, "test-manifest.cjs"), "unit"], { cwd: projectRoot, encoding: "utf8" }).trim().split(/\r?\n/);
+  assert.equal(unitTests.some((entry) => entry.includes("\\")), false, "manifest paths must be POSIX-normalized on every OS");
   for (const file of [
     "electron/market-audit.test.cjs",
     "electron/quant-audit-remediation.test.cjs",

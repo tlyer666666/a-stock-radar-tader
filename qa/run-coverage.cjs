@@ -27,7 +27,7 @@ const FLOORS = { lines: 75, branches: 74, functions: 80 };
 const root = path.resolve(__dirname, "..");
 const files = execFileSync(process.execPath, [path.join(__dirname, "test-manifest.cjs"), "unit"], { cwd: root, encoding: "utf8" })
   .trim()
-  .split("\n")
+  .split(/\r?\n/)
   .filter(Boolean);
 if (!files.length) throw new Error("test manifest returned no unit test files");
 
