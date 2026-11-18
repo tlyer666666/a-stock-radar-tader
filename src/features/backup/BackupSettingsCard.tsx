@@ -146,6 +146,12 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
 
     <section className="backup-section">
       <h4>备份密码（可选）</h4>
+      {status?.folder && !status?.hasPassword && Boolean(folderLabel) && (
+        <div className="warning-banner backup-privacy-banner" role="status">
+          <CircleAlert size={15} />
+          <span>当前已选择网盘同步目录（{folderLabel}），未设密码时备份文件会以明文保存持仓股数、成本价与随心记，强烈建议设置备份密码加密保护隐私。</span>
+        </div>
+      )}
       <p className="source-health-note">设了密码，备份文件整份加密，放在网盘上别人也看不到持仓。<b>密码忘了备份就打不开</b>，请记好。本机记住密码，自动备份不用每次输。</p>
       {editingPassword ? <div className="backup-actions">
         <input type="password" className="backup-password" value={password} placeholder="至少 6 位；留空表示不加密" aria-label="备份密码" onChange={event => setPassword(event.target.value)} />
@@ -180,6 +186,11 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
     </section>
 
     {message && <p className={`backup-message ${message.tone}`} role={message.tone === "error" ? "alert" : "status"}>{message.tone === "error" && <CircleAlert size={14} />}{message.text}</p>}
+    {status?.storageSummary && (
+      <p className="source-health-note" aria-label="本机存储空间占用">
+        本机目录占用：业务数据 {sizeText(Math.max(0, status.storageSummary.userDataBytes - status.storageSummary.dailyBarsBytes - status.storageSummary.webCacheBytes))} · 本地日线库 {sizeText(status.storageSummary.dailyBarsBytes)}（{status.storageSummary.dailyBarsCount} 只股票，退市超 180 天自动回收） · 内嵌网页缓存 {sizeText(status.storageSummary.webCacheBytes)}。
+      </p>
+    )}
     <p className="source-health-note">备份里有：设置（不含令牌和 API Key）、自选、持仓、观察记录、随心记、做T助手、自定义策略、AI 打分与问股对话、回测与复盘记录、纸面账户。不含行情缓存和日线库（换电脑后会自动重新下载）。</p>
     <ConfirmDialog request={confirm} onResolve={confirmed => { setConfirm(null); if (confirmed) void runRestore(); else setRestore(null); }} />
   </div>;

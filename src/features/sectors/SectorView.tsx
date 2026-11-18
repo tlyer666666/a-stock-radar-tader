@@ -202,7 +202,7 @@ export function ConceptChainPanel({
     return (
       <section className="panel concept-chain-panel">
         <PanelTitle title="产业链细分概览" subtitle="正在读取免费行情成分股与交叉概念" icon={Layers3} />
-        <div className="concept-chain-loading"><LoaderCircle className="spin" size={18} />加载细分概念...</div>
+        <div className="concept-chain-loading" role="status" aria-live="polite"><LoaderCircle className="spin" size={18} />加载细分概念...</div>
       </section>
     );
   }
@@ -419,7 +419,9 @@ export function SectorMemberTable({
   exchangeBoard,
   emptyText,
   onOpenStock,
-  onLoadMore
+  onLoadMore,
+  favoriteCodes,
+  onToggleFavorite
 }: {
   members: SectorMemberItem[];
   limit: number;
@@ -427,6 +429,8 @@ export function SectorMemberTable({
   emptyText: string;
   onOpenStock: (stock: Security) => void;
   onLoadMore: () => void;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onToggleFavorite?: ((stock: Security) => void) | undefined;
 }) {
   const [sort, setSort] = useState<ColumnSort<MemberSortKey>>(DEFAULT_MEMBER_SORT);
   const sorted = useMemo(() => sortRowsBy(members, (item: SectorMemberItem) => item?.[sort.key], sort.direction), [members, sort]);
@@ -477,6 +481,17 @@ export function SectorMemberTable({
                 <span>
                   {item.quoteStatus === "unavailable" ? "行情暂缺" : item.quoteStatus === "stale" ? "较早行情" : exchangeBoard && !item.limitStatusKnown ? "--" : item.isLimitUp ? <em className="limit-status">涨停</em> : "正常"}
                 </span>
+                {onToggleFavorite && (
+                  <button
+                    type="button"
+                    className={`table-action${favoriteCodes?.has(item.code) ? " active" : ""}`}
+                    aria-label={`${favoriteCodes?.has(item.code) ? "移出自选" : "加入自选"} ${item.code}`}
+                    title={favoriteCodes?.has(item.code) ? "移出自选板块" : "加入自选板块"}
+                    onClick={() => onToggleFavorite({ code: item.code, name: item.name, secid: item.secid, assetType: "stock" })}
+                  >
+                    {favoriteCodes?.has(item.code) ? "已自选" : "+自选"}
+                  </button>
+                )}
               </td>
             </tr>
           ))}
@@ -670,7 +685,7 @@ type DetailCountEntry = {
   limitCount?: SectorLimitCount | null | undefined;
 };
 
-function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, dedicatedSector, aiPanel }: {
+function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, favoriteCodes, onToggleFavorite, dedicatedSector, aiPanel }: {
   /** 板块强度页标题下方的「AI 解读」。 */
   aiPanel?: ReactNode;
   /** 概念榜、今日涨停主线（1.6.43 起与行业榜一起取回）。 */
@@ -681,6 +696,8 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   loadError: string;
   onRefresh: () => Promise<boolean | void> | boolean | void;
   onOpenStock: (stock: Security) => void;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onToggleFavorite?: ((stock: Security) => void) | undefined;
 }) {
   const [selectedName, setSelectedName] = useState(dedicatedSector || "");
   const [expandedName, setExpandedName] = useState("");
@@ -747,6 +764,26 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   const currentBoardSnapshot = useRef(boardSnapshot);
   currentBoardSnapshot.current = boardSnapshot;
   const countRevision = useRef(new Map<string, number>());
+  const pendingDetailBatch = useRef<{ snapshot: BoardSnapshotRef; entries: Map<string, DetailCountEntry> } | null>(null);
+  const detailFlushTimer = useRef<number | undefined>(undefined);
+  const lastDetailFlushAt = useRef(0);
+
+  const flushPendingDetailCounts = useCallback(() => {
+    detailFlushTimer.current = undefined;
+    const batch = pendingDetailBatch.current;
+    if (!batch || !batch.entries.size) return;
+    pendingDetailBatch.current = null;
+    lastDetailFlushAt.current = Date.now();
+    if (currentBoardSnapshot.current !== batch.snapshot) return;
+    setDetailCounts(previous => {
+      const byName = new Map(previous?.snapshot === batch.snapshot ? previous.byName : []);
+      for (const [name, entry] of batch.entries) {
+        byName.set(name, entry);
+      }
+      return { snapshot: batch.snapshot, byName };
+    });
+  }, []);
+
   const countVisible = useCallback((item: SectorViewRow) => {
     const api = window.stockApi.getSectorLimitUpCount;
     if (!api || dedicatedSector) return;
@@ -762,15 +799,21 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
       ...(item.conceptCid !== undefined ? { conceptCid: item.conceptCid } : {}),
       memberCount: item.memberCount }).then(result => {
       if (currentBoardSnapshot.current !== boardSnapshot || (countRevision.current.get(item.name) ?? 0) !== revision) return;
-      setDetailCounts(previous => {
-        const byName = new Map(previous?.snapshot === boardSnapshot ? previous.byName : []);
-        byName.set(item.name, { count: result.limitUps, stocks: result.limitUpStocks, limitCount: result });
-        return { snapshot: boardSnapshot, byName };
-      });
+      if (!pendingDetailBatch.current || pendingDetailBatch.current.snapshot !== boardSnapshot) {
+        pendingDetailBatch.current = { snapshot: boardSnapshot, entries: new Map() };
+      }
+      pendingDetailBatch.current.entries.set(item.name, { count: result.limitUps, stocks: result.limitUpStocks, limitCount: result });
+      const elapsed = Date.now() - lastDetailFlushAt.current;
+      if (elapsed >= 200) {
+        window.clearTimeout(detailFlushTimer.current);
+        flushPendingDetailCounts();
+      } else if (detailFlushTimer.current === undefined) {
+        detailFlushTimer.current = window.setTimeout(flushPendingDetailCounts, Math.max(16, 200 - elapsed));
+      }
     }).catch(() => { /* A fresh board snapshot permits another attempt. */ });
     countRequests.current.requests.set(item.name, request);
     return request;
-  }, [boardSnapshot, dedicatedSector]);
+  }, [boardSnapshot, dedicatedSector, flushPendingDetailCounts]);
 
   useEffect(() => () => {
     currentBoardSnapshot.current = [];
@@ -778,6 +821,8 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     sectorAnalysisRequest.current += 1;
     conceptChainRequest.current += 1;
     window.clearTimeout(sectorSearchTimer.current);
+    window.clearTimeout(detailFlushTimer.current);
+    pendingDetailBatch.current = null;
   }, []);
 
   const changeSectorQuery = useCallback((value: string) => {
@@ -856,6 +901,9 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
           normalizedDetail.constituents.every((stock) => stock?.quoteStatus === "live" && (stock.latest ?? 0) > 0 && (stock.preClose ?? 0) > 0);
         if (detail.limitCount || fullLiveRoster || stocks.length > (itemRecord ? limitUpCount(itemRecord) ?? 0 : 0)) {
           countRevision.current.set(requestedName, (countRevision.current.get(requestedName) ?? 0) + 1);
+          if (pendingDetailBatch.current?.snapshot === snapshot) {
+            pendingDetailBatch.current.entries.delete(requestedName);
+          }
           setDetailCounts(previous => {
             const byName = new Map(previous?.snapshot === snapshot ? previous.byName : []);
             byName.set(requestedName, { count: detail.limitCount ? detail.limitCount.limitUps : stocks.length, stocks: detail.limitCount?.limitUpStocks ?? stocks, limitCount: detail.limitCount ?? null });
@@ -1009,6 +1057,8 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
                   emptyText={sector.constituents.length ? "当前筛选条件下没有成分股" : "本次未取得成分股，请重试"}
                   onOpenStock={onOpenStock}
                   onLoadMore={() => setMemberLimit((current) => current + MEMBER_PAGE_SIZE)}
+                  favoriteCodes={favoriteCodes}
+                  onToggleFavorite={onToggleFavorite}
                 />
               </div>
             </div>

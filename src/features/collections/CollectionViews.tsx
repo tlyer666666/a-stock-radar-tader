@@ -6,6 +6,7 @@ import {
   BookmarkCheck,
   ChevronRight,
   ClipboardPaste,
+  History,
   LineChart,
   LoaderCircle,
   PlusCircle,
@@ -14,6 +15,7 @@ import {
   ShieldAlert,
   SlidersHorizontal,
   Star,
+  Trash2,
   WalletCards,
   X
 } from "lucide-react";
@@ -22,15 +24,23 @@ import StockMonitorEditor from "../../components/StockMonitorEditor";
 import useStockMonitors from "../../useStockMonitors";
 import { startVisibleInterval } from "../../visiblePolling";
 import { fmt, fmtMoney, nullableNumber } from "../../domain/formatters";
+import { inferSecid } from "../../domain/securityIdentifiers";
+import type { PaperPosition } from "../../domain/paperSimulationTypes";
 import { formatShanghaiTime, formatShanghaiDateTime } from "../../dateUtils";
 import { summarizeStockMonitor } from "../../stockMonitorRules";
 import {
+  HOLDING_TRADES_STORAGE_KEY,
+  appendHoldingTradeRecord,
   applyHoldingTrade,
   buildStopLossMonitorConfig,
+  clearHoldingTrades,
   computeMonitorStopPrice,
+  loadHoldingTrades,
   maskSensitiveText,
   mergeImportedHoldings,
   parseHoldingsPaste,
+  summarizeHoldingTrades,
+  type HoldingTradeRecord,
   type HoldingTradeSide
 } from "./holdingsLedger";
 
@@ -88,6 +98,11 @@ export function HoldingsView({
   monitors,
   privacyMask = false,
   onTransferToT,
+  paperPositions,
+  paperMetrics,
+  onClosePaperPosition,
+  onOpenPaperStock,
+  initialLedgerTab = "real",
   onSave,
   onOpen
 }: {
@@ -97,9 +112,25 @@ export function HoldingsView({
   monitors?: ReturnType<typeof useStockMonitors> | undefined;
   privacyMask?: boolean;
   onTransferToT?: ((item: HoldingItem) => void) | undefined;
+  paperPositions?: PaperPosition[] | undefined;
+  paperMetrics?: {
+    equity?: number | undefined;
+    cash?: number | undefined;
+    openValue?: number | undefined;
+    openPnl?: number | undefined;
+    openPnlPercent?: number | undefined;
+    cumulativeRealizedPnl?: number | undefined;
+    closedCount?: number | undefined;
+    winCount?: number | undefined;
+  } | undefined;
+  onClosePaperPosition?: ((code: string) => void) | undefined;
+  onOpenPaperStock?: ((security: Security) => void) | undefined;
+  initialLedgerTab?: "real" | "paper" | undefined;
   onSave: (update: (items: HoldingItem[]) => HoldingItem[]) => Promise<boolean>;
   onOpen: (item: HoldingItem) => void;
 }) {
+  const hasPaperSwitch = paperPositions !== undefined || paperMetrics !== undefined;
+  const [ledgerTab, setLedgerTab] = useState<"real" | "paper">(initialLedgerTab);
   const [entryMode, setEntryMode] = useState<"single" | "trade" | "paste">("single");
   const [code, setCode] = useState("");
   const [shares, setShares] = useState("");
@@ -109,10 +140,13 @@ export function HoldingsView({
   const [tradeCode, setTradeCode] = useState("");
   const [tradeShares, setTradeShares] = useState("100");
   const [tradePrice, setTradePrice] = useState("");
+  const [tradeDiluteCost, setTradeDiluteCost] = useState(false);
   const [tradeNote, setTradeNote] = useState("");
   const [pasteText, setPasteText] = useState("");
   const [batchMessage, setBatchMessage] = useState("");
   const [editingMonitorCode, setEditingMonitorCode] = useState<string | null>(null);
+  const [holdingSort, setHoldingSort] = useState<{ key: "marketValue" | "profit" | "profitPercent"; dir: "desc" | "asc" } | null>(null);
+  const [tradeRecords, setTradeRecords] = useState<HoldingTradeRecord[]>(() => loadHoldingTrades());
   const [quotes, setQuotes] = useState<Record<string, { quote: Record<string, unknown> | null; updatedAt: string; failed: boolean }>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -181,6 +215,25 @@ export function HoldingsView({
       quoteRefreshPending.current = null;
     };
   }, [items.length, live, settings.quoteRefreshSeconds, refreshQuotes]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const syncTrades = (event?: Event) => {
+      if (event && "key" in event) {
+        const storageEvent = event as StorageEvent;
+        if (storageEvent.key !== null && storageEvent.key !== HOLDING_TRADES_STORAGE_KEY) return;
+      }
+      setTradeRecords(loadHoldingTrades());
+    };
+    window.addEventListener("storage", syncTrades);
+    window.addEventListener("a-stock-radar:holding-trades-updated", syncTrades);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("storage", syncTrades);
+        window.removeEventListener("a-stock-radar:holding-trades-updated", syncTrades);
+      }
+    };
+  }, []);
 
   const rows = useMemo(() => items.map((item) => {
     const snapshot = quotes[item.code];
@@ -309,10 +362,37 @@ export function HoldingsView({
       side: tradeSide,
       shares: Number(tradeShares),
       price: Number(tradePrice),
+      diluteCost: tradeSide === "sell" ? tradeDiluteCost : false,
       note: tradeNote
     });
     return res;
-  }, [items, tradeCode, tradeSide, tradeShares, tradePrice, tradeNote]);
+  }, [items, tradeCode, tradeSide, tradeShares, tradePrice, tradeDiluteCost, tradeNote]);
+
+  const sortedRows = useMemo(() => {
+    if (!holdingSort) return rows;
+    const { key, dir } = holdingSort;
+    return rows.slice().sort((left, right) => {
+      const lv = left[key];
+      const rv = right[key];
+      const lValid = Number.isFinite(lv);
+      const rValid = Number.isFinite(rv);
+      if (!lValid && !rValid) return left.item.code.localeCompare(right.item.code);
+      if (!lValid) return 1;
+      if (!rValid) return -1;
+      return (dir === "desc" ? rv - lv : lv - rv) || left.item.code.localeCompare(right.item.code);
+    });
+  }, [rows, holdingSort]);
+
+  const toggleHoldingSort = (key: "marketValue" | "profit" | "profitPercent") => {
+    setHoldingSort(prev => (prev && prev.key === key ? { key, dir: prev.dir === "desc" ? "asc" : "desc" } : { key, dir: "desc" }));
+  };
+
+  const holdingCodeSet = useMemo(() => new Set(items.map(i => i.code)), [items]);
+  const holdingAlerts = useMemo(
+    () => (monitors?.alerts || []).filter(alert => holdingCodeSet.has(alert.code)),
+    [monitors?.alerts, holdingCodeSet]
+  );
+  const tradeSummary = useMemo(() => summarizeHoldingTrades(tradeRecords), [tradeRecords]);
 
   const unmonitoredRows = useMemo(
     () => (monitors ? rows.filter(row => !monitors.configs[row.item.code]?.enabled) : []),
@@ -334,7 +414,12 @@ export function HoldingsView({
         resolved = choices.find(entry => entry.code === cleanCode);
       }
       let summaryText = "";
+      let settledPnl: number | null = null;
+      let settledName = resolved?.name || cleanCode;
+      const numericShares = Number(tradeShares);
+      const numericPrice = Number(tradePrice);
       const saved = await onSave(current => {
+        const prevItem = current.find(item => item.code === cleanCode);
         const outcome = applyHoldingTrade({
           items: current,
           code: cleanCode,
@@ -343,15 +428,27 @@ export function HoldingsView({
           thscode: resolved?.thscode,
           marketName: resolved?.marketName,
           side: tradeSide,
-          shares: Number(tradeShares),
-          price: Number(tradePrice),
+          shares: numericShares,
+          price: numericPrice,
+          diluteCost: tradeSide === "sell" ? tradeDiluteCost : false,
           note: tradeNote
         });
         if (!outcome.ok) throw new Error(outcome.error);
         summaryText = outcome.summary;
+        settledPnl = outcome.realizedPnl;
+        settledName = resolved?.name || prevItem?.name || outcome.nextItems.find(item => item.code === cleanCode)?.name || cleanCode;
         return outcome.nextItems;
       });
       if (saved) {
+        setTradeRecords(appendHoldingTradeRecord({
+          code: cleanCode,
+          name: settledName,
+          side: tradeSide,
+          shares: numericShares,
+          price: numericPrice,
+          realizedPnl: settledPnl,
+          note: tradeNote
+        }));
         setBatchMessage(summaryText);
         setTradeCode("");
         setTradeShares("100");
@@ -437,6 +534,75 @@ export function HoldingsView({
         description="持仓数据仅保存在本机；支持单只录入、买卖加减仓自动摊薄成本、多行粘贴导入及一键止损盯盘。"
         actions={<button className="secondary-btn" onClick={() => void refreshQuotes()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新行情</button>}
       />
+      {hasPaperSwitch && (
+        <div className="holdings-mode-tabs holdings-account-tabs" role="tablist" aria-label="实盘与模拟盘持仓切换">
+          <button type="button" role="tab" aria-selected={ledgerTab === "real"} className={ledgerTab === "real" ? "active" : ""} onClick={() => setLedgerTab("real")}>
+            实盘持仓 ({items.length})
+          </button>
+          <button type="button" role="tab" aria-selected={ledgerTab === "paper"} className={ledgerTab === "paper" ? "active" : ""} onClick={() => setLedgerTab("paper")}>
+            模拟盘持仓 ({paperPositions?.length ?? 0})
+          </button>
+        </div>
+      )}
+      {hasPaperSwitch && ledgerTab === "paper" ? (
+        <>
+          <section className="panel holdings-summary-panel">
+            <PanelTitle title="模拟盘总览" subtitle="与驾驶舱及个股分析纸面交易实时同步" icon={WalletCards} badge={`${paperPositions?.length ?? 0} 只`} />
+            <div className="fact-grid holdings-summary-grid">
+              <Fact label="模拟账户总权益" value={typeof paperMetrics?.equity === "number" ? maskSensitiveText(fmtMoney(paperMetrics.equity), privacyMask) : "--"} />
+              <Fact label="模拟持仓市值" value={typeof paperMetrics?.openValue === "number" ? maskSensitiveText(fmtMoney(paperMetrics.openValue), privacyMask) : "--"} />
+              <Fact
+                label="模拟浮动盈亏"
+                value={typeof paperMetrics?.openPnl === "number" ? `${maskSensitiveText(signedMoney(paperMetrics.openPnl), privacyMask)}${typeof paperMetrics?.openPnlPercent === "number" ? `（${signedPercent(paperMetrics.openPnlPercent)}）` : ""}` : "--"}
+                tone={typeof paperMetrics?.openPnl === "number" && paperMetrics.openPnl !== 0 ? (paperMetrics.openPnl > 0 ? "up" : "down") : ""}
+              />
+              <Fact
+                label="模拟累计已实现盈亏"
+                value={typeof paperMetrics?.cumulativeRealizedPnl === "number" ? maskSensitiveText(signedMoney(paperMetrics.cumulativeRealizedPnl), privacyMask) : "--"}
+                tone={typeof paperMetrics?.cumulativeRealizedPnl === "number" && paperMetrics.cumulativeRealizedPnl !== 0 ? (paperMetrics.cumulativeRealizedPnl > 0 ? "up" : "down") : ""}
+              />
+            </div>
+          </section>
+          <section className="panel holdings-table-panel">
+            <PanelTitle title="模拟盘持仓明细" subtitle="支持一键跳转个股深度分析或手动平仓" icon={LineChart} />
+            {paperPositions && paperPositions.length > 0 ? (
+              <div className="table holdings-table" role="table" aria-label="模拟盘持仓明细">
+                <div className="th tr" role="row">
+                  <span role="columnheader">股票</span>
+                  <span role="columnheader">股数 / 入场均价</span>
+                  <span role="columnheader">现价 / 止损止盈</span>
+                  <span role="columnheader">市值</span>
+                  <span role="columnheader">浮动盈亏</span>
+                  <span role="columnheader">操作</span>
+                </div>
+                {paperPositions.map(pos => {
+                  const mktVal = pos.latestPrice * pos.shares;
+                  const pnl = (pos.latestPrice - pos.entryPrice) * pos.shares - pos.entryFee;
+                  const costBase = pos.entryPrice * pos.shares + pos.entryFee;
+                  const pnlPct = costBase > 0 ? (pnl / costBase) * 100 : 0;
+                  const sec: Security = { code: pos.code, name: pos.name, secid: inferSecid(pos.code), assetType: "stock" };
+                  return (
+                    <div className="tr" key={pos.id || pos.code} role="row">
+                      <span role="rowheader" className="stock-cell"><b>{pos.name}</b><small>{pos.code}</small></span>
+                      <span role="cell">{maskSensitiveText(pos.shares.toLocaleString("zh-CN"), privacyMask)} 股 <small>成本 {fmt(pos.entryPrice)} 元</small></span>
+                      <span role="cell"><b>{fmt(pos.latestPrice)} 元</b><small>止损 {fmt(pos.stopPrice)} · 止盈 {fmt(pos.takePrice)}</small></span>
+                      <span role="cell">{maskSensitiveText(fmtMoney(mktVal), privacyMask)}</span>
+                      <span role="cell" className={pnl >= 0 ? "holding-pnl up" : "holding-pnl down"}><b>{maskSensitiveText(signedMoney(pnl), privacyMask)}</b><small>{signedPercent(pnlPct)}</small></span>
+                      <span role="cell" className="holdings-row-actions">
+                        {onOpenPaperStock && <button type="button" className="table-action" onClick={() => onOpenPaperStock(sec)}>分析</button>}
+                        {onClosePaperPosition && <button type="button" className="table-action danger" onClick={() => onClosePaperPosition(pos.code)}>平仓</button>}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="favorites-empty holdings-empty"><WalletCards size={32} /><b>当前没有模拟盘持仓</b><span>可在个股深度分析页根据信号执行纸面建仓演练。</span></div>
+            )}
+          </section>
+        </>
+      ) : (
+      <>
       <section className="panel holdings-summary-panel">
         <PanelTitle title="持仓总览" subtitle={`本轮有效报价 ${summary.pricedCount}/${items.length} 条；汇总仅覆盖本轮有效报价的持仓`} icon={WalletCards} badge={`${items.length} 只`} />
         {summary.referenceCount > 0 && <p className="warning-banner" role="status">{summary.referenceCount} 只持仓刷新失败，上次报价仅供参考，不计入汇总。</p>}
@@ -506,6 +672,12 @@ export function HoldingsView({
             <input aria-label="交易股数" value={tradeShares} onChange={e => setTradeShares(e.target.value)} placeholder="成交股数，如 100" inputMode="numeric" />
             <input aria-label="成交均价" value={tradePrice} onChange={e => setTradePrice(e.target.value)} placeholder="成交均价" inputMode="decimal" />
             <input aria-label="交易备注" value={tradeNote} onChange={e => setTradeNote(e.target.value)} placeholder="交易原因/计划备注（可选）" maxLength={160} />
+            {tradeSide === "sell" && (
+              <label className="holdings-dilute-check">
+                <input type="checkbox" checked={tradeDiluteCost} onChange={e => setTradeDiluteCost(e.target.checked)} />
+                <span>按卖出盈亏摊薄剩余持仓成本</span>
+              </label>
+            )}
             {tradePreview && (
               <div className={`holdings-trade-preview ${tradePreview.ok ? "ok" : "warn"}`} role="status">
                 {tradePreview.ok ? tradePreview.summary : tradePreview.error}
@@ -525,12 +697,13 @@ export function HoldingsView({
               aria-label="粘贴持仓明细"
               value={pasteText}
               onChange={e => setPasteText(e.target.value)}
-              placeholder={"直接从券商持仓页或表格复制粘贴，每行一只：\n600519 贵州茅台 200 1480.5 底仓\n300059,500,21.8"}
+              placeholder={"直接从券商持仓页或表格复制粘贴，每行一只：\n600519 贵州茅台 200 1480.5 底仓\n000001 平安银行 1000 1000 14.85 15.20\n300059,500,21.8"}
             />
             {(pasteParsed.entries.length > 0 || pasteParsed.errors.length > 0) && (
               <div className="holdings-paste-preview">
                 <small>
                   识别有效记录 <b>{pasteParsed.entries.length}</b> 条
+                  {pasteParsed.entries.some(row => row.availableShares !== undefined) ? "（已自动识别券商多列持仓/可用/成本）" : ""}
                   {pasteParsed.errors.length > 0 ? ` · 待修正 ${pasteParsed.errors.length} 行` : ""}
                 </small>
                 {pasteParsed.errors.slice(0, 3).map((err, i) => <p key={i} className="holdings-form-error">{err}</p>)}
@@ -566,8 +739,27 @@ export function HoldingsView({
         {rows.length ? (
           <>
           <div className="table holdings-table" role="table" aria-label="持仓明细">
-            <div className="th tr" role="row"><span role="columnheader">股票 / 备注</span><span role="columnheader">持仓 / 成本 / 止损</span><span role="columnheader">行情 / 更新时间</span><span role="columnheader">市值</span><span role="columnheader">浮动盈亏</span><span role="columnheader">操作</span></div>
-            {rows.map((row) => {
+            <div className="th tr" role="row">
+              <span role="columnheader">股票 / 备注</span>
+              <span role="columnheader">持仓 / 成本 / 止损</span>
+              <span role="columnheader">行情 / 更新时间</span>
+              <span role="columnheader" aria-sort={holdingSort?.key === "marketValue" ? (holdingSort.dir === "desc" ? "descending" : "ascending") : "none"}>
+                <button type="button" className={`column-sort-button${holdingSort?.key === "marketValue" ? " active" : ""}`} onClick={() => toggleHoldingSort("marketValue")}>
+                  市值{holdingSort?.key === "marketValue" ? (holdingSort.dir === "desc" ? " ▾" : " ▴") : ""}
+                </button>
+              </span>
+              <span role="columnheader" aria-sort={holdingSort?.key === "profit" || holdingSort?.key === "profitPercent" ? (holdingSort.dir === "desc" ? "descending" : "ascending") : "none"}>
+                <button type="button" className={`column-sort-button${holdingSort?.key === "profit" ? " active" : ""}`} onClick={() => toggleHoldingSort("profit")}>
+                  浮盈额{holdingSort?.key === "profit" ? (holdingSort.dir === "desc" ? " ▾" : " ▴") : ""}
+                </button>
+                {" / "}
+                <button type="button" className={`column-sort-button${holdingSort?.key === "profitPercent" ? " active" : ""}`} onClick={() => toggleHoldingSort("profitPercent")}>
+                  浮盈率{holdingSort?.key === "profitPercent" ? (holdingSort.dir === "desc" ? " ▾" : " ▴") : ""}
+                </button>
+              </span>
+              <span role="columnheader">操作</span>
+            </div>
+            {sortedRows.map((row) => {
               const cfg = monitors?.configs?.[row.item.code];
               const stopPrice = computeMonitorStopPrice(cfg);
               const stopGapPct = stopPrice && row.quoteAvailable && row.latest > 0
@@ -623,6 +815,84 @@ export function HoldingsView({
         )}
       </section>
       </div>
+      {holdingAlerts.length > 0 && (
+        <section className="panel monitor-alert-panel holdings-alert-panel">
+          <header>
+            <Bell size={17} />
+            <h3>持仓盯盘预警记录</h3>
+            <span>共 {holdingAlerts.length} 条</span>
+            {monitors?.clearAlerts && (
+              <button type="button" className="secondary-btn" onClick={() => monitors.clearAlerts()}>
+                清空预警记录
+              </button>
+            )}
+          </header>
+          <div>
+            {holdingAlerts.map(alert => (
+              <article key={alert.id}>
+                <div><b>{alert.name}</b><span>{alert.code}</span><time>{formatShanghaiDateTime(alert.triggeredAt)}</time></div>
+                <p>{alert.detail}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      <details className="panel holdings-trades-ledger-panel">
+        <summary>
+          <History size={16} />
+          <b>实盘成交流水与累计已实现盈亏</b>
+          <span>
+            共 {tradeSummary.totalCount} 笔成交
+            {tradeSummary.sellCount > 0 ? ` · 卖出结算 ${tradeSummary.sellCount} 笔（胜 ${tradeSummary.winCount}）· 累计已实现盈亏 ${maskSensitiveText(signedMoney(tradeSummary.cumulativeRealizedPnl), privacyMask)}` : ""}
+          </span>
+        </summary>
+        {tradeRecords.length > 0 ? (
+          <div className="holdings-trades-ledger-body">
+            <div className="holdings-trades-ledger-actions">
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => {
+                  clearHoldingTrades();
+                  setTradeRecords([]);
+                }}
+              >
+                <Trash2 size={14} />清空成交流水
+              </button>
+            </div>
+            <table className="watch-stock-table">
+              <thead>
+                <tr>
+                  <th scope="col">时间</th>
+                  <th scope="col">股票</th>
+                  <th scope="col">方向</th>
+                  <th scope="col">股数</th>
+                  <th scope="col">成交均价</th>
+                  <th scope="col">实现盈亏</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tradeRecords.slice(0, 50).map(rec => (
+                  <tr key={rec.id}>
+                    <td>{formatShanghaiDateTime(rec.tradedAt)}</td>
+                    <td><b>{rec.name}</b> <small>{rec.code}</small></td>
+                    <td className={rec.side === "buy" ? "up" : "down"}>{rec.side === "buy" ? "买入/加仓" : "卖出/减仓"}</td>
+                    <td>{maskSensitiveText(rec.shares.toLocaleString("zh-CN"), privacyMask)} 股</td>
+                    <td>{fmt(rec.price)} 元</td>
+                    <td className={rec.realizedPnl === null ? "" : rec.realizedPnl >= 0 ? "up" : "down"}>
+                      {rec.realizedPnl === null ? "—" : maskSensitiveText(signedMoney(rec.realizedPnl), privacyMask)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="empty-inline">尚无实盘成交流水；在「加减仓记账」或个股分析页快捷加减仓后会自动归档。</p>
+        )}
+      </details>
+      </>
+      )}
     </div>
   );
 }
@@ -630,12 +900,18 @@ export function HoldingsView({
 export function WatchlistView({
   items,
   activeNode,
+  quotes,
+  favoriteCodes,
+  onAddFavorite,
   onNodeChange,
   onOpen,
   onRemove
 }: {
   items: WatchItem[];
   activeNode: string;
+  quotes?: Record<string, { latest?: number | null | undefined; changePct?: number | null | undefined }> | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onAddFavorite?: ((item: WatchItem) => void) | undefined;
   onNodeChange: (node: string) => void;
   onOpen: (item: WatchItem) => void;
   onRemove: (item: WatchItem) => void;
@@ -672,15 +948,38 @@ export function WatchlistView({
               <table className="watch-stock-table" aria-describedby="watch-observation-guide">
                 <colgroup><col className="watch-col-index" /><col className="watch-col-name" /><col className="watch-col-code" /><col className="watch-col-node" /><col className="watch-col-date" /><col className="watch-col-boards" /><col className="watch-col-actions" /></colgroup>
                 <thead><tr><th scope="col">序号</th><th scope="col">股票</th><th scope="col">代码</th><th scope="col">观察日</th><th scope="col">涨停日期</th><th scope="col">连板</th><th scope="col">操作</th></tr></thead>
-                <tbody>{visibleItems.map((item, index) => <tr key={item.code}>
+                <tbody>{visibleItems.map((item, index) => {
+                  const q = quotes?.[item.code];
+                  const latest = typeof q?.latest === "number" && Number.isFinite(q.latest) && q.latest > 0 ? q.latest : null;
+                  const chg = typeof q?.changePct === "number" && Number.isFinite(q.changePct) ? q.changePct : null;
+                  const isFav = Boolean(favoriteCodes?.has(item.code));
+                  return <tr key={item.code}>
                   <td className="watch-row-number">{index + 1}</td>
-                  <td><button className="watch-stock-open" aria-label={`${item.name} ${item.code}`} onClick={() => onOpen(item)}><strong>{item.name}</strong></button></td>
+                  <td>
+                    <button className="watch-stock-open" aria-label={`${item.name} ${item.code}`} onClick={() => onOpen(item)}><strong>{item.name}</strong></button>
+                    {latest !== null && (
+                      <small className={chg === null ? "" : chg >= 0 ? "up" : "down"}>
+                        {" "}{fmt(latest)}{chg !== null ? ` (${chg >= 0 ? "+" : ""}${fmt(chg)}%)` : ""}
+                      </small>
+                    )}
+                  </td>
                   <td className="watch-security-code">{item.code}<small>{item.thscode?.split(".")[1] || "A"}</small></td>
                   <td><span className="watch-day-badge">{nodeFor(item)}</span></td>
                   <td>{item.limitDate || (item.createdAt ? new Date(item.createdAt).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" }) : "—")}</td>
                   <td>{Number(item.consecutiveBoards) > 1 ? <b className="watch-board-count">{item.consecutiveBoards} 板</b> : Number(item.consecutiveBoards) === 1 ? "首板" : "—"}</td>
-                  <td><div className="watch-row-actions"><button onClick={() => onOpen(item)} aria-label={`分析${item.name}`}>分析</button><button onClick={() => onRemove(item)} title="移出观察池" aria-label={`移出观察池${item.name}`}><X size={14} /></button></div></td>
-                </tr>)}</tbody>
+                  <td>
+                    <div className="watch-row-actions">
+                      {onAddFavorite && (
+                        <button type="button" disabled={isFav} onClick={() => onAddFavorite(item)} aria-label={`加入自选${item.name}`}>
+                          {isFav ? "已自选" : "+加入自选"}
+                        </button>
+                      )}
+                      <button onClick={() => onOpen(item)} aria-label={`分析${item.name}`}>分析</button>
+                      <button onClick={() => onRemove(item)} title="移出观察池" aria-label={`移出观察池${item.name}`}><X size={14} /></button>
+                    </div>
+                  </td>
+                </tr>;
+                })}</tbody>
               </table>
             </div>
           </> : <div className="empty-state"><Bookmark size={32} /><h3>{filter.trim() ? "没有匹配的股票" : "该观察节点暂无股票"}</h3><p>{filter.trim() ? "修改名称或代码，或清空筛选。" : "切换 T+1 至 T+10 查看其他交易日节点。"}</p></div>}

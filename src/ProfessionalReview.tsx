@@ -40,7 +40,7 @@ import { createNumberFormatters } from "./domain/formatters";
 import { isPreviewStockApi } from "./runtimeBridge";
 import { AiMarketReviewPanel } from "./features/ai-review/AiMarketReviewPanel";
 import { AiStockReviewPanel } from "./features/ai-picks/AiStockReviewPanel";
-import { readTrendPlans } from "./trendWorkspace";
+import { readTrendPlans, saveQuickObservationPlan } from "./trendWorkspace";
 import { strategyName } from "./trendStrategyConfig";
 import { reconcilePlansAfterClose, type PlanReconciliationRow } from "./features/cockpit/cockpitModel";
 import { canOpenAgent, openAgentFor, openAgentPage } from "./features/ai-agent/agentModel";
@@ -1143,6 +1143,7 @@ export function resolveStockReviewPlanRows(data: StockReviewSnapshot | null | un
 type ProfessionalReviewProps = {
   onOpenStock?: (stock: { code: string; name: string; secid: string }) => void;
   onAddToT?: (stock: { code: string; name: string; secid: string }) => void;
+  onAddQuickPlan?: ((security: { code: string; name: string; secid: string }, latestPrice?: number | null) => void) | undefined;
   onOpenBacktest?: (stock?: { code: string; name: string; secid: string }) => void;
   onNavigate?: (view: string) => void;
   holdings?: Array<{ code?: string; shares?: number; costPrice?: number }>;
@@ -1151,6 +1152,7 @@ type ProfessionalReviewProps = {
 export default function ProfessionalReview({
   onOpenStock,
   onAddToT,
+  onAddQuickPlan,
   onOpenBacktest,
   onNavigate,
   holdings
@@ -1172,6 +1174,7 @@ export default function ProfessionalReview({
   const previewMode = isPreviewStockApi();
   const archiveKey = previewMode ? PREVIEW_REVIEW_ARCHIVE_KEY : REVIEW_ARCHIVE_KEY;
   const [archive, setArchive] = useState<ReviewRecord[]>(() => loadCurrentArchive(previewMode));
+  const [planVersion, setPlanVersion] = useState(0);
   const [toast, setToast] = useState("");
   // R-04: 把「独立窗口是否可用」提成变量，供按钮的 disabled/title 使用。
   const openReviewWindow = api()?.openProfessionalReviewWindow;
@@ -1229,7 +1232,37 @@ export default function ProfessionalReview({
       notify("复盘档案保存失败，原档案未被覆盖");
       return false;
     };
-    return navigator.locks ? navigator.locks.request(targetKey, commit) : commit();
+    const isFileProtocol = typeof window !== "undefined" && window.location?.protocol === "file:";
+    if (isFileProtocol || typeof navigator === "undefined" || typeof navigator.locks?.request !== "function") {
+      return commit();
+    }
+    return navigator.locks.request(targetKey, commit).catch(() => commit());
+  };
+
+  const handleAddQuickPlan = (sec: { code: string; name: string; secid: string }, latestPrice?: number | null) => {
+    if (onAddQuickPlan) {
+      onAddQuickPlan(sec, latestPrice);
+      setPlanVersion(v => v + 1);
+      return;
+    }
+    if (typeof window === "undefined" || !window.localStorage) {
+      notify("当前环境不支持保存本地计划");
+      return;
+    }
+    const res = saveQuickObservationPlan(window.localStorage, {
+      code: sec.code,
+      name: sec.name,
+      secid: sec.secid,
+      referencePrice: latestPrice ?? null,
+      asOf: stock?.updatedAt?.slice(0, 10),
+      reason: stock?.decision?.headline || stock?.verdict || "专业复盘转入次日观察"
+    });
+    if (!res.ok) {
+      notify(`加入计划失败：${res.error}`);
+      return;
+    }
+    setPlanVersion(v => v + 1);
+    notify(res.created ? "已加入次日观察计划" : "该标的已在次日观察计划中");
   };
 
   const loadMarket = async (refresh = false) => {
@@ -1528,6 +1561,8 @@ export default function ProfessionalReview({
           onBack={() => changeTab("market")}
           onOpenStock={onOpenStock}
           onAddToT={onAddToT}
+          onAddQuickPlan={handleAddQuickPlan}
+          planVersion={planVersion}
           onOpenBacktest={onOpenBacktest}
           onAskAgent={canOpenAgent() ? (sec: { code: string; name: string }, costPrice?: number | null) =>
             openAgentFor(sec, "plan", costPrice && costPrice > 0 ? { costPrice } : undefined) : undefined}
@@ -1543,7 +1578,7 @@ export default function ProfessionalReview({
           onExport={() => downloadJson(archive, `A股雷达-${previewMode ? "预览" : "专业"}复盘-${shanghaiDateTag()}.json`)}
         />
       )}
-      {toast && <div className="review-toast" role="status" aria-live="polite"><CheckCircle2 size={17} />{toast}</div>}
+      {toast && <div className="review-toast" role="status" aria-live="polite">{/失败|错误|异常/.test(toast) ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}{toast}</div>}
     </div>
   );
 }
@@ -1802,6 +1837,8 @@ type StockReviewProps = {
   onBack: () => void;
   onOpenStock?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
   onAddToT?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
+  onAddQuickPlan?: ((stock: { code: string; name: string; secid: string }, latestPrice?: number | null) => void) | undefined;
+  planVersion?: number | undefined;
   onOpenBacktest?: ((stock?: { code: string; name: string; secid: string }) => void) | undefined;
   onAskAgent?: ((stock: { code: string; name: string }, costPrice?: number | null) => void) | undefined;
   holdings?: Array<{ code?: string; shares?: number; costPrice?: number }> | undefined;
@@ -1823,6 +1860,8 @@ function StockReview({
   onBack,
   onOpenStock,
   onAddToT,
+  onAddQuickPlan,
+  planVersion = 0,
   onOpenBacktest,
   onAskAgent,
   holdings
@@ -1832,7 +1871,7 @@ function StockReview({
   const stockName = String(data?.quote?.name || data?.security?.name || stockCode);
   const stockSecid = String(data?.security?.secid || "");
   const stockSecurity = stockCode ? { code: stockCode, name: stockName, secid: stockSecid } : null;
-  const planRows = data ? resolveStockReviewPlanRows(data) : [];
+  const planRows = data ? (void planVersion, resolveStockReviewPlanRows(data)) : [];
   const matchedHolding = data && Array.isArray(holdings)
     ? holdings.find((item) => item?.code === stockCode && Number(item?.shares) > 0)
     : null;
@@ -1841,6 +1880,7 @@ function StockReview({
   const holdingPnlPct = Number.isFinite(latestPrice) && latestPrice > 0 && Number.isFinite(holdingCost) && holdingCost > 0
     ? ((latestPrice - holdingCost) / holdingCost) * 100
     : null;
+  const canQuickPlan = Boolean(onAddQuickPlan && /^\d{6}$/.test(stockCode) && !data?.analysis?.isSearchOnlyAsset && (!data?.security?.assetType || data.security.assetType === "stock"));
   const planTone = (status: string) =>
     status === "stop-hit" ? "down" : status === "in-band" ? "up" : status === "above-band" ? "warn" : "flat";
   return (
@@ -1850,7 +1890,7 @@ function StockReview({
         <form onSubmit={(event) => { if (composing.current) event.preventDefault(); else onSubmit(event); }}>
           <Search size={18} />
           <input value={query} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }} onKeyDown={(event) => { if (event.key === "Enter" && (composing.current || event.nativeEvent.isComposing || event.keyCode === 229)) event.preventDefault(); }} onChange={(event) => onQuery(event.target.value)} placeholder="搜索 A股、ETF、可转债（代码或名称）" />
-          {query && <button type="button" onClick={() => onQuery("")}><X size={15} /></button>}
+          {query && <button type="button" aria-label="清空搜索" onClick={() => onQuery("")}><X size={15} /></button>}
           <button type="submit">{searching ? <LoaderCircle className="review-spin" size={17} /> : "开始复盘"}</button>
           {suggestions.length > 0 && (
             <div className="review-suggestions">
@@ -1887,11 +1927,20 @@ function StockReview({
             <div className="review-horizon"><strong>2–6 周</strong><span>趋势观察</span></div>
           </section>
 
-          {(stockSecurity && (onOpenStock || onAddToT || onOpenBacktest || onAskAgent)) && (
+          {(stockSecurity && (onOpenStock || onAddToT || canQuickPlan || onOpenBacktest || onAskAgent)) && (
             <div className="review-closed-loop-bar" aria-label="个股复盘闭环操作">
               {onOpenStock && (
                 <button type="button" className="review-link-btn primary" onClick={() => onOpenStock(stockSecurity)}>
                   打开个股深度分析
+                </button>
+              )}
+              {canQuickPlan && onAddQuickPlan && (
+                <button
+                  type="button"
+                  className="review-link-btn"
+                  onClick={() => onAddQuickPlan(stockSecurity, Number.isFinite(latestPrice) && latestPrice > 0 ? latestPrice : null)}
+                >
+                  +加入次日计划
                 </button>
               )}
               {onAddToT && /^\d{6}$/.test(stockCode) && (
@@ -2241,9 +2290,9 @@ function ReviewJournal({ title, note, onNote, onSave, placeholder }: { title: st
 }
 
 function ReviewLoading({ text }: { text: string }) {
-  return <div className="review-panel review-loading"><LoaderCircle className="review-spin" size={27} /><b>正在生成专业复盘</b><p>{text}</p></div>;
+  return <div className="review-panel review-loading" role="status" aria-live="polite"><LoaderCircle className="review-spin" size={27} /><b>正在生成专业复盘</b><p>{text}</p></div>;
 }
 
 function ReviewError({ text }: { text: string }) {
-  return <div className="review-panel review-error"><AlertTriangle size={27} /><b>复盘生成失败</b><p>{text}</p></div>;
+  return <div className="review-panel review-error" role="alert"><AlertTriangle size={27} /><b>复盘生成失败</b><p>{text}</p></div>;
 }

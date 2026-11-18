@@ -175,7 +175,7 @@ function suggestFolders({ home = os.homedir(), platform = process.platform, exis
 /**
  * 备份服务：readStore/writeStore 读写 userData 里的 JSON（带校验），config 记文件夹、自动备份开关、密码（已加密）。
  */
-function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, now = Date.now, fsApi = fs }) {
+function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, getStorageSummary, now = Date.now, fsApi = fs }) {
   const config = () => {
     const value = readConfig();
     return { folder: "", auto: true, keep: DEFAULT_KEEP, lastBackupAt: "", lastError: "", password: "", ...(isRecord(value) ? value : {}) };
@@ -203,8 +203,32 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
   };
   const status = () => {
     const current = config();
-    return { folder: current.folder, auto: current.auto !== false, keep: current.keep, lastBackupAt: current.lastBackupAt, lastError: current.lastError,
-      hasPassword: Boolean(current.password), files: listFiles(current.folder) };
+    let storageSummary;
+    if (typeof getStorageSummary === "function") {
+      try {
+        const raw = getStorageSummary();
+        if (isRecord(raw)) {
+          storageSummary = {
+            userDataBytes: Math.max(0, Math.trunc(Number(raw.userDataBytes) || 0)),
+            dailyBarsBytes: Math.max(0, Math.trunc(Number(raw.dailyBarsBytes) || 0)),
+            dailyBarsCount: Math.max(0, Math.trunc(Number(raw.dailyBarsCount) || 0)),
+            webCacheBytes: Math.max(0, Math.trunc(Number(raw.webCacheBytes) || 0))
+          };
+        }
+      } catch {
+        storageSummary = undefined;
+      }
+    }
+    return {
+      folder: current.folder,
+      auto: current.auto !== false,
+      keep: current.keep,
+      lastBackupAt: current.lastBackupAt,
+      lastError: current.lastError,
+      hasPassword: Boolean(current.password),
+      files: listFiles(current.folder),
+      ...(storageSummary ? { storageSummary } : {})
+    };
   };
 
   function planStores(backup) {
@@ -273,6 +297,9 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
       if (typeof patch?.auto === "boolean") next.auto = patch.auto;
       if (Number.isFinite(Number(patch?.keep)) && patch?.keep !== undefined) next.keep = Math.max(3, Math.min(365, Math.floor(Number(patch.keep))));
       if (typeof patch?.password === "string") {
+        if (patch.password.length > 0 && patch.password.length < 6) {
+          throw fail("BACKUP_PASSWORD_TOO_SHORT", "备份密码至少需要 6 个字符");
+        }
         if (patch.password.length > 200) throw fail("BACKUP_PASSWORD_TOO_LONG", "备份密码最多 200 个字符，请缩短后再试");
         next.password = patch.password ? encryptSecret(patch.password) : "";
       }

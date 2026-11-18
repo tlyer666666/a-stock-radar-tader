@@ -96,7 +96,15 @@ let rememberedEcologyTab: string | null = null;
 export default function FuyaoReviewSection({ data, onOpenStock, actions, extra, layout = "grid" }: { data: FuyaoReview | null | undefined; onOpenStock: (stock: Security) => void; actions?: ReactNode; extra?: ReactNode; layout?: "grid" | "tabs" }) {
   const [open, setOpen] = useState<string | null>(rememberedEcologyTab);
   if (!data) return null;
-  if (!data.available) return <p className="fy-unavailable">同花顺扶摇数据（连板天梯、涨停原因、热股榜、龙虎榜、异动解读）：{data.reason || "暂不可用"}</p>;
+  if (!data.available) {
+    const canJump = typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function";
+    return (
+      <div className="fy-unavailable">
+        <span>同花顺扶摇数据（连板天梯、涨停原因、热股榜、龙虎榜、异动解读）：{data.reason || "暂不可用"}（可在 fuyao.aicubes.cn 用普通同花顺账号免费创建 Key）</span>
+        {canJump && <button type="button" className="secondary-btn" onClick={() => window.__aStockOpenSettings?.("sources")}>去设置填写扶摇 Key</button>}
+      </div>
+    );
+  }
   const latestLadder = data.ladder?.days.at(-1);
   const priorLadder = data.ladder?.days.slice(0, -1).reverse() || [];
   const hasHot = Boolean(data.hotLists?.hour || data.hotLists?.day || data.hot?.length || data.skyrocket?.length);

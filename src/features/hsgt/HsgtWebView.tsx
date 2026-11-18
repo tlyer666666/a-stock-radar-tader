@@ -33,7 +33,7 @@ function scrollClips(element: HTMLElement): Bounds[] {
  * 「沪深港通」：同花顺数据中心沪深港通网页原样嵌入（北向/南向资金、陆股通指数成分股资金流向、成交榜）。
  * 网页在独立会话里运行，同花顺账号由用户在网页里自己登录；登录状态保存在本机，软件不读取账号信息。
  */
-export default function HsgtWebView() {
+export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: string) => void) | undefined } = {}) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.thsWeb;
   const frame = useRef<HTMLDivElement | null>(null);
   const shown = useRef(false);
@@ -52,7 +52,7 @@ export default function HsgtWebView() {
   const sync = useCallback(() => {
     if (!api) return;
     // Native child surfaces sit above HTML regardless of their CSS z-index.
-    const overlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .toast, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
+    const overlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .copilot-popover, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
     const bounds = document.hidden || overlay ? null : measure();
     const key = bounds ? JSON.stringify(bounds) : "";
     if (lastBounds.current === key && shown.current === Boolean(bounds)) return;
@@ -83,7 +83,7 @@ export default function HsgtWebView() {
     const observer = new ResizeObserver(schedule);
     if (frame.current) observer.observe(frame.current);
     const overlays = new MutationObserver(schedule);
-    overlays.observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:["open","hidden","aria-modal","class"]});
+    overlays.observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:["open","hidden","aria-modal"]});
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);
@@ -133,10 +133,21 @@ export default function HsgtWebView() {
     <p className="empty-inline">沪深港通网页只在桌面版里打开（浏览器预览不嵌入同花顺网页）。</p>
   </div>;
 
+  const detectedStockCode = (state as (ThsWebState & { detectedStockCode?: string | null }) | null)?.detectedStockCode || "";
+
   return <div className="hsgt-workspace">
     <div className="page-heading">
       <div className="page-heading-identity"><h1>沪深港通</h1></div>
       <div className="heading-actions hsgt-actions">
+        {detectedStockCode && (
+          <button
+            type="button"
+            className="primary-btn"
+            onClick={() => onOpenStock?.(detectedStockCode)}
+          >
+            在本软件打开 {detectedStockCode} 深度分析
+          </button>
+        )}
         <button type="button" className="secondary-btn" onClick={() => void run("back")} disabled={busy || !state?.canGoBack}><ArrowLeft size={15} />后退</button>
         <button type="button" className="secondary-btn" onClick={() => void run("home")} disabled={busy}><Home size={15} />沪深港通首页</button>
         <button type="button" className="secondary-btn" onClick={() => void run("reload")} disabled={busy}><RefreshCw size={15} className={state?.loading ? "spin" : ""} />刷新</button>

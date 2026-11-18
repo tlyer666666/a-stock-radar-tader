@@ -32,6 +32,8 @@ export default function QuickPaletteModal({
   const [remoteStocks, setRemoteStocks] = useState<Security[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
   const searchGeneration = useRef(0);
 
   useEffect(() => {
@@ -39,7 +41,25 @@ export default function QuickPaletteModal({
       setQuery("");
       setRemoteStocks([]);
       setActiveIndex(0);
+      const dialog = dialogRef.current;
+      if (dialog?.open) dialog.close();
+      const prev = previousFocusRef.current;
+      previousFocusRef.current = null;
+      if (prev && typeof prev.focus === "function") {
+        prev.focus({ preventScroll: true });
+      }
       return;
+    }
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
+      previousFocusRef.current = document.activeElement;
+    }
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.open && typeof dialog.showModal === "function") {
+      try {
+        dialog.showModal();
+      } catch {
+        // fallback for environments without native showModal support
+      }
     }
     const timer = window.setTimeout(() => inputRef.current?.focus(), 20);
     return () => window.clearTimeout(timer);
@@ -95,24 +115,41 @@ export default function QuickPaletteModal({
 
   if (!open) return null;
 
+  const activeOptionId = entries[activeIndex] ? `quick-palette-opt-${activeIndex}` : undefined;
+
   return (
-    <div
-      className="quick-palette-backdrop"
-      role="presentation"
+    <dialog
+      ref={dialogRef}
+      className="quick-palette-backdrop quick-palette-native-dialog"
+      aria-label="全局快速跳转"
+      onCancel={event => {
+        event.preventDefault();
+        onClose();
+      }}
+      onKeyDown={event => {
+        if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          onClose();
+        }
+      }}
       onClick={event => {
         if (event.target === event.currentTarget) onClose();
       }}
     >
       <section
         className="quick-palette-dialog"
-        role="dialog"
-        aria-modal="true"
         aria-label="全局快速跳转"
       >
         <div className="quick-palette-head">
           <Search size={16} />
           <input
             ref={inputRef}
+            role="combobox"
+            aria-expanded={entries.length > 0}
+            aria-controls="quick-palette-listbox"
+            aria-activedescendant={activeOptionId}
             value={query}
             onChange={event => setQuery(event.target.value)}
             onKeyDown={event => {
@@ -146,7 +183,7 @@ export default function QuickPaletteModal({
           </button>
         </div>
 
-        <div className="quick-palette-list" role="listbox" aria-label="跳转结果">
+        <div id="quick-palette-listbox" className="quick-palette-list" role="listbox" aria-label="跳转结果">
           {entries.length === 0 ? (
             <div className="quick-palette-empty">
               未匹配到相关工作区或证券，可直接输入 6 位股票代码按 Enter 打开个股页。
@@ -154,6 +191,7 @@ export default function QuickPaletteModal({
           ) : (
             entries.map((entry, idx) => (
               <button
+                id={`quick-palette-opt-${idx}`}
                 key={entry.id}
                 type="button"
                 role="option"
@@ -181,6 +219,6 @@ export default function QuickPaletteModal({
           <span>↑↓ 选择 · Enter 打开 · Esc 关闭</span>
         </footer>
       </section>
-    </div>
+    </dialog>
   );
 }

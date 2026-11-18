@@ -74,6 +74,8 @@ type AppHeaderBarProps = {
   awaitingNotesCount: number;
   tItemsCount: number;
   onNavigateView: (next: View) => void;
+  hasMonitorAlerts?: boolean | undefined;
+  onClearMonitorAlerts?: (() => void) | undefined;
 };
 
 export function renderAppHeaderBar({
@@ -122,7 +124,9 @@ export function renderAppHeaderBar({
   favoritesCount,
   awaitingNotesCount,
   tItemsCount,
-  onNavigateView
+  onNavigateView,
+  hasMonitorAlerts,
+  onClearMonitorAlerts
 }: AppHeaderBarProps) {
   return (
     <header className="topbar">
@@ -258,7 +262,10 @@ export function renderAppHeaderBar({
               </button>
             )}
             <button
+              type="button"
               className={`icon-button ${settings.newsVoiceEnabled === false ? "" : "voice-on"}`}
+              aria-pressed={settings.newsVoiceEnabled !== false}
+              aria-label={settings.newsVoiceEnabled === false ? "开启重大资讯自动播报" : "关闭重大资讯自动播报"}
               onClick={onToggleNewsVoice}
               title={settings.newsVoiceEnabled === false ? "开启重大资讯自动播报" : "关闭重大资讯自动播报"}
             >
@@ -309,15 +316,28 @@ export function renderAppHeaderBar({
             {copilotAlerts.length > 0 && <span className="copilot-badge">{copilotAlerts.length > 9 ? "9+" : copilotAlerts.length}</span>}
           </button>
           {copilotOpen && (
-            <section className="copilot-popover" role="dialog" aria-label="智能副驾驶简报">
+            <section className="copilot-popover" role="dialog" data-overlay="open" aria-label="智能副驾驶简报">
               <header className="copilot-popover-head">
                 <div>
                   <strong>{copilotPhase.label}</strong>
                   <small>{copilotPhase.tip}</small>
                 </div>
-                <button type="button" className="copilot-close-btn" onClick={() => setCopilotOpen(false)} aria-label="关闭简报">
-                  <X size={15} />
-                </button>
+                <div className="copilot-head-actions">
+                  {hasMonitorAlerts && onClearMonitorAlerts && (
+                    <button type="button" className="link-btn" onClick={onClearMonitorAlerts}>清空盯盘已读</button>
+                  )}
+                  <button
+                    type="button"
+                    className="copilot-close-btn"
+                    onClick={() => {
+                      setCopilotOpen(false);
+                      copilotRef.current?.querySelector<HTMLButtonElement>(".copilot-bell-btn")?.focus({ preventScroll: true });
+                    }}
+                    aria-label="关闭简报"
+                  >
+                    <X size={15} />
+                  </button>
+                </div>
               </header>
               <div className="copilot-stats-row">
                 <span>持仓 {holdingsCount}</span>

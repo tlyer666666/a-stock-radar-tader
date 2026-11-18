@@ -1,6 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { isTradingDay } from "./features/notes/notesModel";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
 import { startVisibleInterval, whenVisible } from "./visiblePolling";
+
+function isBeijingTradingSession(now = Date.now()): boolean {
+  const cn = new Date(now + 8 * 3600_000);
+  const date = cn.toISOString().slice(0, 10);
+  if (!isTradingDay(date)) return false;
+  const minute = cn.getUTCHours() * 60 + cn.getUTCMinutes();
+  return (minute >= 9 * 60 + 15 && minute <= 11 * 60 + 30) || (minute >= 13 * 60 && minute <= 15 * 60);
+}
 import {
   evaluateStockMonitor,
   normalizeStockMonitorConfig,
@@ -166,10 +175,25 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
 
   useEffect(() => {
     if (!live) return undefined;
-    return startVisibleInterval(
+    const intervalMs = Math.max(5, Number(refreshSeconds) || 5) * 1000;
+    const stopVisible = startVisibleInterval(
       () => void pollerRef.current?.poll(),
-      Math.max(5, Number(refreshSeconds) || 5) * 1000
+      intervalMs
     );
+    // 桌面端盘中最小化或切去券商软件下单时，保持后台降频巡检，防止漏报止损或突破预警。
+    const canBackgroundNotify = typeof window !== "undefined" && typeof window.stockApi?.notify === "function";
+    const bgTimer = canBackgroundNotify
+      ? window.setInterval(() => {
+          if (typeof document === "undefined" || !document.hidden) return;
+          if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+          const hasEnabledRule = Object.values(savedRef.current.configs).some(cfg => cfg?.enabled);
+          if (hasEnabledRule && isBeijingTradingSession()) void pollerRef.current?.poll();
+        }, Math.max(15_000, intervalMs))
+      : undefined;
+    return () => {
+      stopVisible();
+      if (bgTimer !== undefined) window.clearInterval(bgTimer);
+    };
   }, [live, refreshSeconds]);
 
   useEffect(() => () => { pollerRef.current?.stop(); }, []);
@@ -196,5 +220,21 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
     return true;
   }, []);
 
-  return { configs: saved.configs, runtimes, latestQuotes, alerts: saved.alerts, save, remove, storageError, refreshing };
+  const ackAlert = useCallback((alertId: string) => {
+    const nextAlerts = savedRef.current.alerts.filter(item => item.id !== alertId);
+    const next = { ...savedRef.current, alerts: nextAlerts };
+    saveSafeLocalJson(STOCK_MONITOR_STORAGE_KEY, next, isUsableMonitorStorage);
+    savedRef.current = next;
+    setSaved(next);
+  }, []);
+
+  const clearAlerts = useCallback(() => {
+    if (!savedRef.current.alerts.length) return;
+    const next = { ...savedRef.current, alerts: [] };
+    saveSafeLocalJson(STOCK_MONITOR_STORAGE_KEY, next, isUsableMonitorStorage);
+    savedRef.current = next;
+    setSaved(next);
+  }, []);
+
+  return { configs: saved.configs, runtimes, latestQuotes, alerts: saved.alerts, save, remove, ackAlert, clearAlerts, storageError, refreshing };
 }

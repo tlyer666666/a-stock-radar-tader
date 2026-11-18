@@ -5,6 +5,21 @@ import {
 
 export type HoldingTradeSide = "buy" | "sell";
 
+export const HOLDING_TRADES_STORAGE_KEY = "a-stock-radar:holding-trades:v1";
+export const MAX_HOLDING_TRADES = 300;
+
+export type HoldingTradeRecord = {
+  id: string;
+  tradedAt: string;
+  code: string;
+  name: string;
+  side: HoldingTradeSide;
+  shares: number;
+  price: number;
+  realizedPnl: number | null;
+  note?: string | undefined;
+};
+
 export type HoldingTradeInput = {
   items: HoldingItem[];
   code: string;
@@ -15,6 +30,7 @@ export type HoldingTradeInput = {
   side: HoldingTradeSide;
   shares: number;
   price: number;
+  diluteCost?: boolean | undefined;
   note?: string | undefined;
   now?: string | undefined;
 };
@@ -36,6 +52,7 @@ export type ParsedHoldingRow = {
   code: string;
   name: string;
   shares: number;
+  availableShares?: number | undefined;
   costPrice: number;
   note: string;
 };
@@ -142,9 +159,14 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
     };
   }
 
+  const nextCost = input.diluteCost
+    ? Math.max(0.001, roundPrice((existing.shares * existing.costPrice - shares * price) / remainingShares))
+    : existing.costPrice;
+
   const nextItem: HoldingItem = {
     ...existing,
     shares: remainingShares,
+    costPrice: nextCost,
     note: noteTrimmed || existing.note || "",
     updatedAt: now
   };
@@ -155,9 +177,126 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
     nextItems,
     action: "reduced",
     remainingShares,
-    costPrice: existing.costPrice,
+    costPrice: nextCost,
     realizedPnl,
-    summary: `${existing.name} 已减仓 ${shares} 股 @ ${price.toFixed(2)}，剩余 ${remainingShares} 股（成本 ${existing.costPrice.toFixed(3)}）`
+    summary: `${existing.name} 已减仓 ${shares} 股 @ ${price.toFixed(2)}，剩余 ${remainingShares} 股（${input.diluteCost ? "摊薄成本" : "成本"} ${nextCost.toFixed(3)}）`
+  };
+}
+
+const defaultTradeStorage = (): Pick<Storage, "getItem" | "setItem"> | null => {
+  try {
+    return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+};
+
+function isValidHoldingTradeRecord(value: unknown): value is HoldingTradeRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const r = value as Record<string, unknown>;
+  return (
+    typeof r.id === "string" &&
+    r.id.length > 0 &&
+    typeof r.tradedAt === "string" &&
+    Number.isFinite(Date.parse(r.tradedAt)) &&
+    typeof r.code === "string" &&
+    /^\d{6}$/.test(r.code) &&
+    typeof r.name === "string" &&
+    (r.side === "buy" || r.side === "sell") &&
+    typeof r.shares === "number" &&
+    Number.isSafeInteger(r.shares) &&
+    r.shares > 0 &&
+    typeof r.price === "number" &&
+    Number.isFinite(r.price) &&
+    r.price > 0 &&
+    (r.realizedPnl === null || (typeof r.realizedPnl === "number" && Number.isFinite(r.realizedPnl)))
+  );
+}
+
+export function loadHoldingTrades(storage: Pick<Storage, "getItem"> | null = defaultTradeStorage()): HoldingTradeRecord[] {
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(HOLDING_TRADES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    const list = Array.isArray(parsed)
+      ? parsed
+      : parsed && typeof parsed === "object" && Array.isArray((parsed as { records?: unknown }).records)
+        ? (parsed as { records: unknown[] }).records
+        : [];
+    return list.filter(isValidHoldingTradeRecord).slice(0, MAX_HOLDING_TRADES);
+  } catch {
+    return [];
+  }
+}
+
+export function appendHoldingTradeRecord(
+  input: Omit<HoldingTradeRecord, "id" | "tradedAt"> & { id?: string | undefined; tradedAt?: string | undefined },
+  storage: Pick<Storage, "getItem" | "setItem"> | null = defaultTradeStorage()
+): HoldingTradeRecord[] {
+  const tradedAt = input.tradedAt && Number.isFinite(Date.parse(input.tradedAt)) ? input.tradedAt : new Date().toISOString();
+  const record: HoldingTradeRecord = {
+    id: input.id || `${input.code}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    tradedAt,
+    code: String(input.code || "").trim(),
+    name: String(input.name || input.code || "").trim().slice(0, 24) || String(input.code || ""),
+    side: input.side,
+    shares: Math.floor(Number(input.shares)),
+    price: roundPrice(Number(input.price)),
+    realizedPnl: typeof input.realizedPnl === "number" && Number.isFinite(input.realizedPnl)
+      ? Math.round(input.realizedPnl * 100) / 100
+      : null,
+    ...(input.note ? { note: String(input.note).trim().slice(0, 160) } : {})
+  };
+  if (!isValidHoldingTradeRecord(record)) return loadHoldingTrades(storage);
+  const previous = loadHoldingTrades(storage).filter(item => item.id !== record.id);
+  const next = [record, ...previous].slice(0, MAX_HOLDING_TRADES);
+  if (storage) {
+    try {
+      storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify(next));
+      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+        window.dispatchEvent(new CustomEvent("a-stock-radar:holding-trades-updated"));
+      }
+    } catch {
+      // ignore storage quota or synthetic test environment restrictions
+    }
+  }
+  return next;
+}
+
+export function clearHoldingTrades(storage: Pick<Storage, "setItem"> | null = defaultTradeStorage()): void {
+  if (!storage) return;
+  try {
+    storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify([]));
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+      window.dispatchEvent(new CustomEvent("a-stock-radar:holding-trades-updated"));
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function summarizeHoldingTrades(records: HoldingTradeRecord[]): {
+  totalCount: number;
+  sellCount: number;
+  winCount: number;
+  cumulativeRealizedPnl: number;
+} {
+  let sellCount = 0;
+  let winCount = 0;
+  let cumulativeRealizedPnl = 0;
+  for (const r of records) {
+    if (r.side === "sell" && typeof r.realizedPnl === "number" && Number.isFinite(r.realizedPnl)) {
+      sellCount += 1;
+      if (r.realizedPnl > 0) winCount += 1;
+      cumulativeRealizedPnl += r.realizedPnl;
+    }
+  }
+  return {
+    totalCount: records.length,
+    sellCount,
+    winCount,
+    cumulativeRealizedPnl: Math.round(cumulativeRealizedPnl * 100) / 100
   };
 }
 
@@ -171,6 +310,13 @@ const parsePositiveNumber = (token: string): number => {
   if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return Number.NaN;
   const value = Number(cleaned);
   return Number.isFinite(value) && value > 0 ? value : Number.NaN;
+};
+
+const parseNonNegativeNumber = (token: string): number => {
+  const cleaned = token.trim().replace(/,/g, "").replace(/[股元¥￥]/g, "");
+  if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return Number.NaN;
+  const value = Number(cleaned);
+  return Number.isFinite(value) && value >= 0 ? value : Number.NaN;
 };
 
 function splitHoldingColumns(line: string): string[] {
@@ -210,7 +356,7 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
   lines.forEach((rawLine, index) => {
     const trimmed = rawLine.trim();
     if (!trimmed) return;
-    if (/^(证券代码|股票代码|代码|名称|stock)/i.test(trimmed) && !/\d{6}/.test(trimmed)) return;
+    if (/(?:^(?:证券代码|股票代码|代码|名称|stock)|证券代码|股票代码|股票余额|持仓余额|可用余额|成本价)/i.test(trimmed) && !/\d{6}/.test(trimmed)) return;
 
     const rawTokens = splitHoldingColumns(trimmed);
     const tokens = rawTokens.length >= 4 && /^(?:序号)?\d{1,3}[.)、]?$/.test(rawTokens[0] || "") && !stripCodeDecorators(rawTokens[0] || "")
@@ -240,27 +386,47 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
       remaining = tokens.slice(2);
     } else {
       remaining = tokens.slice(1);
-      if (remaining.length > 0 && Number.isNaN(parsePositiveNumber(remaining[0] || ""))) {
+      if (remaining.length > 0 && Number.isNaN(parseNonNegativeNumber(remaining[0] || ""))) {
         name = remaining.shift()!.slice(0, 24);
       }
     }
 
-    const sharesToken = remaining[0] ?? "";
-    const priceToken = remaining[1] ?? "";
-    const shares = parsePositiveNumber(sharesToken);
-    const costPrice = parsePositiveNumber(priceToken);
+    const n0 = parsePositiveNumber(remaining[0] ?? "");
+    const n1 = parseNonNegativeNumber(remaining[1] ?? "");
+    const n2 = parsePositiveNumber(remaining[2] ?? "");
+    const isBrokerMultiCol =
+      remaining.length >= 3 &&
+      Number.isSafeInteger(n0) &&
+      n0 >= 1 &&
+      Number.isSafeInteger(n1) &&
+      n1 >= 0 &&
+      n1 <= n0 &&
+      Number.isFinite(n2) &&
+      n2 > 0 &&
+      (n1 === 0 || n1 === n0 || (n1 >= 100 && (n2 < n1 || n1 % 100 === 0)));
+
+    const shares = n0;
+    const costPrice = isBrokerMultiCol ? n2 : parsePositiveNumber(remaining[1] ?? "");
+    const availableShares = isBrokerMultiCol ? n1 : undefined;
 
     if (!Number.isSafeInteger(shares) || shares <= 0 || !Number.isFinite(costPrice) || costPrice <= 0) {
       errors.push(`第 ${index + 1} 行（${code}）缺少有效的数量或成本价，格式示例：600519 贵州茅台 200 1480.5`);
       return;
     }
 
-    const note = remaining.slice(2).join(" ").slice(0, 160);
+    const note = isBrokerMultiCol
+      ? remaining
+          .slice(3)
+          .filter(tok => !/^[-+]?[\d,]+(?:\.\d+)?(?:[%元股¥￥])?$/.test(tok.trim()))
+          .join(" ")
+          .slice(0, 160)
+      : remaining.slice(2).join(" ").slice(0, 160);
     byCode.set(code, {
       line: index + 1,
       code,
       name: name || code,
       shares,
+      ...(availableShares !== undefined ? { availableShares } : {}),
       costPrice: roundPrice(costPrice),
       note
     });

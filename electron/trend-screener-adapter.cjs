@@ -11,10 +11,55 @@ const { isBseAshareCode } = require("./price-limit-rules.cjs");
 const THS_FAULT_LIMIT = 3;
 const THS_PAUSE_MS = 60000;
 const HISTORY_RETRY_MS = 5 * 60 * 1000;
+let defaultThsSingleton = null;
 function defaultThs() {
-  const ths = require("./ths-free-market.cjs");
-  return { history: ths.thsFreeDailyHistory, quote: ths.thsFreeQuote };
+  if (!defaultThsSingleton) {
+    const ths = require("./ths-free-market.cjs");
+    defaultThsSingleton = { history: ths.thsFreeDailyHistory, quote: ths.thsFreeQuote };
+  }
+  return defaultThsSingleton;
 }
+const sharedFailedHostsByTransport = new WeakMap();
+const sharedThsByProvider = new WeakMap();
+const moduleDefaultFailedHosts = new Map();
+const moduleDefaultThsState = { faults: 0, pausedUntil: 0, lastFaultAt: 0 };
+
+function resolveSharedFailedHosts(fetchJson, explicitMap) {
+  if (explicitMap instanceof Map) return explicitMap;
+  if (fetchJson === fetchJsonWithPolicy) return moduleDefaultFailedHosts;
+  if (typeof fetchJson === "function") {
+    let map = sharedFailedHostsByTransport.get(fetchJson);
+    if (!map) {
+      map = new Map();
+      sharedFailedHostsByTransport.set(fetchJson, map);
+    }
+    return map;
+  }
+  return new Map();
+}
+
+function resolveSharedThsState(thsProvider, explicitState) {
+  if (explicitState && typeof explicitState === "object") return explicitState;
+  if (!thsProvider) return { faults: 0, pausedUntil: 0, lastFaultAt: 0 };
+  if (thsProvider === defaultThsSingleton) return moduleDefaultThsState;
+  if (typeof thsProvider === "object") {
+    let state = sharedThsByProvider.get(thsProvider);
+    if (!state) {
+      state = { faults: 0, pausedUntil: 0, lastFaultAt: 0 };
+      sharedThsByProvider.set(thsProvider, state);
+    }
+    return state;
+  }
+  return { faults: 0, pausedUntil: 0, lastFaultAt: 0 };
+}
+
+function resetSharedTrendBreakerState() {
+  moduleDefaultFailedHosts.clear();
+  moduleDefaultThsState.faults = 0;
+  moduleDefaultThsState.pausedUntil = 0;
+  moduleDefaultThsState.lastFaultAt = 0;
+}
+
 function isThsProviderFault(error) {
   // 数据不完整/字段缺失只影响这一只证券，不代表同花顺整体不可用。
   return !/^THS_FREE_(?:INCOMPLETE_HISTORY|EMPTY_HISTORY|MISMATCH|NO_PRICE|UNSUPPORTED)$/.test(String(error?.code || "")) && error?.code !== "TREND_DATA_UNAVAILABLE";
@@ -22,10 +67,18 @@ function isThsProviderFault(error) {
 
 function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetchJson = fetchJsonWithPolicy, now = () => new Date(), historyBars = 320, ths = fetchJson === fetchJsonWithPolicy ? defaultThs() : null, clock = () => Date.now(),
   // 本地日线库（daily-bar-store）与“最近完整交易日”：都提供时，不复权日线先查本机，缺了才下载。
-  dailyStore = null, asOf = null } = {}) {
+  dailyStore = null, asOf = null, sharedBreakerState = null } = {}) {
   if (!Number.isInteger(historyBars) || historyBars < 20 || historyBars > 1500) throw new Error("historyBars必须为20至1500的整数");
+  const sharedFailedHosts = resolveSharedFailedHosts(fetchJson, sharedBreakerState?.failedHosts);
+  const sharedThs = resolveSharedThsState(ths, sharedBreakerState?.ths);
+  const pruneFailedHosts = nowMs => {
+    for (const [key, entry] of sharedFailedHosts) {
+      const age = nowMs - entry.at;
+      if (!(age >= 0 && age < HISTORY_RETRY_MS)) sharedFailedHosts.delete(key);
+    }
+  };
   const contexts = new WeakMap();
-  const newContext = () => ({ failedHosts: new Map(), sources: new Map(), raw: new Map(), universe: null, quotes: new Map(), ths: { faults: 0, pausedUntil: 0 } });
+  const newContext = () => ({ failedHosts: sharedFailedHosts, sources: new Map(), raw: new Map(), universe: null, quotes: new Map(), ths: sharedThs });
   const defaultContext = newContext();
   const context = signal => {
     if (!signal) return defaultContext;
@@ -74,7 +127,9 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
       catch (error) {
         if (signal?.aborted || error.code !== "MARKET_DATA_SOURCE_UNAVAILABLE" || error.providerRc !== undefined || [401, 403, 429].includes(error.status)) throw error;
         primaryError = error;
-        ctx.failedHosts.set(host, { error, at: clock() });
+        const failedAt = clock();
+        pruneFailedHosts(failedAt);
+        ctx.failedHosts.set(host, { error, at: failedAt });
       }
     }
     try { return await fallback(); }
@@ -323,7 +378,11 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
   }
   /** 同花顺主源；返回 null 表示这只证券改走应急源。 */
   async function thsHistory(ctx, security, adjustment, stage, signal) {
-    if (!ths || ctx.ths.pausedUntil > clock()) return null;
+    const nowMs = clock();
+    if (!ths || ctx.ths.pausedUntil > nowMs) return null;
+    if (ctx.ths.pausedUntil === 0 && ctx.ths.faults > 0 && nowMs - (ctx.ths.lastFaultAt || 0) >= THS_PAUSE_MS) {
+      ctx.ths.faults = 0;
+    }
     try {
       signal?.throwIfAborted();
       const quote = await sharedThsQuote(ctx, security, signal);
@@ -349,13 +408,19 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
       }
       signal?.throwIfAborted();
       ctx.ths.faults = 0;
+      ctx.ths.pausedUntil = 0;
+      ctx.ths.lastFaultAt = 0;
       const source = String(fetched?.dataSource || "").startsWith("fuyao") ? "ths-fuyao" : "ths-free";
       const result = { rows, adjustment, source, provenance: { source, amountUnit: "CNY", volumeUnit: "lot" } };
       record(ctx, stage, source, true, result);
       return result;
     } catch (error) {
       if (signal?.aborted || localCapacityError(error)) throw error;
-      if (isThsProviderFault(error) && ++ctx.ths.faults >= THS_FAULT_LIMIT) ctx.ths.pausedUntil = clock() + THS_PAUSE_MS;
+      if (isThsProviderFault(error)) {
+        const faultAt = clock();
+        ctx.ths.lastFaultAt = faultAt;
+        if (++ctx.ths.faults >= THS_FAULT_LIMIT) ctx.ths.pausedUntil = faultAt + THS_PAUSE_MS;
+      }
       record(ctx, stage, "ths-free", false, null, new Error(`同花顺未取到，已改用应急源：${error?.message || error}`));
       return null;
     }
@@ -429,4 +494,4 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
     getDiagnostics: ({ signal } = {}) => ({ sources: structuredClone([...context(signal).sources.values()]) }) };
 }
 
-module.exports = { createTrendMarketData };
+module.exports = { createTrendMarketData, resetSharedTrendBreakerState };

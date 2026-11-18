@@ -53,13 +53,17 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
     finally { if (generation.current === current) { setBusy(false); setLiveText(""); } }
   };
 
+  const canJumpAi = typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function";
   return <section className={`panel ai-interpret ${compact ? "compact" : ""}`} aria-label="AI 解读">
     <header className="ai-stock-review-head">
       <div><Bot size={17} /><span><b>AI 解读</b><small>{!configured ? "未配置模型：到「设置 → AI 助手」添加模型配置" : disabled ? "本页数据加载后可用" : "把本页数据交给 AI 写要点、风险和接下来要观察的地方"}</small></span></div>
-      <button type="button" className="secondary-btn" onClick={() => void run()} disabled={!configured || busy || disabled}>
-        {busy ? <LoaderCircle size={15} className="spin" /> : value ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "解读中…" : value ? "重新解读" : "AI 解读"}</button>
+      <div className="ai-selection-actions">
+        {!configured && canJumpAi && <button type="button" className="secondary-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>去配置 AI</button>}
+        <button type="button" className="secondary-btn" onClick={() => void run()} disabled={!configured || busy || disabled}>
+          {busy ? <LoaderCircle size={15} className="spin" /> : value ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "解读中…" : value ? "重新解读" : "AI 解读"}</button>
+      </div>
     </header>
-    {error && <div className="test-result fail" role="alert"><span />{error}</div>}
+    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
     {busy && liveText && <div className="ai-stream-preview" aria-live="polite"><p className="ai-stream-text">{liveText}</p></div>}
     {value && <article className="ai-summary">
       <h3>{value.headline || `${value.title}解读`}{kind !== "sectors" && <small>{value.asOfDate ? `数据日 ${value.asOfDate} · ` : ""}{value.model} · {new Date(value.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}{value.cached ? " · 本机已保存" : ""}</small>}</h3>

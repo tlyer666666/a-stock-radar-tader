@@ -157,17 +157,18 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
   if (!api) return <div className="ai-agent-view"><PageHeading title="AI 问股" />
     <div className="panel strategy-stock-empty"><Bot size={28} /><b>浏览器预览不调用 AI</b><p>请在桌面版「数据源设置 → AI 助手」添加模型配置后使用。</p></div></div>;
 
+  const openAiSettings = onOpenSettings || (typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function" ? () => window.__aStockOpenSettings?.("ai") : undefined);
   const messages = thread?.messages || [];
   const lastAnswer = [...messages].reverse().find(item => item.role === "assistant");
 
   return <div className={`ai-agent-view${embeddedFocus ? " ai-agent-embedded" : ""}`}>
-    {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · {embeddedMode === "stock-drawer" ? "AI问股" : "AI做T分析"}</b>{allowPersonalContext && contextLabel && <span className="ai-agent-ctx-badge">{contextLabel}</span>}<label className="ai-agent-ctx-toggle" title="关闭后仅传公开行情与你的提问，不读取持仓、做T、计划与随心记工具"><input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />读取持仓/计划/随心记</label>{state && <ModelPicker state={state} onChoose={chooseProfile} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查公开行情、日线体检、K线、分时、策略、公告、板块等数据，支持开启个人工作区上下文（持仓成本/做T/计划/随心记，随时可一键关闭）；对话只保存在本机。"
-      actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={onOpenSettings} />} />}
+    {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · {embeddedMode === "stock-drawer" ? "AI问股" : "AI做T分析"}</b>{allowPersonalContext && contextLabel && <span className="ai-agent-ctx-badge">{contextLabel}</span>}<label className="ai-agent-ctx-toggle" title="关闭后仅传公开行情与你的提问，不读取持仓、做T、计划与随心记工具"><input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />读取持仓/计划/随心记</label>{state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查公开行情、日线体检、K线、分时、策略、公告、板块等数据，支持开启个人工作区上下文（持仓成本/做T/计划/随心记，随时可一键关闭）；对话只保存在本机。"
+      actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />} />}
     {loadError && <div className="warning-banner" role="alert"><CircleAlert size={17} />{loadError}<button type="button" className="secondary-btn" onClick={() => void refreshState()}>重试</button></div>}
     {persistenceError && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>{persistenceError}。回答仍在本次运行中，关闭软件前请重试保存。</span>
       <button type="button" className="secondary-btn" disabled={saving} onClick={() => void retryPersistence()}>{saving ? "保存中…" : "重试保存"}</button></div>}
     {state && !state.configured && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>还没有可用的 AI 模型配置：请先在「数据源设置 → AI 助手」填写接口地址、模型名和 API Key。</span>
-      {onOpenSettings && <button type="button" className="secondary-btn" onClick={onOpenSettings}><Settings size={15} />去设置</button>}</div>}
+      {openAiSettings && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={15} />去设置</button>}</div>}
 
     <div className="ai-agent-layout">
       {!embeddedFocus && <aside className="panel ai-agent-sidebar" aria-label="对话列表">
@@ -254,7 +255,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
           {running && run && <RunCard run={run} onStop={() => void stop()} />}
         </div>
 
-        {error && <div className="warning-banner ai-agent-error" role="alert"><CircleAlert size={16} />{error}<button type="button" className="link-btn" onClick={() => setError("")}>关闭</button></div>}
+        {error && <div className="warning-banner ai-agent-error" role="alert"><CircleAlert size={16} /><span>{error}</span>{openAiSettings && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={14} />前往 AI 设置</button>}<button type="button" className="link-btn" onClick={() => setError("")}>关闭</button></div>}
         {messages.length > 0 && !running && <div className="ai-agent-quick" aria-label="快捷问题">
           {QUICK_TASKS.filter(task => task.id !== "full" || !lastAnswer || lastAnswer.focus?.code !== focus?.code).slice(0, 6).map(task => <button type="button" key={task.id} className="ai-agent-chip"
             disabled={(task.needsStock && !focus) || !state?.configured || sending} title={task.hint} onClick={() => useTask(task)}>{task.label}</button>)}

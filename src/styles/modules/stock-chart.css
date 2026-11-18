@@ -160,7 +160,7 @@ html .terminal-shell .chart-panel .chart-axis-text {
 
 html .terminal-shell .chart-panel .grid-line { stroke: var(--stock-chart-grid); stroke-width: 1; }
 html .terminal-shell .chart-panel .k-rise :is(.wick,.candle-body) { stroke: var(--stock-chart-rise); }
-html .terminal-shell .chart-panel .k-rise .candle-body { fill: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .k-rise .candle-body { fill: var(--stock-chart-bg); stroke-width: 1.25; }
 html .terminal-shell .chart-panel .k-fall :is(.wick,.candle-body) { stroke: var(--stock-chart-fall); }
 html .terminal-shell .chart-panel .k-fall .candle-body { fill: var(--stock-chart-fall); }
 html .terminal-shell .chart-panel :is(.wick,.candle-body) { stroke-width: 1; }

@@ -26,10 +26,11 @@ export default function WorkspaceNavigation({
             className={`sidebar-collapse sidebar-focus-toggle${coreOnly ? ' active' : ''}`}
             aria-pressed={coreOnly}
             aria-label={coreOnly ? '显示全部模块' : '只看核心模块'}
-            title={coreOnly ? '已精简为核心模块，点击恢复全部' : '精简侧边栏：只看高频核心模块'}
+            title={coreOnly ? '已精简为核心模块，点击恢复全部 19 个工具' : '精简侧边栏：只看高频核心模块'}
             onClick={onToggleCoreOnly}
           >
-            <Star size={14} />
+            <Star size={13} />
+            <small>{coreOnly ? '全部' : '精简'}</small>
           </button>
         )}
         <button className="sidebar-collapse" aria-label={collapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!collapsed} title={collapsed ? '展开导航栏' : '收起导航栏'} onClick={onCollapse}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>

@@ -1,4 +1,4 @@
-import { memo, useMemo, useState, type MouseEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { fmt, fmtMoney } from "../../domain/formatters";
 import { buildTimeShare, TIME_SHARE_SLOTS, type TimeShareOptions } from "./timeShareModel";
 
@@ -10,6 +10,12 @@ const signedPercent = (value: number) => `${value > 0 ? "+" : ""}${value.toFixed
 function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unitsPerLot, volumeUnit }: { rows: Array<Record<string, unknown>> } & TimeShareOptions) {
   const share = useMemo(() => buildTimeShare(rows, { preClose: sourcePreClose, assetType, unitsPerLot, volumeUnit }), [rows, sourcePreClose, assetType, unitsPerLot, volumeUnit]);
   const [hover, setHover] = useState<number | null>(null);
+  const cachedRectRef = useRef<{ left: number; width: number } | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const pendingSlotRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (rafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(rafRef.current);
+  }, []);
   if (!share) return <div className="empty-inline">暂无分时数据</div>;
   const { points, preClose, scale } = share;
   const x = (slot: number) => PAD_X + (slot / (TIME_SHARE_SLOTS - 1)) * (WIDTH - PAD_X * 2);
@@ -21,11 +27,35 @@ function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unit
   const area = `${x(points[0]!.slot)},${y(preClose)} ${priceLine} ${x(points.at(-1)!.slot)},${y(preClose)}`;
   const selected = hover === null ? points.at(-1)! : points.reduce((best, point) => Math.abs(point.slot - hover) < Math.abs(best.slot - hover) ? point : best, points[0]!);
   const levels = [1, 0.5, 0, -0.5, -1].map(ratio => preClose + (scale.max - preClose) * ratio);
+  const captureRect = (event: MouseEvent<SVGSVGElement>) => {
+    const r = event.currentTarget.getBoundingClientRect();
+    cachedRectRef.current = { left: r.left, width: r.width };
+  };
   const move = (event: MouseEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = cachedRectRef.current || event.currentTarget.getBoundingClientRect();
+    if (!cachedRectRef.current) cachedRectRef.current = { left: rect.left, width: rect.width };
+    if (rect.width <= 0) return;
     const ratio = (event.clientX - rect.left) / rect.width;
-    const slot = Math.round(((ratio * WIDTH - PAD_X) / (WIDTH - PAD_X * 2)) * (TIME_SHARE_SLOTS - 1));
-    setHover(Math.max(0, Math.min(TIME_SHARE_SLOTS - 1, slot)));
+    const slot = Math.max(0, Math.min(TIME_SHARE_SLOTS - 1, Math.round(((ratio * WIDTH - PAD_X) / (WIDTH - PAD_X * 2)) * (TIME_SHARE_SLOTS - 1))));
+    pendingSlotRef.current = slot;
+    if (typeof window?.requestAnimationFrame !== "function") {
+      setHover(slot);
+      return;
+    }
+    if (rafRef.current !== null) return;
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      setHover(pendingSlotRef.current);
+    });
+  };
+  const leave = () => {
+    cachedRectRef.current = null;
+    pendingSlotRef.current = null;
+    if (rafRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setHover(null);
   };
   const tone = (value: number) => value > preClose ? "red" : value < preClose ? "green" : "";
   return (
@@ -41,7 +71,7 @@ function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unit
         <span>最低 <em className={tone(share.low)}>{fmt(share.low)}</em></span>
         {share.totalAmount !== null && <span>总额 <em>{fmtMoney(share.totalAmount)}</em></span>}
       </div>
-      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" role="img" aria-label="分时走势" onMouseMove={move} onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none" role="img" aria-label="分时走势" onMouseEnter={captureRect} onMouseMove={move} onMouseLeave={leave}>
         {levels.map((level, index) => (
           <g key={index}>
             <line x1={PAD_X} x2={WIDTH - PAD_X} y1={y(level)} y2={y(level)} className={index === 2 ? "time-share-preclose" : "grid-line"} />
@@ -59,7 +89,7 @@ function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unit
           <circle cx={x(selected.slot)} cy={y(selected.price)} r="3" className="chart-crosshair-dot" />
         </>}
       </svg>
-      <svg viewBox={`0 0 ${WIDTH} ${VOLUME_HEIGHT}`} preserveAspectRatio="none" className="time-share-volume" role="img" aria-label="分时成交量" onMouseMove={move} onMouseLeave={() => setHover(null)}>
+      <svg viewBox={`0 0 ${WIDTH} ${VOLUME_HEIGHT}`} preserveAspectRatio="none" className="time-share-volume" role="img" aria-label="分时成交量" onMouseEnter={captureRect} onMouseMove={move} onMouseLeave={leave}>
         {points.map(point => {
           const height = (point.volume / maxVolume) * (VOLUME_HEIGHT - 6);
           return <rect key={point.slot} x={x(point.slot) - barWidth / 2} y={VOLUME_HEIGHT - height} width={barWidth} height={Math.max(0.5, height)} className={point.rising ? "time-share-bar rise" : "time-share-bar fall"} />;

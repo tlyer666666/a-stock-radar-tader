@@ -76,10 +76,12 @@ export function AiStockReviewPanel({ security, context, agentContext }: {
   const multi = (review?.models?.length || 0) > 1;
   const failed = (review?.models || []).filter(model => !model.ok);
 
+  const canJumpAi = typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function";
   return <section className="panel ai-stock-review" aria-label="AI 点评">
     <header className="ai-stock-review-head">
       <div><Bot size={18} /><span><b>AI 点评</b><small>{!configured ? "未配置模型：到「设置 → AI 助手」添加模型配置" : item ? "按日线体检数据和分析框架打分" : "按日线体检数据和分析框架打分点评；点一次调用一次模型，同一数据日的结果保存在本机"}</small></span></div>
       <div className="ai-selection-actions">
+        {!configured && canJumpAi && <button type="button" className="secondary-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>去配置 AI</button>}
         {frameworks.available && <AiFrameworkPicker inline catalog={frameworks.catalog} onChoose={id => void frameworks.choose(id)} disabled={busy} />}
         {(api.mutateCustomList || (api.customList && api.saveCustomList)) && <button type="button" className="secondary-btn" onClick={() => void addToList()}><ListPlus size={15} />加入我的股票</button>}
         {api.agent && canOpenAgent() && <button type="button" className="secondary-btn" disabled={!configured} title="打开 AI 问股，让 AI 自己查数据做全面分析，可以继续追问"
@@ -89,7 +91,7 @@ export function AiStockReviewPanel({ security, context, agentContext }: {
       </div>
     </header>
     {notice && <p className="ai-selection-note" role="status">{notice}</p>}
-    {error && <div className="test-result fail" role="alert"><span />{error}</div>}
+    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
     {failed.length > 0 && item && <div className="test-result fail" role="alert"><span />{failed.map(model => `${model.name} 点评失败：${model.error || "未知原因"}`).join("；")}</div>}
     {item && review && <div className="ai-stock-review-body">
       <div className="ai-stock-review-score">

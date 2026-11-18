@@ -401,4 +401,5 @@ type ThsWebState = import("./shared/ipc-contract").ThsWebBridgeState;
 
 interface Window {
   stockApi: import("./shared/ipc-contract").StockApi;
+  __aStockOpenSettings?: ((category?: string) => void) | undefined;
 }

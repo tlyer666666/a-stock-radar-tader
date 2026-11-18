@@ -78,7 +78,16 @@ export function useWorkspaceCopilot({
     items: monitorItems,
     live,
     refreshSeconds: Number(settings.quoteRefreshSeconds) || 5,
-    onAlert: alert => showToast(`${alert.name}（${alert.code}）：${alert.detail}`)
+    onAlert: alert => {
+      const msg = `${alert.name}（${alert.code}）：${alert.detail}`;
+      showToast(msg);
+      if (typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
+        void window.stockApi.notify({
+          title: `盯盘预警 · ${alert.name}（${alert.code}）`,
+          body: alert.detail
+        }).catch(() => undefined);
+      }
+    }
   });
   const tAssistant = useTAssistant({ live, holdings, onAlert: message => showToast(message) });
   const notes = useNotes();

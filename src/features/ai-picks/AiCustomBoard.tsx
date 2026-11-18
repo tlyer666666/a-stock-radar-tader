@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, Briefcase, Eye, LoaderCircle, Plus, RefreshCw, Search, Sparkles, Trash2 } from "lucide-react";
+import { Bookmark, Briefcase, Eye, LoaderCircle, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2 } from "lucide-react";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
+import { saveQuickObservationPlan } from "../../trendWorkspace";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -20,9 +21,9 @@ const stamp = (value: AiRanking) => `${value.model} · 数据日 ${value.asOfDat
  * 清单可搜索添加，或一键导入自选板块 / 观察池 / 持仓（最多 40 只，只存代码和名称）。
  * 打分时软件先用日线给每只算体检数据，再交给勾选的几个模型一起打分。
  */
-export function AiCustomBoard({ configured, reload, expectedModels = 1, historyRanking, historyDate, onOpen, onChanged, live = true, quoteRefreshSeconds = 15 }: {
+export function AiCustomBoard({ configured, reload, expectedModels = 1, historyRanking, historyDate, onOpen, onOpenSettings, onShowToast, onChanged, live = true, quoteRefreshSeconds = 15 }: {
   configured: boolean; reload: number; expectedModels?: number; historyRanking?: AiRanking | null | undefined; historyDate?: string | undefined;
-  onOpen?: ((security: Security) => void) | undefined; onChanged?: (() => void) | undefined; live?: boolean; quoteRefreshSeconds?: number;
+  onOpen?: ((security: Security) => void) | undefined; onOpenSettings?: (() => void) | undefined; onShowToast?: ((message: string) => void) | undefined; onChanged?: (() => void) | undefined; live?: boolean; quoteRefreshSeconds?: number;
 }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai;
   const [list, setList] = useState<AiCustomStock[]>([]);
@@ -178,6 +179,43 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
     setSuggestions([]);
     setSuggestionQuery("");
   };
+  const batchAddPlans = () => {
+    if (typeof window === "undefined" || !window.localStorage || !selection.list.length) return;
+    let addedCount = 0;
+    let existingCount = 0;
+    let skippedNoPrice = 0;
+    const itemByCode = new Map((shown?.items || []).map(item => [item.code, item]));
+    const stockByCode = new Map(list.map(item => [item.code, item]));
+    for (const code of selection.list) {
+      const stock = stockByCode.get(code);
+      const livePrice = Number(quotes.entries[code]?.quote?.latest);
+      const refPrice = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : profileByCode.get(code)?.latest;
+      const aiItem = itemByCode.get(code);
+      const res = saveQuickObservationPlan(window.localStorage, {
+        code,
+        name: stock?.name || aiItem?.name || code,
+        secid: secidFor(code),
+        referencePrice: refPrice,
+        asOf: shown?.asOfDate,
+        reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "我的股票关注")
+      });
+      if (!res.ok) {
+        skippedNoPrice += 1;
+      } else if (res.created) {
+        addedCount += 1;
+      } else {
+        existingCount += 1;
+      }
+    }
+    const parts = [
+      addedCount ? `新增 ${addedCount} 只观察计划` : "",
+      existingCount ? `${existingCount} 只已在计划中` : "",
+      skippedNoPrice ? `${skippedNoPrice} 只暂缺参考价` : ""
+    ].filter(Boolean);
+    const msg = parts.length ? `批量流转完成：${parts.join("，")}。` : "未生成新的观察计划。";
+    setNotice(msg);
+    onShowToast?.(msg);
+  };
 
   return <>
     {!isHistory && <section className="panel ai-custom-editor" aria-label="我的股票清单">
@@ -196,6 +234,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
               tone: "danger"
             }
           })}><Trash2 size={15} />清空</button>}
+          {!configured && onOpenSettings && <button type="button" className="secondary-btn" onClick={onOpenSettings}><Settings size={15} />前往 AI 设置</button>}
           <button type="button" className="primary-btn" onClick={() => void run(action.force, action.only)} disabled={!configured || busy || !list.length}>
             {busy ? <LoaderCircle size={15} className="spin" /> : action.force && !action.only ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "读取日线并打分…" : action.label}</button>
         </div>
@@ -218,7 +257,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
       </div>
       {!list.length && <p className="ai-selection-note">清单是空的：搜索添加股票，或一键导入自选板块、观察池、持仓。</p>}
       {notice && <p className="ai-selection-note" role="status">{notice}</p>}
-      {(error || readError) && <div className="test-result fail" role="alert"><span />{error || readError}</div>}
+      {(error || readError) && <div className="test-result fail" role="alert"><span />{error || readError}{error && onOpenSettings && <> <button type="button" className="link-btn" onClick={onOpenSettings}>前往 AI 设置</button></>}</div>}
       {failed.length > 0 && <div className="test-result fail" role="alert"><span />{failed.join("、")} 的日线没读到，这次没有参与打分。</div>}
     </section>}
 
@@ -235,10 +274,11 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
         {shown && <div role="group" aria-label="按评级筛选">{RATING_FILTERS.map(item => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}{item !== "全部" ? ` ${shown.items.filter(row => !row.fallback && row.rating === item).length}` : ""}</button>)}</div>}</div>
       {!isHistory && ranking && <AiScoringCoverage coverage={coverage} expectedModels={expectedModels} />}
       {partialModels.length > 0 && <div className="test-result fail" role="status"><span />{partialModels.map(item => `${item.name} 有 ${item.missed} 只这一批没有返回`).join("；")}，这些股票按基础分显示或暂缺 AI 点评，可点「重新打分」再试。</div>}
-      {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}</div>}
+      {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}{onOpenSettings && <> <button type="button" className="link-btn" onClick={onOpenSettings}>前往 AI 设置</button></>}</div>}
       <div className="ai-board-toolbar">
       {!isHistory && !!list.length && <AiSelectionBar selection={selection} removeLabel="删除" hint="勾选几只可以只给它们打分；点行首 × 从清单删除"
         onRemoveSelected={() => remove(selection.list, true)} />}
+      {!isHistory && selection.list.length > 0 && <button type="button" className="secondary-btn" disabled={busy} onClick={batchAddPlans}><Target size={14} />批量+观察计划（{selection.list.length} 只）</button>}
       {!isHistory && !!pageRows.length && <SelectionQuoteControls total={pageRows.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />}
       </div>
       {!!pageRows.length && <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="我的股票打分表格，可横向滚动">
@@ -254,7 +294,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
               <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? (shown?.models?.length || 1) : expectedModels} /> : <small>未打分</small>}</td>
               {multi && <td className="ai-model-scores">{(row.ai?.scores || []).map(score => <span key={score.id} className={ratingTone(score.rating)}>{score.name} <b>{score.score}</b></span>)}
                 {row.ai?.disagreement && <em className="ai-disagreement" title={`各模型分差 ${row.ai.spread} 分`}>模型分歧</em>}</td>}
-              <th scope="row" className="strategy-stock-name"><b>{row.name}</b><small>{row.code}{profile?.industry ? ` · ${profile.industry}` : ""}</small></th>
+              <th scope="row" className="strategy-stock-name">{onOpen ? <button type="button" className="strategy-security-link" onClick={event => { event.stopPropagation(); onOpen(toSecurity(row)); }} aria-label={`查看 ${row.name} ${row.code} 个股分析`}><b>{row.name}</b><small>{row.code}{profile?.industry ? ` · ${profile.industry}` : ""}</small></button> : <><b>{row.name}</b><small>{row.code}{profile?.industry ? ` · ${profile.industry}` : ""}</small></>}</th>
               <td><SelectionKline security={toSecurity(row)} /></td>
               {!isHistory && <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[row.code]} selectionClose={profile?.latest ?? null} /></td>}
               {hasDims && <td className="ai-dims-cell"><AiDimChips dims={row.ai?.dims} /></td>}

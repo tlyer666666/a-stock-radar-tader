@@ -37,10 +37,12 @@ function registerWorkspaceIpc({
   isAgentStore,
   createBackupService,
   readMigratedBackupConfig,
+  getStorageSummary,
   resetNewsCache,
   resetProfessionalReviewCache,
   applyWindowTheme,
   reviewWindows,
+  closeReviewWindow = () => reviewWindows?.closeWindow?.(),
   showSystemNotification,
   intervalReminders,
   noteWatcher,
@@ -124,7 +126,8 @@ function registerWorkspaceIpc({
     },
     readConfig: () => readMigratedBackupConfig(),
     writeConfig: value => writeJson("backup-config", value, isSettingsRecord, true),
-    encryptSecret, decryptSecret, appVersion: app.getVersion()
+    encryptSecret, decryptSecret, appVersion: app.getVersion(),
+    ...(typeof getStorageSummary === "function" ? { getStorageSummary } : {})
   });
   const backupStatus = () => ({ ...backup.status(), suggestions: backup.suggestions() });
   const backupLocal = input => {
@@ -197,8 +200,10 @@ function registerWorkspaceIpc({
     clearStagedRestore();
     restoreCommitting = true;
     try {
+      closeReviewWindow?.();
       await event.sender.session.flushStorageData();
       if (trustedMainWebContents() !== event.sender) throw restoreBusy();
+      closeReviewWindow?.();
       backup.applyRestore(snapshot);
       loadStoredSettings.cached = undefined;
       settingsForService.cached = undefined;
