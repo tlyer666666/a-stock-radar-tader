@@ -40,6 +40,9 @@ jobs:
         run: pnpm ensure:electron
       - name: Lint
         run: pnpm lint
+      # 测试清单防孤儿门禁：磁盘上的 *.test.cjs 必须全部被 test-manifest 覆盖，
+      # UI 声明必须与 qa:*:ui 脚本引用一致，防止新测试文件静默漏跑（1.6.71 审核发现
+      # cockpitModel.test.cjs 曾长期不在任何脚本中）。
       - name: Test manifest orphan gate
         run: node qa/test-manifest.cjs --check
       - name: Typecheck application and review entry
@@ -74,6 +77,8 @@ jobs:
           cache: pnpm
       - name: Install locked dependencies
         run: pnpm install --frozen-lockfile
+      - name: Install Electron runtime
+        run: pnpm ensure:electron
       - name: Locate Chrome for browser regression tests
         shell: bash
         run: |

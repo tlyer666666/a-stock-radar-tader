@@ -61,7 +61,7 @@ function walk(dir) {
       if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
       out.push(...walk(full));
     } else if (entry.isFile() && entry.name.endsWith(".test.cjs")) {
-      out.push(path.relative(ROOT, full));
+      out.push(path.relative(ROOT, full).split(path.sep).join("/"));
     }
   }
   return out;
