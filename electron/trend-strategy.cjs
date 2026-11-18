@@ -2,13 +2,14 @@
 
 const { createHash } = require("node:crypto");
 const { evaluateTrendStock, evaluateTrendBase, rankTrendCandidates, trendMath } = require("./trend-screener-engine.cjs");
-const library = require("../config/trend-strategy-library.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const library = loadNamedConfig("trend-strategy-library");
 const { prepareTrendLibrary, evaluatePreparedTrendLibrary } = require("./trend-library-engine.cjs");
 const libraryById = new Map(library.map(item => [item.id, item]));
 const { prepareAlignedTrendSeries, maAt, atr14, mean, ceilCents, floorCents } = trendMath;
 const QUALITY_PRESETS = Object.freeze({
-  robust: Object.freeze(require("../config/trend-quality-robust.json")),
-  balanced: Object.freeze(require("../config/trend-quality-balanced.json"))
+  robust: loadNamedConfig("trend-quality-robust"),
+  balanced: loadNamedConfig("trend-quality-balanced")
 });
 const DEFAULTS = QUALITY_PRESETS.robust;
 const BOUNDS = Object.freeze({ maxExtensionAtr: [0.5, 5], minCloseLocation: [0.5, 0.95], maxVolumeRatio: [1.2, 6] });

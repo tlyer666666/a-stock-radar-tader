@@ -49,16 +49,27 @@ test("limit-up bars require the official upper limit rather than a one-cent tole
   }, "600001"), true);
 });
 
-test("an official upper limit takes precedence and malformed official evidence fails closed", () => {
+test("an official upper limit takes precedence and missing/zero official limits fall back to rule price", () => {
+  const { upperLimitPrice, lowerLimitPrice } = require("./price-limit-rules.cjs");
   assert.equal(isLimitUpBar(10, {
     date: "2026-07-06", high: 11.2, close: 11.2, upperLimit: 11.2
   }, "600001"), true);
   assert.equal(isLimitUpBar(10, {
     date: "2026-07-06", high: 11, close: 11, upperLimit: null
-  }, "600001"), false);
+  }, "600001"), true);
+  assert.equal(isLimitUpBar(10, {
+    date: "2026-07-06", high: 11, close: 11, upperLimit: 0
+  }, "600001"), true);
   assert.equal(isLimitUpBar(0.91, {
     date: "2026-07-06", high: 1, close: 1, upperLimit: true
-  }, "600001"), false);
+  }, "600001"), true);
+  assert.equal(upperLimitPrice(10, { date: "2026-07-06", upperLimit: null }, "600001"), 11);
+  assert.equal(upperLimitPrice(10, { date: "2026-07-06", upperLimit: 0 }, "600001"), 11);
+  assert.equal(upperLimitPrice(10, { date: "2026-07-06", upperLimit: "" }, "600001"), 11);
+  assert.equal(upperLimitPrice(10, { date: "2026-07-06", upperLimit: 11.2 }, "600001"), 11.2);
+  assert.equal(lowerLimitPrice(10, { date: "2026-07-06", lowerLimit: null }, "600001"), 9);
+  assert.equal(lowerLimitPrice(10, { date: "2026-07-06", lowerLimit: 0 }, "600001"), 9);
+  assert.equal(lowerLimitPrice(10, { date: "2026-07-06", lowerLimit: 8.8 }, "600001"), 8.8);
   assert.equal(isLimitUpBar(10, {
     date: "2026-07-06", high: 11, close: 11, noPriceLimit: true
   }, "600001"), false);

@@ -2,33 +2,38 @@
 const test = require('node:test'), assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const { EventEmitter } = require('node:events'), ts = require('typescript');
 const { createServiceRuntime } = require('./service-runtime.cjs');
+const { prepareSingleBacktestRequest } = require('./portfolio-backtest.cjs');
+const { loadElectronIpcSources } = require('../qa/ipc-source-loader.cjs');
 const { pickBacktestSettingOverrides } = require('./security-policy.cjs');
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
 function sender(id) { const value = new EventEmitter(); value.id = id; value.isDestroyed = () => Boolean(value.destroyed); return value; }
 function harness() {
-  const source = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8');
-  const ast = ts.createSourceFile('main.cjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const { files } = loadElectronIpcSources();
   const functions = [], registrations = [], handlers = new Map(), requests = [], gate = deferred(), runtime = createServiceRuntime();
   const names = new Set(['serviceRequestId', 'serviceRequestRuntime']);
   const channels = new Set(['strategy:scan', 'backtest:run', 'backtest:run-portfolio', 'service:cancel', 'trend-screener:start']);
   const senders=new Map();let scanCancels=0;
-  function visit(node) {
-    if (ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text)) functions.push(node.getText(ast));
-    if (ts.isCallExpression(node) && node.expression.getText(ast) === 'handleTrustedIpc' && ts.isStringLiteral(node.arguments[0]) && channels.has(node.arguments[0].text)) registrations.push(node.getText(ast) + ';');
-    ts.forEachChild(node, visit);
+  for (const entry of files) {
+    const ast = ts.createSourceFile(entry.name, entry.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    (function visit(node) {
+      if (entry.name === 'electron/main.cjs' && ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text)) functions.push(node.getText(ast));
+      if (ts.isCallExpression(node) && node.expression.getText(ast) === 'handleTrustedIpc' && ts.isStringLiteral(node.arguments[0]) && channels.has(node.arguments[0].text)) registrations.push(node.getText(ast) + ';');
+      ts.forEachChild(node, visit);
+    })(ast);
   }
-  visit(ast);
   const invokeService = (operation, input, request) => { requests.push({ operation, input, request }); return runtime.run(operation, 'shared', request || {}, () => gate.promise); };
-  vm.runInNewContext([...functions, ...registrations].join('\n'), {
+  const context = vm.createContext({
     serviceJobOwners: new WeakSet(), handleTrustedIpc: (name, handler) => handlers.set(name, handler),
+    prepareSingleBacktestRequest,
     customStrategiesForScan:()=>[],readJson:()=>[],normalizeWatchlist:v=>v,normalizeHoldings:v=>v,usableWatchlist:()=>true,usableHoldings:()=>true,
-    trustedMainWebContents:()=>senders.get(1),trendScanOwner:undefined,trendScreener:{start:()=>({phase:'started',jobId:'trend-job-1'}),getStatus:()=>({jobId:'trend-job-1'}),cancel:()=>{scanCancels++;}},runtimeErrorLog:()=>{},
+    trustedMainWebContents:()=>senders.get(1),trendScanOwner:undefined,setTrendScanOwner:owner=>{context.trendScanOwner=owner;},trendScreener:{start:()=>({phase:'started',jobId:'trend-job-1'}),getStatus:()=>({jobId:'trend-job-1'}),cancel:()=>{scanCancels++;}},runtimeErrorLog:()=>{},
     settingsForService: () => ({ provider: 'eastmoney', fallbackEnabled: true }), pickBacktestSettingOverrides,
     scanStrategySignals: (options, request) => invokeService('scan', options, request),
     runBacktest: (input, _settings, _options, request) => invokeService('single', input, request),
     runPortfolioBacktest: (input, _settings, request) => invokeService('portfolio', input, request),
     cancelServiceJob: request => runtime.cancel(request), cancelServiceOwner: owner => runtime.cancelOwner(owner)
   });
+  vm.runInContext([...functions, ...registrations].join('\n'), context);
   return { requests, runtime, gate, scanCancels:()=>scanCancels, invoke: (contents, channel, ...args) => {
     senders.set(contents.id,contents);
     assert.equal(typeof handlers.get(channel), 'function', `${channel} handler exists`);

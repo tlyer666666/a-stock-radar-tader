@@ -840,15 +840,13 @@ test("optimized portfolio is published only with independent universe, terminal 
 });
 
 // Keep actual service/job/cache code; replace only external market loading.
+// P0-2b 拆分后改为共享夹具：loadStrategySignals 已迁到 services/strategy-scan.cjs，
+// 重绑定用 rebindAll 在声明处生效并跨模块传播。
+const { loadServices, rebindAll } = require('../qa/service-fixture.cjs');
 function isolatedScanService(loader) {
-  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-  const filename = path.join(__dirname, 'services.cjs'), isolated = {exports:{}};
-  vm.runInNewContext(fs.readFileSync(filename,'utf8')+'\nloadStrategySignals = syntheticLoader;\n', {
-    module:isolated,exports:isolated.exports,__dirname,__filename:filename, require:require('node:module').createRequire(filename),
-    process,console,URL,DOMException,AbortController,AbortSignal,TextDecoder,setTimeout,clearTimeout,setImmediate,queueMicrotask,Buffer,
-    syntheticLoader:loader,fetch:async()=>{throw Error('network prohibited');}
-  }, {filename});
-  return isolated.exports;
+  const api = loadServices();
+  rebindAll(api, 'loadStrategySignals', loader);
+  return api;
 }
 test('forced scan bypasses a concurrent ordinary cached response',async()=>{
   let calls=0; const api=isolatedScanService(async(_options,runtime)=>({revision:++calls,forceRefresh:runtime.forceRefresh}));
@@ -877,26 +875,24 @@ test('late ordinary scan cannot overwrite a newer forced scan cache',async()=>{
 });
 
 test('strategy scan reads only completed candidate histories and runs pure selection in its worker', async () => {
-  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-  const filename = path.join(__dirname, 'services.cjs'), isolated = { exports: {} }, calls = [];
+  const calls = [];
   const dates = require('./trend-trading-calendar.cjs').createTradingCalendar().sessionsThrough('2026-10-20',140);
   const rows = dates.map(date => ({ date, open: 10, high: 10.1, low: 9.9, close: 10, volume: 100000, amount: 300000000, turnover: 2 }));
   rows[139] = { ...rows[139], open: 10.1, high: 11, low: 10, close: 11, turnover: null };
-  const source = fs.readFileSync(filename, 'utf8') + `
+  const append = `
     topicPoolForDate = async date => ({date,provider:'fixture',pool:date==='2026-10-20'?[{code:'600001',name:'选股样本',tradingDaysSince:0,limitDate:date}]:[]});
     broadAStockValidationUniverse = async () => { throw Error('selection must not request validation universe'); };
     eastHistory = async security => { historyCalls.push(security.code); return fixtureRows; };
   `;
-  const actualRequire=require('node:module').createRequire(filename);
-  const controlledRequire=name=>{
-    const value=actualRequire(name);
-    if(name==='./trend-screener-adapter.cjs')return {createTrendMarketData:()=>({fetchBenchmark:async()=>{calls.push('000985');return rows;},fetchHistory:async security=>{calls.push(security.code);return {rows,source:'fixture-raw'};},
-      prepareHistories:async()=>({requested:0,received:0}),
-      fetchUniversePage:async({filter})=>filter==='m:1+t:2'?{total:2,rows:[{code:'600001',name:'选股样本',secid:'1.600001',industry:'电子'},{code:'600002',name:'ST样本',secid:'1.600002',industry:'电子'}]}:{total:0,rows:[]}})};
-    return name==='./strategy-selection-service.cjs'?{...value,createStrategySelectionService:deps=>value.createStrategySelectionService({...deps,now:()=>new Date('2026-10-21T02:00:00Z')})}:value;
-  };
-  vm.runInNewContext(source, { module: isolated, exports: isolated.exports, __dirname, __filename: filename, require: controlledRequire, process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, queueMicrotask, Buffer, historyCalls: calls, fixtureRows: rows, fetch: async () => { throw Error('network prohibited'); } }, { filename });
-  const api = isolated.exports;
+  // P0-2b：require 覆盖经共享夹具递归作用于 services/*.cjs 子模块。
+  const adapterOverride = { createTrendMarketData: () => ({ fetchBenchmark: async () => { calls.push('000985'); return rows; }, fetchHistory: async security => { calls.push(security.code); return { rows, source: 'fixture-raw' }; },
+    prepareHistories: async () => ({ requested: 0, received: 0 }),
+    fetchUniversePage: async ({ filter }) => filter === 'm:1+t:2' ? { total: 2, rows: [{ code: '600001', name: '选股样本', secid: '1.600001', industry: '电子' }, { code: '600002', name: 'ST样本', secid: '1.600002', industry: '电子' }] } : { total: 0, rows: [] } }) };
+  const selectionService = require('./strategy-selection-service.cjs');
+  const api = loadServices(append, { historyCalls: calls, fixtureRows: rows }, {
+    './trend-screener-adapter.cjs': adapterOverride,
+    './strategy-selection-service.cjs': { ...selectionService, createStrategySelectionService: deps => selectionService.createStrategySelectionService({ ...deps, now: () => new Date('2026-10-21T02:00:00Z') }) }
+  });
   try {
     // 夹具是横盘后的首板，只命中（已下线的）低位首板等规则：按 id 明确指定完整策略库来检查选股流程。
     const allIds = require('./strategy-signal-engine.cjs').ALL_STRATEGY_DEFINITIONS.map(definition => definition.id);

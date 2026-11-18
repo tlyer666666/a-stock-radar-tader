@@ -89,3 +89,109 @@ test("the service saves market reviews per day, looks back at the previous day a
   await assert.rejects(service.interpret({ kind: "nope", data: {}, asOfDate: "2026-11-03" }), { code: "INVALID_IPC_PAYLOAD" });
   assert.deepEqual(service.history(), [], "reviews do not show up as AI stock-picking history days");
 });
+
+test("recentMarketReviews attaches lookback hit rate & lessons, and subsequent marketReview receives previousLookback", async () => {
+  const seenPayloads = [];
+  let stored = null;
+  const fetchImpl = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    const system = body.messages[0].content;
+    const user = JSON.parse(body.messages[1].content);
+    seenPayloads.push({ system, user });
+    if (/事后核对/.test(system)) {
+      return reply({ summary: "次日高开低走需注意节奏", verdicts: [{ claim: "主线延续", result: "部分兑现", evidence: "分化明显" }], lessons: ["少追连板高标"] });
+    }
+    return reply({ headline: "分歧转弱", cycle: { phase: "分歧", reason: "炸板增加" }, market: "m", mainlines: [], nextDay: { posture: "防守", focus: [], avoid: [] }, risks: [], confidence: "中" });
+  };
+  const service = createAiService({ getConfig: () => config, fetchImpl, store: { read: () => stored, write: value => { stored = value; } } });
+  await service.marketReview({ snapshot: snapshot("2026-11-02") });
+  await service.lookback({ snapshot: snapshot("2026-11-03") });
+  const recent = service.recentMarketReviews("2026-11-04", 3);
+  assert.equal(recent[0].lookbackHitRatePct, 50);
+  assert.deepEqual(recent[0].lookbackLessons, ["少追连板高标"]);
+  await service.marketReview({ snapshot: snapshot("2026-11-04") });
+  const lastUser = seenPayloads.at(-1).user;
+  assert.equal(lastUser.previousLookback.hitRatePct, 50);
+  assert.deepEqual(lastUser.previousLookback.lessons, ["少追连板高标"]);
+});
+
+test("Phase 2: skillReview & interpret stream intermediate steps and token previews via onProgress", async () => {
+  const events = [];
+  let turn = 0;
+  const fakeAi = {
+    model: () => "stream-model",
+    chat: async ({ onToken }) => {
+      turn += 1;
+      onToken?.('{"headline":"', '{"headline":"盘后主线聚焦算力"}', {});
+      if (turn === 1) {
+        return { thought: "先核对板块强度", calls: [{ skill: "sector_board", args: {} }] };
+      }
+      if (turn === 2) {
+        return {
+          thought: "数据充足，输出复盘",
+          final: {
+            headline: "盘后主线聚焦算力",
+            market: "成交放量",
+            cycle: { phase: "主升", reason: "高度拓展" },
+            mainlines: [{ name: "算力", comment: "资金回流" }],
+            ladder: "5板领涨",
+            indices: "沪强深弱",
+            nextDay: { posture: "围绕核心低吸", focus: ["算力"], avoid: ["杂毛"] },
+            risks: ["防冲高回落"],
+            confidence: "高"
+          }
+        };
+      }
+      return { headline: "解读标题", points: ["主线活跃"], risks: ["高位分化"], watch: ["明早竞价"] };
+    }
+  };
+  const reviewer = review.createAiReview({ ai: fakeAi });
+  const market = await reviewer.marketReview({
+    snapshot: snapshot("2026-11-05"),
+    onProgress: evt => events.push(evt),
+    skills: {
+      runSkill: async skill => ({ skill, name: "板块强度", ok: true, summary: "算力领涨", data: { topSector: "算力" } })
+    }
+  });
+  assert.equal(market.headline, "盘后主线聚焦算力");
+  assert.ok(events.some(e => e.channel === "market-review" && e.phase === "step" && e.pendingStep));
+  assert.ok(events.some(e => e.channel === "market-review" && e.phase === "step" && e.steps.length >= 1));
+  assert.ok(events.some(e => e.channel === "market-review" && e.phase === "token" && e.text.includes("算力")));
+
+  const interp = await reviewer.interpret({
+    kind: "sectors",
+    data: { rows: ["算力"] },
+    asOfDate: "2026-11-05",
+    onProgress: evt => events.push(evt)
+  });
+  assert.equal(interp.headline, "解读标题");
+  assert.ok(events.some(e => e.channel === "interpret" && e.kind === "sectors" && e.phase === "token"));
+});
+
+test("cachedMarketReview aligns cache key cleanly across active config and summary instructions", async () => {
+  let stored = null;
+  let activeModel = "model-a";
+  let summaryInstr = "严格控制回撤";
+  const fetchImpl = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    return reply({
+      headline: `复盘-${body.model}`,
+      cycle: { phase: "分歧", reason: "测试" },
+      market: "m",
+      mainlines: [],
+      nextDay: { posture: "低吸", focus: [], avoid: [] },
+      risks: [],
+      confidence: "中"
+    });
+  };
+  const service = createAiService({
+    getConfig: () => ({ ...config, model: activeModel }),
+    getInstructions: () => ({ summary: summaryInstr }),
+    fetchImpl,
+    store: { read: () => stored, write: value => { stored = value; } }
+  });
+  await service.marketReview({ snapshot: snapshot("2026-11-06") });
+  assert.equal(service.cachedMarketReview("2026-11-06")?.headline, "复盘-model-a");
+  summaryInstr = "换了自定义总结规则";
+  assert.equal(service.cachedMarketReview("2026-11-06"), null);
+});

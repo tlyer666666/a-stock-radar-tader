@@ -2,35 +2,23 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 const path = require("node:path");
-const vm = require("node:vm");
-const { createRequire } = require("node:module");
+const { loadServiceModule, rebindAll } = require("../qa/service-fixture.cjs");
 
 // Real provider parsers, with only transport/token boundaries replaced. No
 // market requests, credentials or user configuration are used by these tests.
+// P0-2b 拆分后改为共享夹具 + rebindAll（fetchJson 等已迁到 services/*.cjs）。
 function load(name, append = "", requires = {}) {
-  const filename = path.join(__dirname, name);
-  const actualRequire = createRequire(filename);
-  const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, "utf8") + "\n" + append, {
-    module, exports: module.exports,
-    require: id => requires[id] || actualRequire(id),
-    __dirname, __filename: filename, process, console, URL, DOMException,
-    AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout,
-    setImmediate, queueMicrotask, Buffer,
-    fetch: async () => { throw new Error("Unexpected network"); }
-  }, { filename });
-  return module.exports;
+  return loadServiceModule(path.join(__dirname, name), requires, {}, append);
 }
 
 const services = load("services.cjs", `
   module.exports.fixture = {
-    eastQuote, thsQuote,
-    setResponse(value) { fetchJson = async () => value; },
+    eastQuote: _backtest.eastQuote, thsQuote: _quotes_and_charts.thsQuote,
   };
-  withThsToken = (_token, request) => request("offline-token");
 `);
+rebindAll(services, "withThsToken", (_token, request) => request("offline-token"));
+services.fixture.setResponse = value => rebindAll(services, "fetchJson", async () => value);
 const security = { code: "600000", name: "离线样本", secid: "1.600000", thscode: "600000.SH" };
 const sortedMissing = quote => Array.from(quote.missingFields || []).sort();
 const absent = [undefined, null, "", "  ", "-", "invalid", NaN, Infinity];

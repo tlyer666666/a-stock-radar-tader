@@ -85,8 +85,12 @@ export default [
   {
     files: ["src/**/*.{ts,tsx}"],
     languageOptions: { ecmaVersion: 2022, sourceType: "module" },
-    // TypeScript resolves identifiers itself; no-undef only produces false positives.
-    rules: { "no-undef": "off" }
+    // 100% of renderer TypeScript files are strictly checked (no legacy `any` carve-outs).
+    rules: {
+      "no-undef": "off",
+      "@typescript-eslint/no-require-imports": "error",
+      "@typescript-eslint/no-explicit-any": "error"
+    }
   },
 
   {

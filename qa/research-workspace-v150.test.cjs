@@ -16,8 +16,8 @@ describe('v1.5 research workspace in an isolated real renderer', () => {
     const styles = [...main.matchAll(/import\s+["']\.\/([^"']+\.css)["']/g)].map(match => `import '/src/${match[1]}';`).join('\n');
     const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module">
       import React from 'react'; import { createRoot } from 'react-dom/client';
-      import TrendScreenerView from '/src/TrendScreenerView.tsx';
-      import StrategySignalsView from '/src/StrategySignalsView.tsx';
+      import TrendScreenerView from '/src/features/trend/TrendScreenerView.tsx';
+      import StrategySignalsView from '/src/features/strategy-selection/StrategySignalsView.tsx';
       import { createPreviewApi } from '/src/previewApi.ts';
       ${styles}
       window.stockApi = createPreviewApi(); window.calls = { opened: [], backtests: [] };

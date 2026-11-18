@@ -69,6 +69,42 @@ export type BacktestStrategyProfile = {
   maxSectorExposurePercent: number;
 };
 
+export type BacktestPrimitiveMap = Record<string, string | number | boolean | null | undefined>;
+
+export type BacktestRawResult = Record<string, unknown> & {
+  security?: { code?: string; name?: string };
+  strategyIds?: string[];
+  strategyContext?: { strategyName?: string; componentNames?: string[] };
+  strategyProfile?: Record<string, unknown>;
+  executionPolicy?: Record<string, unknown>;
+  lookbackBars?: number;
+  customEntryPrice?: number | null;
+  entryPriceMode?: string;
+  metrics?: BacktestPrimitiveMap & { accepted?: boolean; passReason?: string | null };
+  benchmarkReturns?: Record<string, string | number | null | undefined>;
+  walkForwardValidation?: {
+    accepted?: boolean;
+    reason?: string;
+    oosSampleCount?: number | null;
+    foldPassRate?: number | null;
+    oosProjectedNetEdge?: number | null;
+    oosWinRate5?: number | null;
+    degradationPercent?: number | null;
+    overfitRisk?: string;
+    folds?: Array<BacktestPrimitiveMap>;
+  };
+  historicalSamplePath?: {
+    startingCapital?: number | null;
+    positionPercent?: number | null;
+    roundTripCostPercent?: number | null;
+    points?: Array<BacktestPrimitiveMap>;
+  };
+  trades?: Array<Record<string, unknown>>;
+  profitSummary?: Record<string, string | number | null | undefined>;
+  strategyBreakdown?: Array<BacktestPrimitiveMap>;
+  range?: Record<string, string | number | null | undefined>;
+};
+
 export type BacktestHistoryRecord = {
   id: string;
   createdAt: string;
@@ -76,11 +112,11 @@ export type BacktestHistoryRecord = {
   securityCode: string;
   securityName: string;
   accepted: boolean;
-  metrics: Record<string, any> | null;
+  metrics: BacktestPrimitiveMap | null;
   strategyIds: string[];
-  benchmarkReturns: Record<string, any> | null;
+  benchmarkReturns: Record<string, string | number | null | undefined> | null;
   strategyProfile: BacktestStrategyProfile;
-  rawResult: any;
+  rawResult: BacktestRawResult | null;
 };
 
 export type BacktestProfileComparisonItem = {
@@ -113,7 +149,7 @@ export type BacktestViewProps = {
   draft: BacktestDraft;
   loading: boolean;
   error: string;
-  result: any;
+  result: BacktestRawResult | null;
   history: BacktestHistoryRecord[];
   profileComparisons: BacktestProfileComparisonReport | null;
   onDraftChange: (updater: (current: BacktestDraft) => BacktestDraft) => void;
@@ -135,12 +171,12 @@ export type BacktestViewProps = {
   executionProfile: BacktestStrategyProfile;
   profileDiff: (source: BacktestStrategyProfile) => Array<{ label: string; sourceValue: string; targetValue: string }>;
   evaluateBacktestExecutionReadiness: (
-    metrics: Record<string, any> | null,
+    metrics: Record<string, unknown> | null,
     profileDiffs: Array<{ label: string; sourceValue: string; targetValue: string }>,
-    executionReadinessInput?: any
+    executionReadinessInput?: unknown
   ) => BacktestExecutionReadiness;
   buildBacktestExecutionPlan: (
-    metrics: Record<string, any> | null,
+    metrics: Record<string, unknown> | null,
     readiness: BacktestExecutionReadiness,
     profile: BacktestStrategyProfile
   ) => BacktestExecutionPlan;

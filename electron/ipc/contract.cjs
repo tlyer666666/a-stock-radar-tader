@@ -1,0 +1,292 @@
+"use strict";
+
+/**
+ * Canonical Electron IPC channel registry & boundary payload validator.
+ * Kept in sync with src/shared/ipc-contract.ts, electron/preload.cjs, and
+ * electron/review-preload.cjs via electron/ipc-contract.test.cjs.
+ */
+
+const MAIN_IPC_CHANNELS = Object.freeze([
+  "agent:cancel",
+  "agent:conversation",
+  "agent:delete",
+  "agent:poll",
+  "agent:settings",
+  "agent:skill-delete",
+  "agent:skill-save",
+  "agent:start",
+  "agent:state",
+  "agent:sync-workspace",
+  "ai:cached",
+  "ai:custom-cached",
+  "ai:custom-list",
+  "ai:custom-mutate",
+  "ai:custom-rank",
+  "ai:custom-save",
+  "ai:framework-save",
+  "ai:frameworks",
+  "ai:history",
+  "ai:history-day",
+  "ai:interpret",
+  "ai:interpret-cached",
+  "ai:lookback",
+  "ai:market-review",
+  "ai:market-review-cached",
+  "ai:note-parse",
+  "ai:outcomes-leaderboard",
+  "ai:profile-activate",
+  "ai:profile-delete",
+  "ai:profile-save",
+  "ai:profiles",
+  "ai:rank",
+  "ai:rank-models",
+  "ai:review",
+  "ai:review-cached",
+  "ai:status",
+  "ai:strategy-draft",
+  "ai:summary",
+  "ai:test",
+  "app:notify",
+  "app:set-theme",
+  "app:version",
+  "app:window-control",
+  "backtest:run",
+  "backtest:run-portfolio",
+  "backup:cancel-restore",
+  "backup:choose-folder",
+  "backup:configure",
+  "backup:inspect",
+  "backup:prepare-restore",
+  "backup:restore",
+  "backup:run",
+  "backup:status",
+  "bond:list",
+  "diagnostics:corrupted-on-load",
+  "holdings:get",
+  "holdings:save",
+  "market:analyze",
+  "market:analyze-sector",
+  "market:chart",
+  "market:concept-chain",
+  "market:federation",
+  "market:limit-ecology",
+  "market:limit-up-sectors",
+  "market:limit-ups",
+  "market:previous-limit-up-failed-boards",
+  "market:quote",
+  "market:recent-limit-ups",
+  "market:search",
+  "market:search-sectors",
+  "market:sector-limit-count",
+  "market:sector-strength",
+  "market:source-health",
+  "news:analyze-impact",
+  "news:get-feed",
+  "news:refresh",
+  "notes:interval-sync",
+  "notes:watch-sync",
+  "review:get-market",
+  "review:open-window",
+  "sector:cancel",
+  "sector:catalog",
+  "sector:classifications",
+  "sector:detail",
+  "sector:quotes",
+  "service:cancel",
+  "settings:get",
+  "settings:save",
+  "settings:test-provider",
+  "shell:open-external",
+  "strategy:custom:delete",
+  "strategy:custom:import-settings",
+  "strategy:custom:list",
+  "strategy:custom:save",
+  "strategy:definitions",
+  "strategy:external-archive",
+  "strategy:scan",
+  "ths-web:bounds",
+  "ths-web:command",
+  "ths-web:hide",
+  "ths-web:show",
+  "ths-web:state",
+  "trend-screener:cancel",
+  "trend-screener:execution-check",
+  "trend-screener:research",
+  "trend-screener:start",
+  "trend-screener:status",
+  "watchlist:get",
+  "watchlist:save"
+]);
+
+const REVIEW_IPC_CHANNELS = Object.freeze([
+  "review-window:analyze",
+  "review-window:market",
+  "review-window:search",
+  "review-window:theme"
+]);
+
+const IPC_EVENT_CHANNELS = Object.freeze([
+  "ai:stream",
+  "review-window:theme-changed"
+]);
+
+const ALL_IPC_CHANNELS = Object.freeze([...MAIN_IPC_CHANNELS, ...REVIEW_IPC_CHANNELS]);
+
+const isPlainObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
+const isOptionalPlainObject = value => value === undefined || value === null || isPlainObject(value);
+const isSecurityOrText = value => typeof value === "string" || isPlainObject(value);
+const isOptionalText = value => value === undefined || value === null || typeof value === "string";
+
+function invalidPayload(message) {
+  return Object.assign(new TypeError(message), { code: "INVALID_IPC_PAYLOAD" });
+}
+
+const VALIDATORS = new Map([
+  ["watchlist:save", args => Array.isArray(args[0]) ? null : "观察池保存参数必须为数组"],
+  ["holdings:save", args => Array.isArray(args[0]) ? null : "持仓保存参数必须为数组"],
+  ["ai:custom-save", args => Array.isArray(args[0]) ? null : "自选股票列表必须为数组"],
+  ["ai:rank-models", args => (args[0] === undefined || Array.isArray(args[0])) ? null : "模型筛选参数必须为数组"],
+  ["strategy:custom:save", args => isPlainObject(args[0]) ? null : "策略保存参数无效"],
+  ["strategy:custom:delete", args => (typeof args[0] === "string" && args[0].length > 0 && args[0].length <= 128) ? null : "策略编号无效"],
+  ["service:cancel", args => (typeof args[0] === "string" && args[0].trim().length > 0 && args[0].length <= 256) ? null : "任务编号无效"],
+  ["news:analyze-impact", args => (isPlainObject(args[0]) && isPlainObject(args[0].item)) ? null : "请提供要分析的资讯或公告条目"],
+  ["ai:interpret", args => isPlainObject(args[0]) ? null : "AI 解读参数无效"],
+  ["ai:custom-mutate", args => isPlainObject(args[0]) ? null : "股票清单操作无效"],
+  ["shell:open-external", args => typeof args[0] === "string" ? null : "外部链接参数必须为字符串"],
+  ["app:window-control", args => typeof args[0] === "string" ? null : "窗口操作参数无效"],
+  ["app:set-theme", args => typeof args[0] === "string" ? null : "主题参数必须为字符串"],
+  ["market:analyze", args => (isSecurityOrText(args[0]) && isOptionalPlainObject(args[1])) ? null : "个股分析参数无效"],
+  ["market:quote", args => isSecurityOrText(args[0]) ? null : "行情请求标的参数无效"],
+  ["market:federation", args => isSecurityOrText(args[0]) ? null : "多源融合请求参数无效"],
+  ["market:chart", args => (isSecurityOrText(args[0]) && (isOptionalText(args[1]) || typeof args[1] === "number") && isOptionalPlainObject(args[2])) ? null : "图表请求参数无效"],
+  ["market:recent-limit-ups", args => ((args[0] === undefined || (typeof args[0] === "number" && Number.isFinite(args[0]))) && isOptionalPlainObject(args[1])) ? null : "近期涨停参数无效"],
+  ["market:sector-limit-count", args => ((args[0] === undefined || args[0] === null || isPlainObject(args[0])) && isOptionalPlainObject(args[1])) ? null : "板块涨停计数参数无效"],
+  ["market:concept-chain", args => (args[0] === undefined || typeof args[0] === "string" || isPlainObject(args[0])) ? null : "概念产业链查询参数无效"],
+  ["backtest:run", args => ((args[0] === undefined || isSecurityOrText(args[0])) && isOptionalPlainObject(args[1])) ? null : "单股回测参数无效"],
+  ["backtest:run-portfolio", args => isOptionalPlainObject(args[0]) ? null : "组合回测参数必须为对象"],
+  ["backup:prepare-restore", args => (isOptionalText(args[0]) && isOptionalText(args[1])) ? null : "恢复准备参数无效"],
+  ["backup:restore", args => typeof args[0] === "string" ? null : "恢复令牌必须为字符串"],
+  ["backup:cancel-restore", args => (args[0] === undefined || typeof args[0] === "string") ? null : "取消恢复令牌必须为字符串"],
+  ["backup:inspect", args => (isOptionalText(args[0]) && isOptionalText(args[1])) ? null : "备份校验参数无效"],
+  ["backup:run", args => (isOptionalPlainObject(args[0]) && isOptionalPlainObject(args[1])) ? null : "备份执行参数无效"],
+  ["market:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "证券搜索关键词无效"],
+  ["market:search-sectors", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "板块搜索关键词无效"],
+  ["market:analyze-sector", args => (args[0] === undefined || args[0] === null || isSecurityOrText(args[0])) ? null : "板块分析参数无效"],
+  ["sector:cancel", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 256) ? null : "板块取消请求编号无效"],
+  ["review-window:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "复盘搜索关键词无效"],
+  ["review-window:analyze", args => (isSecurityOrText(args[0]) && isOptionalPlainObject(args[1])) ? null : "复盘分析标的参数无效"],
+  ["ai:review-cached", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 40) ? null : "点评缓存股票代码无效"],
+  ["ai:history-day", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 40) ? null : "AI 历史日期参数无效"],
+  ["ai:market-review-cached", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 40) ? null : "AI 复盘缓存日期无效"],
+  ["ai:profile-activate", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "AI 配置编号无效"],
+  ["ai:profile-delete", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "AI 配置编号无效"],
+  ["agent:conversation", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "对话编号无效"],
+  ["agent:poll", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "运行编号无效"],
+  ["agent:cancel", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "运行编号无效"],
+  ["agent:delete", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "对话编号无效"],
+  ["agent:skill-delete", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "技能编号无效"],
+  ["trend-screener:status", args => (args[0] === undefined || args[0] === null || isPlainObject(args[0]) || typeof args[0] === "string" || typeof args[0] === "number") ? null : "趋势扫描状态游标无效"]
+]);
+
+const NO_ARG_CHANNELS = new Set([
+  "agent:state",
+  "ai:custom-cached",
+  "ai:custom-list",
+  "ai:frameworks",
+  "ai:history",
+  "ai:profiles",
+  "ai:status",
+  "app:version",
+  "backup:choose-folder",
+  "backup:status",
+  "diagnostics:corrupted-on-load",
+  "holdings:get",
+  "market:source-health",
+  "review:open-window",
+  "review-window:theme",
+  "settings:get",
+  "strategy:custom:import-settings",
+  "strategy:custom:list",
+  "strategy:definitions",
+  "strategy:external-archive",
+  "ths-web:hide",
+  "ths-web:state",
+  "trend-screener:cancel",
+  "watchlist:get"
+]);
+
+const OPTIONAL_OBJECT_CHANNELS = new Set([
+  "bond:list",
+  "ths-web:show",
+  "ths-web:bounds",
+  "ths-web:command",
+  "ai:rank",
+  "ai:summary",
+  "ai:cached",
+  "ai:market-review",
+  "ai:lookback",
+  "ai:interpret-cached",
+  "ai:framework-save",
+  "ai:outcomes-leaderboard",
+  "ai:review",
+  "ai:custom-rank",
+  "ai:strategy-draft",
+  "ai:note-parse",
+  "ai:profile-save",
+  "ai:test",
+  "agent:start",
+  "agent:settings",
+  "agent:skill-save",
+  "agent:sync-workspace",
+  "market:limit-ecology",
+  "market:limit-ups",
+  "market:previous-limit-up-failed-boards",
+  "strategy:scan",
+  "sector:classifications",
+  "sector:catalog",
+  "sector:quotes",
+  "sector:detail",
+  "trend-screener:research",
+  "trend-screener:execution-check",
+  "trend-screener:start",
+  "market:limit-up-sectors",
+  "market:sector-strength",
+  "review:get-market",
+  "review-window:market",
+  "news:get-feed",
+  "news:refresh",
+  "settings:save",
+  "settings:test-provider",
+  "notes:interval-sync",
+  "notes:watch-sync",
+  "backup:configure",
+  "app:notify"
+]);
+
+function validateIpcPayload(channel, args = []) {
+  const custom = VALIDATORS.get(channel);
+  if (custom) {
+    const reason = custom(args);
+    if (reason) throw invalidPayload(reason);
+    return;
+  }
+  if (OPTIONAL_OBJECT_CHANNELS.has(channel) && !isOptionalPlainObject(args[0])) {
+    throw invalidPayload(`${channel} 参数必须为对象`);
+  }
+  if (NO_ARG_CHANNELS.has(channel) && args.some(arg => arg !== undefined)) {
+    throw invalidPayload(`${channel} 不接受多余调用参数`);
+  }
+}
+
+module.exports = {
+  MAIN_IPC_CHANNELS,
+  REVIEW_IPC_CHANNELS,
+  IPC_EVENT_CHANNELS,
+  ALL_IPC_CHANNELS,
+  VALIDATED_CHANNELS: new Set([...VALIDATORS.keys(), ...OPTIONAL_OBJECT_CHANNELS, ...NO_ARG_CHANNELS]),
+  VALIDATORS,
+  OPTIONAL_OBJECT_CHANNELS,
+  NO_ARG_CHANNELS,
+  validateIpcPayload,
+  invalidPayload
+};

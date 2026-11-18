@@ -78,6 +78,57 @@ test('交易时段判断按北京时间', () => {
   assert.equal(inTradingSession(cn('2026-11-12T10:00:00'), () => false), false);
 });
 
+test('兜底 secid 与 assetType 正确区分北交所、沪深 ETF 及可转债', async () => {
+  const cond = { field: 'latest', op: 'gte', value: 1 };
+  const cases = [
+    ['920001', '0.920001', 'stock'],
+    ['430047', '0.430047', 'stock'],
+    ['830799', '0.830799', 'stock'],
+    ['872953', '0.872953', 'stock'],
+    ['880001', '0.880001', 'stock'],
+    ['900901', '1.900901', 'stock'],
+    ['510300', '1.510300', 'etf'],
+    ['159915', '0.159915', 'etf'],
+    ['110059', '1.110059', 'convertibleBond'],
+    ['123001', '0.123001', 'convertibleBond']
+  ];
+  for (const [code, expectedSecid, expectedAssetType] of cases) {
+    const normalized = normalizeItem({ id: `id-${code}`, code, condition: cond });
+    assert.equal(normalized.secid, expectedSecid, `code=${code}`);
+    assert.equal(normalized.assetType, expectedAssetType, `code=${code}`);
+  }
+  assert.equal(normalizeItem({ id: 'explicit-etf', code: '510300', assetType: 'etf', condition: cond }).assetType, 'etf');
+  assert.equal(normalizeItem({ id: 'bond-alias', code: '110059', assetType: 'bond', condition: cond }).assetType, 'convertibleBond');
+
+  const received = [];
+  const watcher = createNoteWatcher({
+    getQuote: async security => {
+      received.push(security);
+      return { quote: { latest: 2, changePct: 1 } };
+    },
+    inSession: () => true,
+    now: () => cn('2026-11-12T10:00:00'),
+    setTimer: () => 1,
+    clearTimer: () => {}
+  });
+  watcher.sync({
+    items: [
+      { id: 'bse', code: '920001', name: '北交所', secid: '', text: '', condition: cond },
+      { id: 'etf', code: '510300', name: '沪深300ETF', secid: '', text: '', condition: cond },
+      { id: 'cb', code: '110059', name: '福能转债', secid: '', text: '', condition: cond }
+    ]
+  });
+  await watcher.tick();
+  assert.deepEqual(
+    received.map(({ code, secid, assetType }) => ({ code, secid, assetType })),
+    [
+      { code: '920001', secid: '0.920001', assetType: 'stock' },
+      { code: '510300', secid: '1.510300', assetType: 'etf' },
+      { code: '110059', secid: '1.110059', assetType: 'convertibleBond' }
+    ]
+  );
+});
+
 test("minute reminders run without a renderer tick, survive late sync, and cancel on removal", () => {
   const { createIntervalReminderScheduler } = require("./note-watch.cjs");
   let now = cn("2026-11-13T16:00:00");
@@ -106,4 +157,34 @@ test("minute reminders run without a renderer tick, survive late sync, and cance
   assert.equal(scheduler.sync({ items: [{ ...item, at: now }] })[0].lastFiredAt, now);
   scheduler.sync({ items: [] });
   assert.equal(timer, null);
+});
+
+test("缺失涨跌幅不是零，也不能触发下跌条件", () => {
+  const condition = { field: "changePct", op: "lte", value: 0 };
+  assert.equal(evaluateCondition(condition, { changePct: null }), null);
+  assert.equal(evaluateCondition(condition, { changePct: "" }), null);
+  assert.match(evaluateCondition(condition, { changePct: 0 }), /涨跌幅 0%/);
+});
+
+test("报价请求在途时修改条件，旧报价不会触发新条件", async () => {
+  const original = item("edited", "600519", { field: "latest", op: "lte", value: 100 });
+  const edited = { ...original, condition: { field: "latest", op: "lte", value: 200 } };
+  let resolveQuote;
+  const notices = [];
+  const watcher = createNoteWatcher({
+    getQuote: () => new Promise(resolve => { resolveQuote = resolve; }),
+    notify: value => notices.push(value),
+    now: () => cn("2026-11-13T10:00:00"), inSession: () => true,
+    setTimer: () => 1, clearTimer() {}
+  });
+  watcher.sync({ items: [original] });
+  const first = watcher.tick();
+  watcher.sync({ items: [edited] });
+  resolveQuote({ quote: { latest: 150 } });
+  await first;
+  assert.deepEqual(notices, []);
+  const second = watcher.tick();
+  resolveQuote({ quote: { latest: 150 } });
+  await second;
+  assert.equal(notices.length, 1);
 });

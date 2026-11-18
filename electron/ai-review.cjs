@@ -55,13 +55,24 @@ function compactMarketSnapshot(snapshot) {
     leaders: list(s.leaders, 10).map(item => ({ name: clip(item?.name, 8), boards: finite(item?.consecutiveBoards), industry: clip(item?.industry, 10),
       reason: clip(item?.thsReason || "", 20), openBoards: finite(item?.openBoardCount) })).filter(item => item.name),
     hot: fuyao ? list(fuyao.hotLists?.day?.hot || fuyao.hot, 8).map(item => clip(item?.name, 8)).filter(Boolean) : [],
-    softwareRisks: texts(s.riskSignals, 6, 50)
+    softwareRisks: texts(s.riskSignals, 6, 50),
+    ...(s.previousLookback && (s.previousLookback.summary || s.previousLookback.lessons?.length) ? {
+      previousLookback: {
+        date: String(s.previousLookback.date || ""),
+        hitRatePct: finite(s.previousLookback.hitRatePct),
+        summary: clip(s.previousLookback.summary, 60),
+        lessons: texts(s.previousLookback.lessons, 3, 50)
+      }
+    } : {}),
+    ...(Array.isArray(s.recentSelectionLessons) && s.recentSelectionLessons.length ? {
+      recentSelectionLessons: texts(s.recentSelectionLessons, 4, 80)
+    } : {})
   };
 }
 
-const MARKET_SYSTEM = `你是A股短线复盘助手。下面是软件收盘（或盘中）算好的市场复盘数据：涨跌家数、涨停/跌停/炸板/晋级率/连板高度、封板率、核心指数、强势板块、连板龙头、涨停题材和热股，以及软件自己的情绪判断（softwareRegime）和风险信号。请写一份盘后复盘。
+const MARKET_SYSTEM = `你是A股短线复盘助手。下面是软件收盘（或盘中）算好的市场复盘数据：涨跌家数、涨停/跌停/炸板/晋级率/连板高度、封板率、核心指数、强势板块、连板龙头、涨停题材和热股，以及软件自己的情绪判断（softwareRegime）和风险信号（若有 previousLookback，则是上次复盘的回看准确率与经验教训；若有 recentSelectionLessons，则是近期高分个股后验失误教训）。请写一份盘后复盘。
 要求：
-- 只根据输入数据判断，引用具体数字；不要编造新闻、政策、资金流向或个股消息；输入没有的就不要提。
+- 只根据输入数据判断，引用具体数字；不要编造新闻、政策、资金流向或个股消息；输入没有的就不要提。若输入含 previousLookback 或 recentSelectionLessons，需主动对照上次与近期选股失误教训，收紧风险提示、避免重复误判。
 - headline：一句话结论（≤30字）。
 - cycle.phase：情绪周期阶段，只能是 冰点/启动/发酵/高潮/分歧/退潮/修复/混沌 之一；cycle.reason：依据（≤80字，引用数字）。可以不同意软件的判断，但要说明理由。
 - market：赚钱效应与情绪（≤150字）。
@@ -82,7 +93,7 @@ ${skillCatalogText()}
 工作方式（每一轮只输出一个 JSON）：
 - 需要数据时输出 {"thought":"这一轮想弄清什么（≤60字）","calls":[{"skill":"技能id","args":{…}}]}，一轮最多 ${MAX_CALLS_PER_ROUND} 个技能；软件执行后把结果（skillResults）发给你。
 - 信息足够时输出 {"thought":"…","final":{复盘 JSON}}。最多 ${MAX_SKILL_ROUNDS} 轮调用，之后必须给 final。
-- 建议思路：先判断情绪周期（涨停/跌停/炸板/晋级率/高度），再找主线（板块强度、涨停原因、龙虎榜交叉验证，主线要有持续性和梯队），再看风险（炸板、跌停、高位股），必要时查龙头个股或板块成分，最后对照历次复盘看延续性。不是每个技能都要用，按需选择。
+- 建议思路：先判断情绪周期（涨停/跌停/炸板/晋级率/高度），再找主线（板块强度、涨停原因、龙虎榜交叉验证，主线要有持续性和梯队），再看风险（炸板、跌停、高位股），必要时查龙头个股或板块成分，最后对照历次复盘及其事后回看教训（lookbackLessons）看延续性并避免重复偏差。不是每个技能都要用，按需选择。
 final 的要求：
 - 只根据 overview 和技能结果判断，引用具体数字；不要编造新闻、政策、资金流向或个股消息；技能返回“暂不可用”的就不要提那部分。
 - headline：一句话结论（≤30字）。cycle.phase 只能是 冰点/启动/发酵/高潮/分歧/退潮/修复/混沌 之一，cycle.reason 写依据（≤80字）。
@@ -208,14 +219,40 @@ function withInstructions(system, instructions) {
   return extra ? `${system}\n\n用户的额外要求（请尽量照做；与上面的规则或输出格式冲突时，以上面为准）：\n${extra}` : system;
 }
 
+function extractReviewStreamPreview(raw) {
+  const text = String(raw || "");
+  if (!text) return "";
+  for (const field of ["headline", "market", "summary", "thought"]) {
+    const match = text.match(new RegExp(`"${field}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)(?:"|$)`));
+    if (match?.[1]) {
+      return match[1]
+        .replace(/\\n/g, "\n")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\")
+        .trim();
+    }
+  }
+  return "";
+}
+
 function createAiReview({ ai }) {
   const stamp = (asOfDate, value) => ({ asOfDate, model: ai.model(), generatedAt: new Date().toISOString(), ...value });
 
-  async function marketReview({ snapshot, instructions, skills } = {}, { signal } = {}) {
+  async function marketReview({ snapshot, instructions, skills, onProgress } = {}, { signal } = {}) {
     const input = compactMarketSnapshot(snapshot);
     if (!input.date) throw Object.assign(new Error("市场复盘数据还没准备好，请先刷新复盘页"), { code: "AI_NO_INPUT" });
-    if (skills?.runSkill) return skillReview(input, skills, instructions, signal);
-    const result = await ai.chat({ system: withInstructions(MARKET_SYSTEM, instructions), user: JSON.stringify(input), json: true, temperature: 0.4, maxTokens: 3000, signal });
+    if (skills?.runSkill) return skillReview(input, skills, instructions, signal, onProgress);
+    let lastPreview = "";
+    const onToken = typeof onProgress === "function"
+      ? (_delta, full, meta) => {
+          const text = extractReviewStreamPreview(full) || String(meta?.reasoning || "").trim();
+          if (text && text !== lastPreview) {
+            lastPreview = text;
+            onProgress({ channel: "market-review", phase: "token", text });
+          }
+        }
+      : undefined;
+    const result = await ai.chat({ system: withInstructions(MARKET_SYSTEM, instructions), user: JSON.stringify(input), json: true, temperature: 0.4, maxTokens: 3000, signal, onToken });
     return stamp(input.date, validateMarketReview(result, input));
   }
 
@@ -224,17 +261,40 @@ function createAiReview({ ai }) {
    * 记录每一轮的思路和调用了哪些技能，界面上可以展开看。
    * AI 一直不给结论时，用已拿到的技能结果再按普通模式写一次。
    */
-  async function skillReview(input, skills, instructions, signal) {
+  async function skillReview(input, skills, instructions, signal, onProgress) {
     const system = withInstructions(AGENT_SYSTEM, instructions);
     const messages = [{ role: "user", content: JSON.stringify({ overview: input, remainingRounds: MAX_SKILL_ROUNDS }) }];
     const steps = [], results = [];
     const done = new Set();
+    let lastPreview = "";
+    const emitToken = (_delta, full, meta) => {
+      if (typeof onProgress !== "function") return;
+      const text = extractReviewStreamPreview(full) || String(meta?.reasoning || "").trim();
+      if (text && text !== lastPreview) {
+        lastPreview = text;
+        onProgress({ channel: "market-review", phase: "token", text });
+      }
+    };
+    const emitSteps = (round, extra = {}) => {
+      if (typeof onProgress !== "function") return;
+      onProgress({
+        channel: "market-review",
+        phase: "step",
+        round,
+        steps: steps.filter(step => step.thought || step.calls.length),
+        ...extra
+      });
+    };
     for (let round = 0; round <= MAX_SKILL_ROUNDS; round += 1) {
-      const reply = await ai.chat({ system, messages, json: true, temperature: 0.3, maxTokens: 3000, signal });
+      const reply = await ai.chat({
+        system, messages, json: true, temperature: 0.3, maxTokens: 3000, signal,
+        ...(typeof onProgress === "function" ? { onToken: emitToken } : {})
+      });
       const thought = clip(reply?.thought, 80);
       const final = reply?.final && typeof reply.final === "object" ? reply.final : (reply?.headline || reply?.market) ? reply : null;
       if (final) {
         steps.push({ thought, calls: [] });
+        emitSteps(round, { thought });
         return stamp(input.date, { ...validateMarketReview(final, input, namesFromResults(results)), mode: "skills", steps: steps.filter(step => step.thought || step.calls.length) });
       }
       const calls = list(reply?.calls, 8).map(call => ({ skill: String(call?.skill || ""), args: call?.args && typeof call.args === "object" && !Array.isArray(call.args) ? call.args : {} }))
@@ -245,9 +305,18 @@ function createAiReview({ ai }) {
         continue;
       }
       calls.forEach(call => done.add(`${call.skill}:${JSON.stringify(call.args)}`));
+      const pendingCalls = calls.map(call => ({
+        skill: call.skill,
+        name: call.skill,
+        ok: true,
+        summary: "正在调用技能取数...",
+        args: clip(JSON.stringify(call.args), 60)
+      }));
+      emitSteps(round, { thought, pendingStep: { thought, calls: pendingCalls } });
       const outcome = await Promise.all(calls.map(call => skills.runSkill(call.skill, call.args)));
       results.push(...outcome);
       steps.push({ thought, calls: outcome.map((item, index) => ({ skill: item.skill, name: item.name, ok: item.ok, summary: item.summary, args: clip(JSON.stringify(calls[index].args), 60) })) });
+      emitSteps(round, { thought });
       const remaining = MAX_SKILL_ROUNDS - round - 1;
       messages.push({ role: "assistant", content: JSON.stringify({ thought, calls }) },
         { role: "user", content: boundedJson({ skillResults: outcome.map(item => ({ skill: item.skill, ok: item.ok, summary: item.summary, data: item.data })), remainingRounds: remaining,
@@ -255,6 +324,7 @@ function createAiReview({ ai }) {
     }
     // 兜底：AI 没给结论，用已拿到的技能结果按普通模式写一次。
     const fallback = await ai.chat({ system: withInstructions(MARKET_SYSTEM, instructions), json: true, temperature: 0.4, maxTokens: 3000, signal,
+      ...(typeof onProgress === "function" ? { onToken: emitToken } : {}),
       user: boundedJson({ ...input, skillResults: results.filter(item => item.ok).map(item => ({ skill: item.skill, summary: item.summary, data: item.data })) }, 16000, 7) });
     return stamp(input.date, { ...validateMarketReview(fallback, input, namesFromResults(results)), mode: "skills", steps: steps.filter(step => step.thought || step.calls.length) });
   }
@@ -268,12 +338,22 @@ function createAiReview({ ai }) {
     return stamp(today.date, { previousDate: before.date, previousHeadline: before.headline, ...validateLookback(result) });
   }
 
-  async function interpret({ kind, data, asOfDate, instructions } = {}, { signal } = {}) {
+  async function interpret({ kind, data, asOfDate, instructions, onProgress } = {}, { signal } = {}) {
     const spec = INTERPRET[kind];
     if (!spec) throw Object.assign(new TypeError("不支持的解读类型"), { code: "INVALID_IPC_PAYLOAD" });
     const user = boundedJson(data);
     if (user.length < 10) throw Object.assign(new Error("页面数据还没加载好，请稍后再试"), { code: "AI_NO_INPUT" });
-    const result = await ai.chat({ system: withInstructions(`${spec.system}\n${INTERPRET_RULES}`, instructions), user, json: true, temperature: 0.4, maxTokens: 1500, signal });
+    let lastPreview = "";
+    const onToken = typeof onProgress === "function"
+      ? (_delta, full, meta) => {
+          const text = extractReviewStreamPreview(full) || String(meta?.reasoning || "").trim();
+          if (text && text !== lastPreview) {
+            lastPreview = text;
+            onProgress({ channel: "interpret", kind, asOfDate: String(asOfDate || ""), phase: "token", text });
+          }
+        }
+      : undefined;
+    const result = await ai.chat({ system: withInstructions(`${spec.system}\n${INTERPRET_RULES}`, instructions), user, json: true, temperature: 0.4, maxTokens: 1500, signal, onToken });
     return stamp(String(asOfDate || ""), { kind, title: spec.title, ...validateInterpret(result) });
   }
 

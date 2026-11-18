@@ -1,5 +1,3 @@
-import { createPreviewApi } from "./previewApi";
-
 const previewApis = new WeakSet<object>();
 
 export function isPreviewStockApi(): boolean {
@@ -7,10 +5,13 @@ export function isPreviewStockApi(): boolean {
 }
 
 /** Install a preview bridge only after the entry point explicitly allows it. */
-export function initializeStockApi(allowPreview: boolean): boolean {
+export function initializeStockApi(
+  allowPreview: boolean,
+  factory?: () => Window["stockApi"]
+): boolean {
   if (window.stockApi) return true;
-  if (allowPreview) {
-    window.stockApi = createPreviewApi();
+  if (allowPreview && factory) {
+    window.stockApi = factory();
     previewApis.add(window.stockApi);
     console.warn("[A股雷达] preload 桥不可用，已启用预览数据（仅开发/显式预览模式）。");
     return true;

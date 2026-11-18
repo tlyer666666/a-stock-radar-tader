@@ -1,31 +1,20 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { loadServices, rebindAll } = require('../qa/service-fixture.cjs');
 
+// P0-2b 拆分后改为共享夹具：services/*.cjs 子模块每次 fixture 都是全新实例。
+// 通过 rebindAll 在各子模块声明处重绑定（sectors / backtest / limit-pool / runtime）。
 function fixture(t, members, read) {
-  const filename = path.join(__dirname, 'services.cjs'), module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + `
+  const service = loadServices(`
     module.exports.fixture = {
-      setup(members, read) {
-        sectorStrength = async () => ({ name: '元件', code: '881270', constituents: members, score: 65 });
-        eastHistoryCached = async () => [];
-        wholeMarketSnapshot = async () => ({ breadth: .5, averageReturn: 0, stockCount: 0 });
-        currentLadderPools = async () => ({ currentPool: [], previousPool: [], failedPool: [] });
-        fetchJson = read;
-      },
       close: () => serviceRuntime.shutdown()
-    };`, {
-    module, exports: module.exports, require: createRequire(filename), __dirname, __filename: filename,
-    process, console, URL, URLSearchParams, DOMException, AbortController, AbortSignal, TextDecoder,
-    setTimeout, clearTimeout, setImmediate, queueMicrotask, Buffer,
-    fetch: async () => { throw Error('Unexpected direct network'); }
-  }, { filename });
-  const service = module.exports;
-  service.fixture.setup(members, read);
+    };`);
+  rebindAll(service, 'sectorStrength', async () => ({ name: '元件', code: '881270', constituents: members, score: 65 }));
+  rebindAll(service, 'eastHistoryCached', async () => []);
+  rebindAll(service, 'wholeMarketSnapshot', async () => ({ breadth: .5, averageReturn: 0, stockCount: 0 }));
+  rebindAll(service, 'currentLadderPools', async () => ({ currentPool: [], previousPool: [], failedPool: [] }));
+  rebindAll(service, 'fetchJson', read);
   t.after(() => service.fixture.close());
   return options => service.analyzeSector({ code: '881270', name: '元件', ...options });
 }

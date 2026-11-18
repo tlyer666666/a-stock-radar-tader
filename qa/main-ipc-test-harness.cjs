@@ -9,6 +9,7 @@
 // which is exactly how the previous fixed name list broke.
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), vm = require("node:vm");
 const ts = require("typescript");
+const { loadElectronIpcSources } = require("./ipc-source-loader.cjs");
 const repo = path.resolve(__dirname, "..");
 const persistence = require(path.join(repo, "electron/persistence.cjs"));
 const policy = require(path.join(repo, "electron/security-policy.cjs"));
@@ -64,15 +65,20 @@ function closureDeclarations(declarations, roots) {
 
 function createHarness(options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "astock-v141-isolated-"));
-  const source = fs.readFileSync(path.join(repo, "electron/main.cjs"), "utf8");
-  const ast = ts.createSourceFile("main.cjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  const declarations = collectDeclarations(ast);
+  const { mainSource, files } = loadElectronIpcSources(repo);
+  const mainAst = ts.createSourceFile("main.cjs", mainSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const declarations = collectDeclarations(mainAst);
 
   const registrations = [];
-  (function visit(node) {
-    if (ts.isCallExpression(node) && node.expression.getText(ast)==="handleTrustedIpc" && ts.isStringLiteral(node.arguments[0]) && CHANNELS.includes(node.arguments[0].text)) registrations.push(node.getText(ast)+";");
-    ts.forEachChild(node,visit);
-  })(ast);
+  for (const entry of files) {
+    const ast = entry.name === "electron/main.cjs"
+      ? mainAst
+      : ts.createSourceFile(entry.name, entry.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+    (function visit(node) {
+      if (ts.isCallExpression(node) && node.expression.getText(ast)==="handleTrustedIpc" && ts.isStringLiteral(node.arguments[0]) && CHANNELS.includes(node.arguments[0].text)) registrations.push(node.getText(ast)+";");
+      ts.forEachChild(node,visit);
+    })(ast);
+  }
 
   const { included, texts: functions } = closureDeclarations(declarations, referencedNames([...registrations, ...EXPOSED]));
   for (const name of EXPOSED) {
@@ -84,6 +90,7 @@ function createHarness(options = {}) {
   const contents = {mainFrame,isDestroyed:()=>false};
   const context = {
     fs,path,...persistence,...policy,
+    restoredProfilePendingRestart: options.restoredProfilePendingRestart === true,
     app:{getPath:name=>{if(name!=="userData")throw Error("Only isolated userData is allowed");return directory;}},
     // Use an isolated fake secure store. The test must never touch the OS keychain.
     localSecretStorage:{isEncryptionAvailable:()=>options.secureStoreAvailable !== false,encryptString:value=>Buffer.from(`ISOLATED:${value}`),decryptString:value=>value.toString().replace(/^ISOLATED:/,"")},

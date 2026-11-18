@@ -1,5 +1,5 @@
 /** 涨停观察池：最近 10 个交易日涨停过的股票自动加入，用户自选的保留。 */
-export function mergeObservationPool(current: WatchItem[], recentLimitUps: any[]) {
+export function mergeObservationPool(current: WatchItem[], recentLimitUps: WatchItem[]) {
   // 用户自己加的自选（含 ST/退市股）一律保留；ST/退 只在自动加入的涨停观察里排除。
   const favoriteItems = current.filter((item) => item.favorite || !item.autoAdded);
   const merged = new Map<string, WatchItem>();

@@ -31,3 +31,22 @@ test('不合格的字段丢掉：坏时间、坏代码、坏条件、非交易�
   assert.equal(sanitizeNoteParse({ condition: { field: 'changePct', op: 'gte', value: 50 } }).condition, null);
   assert.deepEqual(sanitizeNoteParse({ condition: { field: 'changePct', op: 'lte', value: -3 } }).condition, { field: 'changePct', op: 'lte', value: -3 });
 });
+
+test('AI 整理在只写了股票名称且模型未给出代码时，通过本地/行情联想自动补全6位代码并容错', async () => {
+  const ai = {
+    chat: async () => ({ text: '明早看宁德时代能否站上260', when: '2026-11-13 09:30', repeat: 'none', code: null, stockName: '宁德时代', condition: { field: 'latest', op: 'gte', value: 260 }, note: '' }),
+    model: () => 'demo-model'
+  };
+  const resolved = await createNoteParser({
+    ai,
+    resolveStock: async name => (name === '宁德时代' ? [{ code: '300750', name: '宁德时代' }] : [])
+  }).parseNote({ text: '明早看看宁德时代 站上260关注', now: '2026-11-12 20:00', tradingDays: DAYS });
+  assert.equal(resolved.code, '300750');
+
+  const tolerated = await createNoteParser({
+    ai,
+    resolveStock: async () => { throw new Error('network down'); }
+  }).parseNote({ text: '明早看看宁德时代', now: '2026-11-12 20:00', tradingDays: DAYS });
+  assert.equal(tolerated.code, null);
+  assert.equal(tolerated.text, '明早看宁德时代能否站上260');
+});

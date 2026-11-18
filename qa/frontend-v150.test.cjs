@@ -54,8 +54,11 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
       for(const [id,label]of views) {
         await openView(page,id,label);
         if(id==='sectors') {
+          await page.locator('.sector-gainers-row').first().waitFor();
+          await page.locator('.sector-theme-strip').waitFor();
           // 1.6.43：板块目录默认收起，先展开。
           if(!(await page.locator('.sector-legacy-details').evaluate(el=>el.open))) await page.locator('.sector-legacy-details > summary').click();
+          await page.locator('.sector-legacy-details[open]').waitFor();
           await page.locator('.sector-explorer-entry').first().click();
           await page.locator('.sector-explorer-detail').waitFor();
         }
@@ -105,7 +108,10 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
 
   test('settings, portfolio mode, monitor editor and news tabs remain reachable',async()=>withPage(1280,async page=>{
     await openView(page,'sectors','板块强度');
+    await page.locator('.sector-gainers-row').first().waitFor();
+    await page.locator('.sector-theme-strip').waitFor();
     if(!(await page.locator('.sector-legacy-details').evaluate(el=>el.open))) await page.locator('.sector-legacy-details > summary').click();
+    await page.locator('.sector-legacy-details[open]').waitFor();
     const sectorStock=page.getByRole('combobox',{name:'股票名称或代码'});
     await sectorStock.fill('贵州');
     await page.getByRole('option',{name:/贵州茅台/}).waitFor();

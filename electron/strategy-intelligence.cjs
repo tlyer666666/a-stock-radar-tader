@@ -1,5 +1,6 @@
 const { preLimitRangePosition, LOW_POSITION } = require("./strategy-selection-rules.cjs");
 const { anchoredVwap } = require("./market-history-rules.cjs");
+const { intervalPriceBasisIssue } = require("./quant-history-safety.cjs");
 const {
   isBseAshareCode,
   isLimitUpBar,
@@ -422,9 +423,14 @@ function featureSnapshot(history, event, evaluationIndex, events) {
     .map((item) => Number(item.volume || 0));
   const priorTurns = history
     .slice(Math.max(0, evaluationIndex - 20), evaluationIndex)
-    .map((item) => Number(item.turnover || 0));
+    .map((item) => Number(item.turnover))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const latestTurn = Number(latest.turnover);
   const volumeRatio = average(priorVolumes) ? Number(latest.volume || 0) / average(priorVolumes) : 0;
-  const relativeTurnover = average(priorTurns) ? Number(latest.turnover || 0) / average(priorTurns) : 0;
+  const relativeTurnover =
+    priorTurns.length && Number.isFinite(latestTurn) && latestTurn >= 0 && average(priorTurns) > 0
+      ? latestTurn / average(priorTurns)
+      : null;
   const closePosition =
     Number(latest.high) === Number(latest.low)
       ? 1
@@ -518,7 +524,7 @@ function strategyMatched(id, feature) {
     case "support": return feature.heldSupport;
     case "avwap": return feature.aboveAvwap;
     case "trend": return feature.maBull && feature.slopesUp;
-    case "contraction": return feature.volumeRatio < 1 && feature.relativeTurnover < 1.5;
+    case "contraction": return feature.volumeRatio > 0 && feature.volumeRatio < 1 && feature.relativeTurnover !== null && feature.relativeTurnover < 1.5;
     case "volatility": return feature.maxDrawdown < 10 && feature.closePosition > 0.55;
     case "exactNode": return true;
     case "lowFirstBoard": return feature.lowFirstBoard;
@@ -668,6 +674,10 @@ function buildHistoricalStrategyStats(
       .filter((item) => item?.date)
       .map((item) => [String(item.date).slice(0, 10), item])
   );
+  const sortedBenchmarkDates = [...benchmarkByDate.keys()].sort();
+  const nextMarketDateByDate = new Map(
+    sortedBenchmarkDates.map((d, idx) => [d, sortedBenchmarkDates[idx + 1] || ""])
+  );
   let untradeableCount = 0;
 
   for (const event of events) {
@@ -678,10 +688,26 @@ function buildHistoricalStrategyStats(
       const evaluation = history[evaluationIndex];
       const feature = featureSnapshot(history, event, evaluationIndex, events);
       const entry = history[entryIndex];
+      const evalDate = String(evaluation.date || "").slice(0, 10);
+      const entryDateText = String(entry.date || "").slice(0, 10);
+      if (nextMarketDateByDate.has(evalDate)) {
+        const expectedNextDate = nextMarketDateByDate.get(evalDate);
+        if (!expectedNextDate || entryDateText !== expectedNextDate) {
+          untradeableCount += 1;
+          continue;
+        }
+      }
       const entryPrice = Number(entry.open);
       if (!entryPrice) continue;
       const openingLimitUp = isOpeningLimitUpEntry(Number(evaluation.close), entry, code, name);
-      if (openingLimitUp || entry.volume === null || entry.volume === undefined || !Number.isFinite(Number(entry.volume)) || Number(entry.volume) <= 0) {
+      if (
+        openingLimitUp ||
+        entry.volume === null ||
+        entry.volume === undefined ||
+        !Number.isFinite(Number(entry.volume)) ||
+        Number(entry.volume) <= 0 ||
+        intervalPriceBasisIssue(history, entryIndex, Math.min(history.length - 1, entryIndex + 4), code, code)
+      ) {
         untradeableCount += 1;
         continue;
       }
@@ -721,9 +747,21 @@ function buildHistoricalStrategyStats(
         ? Math.min(...forward.map((item) => ((Number(item.low) / entryPrice) - 1) * 100))
         : null;
       nodeSamples.get(node).push(outcome);
+      const extSnap = options.externalSnapshots && typeof options.externalSnapshots === "object"
+        ? options.externalSnapshots[String(evaluation.date || "").slice(0, 10)] || null
+        : null;
       const matchedReplayable = [];
       for (const id of statisticIds) {
-        if (strategyMatched(id, feature) === true) {
+        let matched = strategyMatched(id, feature);
+        if (matched === null && extSnap) {
+          if (id === "marketEmotion" && Number.isFinite(extSnap.emotionScore)) {
+            matched = extSnap.emotionScore >= 52 && (!Number.isFinite(extSnap.breakRate) || extSnap.breakRate <= 0.38);
+          } else if (id === "sectorLadder" && (Number.isFinite(extSnap.promotionRate) || Number.isFinite(extSnap.maxHeight))) {
+            matched = (Number.isFinite(extSnap.promotionRate) && extSnap.promotionRate >= 0.2)
+              || (Number.isFinite(extSnap.maxHeight) && extSnap.maxHeight >= 3);
+          }
+        }
+        if (matched === true) {
           samplesByStrategy.get(id).push(outcome);
           if (replayableIds.includes(id)) matchedReplayable.push(id);
         }
@@ -745,6 +783,20 @@ function buildHistoricalStrategyStats(
   combination.confidenceNote =
     `${combination.confidenceNote}；覆盖 ${replayableIds.length}/${statisticIds.length} 个可回放条件`;
 
+  const externalArchiveDays = options.externalSnapshots && typeof options.externalSnapshots === "object"
+    ? Object.keys(options.externalSnapshots).length
+    : 0;
+  const stats = [
+    combination,
+    ...statisticIds.map((id) => {
+      const entry = summarizeSamples(id, samplesByStrategy.get(id) || []);
+      if (externalArchiveDays > 0 && (id === "marketEmotion" || id === "sectorLadder") && entry.sampleCount === 0) {
+        entry.confidenceNote = `已归档 ${externalArchiveDays} 个交易日外生快照，该股历史涨停窗口暂未重叠，继续积累中`;
+      }
+      return entry;
+    })
+  ];
+
   return {
     source: "个股不复权日线回放",
     range: `${history[0]?.date || ""} 至 ${history.at(-1)?.date || ""}`,
@@ -753,10 +805,8 @@ function buildHistoricalStrategyStats(
     entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入；开盘涨停或无有效成交量样本剔除",
     benchmarkAvailable: Array.isArray(benchmarkHistory) && benchmarkHistory.length > 0,
     untradeableCount,
-    stats: [
-      combination,
-      ...statisticIds.map((id) => summarizeSamples(id, samplesByStrategy.get(id) || []))
-    ],
+    externalArchiveDays,
+    stats,
     nodeStats: nodes.map((node) => {
       const samples = nodeSamples.get(node) || [];
       const r5 = samples.map((item) => item.r5).filter(Number.isFinite);
@@ -860,6 +910,167 @@ function isRiskSecurityName(name = "") {
   return normalized.includes("ST") || normalized.includes("退");
 }
 
+const EXTERNAL_FACTOR_MAX_DAYS = 180;
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const finiteOrNull = (value, digits = 3) => (
+  typeof value === "number" && Number.isFinite(value) ? Number(value.toFixed(digits)) : null
+);
+
+function shanghaiTodayDate() {
+  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+function compactExternalSnapshot({ review = null, sectorBoard = null } = {}) {
+  const emotion = review?.emotion || null;
+  const ladder = review?.ladder || null;
+  const breadth = review?.breadth || null;
+  const rawDate = String(review?.date || emotion?.date || ladder?.date || "").slice(0, 10);
+  const date = DATE_RE.test(rawDate) ? rawDate : (Array.isArray(sectorBoard) && sectorBoard.length ? shanghaiTodayDate() : "");
+  if (!date) return null;
+
+  const sectorNames = Array.isArray(sectorBoard) && sectorBoard.length
+    ? sectorBoard.slice(0, 8).map(item => String(item?.name || "").trim()).filter(Boolean)
+    : Array.isArray(review?.sectors)
+      ? review.sectors.slice(0, 8).map(item => String(item?.name || "").trim()).filter(Boolean)
+      : [];
+
+  const up = finiteOrNull(breadth?.up ?? review?.market?.up, 0);
+  const total = finiteOrNull(breadth?.total ?? review?.market?.total, 0);
+  const advanceRatio = up !== null && total && total > 0 ? Number((up / total).toFixed(3)) : finiteOrNull(breadth?.advanceRatio, 3);
+
+  return {
+    date,
+    emotionScore: finiteOrNull(emotion?.score, 1),
+    emotionState: String(emotion?.state || "").slice(0, 24),
+    promotionRate: finiteOrNull(ladder?.promotionRate, 3),
+    breakRate: finiteOrNull(ladder?.breakRate, 3),
+    maxHeight: finiteOrNull(ladder?.maxHeight, 0),
+    limitUpCount: finiteOrNull(emotion?.limitUpCount ?? ladder?.currentLimitUps, 0),
+    limitDownCount: finiteOrNull(emotion?.limitDownCount, 0),
+    advanceRatio,
+    topSectors: sectorNames.slice(0, 8),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function normalizeExternalFactorStore(raw) {
+  const source = raw && typeof raw === "object" && !Array.isArray(raw) && raw.snapshots && typeof raw.snapshots === "object"
+    ? raw.snapshots
+    : {};
+  const dates = Object.keys(source).filter(key => DATE_RE.test(key) && source[key] && typeof source[key] === "object").sort().reverse().slice(0, EXTERNAL_FACTOR_MAX_DAYS);
+  const snapshots = {};
+  for (const date of dates) {
+    const item = source[date];
+    snapshots[date] = {
+      date,
+      emotionScore: finiteOrNull(item.emotionScore, 1),
+      emotionState: String(item.emotionState || "").slice(0, 24),
+      promotionRate: finiteOrNull(item.promotionRate, 3),
+      breakRate: finiteOrNull(item.breakRate, 3),
+      maxHeight: finiteOrNull(item.maxHeight, 0),
+      limitUpCount: finiteOrNull(item.limitUpCount, 0),
+      limitDownCount: finiteOrNull(item.limitDownCount, 0),
+      advanceRatio: finiteOrNull(item.advanceRatio, 3),
+      topSectors: Array.isArray(item.topSectors) ? item.topSectors.slice(0, 8).map(v => String(v || "").trim()).filter(Boolean) : [],
+      updatedAt: String(item.updatedAt || "")
+    };
+  }
+  return { version: 1, snapshots };
+}
+
+function mergeExternalFactorSnapshot(store, incoming) {
+  const normalized = normalizeExternalFactorStore(store);
+  if (!incoming || !DATE_RE.test(String(incoming.date || ""))) return normalized;
+  const prev = normalized.snapshots[incoming.date] || {};
+  const merged = {
+    date: incoming.date,
+    emotionScore: incoming.emotionScore ?? prev.emotionScore ?? null,
+    emotionState: incoming.emotionState || prev.emotionState || "",
+    promotionRate: incoming.promotionRate ?? prev.promotionRate ?? null,
+    breakRate: incoming.breakRate ?? prev.breakRate ?? null,
+    maxHeight: incoming.maxHeight ?? prev.maxHeight ?? null,
+    limitUpCount: incoming.limitUpCount ?? prev.limitUpCount ?? null,
+    limitDownCount: incoming.limitDownCount ?? prev.limitDownCount ?? null,
+    advanceRatio: incoming.advanceRatio ?? prev.advanceRatio ?? null,
+    topSectors: Array.isArray(incoming.topSectors) && incoming.topSectors.length ? incoming.topSectors : (prev.topSectors || []),
+    updatedAt: incoming.updatedAt || new Date().toISOString()
+  };
+  return normalizeExternalFactorStore({
+    version: 1,
+    snapshots: { ...normalized.snapshots, [incoming.date]: merged }
+  });
+}
+
+function computeRegimeWeightProfile(snapshot = null) {
+  const score = Number.isFinite(Number(snapshot?.emotionScore)) ? Number(snapshot.emotionScore) : null;
+  const breakRate = Number.isFinite(Number(snapshot?.breakRate)) ? Number(snapshot.breakRate) : null;
+  const promoRate = Number.isFinite(Number(snapshot?.promotionRate)) ? Number(snapshot.promotionRate) : null;
+  const limitUps = Number.isFinite(Number(snapshot?.limitUpCount)) ? Number(snapshot.limitUpCount) : null;
+
+  if ((score !== null && score < 42) || (breakRate !== null && breakRate > 0.38)) {
+    return {
+      regimeId: "ice",
+      regimeLabel: "退潮/冰点防御周期",
+      summary: "炸板偏多或情绪低迷，提高防守缩量权重并抬高回测净收益门槛。",
+      factorWeights: { trend: 15, volume: 15, emotion: 25, sector: 15, defensive: 30 },
+      backtestPreset: {
+        label: "冰点防守回测参数",
+        lookbackBars: 240,
+        minProjectedNetEdgePercent: 2.0,
+        minExpectancyPoints: 1.5,
+        minTurnoverPercent: 3.0,
+        note: "拉长至240日样本并提高正期望门槛"
+      }
+    };
+  }
+  if (score !== null && score >= 80 && limitUps !== null && limitUps >= 85) {
+    return {
+      regimeId: "climax",
+      regimeLabel: "高潮防分歧周期",
+      summary: "情绪高潮防次日分歧踩踏，适度平衡动量权重与换手流动性门槛。",
+      factorWeights: { trend: 25, volume: 20, emotion: 20, sector: 20, defensive: 15 },
+      backtestPreset: {
+        label: "高潮防分歧回测参数",
+        lookbackBars: 180,
+        minProjectedNetEdgePercent: 1.5,
+        minExpectancyPoints: 1.0,
+        minTurnoverPercent: 4.0,
+        note: "过滤低换手杂毛，保留净收益保护"
+      }
+    };
+  }
+  if (score !== null && score >= 62 && (promoRate === null || promoRate >= 0.2)) {
+    return {
+      regimeId: "ferment",
+      regimeLabel: "主升发酵进攻周期",
+      summary: "情绪顺风且晋级流畅，优先放大趋势与强板块动量权重。",
+      factorWeights: { trend: 30, volume: 25, emotion: 15, sector: 25, defensive: 5 },
+      backtestPreset: {
+        label: "发酵进攻回测参数",
+        lookbackBars: 160,
+        minProjectedNetEdgePercent: 0.8,
+        minExpectancyPoints: 0.4,
+        minTurnoverPercent: 2.5,
+        note: "顺势周期适度放宽净边缘门槛捕捉主升"
+      }
+    };
+  }
+  return {
+    regimeId: "rotation",
+    regimeLabel: "结构轮动震荡周期",
+    summary: "主线轮动切换阶段，均衡趋势支撑、量能承接与板块共振权重。",
+    factorWeights: { trend: 25, volume: 25, emotion: 15, sector: 20, defensive: 15 },
+    backtestPreset: {
+      label: "结构轮动回测参数",
+      lookbackBars: 200,
+      minProjectedNetEdgePercent: 1.2,
+      minExpectancyPoints: 0.8,
+      minTurnoverPercent: 2.8,
+      note: "均衡过滤假突破与流动性衰减样本"
+    }
+  };
+}
+
 module.exports = {
   LEGACY_DAILY_FACTORS,
   LEGACY_EXTERNAL_FACTORS,
@@ -869,5 +1080,9 @@ module.exports = {
   scoreFirstBoardQuality,
   computePatternStrategies,
   buildHistoricalStrategyStats,
-  buildSectorLadder
+  buildSectorLadder,
+  compactExternalSnapshot,
+  normalizeExternalFactorStore,
+  mergeExternalFactorSnapshot,
+  computeRegimeWeightProfile
 };

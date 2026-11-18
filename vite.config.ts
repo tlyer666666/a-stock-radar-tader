@@ -1,10 +1,12 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import { injectCspConnectSources } from "./src/contentSecurityPolicy";
-import packageJson from "./package.json";
-import { createBuildProvenancePlugin } from "./qa/build-provenance.cjs";
+const { defineConfig } = require("vite");
+const reactPlugin = require("@vitejs/plugin-react");
+const { injectCspConnectSources } = require("./qa/vite-csp.cjs");
+const packageJson = require("./package.json");
+const { createBuildProvenancePlugin } = require("./qa/build-provenance.cjs");
 
-export default defineConfig(({ command }) => ({
+const react = reactPlugin.default || reactPlugin;
+
+module.exports = defineConfig(({ command }: { command: "serve" | "build" }) => ({
   define: {
     __APP_VERSION__: JSON.stringify(packageJson.version)
   },
@@ -13,7 +15,7 @@ export default defineConfig(({ command }) => ({
     createBuildProvenancePlugin({ root: __dirname, kind: "web" }),
     {
       name: "environment-csp",
-      transformIndexHtml(html) {
+      transformIndexHtml(html: string) {
         return injectCspConnectSources(html, command);
       }
     }
@@ -25,6 +27,24 @@ export default defineConfig(({ command }) => ({
   },
   build: {
     outDir: "dist",
-    emptyOutDir: true
+    emptyOutDir: true,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            {
+              name: "vendor-react",
+              test: /[\\/]node_modules[\\/](?:react|react-dom|scheduler)[\\/]/,
+              priority: 20
+            },
+            {
+              name: "vendor-icons",
+              test: /[\\/]node_modules[\\/]lucide-react[\\/]/,
+              priority: 15
+            }
+          ]
+        }
+      }
+    }
   }
 }));

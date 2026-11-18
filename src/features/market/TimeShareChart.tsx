@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo, useState, type MouseEvent } from "react";
 import { fmt, fmtMoney } from "../../domain/formatters";
 import { buildTimeShare, TIME_SHARE_SLOTS, type TimeShareOptions } from "./timeShareModel";
 
@@ -7,7 +7,7 @@ const TIME_TICKS: Array<[number, string]> = [[0, "09:30"], [60, "10:30"], [120, 
 const signedPercent = (value: number) => `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 
 /** 同花顺式分时：价格线 + 均价线，昨收为中轴，左价右幅，下方逐分钟成交量。 */
-function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unitsPerLot, volumeUnit }: { rows: any[] } & TimeShareOptions) {
+function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unitsPerLot, volumeUnit }: { rows: Array<Record<string, unknown>> } & TimeShareOptions) {
   const share = useMemo(() => buildTimeShare(rows, { preClose: sourcePreClose, assetType, unitsPerLot, volumeUnit }), [rows, sourcePreClose, assetType, unitsPerLot, volumeUnit]);
   const [hover, setHover] = useState<number | null>(null);
   if (!share) return <div className="empty-inline">暂无分时数据</div>;
@@ -21,7 +21,7 @@ function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unit
   const area = `${x(points[0]!.slot)},${y(preClose)} ${priceLine} ${x(points.at(-1)!.slot)},${y(preClose)}`;
   const selected = hover === null ? points.at(-1)! : points.reduce((best, point) => Math.abs(point.slot - hover) < Math.abs(best.slot - hover) ? point : best, points[0]!);
   const levels = [1, 0.5, 0, -0.5, -1].map(ratio => preClose + (scale.max - preClose) * ratio);
-  const move = (event: any) => {
+  const move = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = (event.clientX - rect.left) / rect.width;
     const slot = Math.round(((ratio * WIDTH - PAD_X) / (WIDTH - PAD_X * 2)) * (TIME_SHARE_SLOTS - 1));

@@ -2,7 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw, X } from 'lucide-react';
 import { calculatePriceMovingAverages } from '../../priceChartSeries';
-import { whenVisible } from '../../visiblePolling';
+import { startVisibleInterval } from '../../visiblePolling';
 import { subscribeSelectionChart, type SelectionChart, type SelectionCandle } from './selectionChartData';
 
 const number = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : value.toFixed(2);
@@ -114,17 +114,15 @@ export function SelectionKline({ security, signalDate }: { security: Security; s
   useEffect(() => {
     if (!visible && !open) return;
     let dispose = () => {};
-    const load = whenVisible(() => {
+    const load = () => {
       dispose();
       setState(old => ({ key, data: old.key === key ? old.data : null, error: '', loading: !old.data || old.key !== key || pendingForce.current }));
       const forceRefresh = pendingForce.current;
       pendingForce.current = false;
       dispose = subscribeSelectionChart(security, (next, message) => setState(old => ({ key, data: next || (old.key === key ? old.data : null), error: message, loading: false })), forceRefresh);
-    });
-    load();
-    const timer = window.setInterval(load, 60_000);
-    document.addEventListener('visibilitychange', load);
-    return () => { dispose(); clearInterval(timer); document.removeEventListener('visibilitychange', load); };
+    };
+    const stop = startVisibleInterval(load, 60_000, { immediate: true, resumeOnVisible: true });
+    return () => { dispose(); stop(); };
   }, [key, visible, open, revision, security.code, security.secid, security.name]);
   return <div ref={ref} className="selection-kline-cell" onClick={event => event.stopPropagation()}>
     <button type="button" className={`selection-kline-trigger ${error && data ? "has-stale-data" : ""}`} aria-busy={loading && (visible || open)} aria-label={`查看${security.name} ${security.code} K线`} aria-haspopup="dialog" onClick={() => setOpen(true)}>

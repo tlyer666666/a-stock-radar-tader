@@ -64,13 +64,21 @@ const TOOLS = [
   { id: "announcements", name: "公司公告", description: "最近 8 条公司公告（日期、标题、软件判断的利好利空方向和风险等级）", args: '{"code":"600519"}' },
   { id: "news", name: "相关资讯", description: "财联社等快讯里提到这只股票或其行业的最新资讯（标题、时间、方向）", args: '{"code":"600519"}' },
   { id: "market", name: "市场情绪", description: "当日短线情绪：涨停/跌停/炸板家数、封板率、最高连板、涨停原因前列、热股，以及行业涨幅前列和后列", args: "{}" },
-  { id: "sector_rank", name: "板块排行", description: "行业或概念板块按涨幅、涨停家数或主力净流入排行", args: '{"kind":"industry|concept","sortBy":"change|limitUps|netInflow","top":10}' }
+  { id: "sector_rank", name: "板块排行", description: "行业或概念板块按涨幅、涨停家数或主力净流入排行", args: '{"kind":"industry|concept","sortBy":"change|limitUps|netInflow","top":10}' },
+  { id: "my_portfolio", name: "我的持仓与关注", description: "本机持仓（代码、名称、成本价、持仓权重、备注，不含股数）、自选池与 AI 选股池状态", args: '{"code":"6 位代码，可选；不填则汇总全部持仓与自选"}' },
+  { id: "get_my_t_context", name: "我的做T状态", description: "读取做T助手参数（风格、成本价、今日可卖比例、目标价差、当日做T盈亏与未完成方向，不含绝对股数或资金）", args: '{"code":"6 位代码，可选"}' },
+  { id: "get_my_plans_and_notes", name: "我的计划与随心记", description: "读取本机保存的趋势计划卡片、止损/目标位、模拟持仓风控价以及随心记盯盘条件", args: '{"code":"6 位代码，可选"}' },
+  { id: "get_my_recent_reviews", name: "我的近期复盘", description: "读取最近几期 AI 大盘复盘摘要、历史回看命中率与反思教训", args: '{"count":3}' }
 ];
 const TOOL_BY_ID = new Map(TOOLS.map(tool => [tool.id, tool]));
+const PERSONAL_TOOL_IDS = new Set(["my_portfolio", "get_my_t_context", "get_my_plans_and_notes", "get_my_recent_reviews"]);
 
 /** 写进提示词的工具清单。 */
-function toolCatalogText() {
-  return TOOLS.map(tool => `- ${tool.id}「${tool.name}」：${tool.description}；参数 ${tool.args}`).join("\n");
+function toolCatalogText({ allowPersonalContext = true } = {}) {
+  return TOOLS
+    .filter(tool => allowPersonalContext || !PERSONAL_TOOL_IDS.has(tool.id))
+    .map(tool => `- ${tool.id}「${tool.name}」：${tool.description}；参数 ${tool.args}`)
+    .join("\n");
 }
 
 const CACHE_TTL_MS = 2 * 60 * 1000;
@@ -165,7 +173,9 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
           pct: round(pct), amountYi: yi(finite(row.amount)), turnover: round(finite(row.turnover)) };
       });
       const first = bars[0], last = bars.at(-1);
-      const change = finite(first?.open) && finite(last?.close) ? round((last.close / (bars.length > 1 && finite(list[0].close) ? list[0].close : first.open) - 1) * 100) : null;
+      const firstPrevClose = rows.length > days ? finite(rows[rows.length - days - 1]?.close) : null;
+      const baseRef = firstPrevClose > 0 ? firstPrevClose : finite(first?.open);
+      const change = baseRef > 0 && finite(last?.close) ? round((last.close / baseRef - 1) * 100) : null;
       return { summary: `${bars.length} 根日K（${first.date}~${last.date}），区间涨跌 ${change ?? "--"}%`, data: { code: security.code, bars } };
     },
 
@@ -176,15 +186,25 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
       if (!rows.length) throw toolError("分时没取到（休市日或数据源不可用）");
       const preClose = finite(share.preClose);
       const time = row => String(row.date || "").slice(11, 16);
+      const toMinutes = hhmm => {
+        const match = /^(\d{2}):(\d{2})$/.exec(String(hhmm || ""));
+        return match ? Number(match[1]) * 60 + Number(match[2]) : null;
+      };
       const pct = price => preClose > 0 && finite(price) !== null ? round((price / preClose - 1) * 100) : null;
       let high = rows[0], low = rows[0];
       for (const row of rows) { if (row.close > high.close) high = row; if (row.close < low.close) low = row; }
       const last = rows.at(-1), first = rows[0];
+      const lastMinutes = toMinutes(time(last));
       const average = finite(last.average);
       const at = hhmm => rows.filter(row => time(row) <= hhmm).at(-1);
       const nodes = ["09:45", "10:00", "10:30", "11:00", "11:30", "13:30", "14:00", "14:30", "15:00"].map(hhmm => {
+        const targetMinutes = toMinutes(hhmm);
+        if (targetMinutes === null || (lastMinutes !== null && lastMinutes < targetMinutes - 2)) return null;
         const row = at(hhmm);
-        return row && time(row) >= hhmm.replace(/:(\d{2})$/, (_, m) => `:${String(Math.max(0, Number(m) - 15)).padStart(2, "0")}`) ? { time: hhmm, price: round(row.close), pct: pct(row.close) } : null;
+        const rowMinutes = row ? toMinutes(time(row)) : null;
+        return row && rowMinutes !== null && rowMinutes >= targetMinutes - 15
+          ? { time: hhmm, price: round(row.close), pct: pct(row.close) }
+          : null;
       }).filter(Boolean);
       const amountOf = list => list.reduce((sum, row) => sum + (finite(row.amount) || 0), 0);
       const morning = rows.filter(row => time(row) <= "11:30"), afternoon = rows.filter(row => time(row) >= "13:00");
@@ -375,6 +395,160 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
       const result = await source("reviewSkill", "sector_strength", args || {});
       if (!result?.ok) throw toolError(result?.summary || "板块排行暂不可用");
       return { summary: result.summary, data: result.data };
+    },
+
+    async my_portfolio(args) {
+      if (typeof sources.myPortfolio !== "function") throw toolError("本机持仓与自选上下文暂不可用");
+      const code = String(args?.code || "").match(/\d{6}/)?.[0] || "";
+      const raw = await source("myPortfolio", code);
+      if (!raw || raw.ok === false) throw toolError(raw?.summary || "本机持仓与自选上下文暂不可用");
+      const rawHoldings = Array.isArray(raw.holdings) ? raw.holdings : [];
+      const totalCost = rawHoldings.reduce((sum, item) => {
+        const shares = finite(Number(item?.shares));
+        const cost = finite(Number(item?.costPrice));
+        return shares !== null && shares > 0 && cost !== null && cost > 0 ? sum + shares * cost : sum;
+      }, 0);
+      const allHoldings = take(rawHoldings, 40).filter(item => /^\d{6}$/.test(String(item?.code || ""))).map(item => {
+        const shares = finite(Number(item?.shares));
+        const costPrice = round(finite(Number(item?.costPrice)));
+        const explicitWeight = finite(Number(item?.weightPct));
+        const weightPct = explicitWeight !== null ? round(explicitWeight, 1)
+          : totalCost > 0 && shares !== null && shares > 0 && costPrice !== null && costPrice > 0 ? round((shares * costPrice / totalCost) * 100, 1) : null;
+        remember(item.code, item.name);
+        return {
+          code: String(item.code),
+          name: clip(item.name || nameOf(String(item.code)) || item.code, 12),
+          costPrice,
+          weightPct,
+          note: clip(item.note || "", 60)
+        };
+      });
+      const allWatchlist = take(raw.watchlist, 60).filter(item => /^\d{6}$/.test(String(item?.code || ""))).map(item => {
+        remember(item.code, item.name);
+        return {
+          code: String(item.code),
+          name: clip(item.name || nameOf(String(item.code)) || item.code, 12),
+          favorite: item.favorite === true,
+          daysSinceLimit: finite(item.daysSinceLimit ?? item.tradingDaysSince)
+        };
+      });
+      const allCustom = take(raw.aiCustomStocks, 40).map(item => {
+        const itemCode = String(typeof item === "string" ? item : item?.code || "");
+        const itemName = typeof item === "object" && item?.name ? item.name : nameOf(itemCode) || itemCode;
+        if (/^\d{6}$/.test(itemCode)) remember(itemCode, itemName);
+        return /^\d{6}$/.test(itemCode) ? { code: itemCode, name: clip(itemName, 12) } : null;
+      }).filter(Boolean);
+      const holdings = code ? allHoldings.filter(item => item.code === code) : allHoldings;
+      const watchlist = code ? allWatchlist.filter(item => item.code === code) : allWatchlist;
+      const aiCustomStocks = code ? allCustom.filter(item => item.code === code) : allCustom;
+      const data = {
+        ...(code ? {
+          code,
+          isHolding: holdings.length > 0,
+          holding: holdings[0] || null,
+          inWatchlist: watchlist.length > 0,
+          watchlistItem: watchlist[0] || null,
+          inAiCustomStocks: aiCustomStocks.length > 0
+        } : {}),
+        holdings,
+        watchlist,
+        aiCustomStocks
+      };
+      const defaultSummary = code
+        ? (holdings[0]
+          ? `持仓 ${holdings[0].name}(${code}) 成本 ${holdings[0].costPrice ?? "--"}（权重 ${holdings[0].weightPct ?? "--"}%）${watchlist.length ? "，在自选池" : ""}${aiCustomStocks.length ? "，在AI选股池" : ""}`
+          : watchlist[0] || aiCustomStocks[0]
+            ? `${(watchlist[0] || aiCustomStocks[0]).name}(${code}) 未持仓${watchlist[0] ? `，在自选池${watchlist[0].favorite ? "(星标)" : ""}` : ""}${aiCustomStocks.length ? "，在AI选股池" : ""}`
+            : `${code} 当前不在本机持仓、自选或AI选股池中`)
+        : `持仓 ${holdings.length} 只${holdings.length ? `（${holdings.slice(0, 3).map(h => `${h.name} 成本${h.costPrice ?? "--"}`).join("、")}）` : ""}，自选 ${watchlist.length} 只，AI选股池 ${aiCustomStocks.length} 只`;
+      return { summary: clip(raw.summary || defaultSummary, 110), data };
+    },
+
+    async get_my_t_context(args) {
+      if (typeof sources.myTContext !== "function") throw toolError("本机做T助手上下文暂不可用");
+      const rawCode = String(args?.code || "").trim();
+      const code = rawCode ? securityOf(rawCode).code : "";
+      const raw = await source("myTContext", code);
+      const list = Array.isArray(raw?.items) ? raw.items : [];
+      const sanitized = list
+        .filter(item => !code || String(item?.code || "") === code)
+        .slice(0, 12)
+        .map(item => ({
+          code: String(item.code || ""),
+          name: clip(item.name || item.code, 10),
+          style: clip(item.style, 10) || "均衡",
+          costPrice: finite(item.costPrice) && item.costPrice > 0 ? round(item.costPrice, 3) : null,
+          sellableRatioPct: finite(item.sellableRatioPct),
+          minSpreadPct: finite(item.minSpreadPct),
+          roundsToday: intArg(item.roundsToday, 0, 20, 0),
+          realizedToday: round(finite(item.realizedToday), 2),
+          openT: item.openT ? { kind: clip(item.openT.kind, 10), time: clip(item.openT.time, 8), price: round(finite(item.openT.price), 3) } : null,
+          suitability: clip(item.suitability, 16) || ""
+        }));
+      const summary = code
+        ? (sanitized[0]
+          ? `${sanitized[0].name}(${code}) 做T参数：${sanitized[0].style}、成本 ${sanitized[0].costPrice ?? "--"}、可卖比例 ${sanitized[0].sellableRatioPct ?? "--"}%、今日完成 ${sanitized[0].roundsToday} 次${sanitized[0].openT ? `（进行中：${sanitized[0].openT.kind === "reverse" ? "倒T" : "正T"}）` : ""}`
+          : `${code} 当前不在做T助手跟踪池中`)
+        : `做T助手跟踪 ${sanitized.length} 只股票${sanitized.length ? `（${sanitized.slice(0, 3).map(item => item.name).join("、")}）` : ""}`;
+      return { summary: clip(summary, 110), data: { focusCode: code || null, items: sanitized, updatedAt: clip(raw?.updatedAt, 24) } };
+    },
+
+    async get_my_plans_and_notes(args) {
+      if (typeof sources.myPlansAndNotes !== "function") throw toolError("本机计划与随心记暂不可用");
+      const rawCode = String(args?.code || "").trim();
+      const code = rawCode ? securityOf(rawCode).code : "";
+      const raw = await source("myPlansAndNotes", code);
+      const matches = itemCode => !code || String(itemCode || "") === code;
+      const plans = take(raw?.plans, 20).filter(item => matches(item?.code)).slice(0, 10).map(item => ({
+        code: String(item.code || ""),
+        name: clip(item.name || item.code, 10),
+        strategyName: clip(item.strategyName, 20),
+        entryType: clip(item.entryType, 18),
+        stopPrice: round(finite(item.stopPrice), 3),
+        targetPrice: round(finite(item.targetPrice), 3),
+        savedAt: clip(item.savedAt, 10),
+        status: clip(item.status, 12)
+      }));
+      const paperPositions = take(raw?.paperPositions, 16).filter(item => matches(item?.code)).slice(0, 8).map(item => ({
+        code: String(item.code || ""),
+        name: clip(item.name || item.code, 10),
+        entryPrice: round(finite(item.entryPrice), 3),
+        stopPrice: round(finite(item.stopPrice), 3),
+        takePrice: round(finite(item.takePrice), 3),
+        holdingBars: intArg(item.holdingBars, 0, 500, 0)
+      }));
+      const notes = take(raw?.notes, 20).filter(item => !code || !item?.code || String(item.code) === code).slice(0, 10).map(item => ({
+        code: String(item.code || ""),
+        text: clip(item.text, 60),
+        when: clip(item.when, 16),
+        condition: clip(item.condition, 24),
+        status: clip(item.status, 12)
+      }));
+      const summary = code
+        ? `${code} 相关：计划 ${plans.length} 条、模拟仓 ${paperPositions.length} 笔、随心记 ${notes.length} 条`
+        : `本机已保存计划 ${plans.length} 条、模拟在途 ${paperPositions.length} 笔、随心记 ${notes.length} 条`;
+      return { summary: clip(summary, 110), data: { focusCode: code || null, plans, paperPositions, notes } };
+    },
+
+    async get_my_recent_reviews(args) {
+      if (typeof sources.myRecentReviews !== "function") throw toolError("本机近期复盘记录暂不可用");
+      const count = intArg(args?.count, 1, 5, 3);
+      const raw = await source("myRecentReviews", count);
+      const reviews = take(raw?.reviews, 5).map(item => ({
+        asOfDate: clip(item.asOfDate, 10),
+        headline: clip(item.headline, 60),
+        cyclePhase: clip(item.cyclePhase, 12),
+        softwareRegime: clip(item.softwareRegime, 16),
+        posture: clip(item.posture, 30),
+        focus: take(item.focus, 4).map(f => clip(f, 18)),
+        avoid: take(item.avoid, 4).map(f => clip(f, 18)),
+        lookbackHitRatePct: finite(item.lookbackHitRatePct),
+        lookbackLessons: take(item.lookbackLessons, 3).map(l => clip(l, 60))
+      }));
+      const summary = reviews.length
+        ? `最近 ${reviews.length} 期复盘（最新 ${reviews[0].asOfDate} ${reviews[0].cyclePhase || "--"}）：${clip(reviews[0].headline, 36)}`
+        : "本机还没有已保存的 AI 大盘复盘记录";
+      return { summary: clip(summary, 110), data: { reviews } };
     }
   };
 
@@ -402,4 +576,4 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
   return { catalog: TOOLS, runTool, remember, shutdown: reason => runtime.shutdown(reason) };
 }
 
-module.exports = { createStockAgentTools, toolCatalogText, securityOf, STOCK_AGENT_TOOLS: TOOLS };
+module.exports = { createStockAgentTools, toolCatalogText, securityOf, STOCK_AGENT_TOOLS: TOOLS, PERSONAL_TOOL_IDS };

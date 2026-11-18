@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { spawnSync } = require("node:child_process");
+const { spawnSync, execFileSync } = require("node:child_process");
 const ts = require("typescript");
 const test = require("node:test");
 const { expectedArtifactName } = require("./verify-release-artifact.cjs");
@@ -150,7 +150,8 @@ test("web-only builds remain usable offline and fullstack verification includes 
 });
 
 test("six-dimension audit regressions stay in the release test gates", () => {
-  const unitTests = packageJson.scripts.test.split(/\s+/);
+  // test 脚本自 1.6.72 起改为 qa/test-manifest.cjs 磁盘自动发现，这里校验清单而非脚本字符串
+  const unitTests = execFileSync(process.execPath, [path.join(__dirname, "test-manifest.cjs"), "unit"], { cwd: projectRoot, encoding: "utf8" }).trim().split("\n");
   for (const file of [
     "electron/market-audit.test.cjs",
     "electron/quant-audit-remediation.test.cjs",

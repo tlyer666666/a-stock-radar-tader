@@ -8,6 +8,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const nodePath = path;
+const { sameOrigin } = require("./ai-profile-store.cjs");
 
 const FORMAT = "a-stock-radar-backup";
 const VERSION = 1;
@@ -42,23 +43,36 @@ function sanitizeStore(name, value) {
   return value;
 }
 
-/** 恢复时：设置和模型配置保留本机现有的密钥。 */
+/** 恢复时保留本机密钥。AI 密钥只随原接口来源保留。 */
 function mergeForRestore(name, restored, current) {
   if (name === "settings" && isRecord(restored)) {
     const merged = { ...(isRecord(current) ? current : {}), ...sanitizeStore("settings", restored) };
     for (const key of SECRET_SETTING_KEYS) {
-      if (isRecord(current) && current[key] !== undefined) merged[key] = current[key];
+      const sameEndpoint = key !== "aiApiKey" || sameOrigin(current?.aiBaseUrl, merged.aiBaseUrl);
+      if (sameEndpoint && isRecord(current) && current[key] !== undefined) merged[key] = current[key];
       else delete merged[key];
     }
     return merged;
   }
   if (name === "ai-profiles" && isRecord(restored) && Array.isArray(restored.profiles)) {
-    const keys = new Map((isRecord(current) && Array.isArray(current.profiles) ? current.profiles : [])
-      .filter(profile => isRecord(profile) && profile.apiKey).map(profile => [profile.id, profile.apiKey]));
+    const localProfiles = (isRecord(current) && Array.isArray(current.profiles) ? current.profiles : [])
+      .filter(profile => isRecord(profile) && profile.apiKey);
+    const keys = new Map(localProfiles.map(profile => [profile.id, profile]));
     return { ...restored, profiles: restored.profiles.map(profile => {
       if (!isRecord(profile)) return profile;
       const { apiKey: _ignored, ...rest } = profile;
-      return keys.has(profile.id) ? { ...rest, apiKey: keys.get(profile.id) } : rest;
+      if (keys.has(profile.id)) {
+        const currentProfile = keys.get(profile.id);
+        return sameOrigin(currentProfile.baseUrl, rest.baseUrl)
+          ? { ...rest, apiKey: currentProfile.apiKey }
+          : rest;
+      }
+      const fallbackProfile = localProfiles.find(item => sameOrigin(item.baseUrl, rest.baseUrl) && item.model === rest.model)
+        || localProfiles.find(item => sameOrigin(item.baseUrl, rest.baseUrl) && item.name === rest.name)
+        || localProfiles.find(item => sameOrigin(item.baseUrl, rest.baseUrl));
+      return fallbackProfile
+        ? { ...rest, apiKey: fallbackProfile.apiKey }
+        : rest;
     }) };
   }
   return restored;
@@ -86,23 +100,41 @@ function encodeBackup(backup, password) {
   return JSON.stringify(password ? { ...encryptText(text, password), createdAt: backup.createdAt, appVersion: backup.appVersion } : backup);
 }
 
+function decodeEncryptedField(value, expectedBytes) {
+  if (typeof value !== "string" || !value || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return null;
+  const buffer = Buffer.from(value, "base64");
+  if (expectedBytes !== undefined ? buffer.length !== expectedBytes : buffer.length === 0) return null;
+  return buffer;
+}
+
 function decodeBackup(text, password) {
   let parsed;
   try { parsed = JSON.parse(text); } catch { throw fail("BACKUP_INVALID", "这不是有效的备份文件"); }
   if (!isRecord(parsed) || parsed.format !== FORMAT) throw fail("BACKUP_INVALID", "这不是 A股雷达 的备份文件");
   if (Number(parsed.version) > VERSION) throw fail("BACKUP_TOO_NEW", "备份来自更新版本的软件，请先升级再恢复");
   if (parsed.encrypted) {
+    const salt = decodeEncryptedField(parsed.salt, 16);
+    const iv = decodeEncryptedField(parsed.iv, 12);
+    const tag = decodeEncryptedField(parsed.tag, 16);
+    const data = decodeEncryptedField(parsed.data);
+    if (!salt || !iv || !tag || !data) throw fail("BACKUP_INVALID", "备份加密字段损坏");
     if (!password) throw fail("BACKUP_PASSWORD_REQUIRED", "这个备份有密码，请输入备份密码");
+    let plain;
     try {
-      const key = crypto.scryptSync(String(password), Buffer.from(parsed.salt, "base64"), 32, SCRYPT);
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(parsed.iv, "base64"));
-      decipher.setAuthTag(Buffer.from(parsed.tag, "base64"));
-      const plain = Buffer.concat([decipher.update(Buffer.from(parsed.data, "base64")), decipher.final()]).toString("utf8");
-      parsed = JSON.parse(plain);
+      const key = crypto.scryptSync(String(password), salt, 32, SCRYPT);
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+      decipher.setAuthTag(tag);
+      plain = Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
     } catch { throw fail("BACKUP_WRONG_PASSWORD", "备份密码不对"); }
+    try { parsed = JSON.parse(plain); } catch { throw fail("BACKUP_INVALID", "备份内容损坏"); }
     if (!isRecord(parsed) || parsed.format !== FORMAT) throw fail("BACKUP_INVALID", "备份内容损坏");
   }
-  return { ...parsed, stores: isRecord(parsed.stores) ? parsed.stores : {}, local: isRecord(parsed.local) ? parsed.local : {} };
+  if (Number(parsed.version) > VERSION) throw fail("BACKUP_TOO_NEW", "备份来自更新版本的软件，请先升级再恢复");
+  if (parsed.version !== VERSION || !isRecord(parsed.stores) || !isRecord(parsed.local) ||
+      Object.values(parsed.local).some(value => typeof value !== "string")) {
+    throw fail("BACKUP_INVALID", "备份的数据结构不完整，无法恢复");
+  }
+  return parsed;
 }
 
 const pad = value => String(value).padStart(2, "0");
@@ -143,7 +175,7 @@ function suggestFolders({ home = os.homedir(), platform = process.platform, exis
 /**
  * 备份服务：readStore/writeStore 读写 userData 里的 JSON（带校验），config 记文件夹、自动备份开关、密码（已加密）。
  */
-function createBackupService({ readStore, writeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, now = Date.now, fsApi = fs }) {
+function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, now = Date.now, fsApi = fs }) {
   const config = () => {
     const value = readConfig();
     return { folder: "", auto: true, keep: DEFAULT_KEEP, lastBackupAt: "", lastError: "", password: "", ...(isRecord(value) ? value : {}) };
@@ -162,11 +194,70 @@ function createBackupService({ readStore, writeStore, readConfig, writeConfig, e
     if (!FILE_PATTERN.test(String(name || ""))) throw fail("BACKUP_INVALID", "备份文件名不对");
     return path.join(folder, name);
   };
+  const readBackupFile = file => {
+    const size = fsApi.statSync?.(file)?.size;
+    if (typeof size === "number" && size > MAX_FILE_BYTES) {
+      throw fail("BACKUP_TOO_LARGE", "备份文件超过 64MB，无法读取");
+    }
+    return fsApi.readFileSync(file, "utf8");
+  };
   const status = () => {
     const current = config();
     return { folder: current.folder, auto: current.auto !== false, keep: current.keep, lastBackupAt: current.lastBackupAt, lastError: current.lastError,
       hasPassword: Boolean(current.password), files: listFiles(current.folder) };
   };
+
+  function planStores(backup) {
+    const plan = [];
+    for (const store of BACKUP_STORES) {
+      if (backup.stores[store] === undefined) {
+        if (store !== "settings" && store !== "ai-profiles" && typeof removeStore === "function") {
+          const prev = readStore(store);
+          if (prev !== null && prev !== undefined) plan.push({ store, prev, remove: true });
+        }
+        continue;
+      }
+      const prev = readStore(store);
+      const merged = mergeForRestore(store, backup.stores[store], prev);
+      if (typeof validateStore === "function" && !validateStore(store, merged)) {
+        throw fail("BACKUP_INVALID", `备份里的「${store}」数据格式不对，已取消恢复`);
+      }
+      plan.push({ store, prev, merged });
+    }
+    return plan;
+  }
+
+  function prepareRestore(name, password) {
+    const current = config();
+    const file = safeFile(current.folder, name);
+    const backup = decodeBackup(readBackupFile(file), password || (current.password ? decryptSecret(current.password) : ""));
+    planStores(backup);
+    const local = Object.fromEntries(Object.entries(backup.local).filter(([key, value]) => isAppLocalKey(key) && typeof value === "string"));
+    return { ...backup, local };
+  }
+
+  function applyRestore(backup) {
+    const plan = planStores(backup);
+    const written = [];
+    try {
+      for (const item of plan) {
+        if (item.remove) removeStore(item.store);
+        else writeStore(item.store, item.merged);
+        written.push(item);
+      }
+    } catch (error) {
+      for (let i = written.length - 1; i >= 0; i -= 1) {
+        const item = written[i];
+        try {
+          if (item.prev !== null && item.prev !== undefined) writeStore(item.store, item.prev);
+          else if (typeof removeStore === "function") removeStore(item.store);
+          else writeStore(item.store, item.prev);
+        } catch { /* 回滚尽力而为，保留原始错误 */ }
+      }
+      throw error;
+    }
+    return { createdAt: backup.createdAt, stores: written.filter(item => !item.remove).map(item => item.store), local: backup.local };
+  }
 
   return {
     status,
@@ -181,7 +272,10 @@ function createBackupService({ readStore, writeStore, readConfig, writeConfig, e
       }
       if (typeof patch?.auto === "boolean") next.auto = patch.auto;
       if (Number.isFinite(Number(patch?.keep)) && patch?.keep !== undefined) next.keep = Math.max(3, Math.min(365, Math.floor(Number(patch.keep))));
-      if (typeof patch?.password === "string") next.password = patch.password ? encryptSecret(patch.password.slice(0, 200)) : "";
+      if (typeof patch?.password === "string") {
+        if (patch.password.length > 200) throw fail("BACKUP_PASSWORD_TOO_LONG", "备份密码最多 200 个字符，请缩短后再试");
+        next.password = patch.password ? encryptSecret(patch.password) : "";
+      }
       writeConfig(next);
       return status();
     },
@@ -194,14 +288,24 @@ function createBackupService({ readStore, writeStore, readConfig, writeConfig, e
         const stores = {};
         for (const name of BACKUP_STORES) stores[name] = readStore(name);
         const backup = buildBackup({ stores, local, appVersion, now: now() });
-        const password = current.password ? decryptSecret(current.password) : "";
+        let password = "";
+        if (current.password) {
+          password = decryptSecret(current.password);
+          if (!password) throw fail("BACKUP_PASSWORD_UNREADABLE", "无法读取已保存的备份密码，请重新设置备份密码后再试");
+        }
         const content = encodeBackup(backup, password);
         if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw fail("BACKUP_TOO_LARGE", "备份超过 64MB，请先清理 AI 对话或回测历史");
         const name = backupFileName(now());
         const file = path.join(current.folder, name);
         const temp = `${file}.part`;
-        fsApi.writeFileSync(temp, content, { mode: 0o600 });
-        fsApi.renameSync(temp, file);
+        try {
+          fsApi.writeFileSync(temp, content, { mode: 0o600 });
+          fsApi.renameSync(temp, file);
+        } finally {
+          try {
+            if (!fsApi.existsSync || fsApi.existsSync(temp)) fsApi.unlinkSync?.(temp);
+          } catch { /* 清理临时文件失败不覆盖原始错误 */ }
+        }
         // 只保留最近 keep 份（只删本软件按规则命名的备份文件）。
         for (const old of listFiles(current.folder).slice(current.keep)) {
           try { fsApi.unlinkSync(path.join(current.folder, old.name)); } catch { /* 网盘占用时下次再删 */ }
@@ -217,25 +321,13 @@ function createBackupService({ readStore, writeStore, readConfig, writeConfig, e
     inspect(name, password) {
       const current = config();
       const file = safeFile(current.folder, name);
-      const text = fsApi.readFileSync(file, "utf8");
+      const text = readBackupFile(file);
       const backup = decodeBackup(text, password || (current.password ? decryptSecret(current.password) : ""));
       return { createdAt: backup.createdAt, appVersion: backup.appVersion, stores: Object.keys(backup.stores), localKeys: Object.keys(backup.local).length };
     },
-    /** 恢复：写回 userData 的数据，返回本地存储的键值由渲染进程写回，然后重启软件。 */
-    restore(name, password) {
-      const current = config();
-      const file = safeFile(current.folder, name);
-      const backup = decodeBackup(fsApi.readFileSync(file, "utf8"), password || (current.password ? decryptSecret(current.password) : ""));
-      const written = [];
-      for (const store of BACKUP_STORES) {
-        if (backup.stores[store] === undefined) continue;
-        writeStore(store, mergeForRestore(store, backup.stores[store], readStore(store)));
-        written.push(store);
-      }
-      const local = {};
-      for (const [key, value] of Object.entries(backup.local)) if (isAppLocalKey(key) && typeof value === "string") local[key] = value;
-      return { createdAt: backup.createdAt, stores: written, local };
-    }
+    prepareRestore,
+    applyRestore,
+    restore: (name, password) => applyRestore(prepareRestore(name, password))
   };
 }
 

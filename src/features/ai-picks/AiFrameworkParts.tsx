@@ -12,7 +12,7 @@ export function useAiFrameworks(onChanged?: () => void) {
   useEffect(() => {
     if (!api?.frameworks) return;
     let active = true;
-    void api.frameworks().then(value => { if (active) setCatalog(value); }).catch(() => {});
+    void api.frameworks().then(value => { if (active) setCatalog(value); }).catch(() => undefined /* optional framework catalog */);
     return () => { active = false; };
   }, [api]);
   const choose = useCallback(async (id: AiFrameworkInfo["id"]) => {

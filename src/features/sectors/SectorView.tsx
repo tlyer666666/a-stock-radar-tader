@@ -4,7 +4,7 @@ import { EmptyInline, Metric, PageHeading, PanelTitle } from "../../components/t
 import { fmt, fmtMoney, nullableNumber, subtractNullable } from "../../domain/formatters";
 import { safeNumber } from "../../domain/settings";
 import { formatShanghaiDateTime } from "../../dateUtils";
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 import { ariaSortOf, sortButtonLabel, sortGlyph, sortRowsBy, toggleColumnSort, type ColumnSort } from "../../domain/columnSort";
 import "./sector-workflow.css";
 
@@ -18,14 +18,185 @@ const marketReturnLabel = (snapshot: unknown) => {
 const formatFundFlowTime = (value: unknown) =>
   formatShanghaiDateTime(value ? String(value) : undefined, "时间待确认");
 
-function ConceptChainPanel({
+type ConceptChainSegment = {
+  name: string;
+  role?: string | undefined;
+  description?: string | undefined;
+  matchedBoard?: string | Record<string, unknown> | undefined;
+  thsQuery?: string | undefined;
+  stockCount?: number | undefined;
+  thsStockCount?: number | undefined;
+  overlapRatio?: number | undefined;
+};
+
+type ConceptChainGroup = {
+  name: string;
+  segments?: ConceptChainSegment[] | undefined;
+};
+
+type ConceptChainData = {
+  name?: string | undefined;
+  source?: string | undefined;
+  thsStatus?: string | undefined;
+  message?: string | undefined;
+  stockCount?: number | undefined;
+  query?: string | undefined;
+  groups?: ConceptChainGroup[] | undefined;
+};
+
+type SectorReturnsMap = {
+  r1: number | null;
+  r3: number | null;
+  r5: number | null;
+};
+
+type SectorHistoryPoint = {
+  date?: string | undefined;
+  changePct?: number | null | undefined;
+  amount?: number | null | undefined;
+};
+
+type SectorLadderStock = {
+  code: string;
+  name: string;
+  secid?: string | undefined;
+  firstSealTime?: string | undefined;
+  openBoardCount?: number | null | undefined;
+};
+
+type SectorLadderLevel = {
+  height: number | string;
+  label: string;
+  stocks: SectorLadderStock[];
+};
+
+type SectorLadderData = {
+  score?: number | null | undefined;
+  state?: string | undefined;
+  maxHeight?: number | undefined;
+  firstBoards?: number | undefined;
+  continuationBoards?: number | undefined;
+  promotionRate?: number | undefined;
+  failedBoards?: number | null | undefined;
+  breakRate?: number | null | undefined;
+  currentLimitUps?: number | undefined;
+  previousLimitUps?: number | undefined;
+  promotedCount?: number | undefined;
+  failedPoolAvailable?: boolean | undefined;
+  levels?: SectorLadderLevel[] | undefined;
+};
+
+type SectorFundFlowInfo = {
+  source?: string | undefined;
+  loaded: number;
+  total: number;
+  asOf?: string | undefined;
+  cacheSeconds?: number | undefined;
+  status?: string | undefined;
+  quotes?: {
+    loaded: number;
+    total: number;
+    source?: string | undefined;
+    asOf?: string | undefined;
+  } | undefined;
+};
+
+export type SectorMemberItem = {
+  code: string;
+  name: string;
+  secid: string;
+  latest: number | null;
+  changePct: number | null;
+  turnover: number | null;
+  amount: number | null;
+  mainNetInflow: number | null;
+  firstSealTime: string;
+  openBoardCount: number | null;
+  consecutiveBoards: number | null;
+  limitStatusKnown: boolean;
+  isLimitUp: boolean;
+  quoteStatus?: string | undefined;
+  preClose?: number | null | undefined;
+  fundFlowSource?: string | undefined;
+  fundFlowAsOf?: string | undefined;
+  fundFlowCheckedAt?: string | undefined;
+  [key: string]: unknown;
+};
+
+type SectorViewRow = {
+  code?: string | undefined;
+  displayCode?: string | undefined;
+  boardType?: string | undefined;
+  conceptCid?: string | undefined;
+  name: string;
+  rank: number;
+  state: string;
+  score: number | null;
+  netInflow?: number | null | undefined;
+  leaderName?: string | undefined;
+  returns: SectorReturnsMap;
+  benchmarkReturns: SectorReturnsMap;
+  allMarketReturns: SectorReturnsMap;
+  constituents: SectorMemberItem[];
+  leaders: SectorMemberItem[];
+  history: SectorHistoryPoint[];
+  memberCount: number | null;
+  limitUps: number | null;
+  poolLimitUps: number | null;
+  rankLimitUpStocks?: Array<{ code?: string | undefined; name?: string | undefined }> | undefined;
+  limitCount?: SectorLimitCount | null | undefined;
+  poolShare: number | null;
+  breadth: number | null;
+  memberAverageReturn: number | null;
+  relativeReturn: number | null;
+  amountHeat: number | null;
+  persistence: number | null;
+  memberAverageTurnover: number | null;
+  leadershipQualityScore: number | null;
+  advancingAmountShare: number | null;
+  positiveInflowRatio: number | null;
+  top5AmountShare: number | null;
+  medianMemberReturn: number | null;
+  returnDispersion: number | null;
+  dataCoveragePercent: number | null;
+  dataSource?: string | undefined;
+  marketProxy?: string | undefined;
+  marketSnapshot?: unknown;
+  warning?: string | undefined;
+  quoteBasis?: string | undefined;
+  memberCoverage?: { complete?: boolean | undefined; loaded?: number | undefined; total?: number | undefined } | undefined;
+  quoteCoverage?: { loaded?: number | undefined; total?: number | undefined; pending?: boolean | undefined; asOf?: string | undefined } | undefined;
+  fundFlow?: SectorFundFlowInfo | undefined;
+  ladder?: SectorLadderData | undefined;
+  breadthDiagnostics: Record<string, unknown> | null;
+  [key: string]: unknown;
+};
+
+type SectorSuggestionItem = Record<string, unknown> & {
+  name: string;
+  code?: string | undefined;
+  secid?: string | undefined;
+  type?: string | undefined;
+};
+
+type SectorQueryTarget =
+  | string
+  | (Record<string, unknown> & {
+      name?: string | undefined;
+      query?: string | undefined;
+      code?: string | undefined;
+      memberCount?: number | null | undefined;
+      forceRefresh?: boolean | undefined;
+    });
+
+export function ConceptChainPanel({
   data,
   loading,
   onOpen
 }: {
-  data: any;
+  data: ConceptChainData | null;
   loading: boolean;
-  onOpen: (sector: any) => void;
+  onOpen: (sector: SectorQueryTarget) => void;
 }) {
   if (loading) {
     return (
@@ -49,11 +220,11 @@ function ConceptChainPanel({
         <span>{data.message}</span>
       </div>
       <div className="concept-chain-groups">
-        {(data.groups || []).map((group: any) => (
+        {(data.groups || []).map((group: ConceptChainGroup) => (
           <div className="concept-chain-group" key={group.name}>
             <h3>{group.name}</h3>
             <div>
-              {(group.segments || []).map((segment: any) => (
+              {(group.segments || []).map((segment: ConceptChainSegment) => (
                 <button
                   key={segment.name}
                   onClick={() => onOpen(segment.matchedBoard || segment.name)}
@@ -63,7 +234,7 @@ function ConceptChainPanel({
                   <small>{segment.description}</small>
                   <i>
                     重合 {segment.stockCount ?? segment.thsStockCount} / {data.stockCount} 只
-                    {Number.isFinite(segment.overlapRatio)
+                    {Number.isFinite(segment.overlapRatio) && segment.overlapRatio !== undefined
                       ? ` · ${(segment.overlapRatio * 100).toFixed(1)}%`
                       : ""}
                   </i>
@@ -84,10 +255,13 @@ function ConceptChainPanel({
   );
 }
 
-const normalizeSectorViewRow = (value: any, index = 0) => {
-  const item = value && typeof value === "object" ? value : {};
-  const normalizeMember = (value: any, memberIndex = 0) => {
-    const member = value && typeof value === "object" ? value : {};
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+const normalizeSectorViewRow = (value: unknown, index = 0): SectorViewRow => {
+  const item = asRecord(value);
+  const normalizeMember = (rawMember: unknown, memberIndex = 0): SectorMemberItem => {
+    const member = asRecord(rawMember);
     const code = String(member.code || "").trim();
     return {
       ...member,
@@ -102,26 +276,30 @@ const normalizeSectorViewRow = (value: any, index = 0) => {
       firstSealTime: String(member.firstSealTime || ""),
       openBoardCount: member.openBoardCount == null ? null : safeNumber(member.openBoardCount),
       consecutiveBoards: member.consecutiveBoards == null ? null : safeNumber(member.consecutiveBoards),
-      limitStatusKnown: member.limitStatusKnown ?? typeof member.isLimitUp === "boolean",
+      limitStatusKnown: typeof member.limitStatusKnown === "boolean" ? member.limitStatusKnown : typeof member.isLimitUp === "boolean",
       isLimitUp: Boolean(member.isLimitUp)
     };
   };
-  const normalizeReturns = (returns: any) => ({
-    r1: nullableNumber(returns?.r1),
-    r3: nullableNumber(returns?.r3),
-    r5: nullableNumber(returns?.r5)
-  });
+  const normalizeReturns = (rawReturns: unknown): SectorReturnsMap => {
+    const returns = asRecord(rawReturns);
+    return {
+      r1: nullableNumber(returns.r1),
+      r3: nullableNumber(returns.r3),
+      r5: nullableNumber(returns.r5)
+    };
+  };
   const rawConstituents = Array.isArray(item.constituents)
     ? item.constituents
     : Array.isArray(item.members)
       ? item.members
       : [];
-  const constituents = rawConstituents
-    .filter((member: any) => member && typeof member === "object")
+  const constituents: SectorMemberItem[] = rawConstituents
+    .filter((member): member is Record<string, unknown> => Boolean(member && typeof member === "object"))
     .map(normalizeMember);
   const poolLimitUps = nullableNumber(item.poolLimitUps) ?? nullableNumber(item.limitUps);
   const memberCount = nullableNumber(item.memberCount) ??
     (typeof item.members === "number" ? nullableNumber(item.members) : constituents.length || null);
+  const netInflow = nullableNumber(item.netInflow);
 
   return {
     ...item,
@@ -129,17 +307,19 @@ const normalizeSectorViewRow = (value: any, index = 0) => {
     rank: Math.max(1, safeNumber(item.rank, index + 1)),
     state: String(item.state || "数据待补"),
     score: nullableNumber(item.score),
+    ...(item.netInflow !== undefined ? { netInflow } : {}),
     returns: normalizeReturns(item.returns),
     benchmarkReturns: normalizeReturns(item.benchmarkReturns),
     allMarketReturns: normalizeReturns(item.allMarketReturns),
     constituents,
     leaders: Array.isArray(item.leaders)
-      ? item.leaders.filter((member: any) => member && typeof member === "object").map(normalizeMember)
+      ? item.leaders.filter((member): member is Record<string, unknown> => Boolean(member && typeof member === "object")).map(normalizeMember)
       : constituents.slice(0, 8),
-    history: Array.isArray(item.history) ? item.history : [],
+    history: Array.isArray(item.history) ? (item.history as SectorHistoryPoint[]) : [],
     memberCount,
     limitUps: nullableNumber(item.limitUps) ?? poolLimitUps,
     poolLimitUps,
+    limitCount: item.limitCount as SectorLimitCount | null | undefined,
     poolShare: nullableNumber(item.poolShare),
     breadth: nullableNumber(item.breadth),
     memberAverageReturn: nullableNumber(item.memberAverageReturn),
@@ -155,7 +335,7 @@ const normalizeSectorViewRow = (value: any, index = 0) => {
     returnDispersion: item.returnDispersion == null ? null : safeNumber(item.returnDispersion),
     dataCoveragePercent: nullableNumber(item.dataCoveragePercent),
     breadthDiagnostics: item.breadthDiagnostics && typeof item.breadthDiagnostics === "object"
-      ? item.breadthDiagnostics
+      ? (item.breadthDiagnostics as Record<string, unknown>)
       : null
   };
 };
@@ -180,20 +360,20 @@ const normalizeSectorViewRow = (value: any, index = 0) => {
 export const MEMBER_PAGE_SIZE = 50;
 
 /** B-10：成员排序（涨幅降序，未知值排尾）+ 过滤。纯函数，便于单测与缓存。 */
-export function orderSectorMembers(constituents: any[], filter: string, query: string) {
+export function orderSectorMembers(constituents: SectorMemberItem[], filter: string, query: string) {
   const normalizedQuery = query.trim();
   return constituents
     .slice()
-    .sort((left: any, right: any) => (right.changePct ?? -Infinity) - (left.changePct ?? -Infinity))
-    .filter((item: any) => {
+    .sort((left: SectorMemberItem, right: SectorMemberItem) => (right.changePct ?? -Infinity) - (left.changePct ?? -Infinity))
+    .filter((item: SectorMemberItem) => {
       const name = String(item?.name ?? "");
       const code = String(item?.code ?? "");
       const queryMatched = !normalizedQuery || name.includes(normalizedQuery) || code.includes(normalizedQuery);
       const filterMatched =
         filter === "all" ||
         (filter === "limitUp" && item.isLimitUp) ||
-        (filter === "up" && item.changePct > 0) ||
-        (filter === "down" && item.changePct < 0);
+        (filter === "up" && item.changePct != null && item.changePct > 0) ||
+        (filter === "down" && item.changePct != null && item.changePct < 0);
       return queryMatched && filterMatched;
     });
 }
@@ -241,18 +421,18 @@ export function SectorMemberTable({
   onOpenStock,
   onLoadMore
 }: {
-  members: any[];
+  members: SectorMemberItem[];
   limit: number;
   exchangeBoard: boolean;
   emptyText: string;
-  onOpenStock: (stock: any) => void;
+  onOpenStock: (stock: Security) => void;
   onLoadMore: () => void;
 }) {
   const [sort, setSort] = useState<ColumnSort<MemberSortKey>>(DEFAULT_MEMBER_SORT);
-  const sorted = useMemo(() => sortRowsBy(members, (item: any) => item?.[sort.key], sort.direction), [members, sort]);
+  const sorted = useMemo(() => sortRowsBy(members, (item: SectorMemberItem) => item?.[sort.key], sort.direction), [members, sort]);
   const visible = sorted.slice(0, limit);
   // 资金源整体不可用（一只都没取到）时不显示整列「暂缺」。
-  const showFunds = members.some((item: any) => item?.mainNetInflow != null);
+  const showFunds = members.some((item: SectorMemberItem) => item?.mainNetInflow != null);
   const columns = showFunds ? MEMBER_COLUMNS : MEMBER_COLUMNS.filter(column => column.key !== "mainNetInflow");
   return (
     <>
@@ -270,7 +450,7 @@ export function SectorMemberTable({
           </tr>
         </thead>
         <tbody style={TABLE_SECTION}>
-          {visible.map((item: any) => (
+          {visible.map((item: SectorMemberItem) => (
             <tr className={`member-row${showFunds ? "" : " no-funds"}`} key={item.code}>
               <th scope="row" style={MEMBER_CELL}>
                 <button type="button" style={ROW_OPEN_BUTTON} onClick={() => onOpenStock(item)}>
@@ -313,7 +493,7 @@ export function SectorMemberTable({
 }
 
 type GainerSortKey = "change" | "limitUps" | "netInflow" | "memberCount";
-const gainerValue = (item: any, key: GainerSortKey) => key === "change"
+const gainerValue = (item: SectorViewRow, key: GainerSortKey) => key === "change"
   ? item?.returns?.r1 ?? item?.memberAverageReturn
   : key === "limitUps" ? item?.poolLimitUps ?? item?.limitUps : key === "netInflow" ? item?.netInflow : item?.memberCount;
 
@@ -329,8 +509,8 @@ export function formatSectorFlow(value: unknown) {
 }
 
 /** 涨停家数来自真实成分名单与当日涨停池交集；悬停显示是哪几只。 */
-const limitUpCount = (item: any): number | null => nullableNumber(item?.poolLimitUps ?? item?.limitUps);
-const limitUpNames = (item: any): string => (item?.rankLimitUpStocks ?? item?.leaders ?? []).map((stock: any) => stock?.name).filter(Boolean).slice(0, 8).join("、");
+const limitUpCount = (item: SectorViewRow | Record<string, unknown>): number | null => nullableNumber(item?.poolLimitUps ?? item?.limitUps);
+const limitUpNames = (item: SectorViewRow): string => (item?.rankLimitUpStocks ?? item?.leaders ?? []).map((stock) => stock?.name).filter(Boolean).slice(0, 8).join("、");
 
 /** B-09：板块涨幅排行表（原生 table；展开的个股明细作为整行 <td> 附属行）。 */
 export function SectorGainersTable({
@@ -343,20 +523,20 @@ export function SectorGainersTable({
   renderDetail,
   onCountVisible
 }: {
-  rows: any[];
+  rows: SectorViewRow[];
   /** 只显示排序后的前 limit 行（概念榜很长，分批显示）。 */
   limit?: number | undefined;
   expandedName: string;
   detailOrigin: "board" | "search";
   expandedRowRef: { current: HTMLButtonElement | null };
-  onToggle: (item: any, expanded: boolean) => void;
+  onToggle: (item: SectorViewRow, expanded: boolean) => void;
   renderDetail: () => ReactNode;
-  onCountVisible?: ((item: any) => void | Promise<void>) | undefined;
+  onCountVisible?: ((item: SectorViewRow) => void | Promise<void>) | undefined;
 }) {
   // 排名固定为当日涨幅名次；点表头只改变显示顺序。
   const [sort, setSort] = useState<ColumnSort<GainerSortKey>>({ key: "change", direction: "desc" });
   const sorted = useMemo(() => {
-    const ordered = sortRowsBy(rows, (item: any) => gainerValue(item, sort.key), sort.direction);
+    const ordered = sortRowsBy(rows, (item: SectorViewRow) => gainerValue(item, sort.key), sort.direction);
     return limit ? ordered.slice(0, limit) : ordered;
   }, [rows, sort, limit]);
   const bodyRef = useRef<HTMLTableSectionElement | null>(null);
@@ -406,7 +586,7 @@ export function SectorGainersTable({
         </tr>
       </thead>
       <tbody ref={bodyRef} style={TABLE_SECTION}>
-        {sorted.map((item: any, countIndex: number) => {
+        {sorted.map((item: SectorViewRow, countIndex: number) => {
           const expanded = detailOrigin === "board" && expandedName === item.name;
           const change = item.returns.r1 ?? item.memberAverageReturn;
           const detailId = `sector-gainers-detail-${item.rank}`;
@@ -483,13 +663,20 @@ function SectorThemeStrip({ themes, total, onOpen }: { themes: SectorTheme[]; to
   </section>;
 }
 
+type BoardSnapshotRef = ReadonlyArray<Record<string, unknown>>;
+type DetailCountEntry = {
+  count: number | null;
+  stocks: Array<{ code?: string | undefined; name?: string | undefined }>;
+  limitCount?: SectorLimitCount | null | undefined;
+};
+
 function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, dedicatedSector, aiPanel }: {
   /** 板块强度页标题下方的「AI 解读」。 */
   aiPanel?: ReactNode;
   /** 概念榜、今日涨停主线（1.6.43 起与行业榜一起取回）。 */
   extra?: { concepts: SectorConceptRow[]; themes: SectorTheme[]; warnings: string[]; conceptLimitUpSource: string; limitUpTotal: number | null } | null | undefined;
   dedicatedSector?: "北交所";
-  rows: any[];
+  rows: BoardSnapshotRef;
   loading: boolean;
   loadError: string;
   onRefresh: () => Promise<boolean | void> | boolean | void;
@@ -501,11 +688,11 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   const [detailOrigin, setDetailOrigin] = useState<"board" | "search">("board");
   const composing = useRef(false);
   const [sectorQuery, setSectorQuery] = useState("");
-  const [sectorSuggestions, setSectorSuggestions] = useState<any[]>([]);
+  const [sectorSuggestions, setSectorSuggestions] = useState<SectorSuggestionItem[]>([]);
   const [sectorSearchFocused, setSectorSearchFocused] = useState(false);
   const [sectorSearching, setSectorSearching] = useState(false);
   const [sectorAnalyzing, setSectorAnalyzing] = useState(Boolean(dedicatedSector));
-  const [customSector, setCustomSector] = useState<any>(null);
+  const [customSector, setCustomSector] = useState<SectorViewRow | null>(null);
   const [sectorError, setSectorError] = useState("");
   useEffect(() => {
     if (!expandedName) return;
@@ -519,15 +706,15 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   const [memberFilter, setMemberFilter] = useState("all");
   const [memberQuery, setMemberQuery] = useState("");
   const [showAnalysis, setShowAnalysis] = useState(false);
-  const [conceptChain, setConceptChain] = useState<any>(null);
+  const [conceptChain, setConceptChain] = useState<ConceptChainData | null>(null);
   const [conceptChainLoading, setConceptChainLoading] = useState(false);
   const sectorSearchTimer = useRef<number | undefined>(undefined);
   const sectorSearchRequest = useRef(0);
   const sectorAnalysisRequest = useRef(0);
-  const selectedSnapshot = useRef<any[] | undefined>(undefined);
+  const selectedSnapshot = useRef<BoardSnapshotRef | undefined>(undefined);
   const selectedSectorRequest = useRef<Record<string, unknown> | null>(null);
   const conceptChainRequest = useRef(0);
-  const [detailCounts, setDetailCounts] = useState<{ snapshot: any[]; byName: Map<string, { count: number | null; stocks: any[]; limitCount?: SectorLimitCount | null }> } | null>(null);
+  const [detailCounts, setDetailCounts] = useState<{ snapshot: BoardSnapshotRef; byName: Map<string, DetailCountEntry> } | null>(null);
   const normalizedRows = useMemo(
     () => (Array.isArray(rows) ? rows : [])
       .filter((item) => item && item.code !== "THS:BJ" && item.name !== "北交所")
@@ -553,14 +740,14 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   }), [rawConceptRows, detailCounts]);
   const boardKind = !normalizedRows.length && conceptRows.length ? "concept"
     : !conceptRows.length ? "industry" : preferredBoardKind;
-  const boardSnapshot = boardKind === "concept" ? rawConceptRows : rows;
+  const boardSnapshot: BoardSnapshotRef = boardKind === "concept" ? rawConceptRows : rows;
   const boardRows = boardKind === "concept" ? conceptRows : normalizedRows;
 
-  const countRequests = useRef<{ snapshot: any[]; requests: Map<string, Promise<void>> } | null>(null);
+  const countRequests = useRef<{ snapshot: BoardSnapshotRef; requests: Map<string, Promise<void>> } | null>(null);
   const currentBoardSnapshot = useRef(boardSnapshot);
   currentBoardSnapshot.current = boardSnapshot;
   const countRevision = useRef(new Map<string, number>());
-  const countVisible = useCallback((item: any) => {
+  const countVisible = useCallback((item: SectorViewRow) => {
     const api = window.stockApi.getSectorLimitUpCount;
     if (!api || dedicatedSector) return;
     if (countRequests.current?.snapshot !== boardSnapshot) {
@@ -571,7 +758,9 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     if (pending) return pending;
     const revision = countRevision.current.get(item.name) ?? 0;
     const request = api({ boardType: item.boardType === "concept" ? "concept" : "industry", name: item.name,
-      code: item.code, conceptCid: item.conceptCid, memberCount: item.memberCount }).then(result => {
+      ...(item.code !== undefined ? { code: item.code } : {}),
+      ...(item.conceptCid !== undefined ? { conceptCid: item.conceptCid } : {}),
+      memberCount: item.memberCount }).then(result => {
       if (currentBoardSnapshot.current !== boardSnapshot || (countRevision.current.get(item.name) ?? 0) !== revision) return;
       setDetailCounts(previous => {
         const byName = new Map(previous?.snapshot === boardSnapshot ? previous.byName : []);
@@ -623,17 +812,20 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     };
   }, [sectorQuery]);
 
-  const openSector = useCallback(async (item: any, origin: "board" | "search" = "search", snapshot?: any[], background = false) => {
+  const openSector = useCallback(async (item: SectorQueryTarget, origin: "board" | "search" = "search", snapshot?: BoardSnapshotRef, background = false) => {
+    const itemRecord = typeof item === "object" && item ? item : null;
     const requestedName = typeof item === "string"
       ? item
-      : String(item?.name || item?.query || item?.code || "");
+      : String(itemRecord?.name || itemRecord?.query || itemRecord?.code || "");
     const request = {
-      ...(typeof item === "object" && item ? item : {}),
+      ...(itemRecord || {}),
       ...(dedicatedSector ? { waitForQuotes: false } : {}),
       name: requestedName
     };
     const requestId = ++sectorAnalysisRequest.current;
-    selectedSectorRequest.current = request;
+    const persistedRequest = { ...request };
+    delete persistedRequest.forceRefresh;
+    selectedSectorRequest.current = persistedRequest;
     selectedSnapshot.current = snapshot;
     setDetailOrigin(origin);
     setSelectedName(requestedName);
@@ -651,21 +843,22 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     try {
       const detail = await window.stockApi.analyzeSector(request);
       if (!detail || typeof detail !== "object") throw new Error("未取得板块成分股，请重试");
-      const normalizedDetail = {
+      const normalizedDetail = normalizeSectorViewRow({
         ...detail,
         name: String(detail.name || requestedName)
-      };
+      });
       if (requestId !== sectorAnalysisRequest.current) return;
       setCustomSector(normalizedDetail);
+      const itemMemberCount = itemRecord ? nullableNumber(itemRecord.memberCount) : null;
       if (snapshot && origin === "board" && Array.isArray(detail.constituents)) {
-        const stocks = detail.constituents.filter((stock: any) => stock?.isLimitUp);
-        const fullLiveRoster = item.memberCount > 0 && detail.constituents.length >= item.memberCount &&
-          detail.constituents.every((stock: any) => stock?.quoteStatus === "live" && stock.latest > 0 && stock.preClose > 0);
-        if (detail.limitCount || fullLiveRoster || stocks.length > (limitUpCount(item) ?? 0)) {
+        const stocks = normalizedDetail.constituents.filter((stock) => stock?.isLimitUp);
+        const fullLiveRoster = (itemMemberCount ?? 0) > 0 && normalizedDetail.constituents.length >= (itemMemberCount ?? 0) &&
+          normalizedDetail.constituents.every((stock) => stock?.quoteStatus === "live" && (stock.latest ?? 0) > 0 && (stock.preClose ?? 0) > 0);
+        if (detail.limitCount || fullLiveRoster || stocks.length > (itemRecord ? limitUpCount(itemRecord) ?? 0 : 0)) {
           countRevision.current.set(requestedName, (countRevision.current.get(requestedName) ?? 0) + 1);
           setDetailCounts(previous => {
             const byName = new Map(previous?.snapshot === snapshot ? previous.byName : []);
-            byName.set(requestedName, { count: detail.limitCount ? detail.limitCount.limitUps : stocks.length, stocks: detail.limitCount?.limitUpStocks ?? stocks, limitCount: detail.limitCount });
+            byName.set(requestedName, { count: detail.limitCount ? detail.limitCount.limitUps : stocks.length, stocks: detail.limitCount?.limitUpStocks ?? stocks, limitCount: detail.limitCount ?? null });
             return { snapshot, byName };
           });
         }
@@ -703,18 +896,22 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     if (!dedicatedSector || !customSector?.quoteCoverage?.pending) return;
     let stopped = false;
     let busy = false;
-    const requestId = sectorAnalysisRequest.current;
-    const timer = window.setInterval(whenVisible(async () => {
+    const stopTimer = startVisibleInterval(() => {
       if (busy) return;
       busy = true;
-      try {
-        const result = await window.stockApi.analyzeSector({ code: "THS:BJ", name: dedicatedSector, waitForQuotes: false });
-        if (!stopped && requestId === sectorAnalysisRequest.current) setCustomSector(normalizeSectorViewRow(result));
-      } catch {
-        // Preserve the full roster on a transient progress-read failure; retry next visible tick.
-      } finally { busy = false; }
-    }), 1500);
-    return () => { stopped = true; window.clearInterval(timer); };
+      const activeRequestId = sectorAnalysisRequest.current;
+      void window.stockApi.analyzeSector({ code: "THS:BJ", name: dedicatedSector, waitForQuotes: false })
+        .then(result => {
+          if (!stopped && activeRequestId === sectorAnalysisRequest.current) {
+            setCustomSector(normalizeSectorViewRow(result));
+          }
+        })
+        .catch(() => {
+          // Preserve the full roster on a transient progress-read failure; retry next visible tick.
+        })
+        .finally(() => { busy = false; });
+    }, 1500);
+    return () => { stopped = true; stopTimer(); };
   }, [dedicatedSector, customSector?.quoteCoverage?.pending]);
 
   const selectedSector = customSector || normalizedRows.find((item) => item.name === selectedName) || normalizedRows[0];
@@ -769,19 +966,19 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
     [sector?.constituents, memberFilter, memberQuery]
   );
   const sectorHistory = sector?.history || [];
-  const historyAmounts = sectorHistory.map((day: any) => Number(day.amount || 0));
+  const historyAmounts = sectorHistory.map((day: SectorHistoryPoint) => Number(day.amount || 0));
   const maxHistoryAmount = Math.max(1, ...historyAmounts);
   const averageHistoryAmount = historyAmounts.length
     ? historyAmounts.reduce((sum: number, amount: number) => sum + amount, 0) / historyAmounts.length
     : 0;
 
-  const memberLimitStatusKnown = sector?.boardType !== "exchange" || sector?.constituents.some((item: any) => item.limitStatusKnown);
+  const memberLimitStatusKnown = sector?.boardType !== "exchange" || sector?.constituents.some((item: SectorMemberItem) => item.limitStatusKnown);
 
   const memberPanel = sector ? (
 <div className="panel sector-members-panel">
               <PanelTitle title={dedicatedSector ? "北交所个股行情" : `${sector.name} 成分股明细`} subtitle={dedicatedSector ? "名单：新浪财经北交所名录 · 行情：实时行情优先，取不到时用同花顺逐股快照 · 涨停按 30% 涨停价判断 · 可搜索全部股票" : "按个股涨幅排序；点击股票打开分析"} icon={LayoutDashboard} badge={sector.quoteCoverage ? `名单 ${sector.constituents.length}${sector.memberCoverage?.complete ? `/${sector.memberCoverage.total}` : " · 最新总数待核验"} 只 · 同花顺行情 ${sector.quoteCoverage.loaded}/${sector.quoteCoverage.total} 只${sector.quoteCoverage.pending ? " · 读取中" : ""}` : sector.memberCoverage && !sector.memberCoverage.complete
                 ? `已加载 ${sector.constituents.length} 只 · 非全量`
-                : `已加载 ${sector.constituents.length} 只${sector.memberCount > sector.constituents.length ? ` / 板块 ${sector.memberCount} 只` : ""}`} />
+                : `已加载 ${sector.constituents.length} 只${(sector.memberCount ?? 0) > sector.constituents.length ? ` / 板块 ${sector.memberCount} 只` : ""}`} />
               {sector.boardType === "exchange" && <div className={`beijing-coverage-note ${sector.warning ? "warning-banner" : "sector-fund-flow-source"}`} role="status">{sector.warning || `名单总数及全部分页已核验。${sector.quoteBasis}`} {sector.quoteCoverage?.asOf && `行情日期：${sector.quoteCoverage.asOf}。`}</div>}
               {sector.fundFlow?.quotes && <p className="sector-fund-flow-source" role="status">
                 {sector.fundFlow.quotes.loaded > 0
@@ -823,7 +1020,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
   );
 
   // B-09：整行不再是 button，展开/收起由行内按钮触发；行的 aria-expanded 仅作状态说明。
-  const toggleSectorRow = (item: any, expanded: boolean) => {
+  const toggleSectorRow = (item: SectorViewRow, expanded: boolean) => {
     if (expanded) {
       sectorAnalysisRequest.current += 1;
       setSectorAnalyzing(false);
@@ -984,11 +1181,11 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
                 <Metric label="板块高度" value={sector.ladder.maxHeight ? `${sector.ladder.maxHeight} 板` : "无连板"} />
                 <Metric label="首板家数" value={String(sector.ladder.firstBoards)} tone="red" />
                 <Metric label="连板家数" value={String(sector.ladder.continuationBoards)} tone="red" />
-                <Metric label="昨日晋级率" value={`${fmt(sector.ladder.promotionRate * 100, 1)}%`} />
+                <Metric label="昨日晋级率" value={`${fmt((sector.ladder.promotionRate ?? 0) * 100, 1)}%`} />
                 <Metric
                   label="当前炸板数"
                   value={sector.ladder.failedBoards == null ? "--" : String(sector.ladder.failedBoards)}
-                  tone={sector.ladder.failedBoards > 0 ? "green" : ""}
+                  tone={(sector.ladder.failedBoards ?? 0) > 0 ? "green" : ""}
                 />
                 <Metric
                   label="炸板率"
@@ -997,12 +1194,12 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
                 />
               </div>
               <div className="ladder-levels">
-                {(sector.ladder.levels || []).map((level: any) => (
+                {(sector.ladder.levels || []).map((level: SectorLadderLevel) => (
                   <div key={level.height}>
                     <b>{level.label}</b>
                     <span>
-                      {level.stocks.map((stock: any) => (
-                        <button key={stock.code} onClick={() => onOpenStock(stock)}>
+                      {level.stocks.map((stock: SectorLadderStock) => (
+                        <button key={stock.code} onClick={() => onOpenStock({ code: stock.code, name: stock.name, secid: stock.secid || "" })}>
                           {stock.name}<small>{stock.firstSealTime || "--"} · 开板{stock.openBoardCount ?? 0}</small>
                         </button>
                       ))}
@@ -1034,14 +1231,14 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
                 {" "}数据源：{sector.dataSource || "--"}；评分用于横向比较，不直接等同于买入信号。
               </p>
               <div className="leader-tags">
-                {(sector.leaders || []).slice(0, 8).map((item: any) => <span key={item.code}>{item.name} <b className={item.changePct == null ? "" : item.changePct > 0 ? "red" : item.changePct < 0 ? "green" : ""}>{item.changePct == null ? "--" : `${item.changePct != null && item.changePct > 0 ? "+" : ""}${fmt(item.changePct)}%`}</b></span>)}
+                {(sector.leaders || []).slice(0, 8).map((item: SectorMemberItem) => <span key={item.code}>{item.name} <b className={item.changePct == null ? "" : item.changePct > 0 ? "red" : item.changePct < 0 ? "green" : ""}>{item.changePct == null ? "--" : `${item.changePct != null && item.changePct > 0 ? "+" : ""}${fmt(item.changePct)}%`}</b></span>)}
               </div>
             </div>
             <div className="panel comparison-detail">
               <PanelTitle title="完整收益对比" subtitle={`${sector.name} vs ${sector.marketProxy || "全A基准"} / 沪深300`} icon={Activity} />
               <div className="comparison-periods">
-                {[1, 3, 5].map((day) => {
-                  const key = `r${day}`;
+                {([1, 3, 5] as const).map((day) => {
+                  const key = `r${day}` as const;
                   const sectorReturn = nullableNumber(sector.returns[key]);
                   const hs300Excess = subtractNullable(sectorReturn, sector.benchmarkReturns[key]);
                   const marketExcess = subtractNullable(sectorReturn, sector.allMarketReturns?.[key]);
@@ -1074,9 +1271,9 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
             <div className="panel sector-history">
               <PanelTitle title="近5日强弱轨迹" subtitle="上方为每日涨跌，下方为成交量柱" icon={Activity} />
               <div className="bar-chart">
-                {sectorHistory.map((day: any) => (
-                  <div key={day.date} title={`${day.date} ${day.changePct}%`}>
-                    <span className={day.changePct == null ? "" : day.changePct > 0 ? "up" : day.changePct < 0 ? "down" : ""} style={{ height: `${Math.max(6, Math.min(100, Math.abs(day.changePct) * 20))}%` }} />
+                {sectorHistory.map((day: SectorHistoryPoint, index: number) => (
+                  <div key={day.date || index} title={`${day.date || ""} ${day.changePct ?? "--"}%`}>
+                    <span className={day.changePct == null ? "" : day.changePct > 0 ? "up" : day.changePct < 0 ? "down" : ""} style={{ height: `${Math.max(6, Math.min(100, Math.abs(day.changePct ?? 0) * 20))}%` }} />
                   </div>
                 ))}
               </div>
@@ -1087,11 +1284,11 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, d
                 </b>
               </div>
               <div className="sector-volume-chart">
-                {sectorHistory.map((day: any) => {
+                {sectorHistory.map((day: SectorHistoryPoint, index: number) => {
                   const amount = Number(day.amount || 0);
                   const aboveAverage = averageHistoryAmount > 0 && amount >= averageHistoryAmount;
                   return (
-                    <div key={day.date} title={`${day.date} · 成交额 ${fmtMoney(amount)}`}>
+                    <div key={day.date || index} title={`${day.date || ""} · 成交额 ${fmtMoney(amount)}`}>
                       <span
                         className={aboveAverage ? "hot" : "normal"}
                         style={{ height: `${Math.max(5, (amount / maxHistoryAmount) * 100)}%` }}

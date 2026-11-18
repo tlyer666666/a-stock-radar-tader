@@ -189,11 +189,13 @@ test('per-job timeoutMs overrides the runner default', async () => {
 });
 
 test('every worker dispatch point allows at least its job operation budget', async () => {
-  // 静态断言：services.cjs 的每个派发点都必须显式传 timeoutMs，
-  // 且取值来自 DEFAULT_OPERATION_TIMEOUTS，不能是硬编码的小数字。
+  // 静态断言：services.cjs 及其拆分模块（P0-2b 后 worker 派发点已迁到 services/*.cjs）
+  // 的每个派发点都必须显式传 timeoutMs，且取值来自 DEFAULT_OPERATION_TIMEOUTS。
   const fs = require('node:fs');
   const path = require('node:path');
-  const source = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const files = [path.join(__dirname, 'services.cjs'),
+    ...fs.readdirSync(path.join(__dirname, 'services')).filter(f => f.endsWith('.cjs')).map(f => path.join(__dirname, 'services', f))];
+  const source = files.map(f => fs.readFileSync(f, 'utf8')).join('\n');
   const dispatches = [...source.matchAll(/workerRunner\.run\([\s\S]{0,600}?\}\)\)/g)].map(m => m[0]);
   assert.ok(dispatches.length >= 4, `应至少有 4 个 worker 派发点，实际 ${dispatches.length}`);
   for (const block of dispatches) {

@@ -481,3 +481,45 @@ test("a modeled round trip debits each side once and respects the minimum commis
   assert.equal(trade.shares, 100); assert.equal(trade.entryCost, 5.21); assert.equal(trade.exitCost, 5.71);
   assert.equal(trade.pnl, -10.92); assert.equal(result.metrics.endingCapital, 1089.08);
 });
+
+test("prepareSingleBacktestRequest injects external factor snapshots and filters unsafe setting overrides", () => {
+  const { prepareSingleBacktestRequest } = require("./portfolio-backtest.cjs");
+  let readSnapshotsCalled = 0;
+  let capturedOverrides = null;
+  const prepared = prepareSingleBacktestRequest(
+    { code: "000001", requestId: "req-1" },
+    {
+      timeoutMs: 9000,
+      settings: {
+        stopLossATRMultiple: 2.5,
+        maxHoldingBars: 12,
+        provider: "tushare",
+        fallbackEnabled: false,
+        tushareToken: "INJECTED_SECRET",
+        aiApiKey: "INJECTED_AI_SECRET"
+      }
+    },
+    {
+      readExternalFactorSnapshots: () => {
+        readSnapshotsCalled++;
+        return { "2026-11-17": { phase: "主升" } };
+      },
+      settingsForService: overrides => {
+        capturedOverrides = overrides;
+        return {
+          ...overrides,
+          provider: "eastmoney",
+          fallbackEnabled: true,
+          tushareToken: "SERVER_STORED_SECRET",
+          aiApiKey: "SERVER_AI_KEY"
+        };
+      }
+    }
+  );
+  assert.equal(readSnapshotsCalled, 1);
+  assert.deepEqual(capturedOverrides, { stopLossATRMultiple: 2.5, maxHoldingBars: 12 });
+  assert.equal(prepared.settings.tushareToken, "SERVER_STORED_SECRET");
+  assert.deepEqual(prepared.options.settings, { stopLossATRMultiple: 2.5, maxHoldingBars: 12 });
+  assert.deepEqual(prepared.options.externalFactorSnapshots, { "2026-11-17": { phase: "主升" } });
+  assert.deepEqual(prepared.runtimeInput, { requestId: "req-1", timeoutMs: 9000 });
+});

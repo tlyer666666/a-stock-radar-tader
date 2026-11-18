@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, ExternalLink, Home, LogIn, LogOut, RefreshCw } from "lucide-react";
 
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 type Action = "home" | "login" | "reload" | "back" | "external" | "logout";
@@ -52,7 +52,7 @@ export default function HsgtWebView() {
   const sync = useCallback(() => {
     if (!api) return;
     // Native child surfaces sit above HTML regardless of their CSS z-index.
-    const overlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .toast, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
+    const overlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .toast, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
     const bounds = document.hidden || overlay ? null : measure();
     const key = bounds ? JSON.stringify(bounds) : "";
     if (lastBounds.current === key && shown.current === Boolean(bounds)) return;
@@ -104,7 +104,7 @@ export default function HsgtWebView() {
   useEffect(() => {
     if (!api) return;
     let pending = false, mounted = true;
-    const poll = whenVisible(async () => {
+    const stop = startVisibleInterval(async () => {
       if (pending) return;
       sync();
       if (!shown.current) return;
@@ -118,9 +118,8 @@ export default function HsgtWebView() {
         }
       } catch { /* Retry on the next visible poll. */ }
       finally { pending = false; }
-    });
-    const timer = window.setInterval(poll, 5000);
-    return () => { mounted = false; window.clearInterval(timer); };
+    }, 5000);
+    return () => { mounted = false; stop(); };
   }, [api, sync]);
 
   const run = async (action: Action) => {

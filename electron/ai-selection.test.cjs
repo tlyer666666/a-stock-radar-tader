@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createAiClient, chatCompletionsUrl, parseModelJson } = require('./ai-client.cjs');
 const { createAiSelection, sanitizePicks } = require('./ai-selection.cjs');
-const { createAiService, marketFromEcology } = require('./ai-service.cjs');
+const { createAiService, marketFromEcology, evaluateRowsOutcome } = require('./ai-service.cjs');
 
 const config = { baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'sk-test' };
 const reply = (content) => ({ json: async () => ({ choices: [{ message: { content: typeof content === 'string' ? content : JSON.stringify(content) } }] }) });
@@ -453,6 +453,40 @@ test('several models score together: average score, per-model scores, disagreeme
   assert.equal(cached.cached, true);
 });
 
+test('scoring profiles sharing an endpoint and model use their own account and cached score', async t => {
+  const sharedConfig = { baseUrl: 'https://rank.example.test/v1', model: 'shared-model' };
+  const profiles = [
+    { ...sharedConfig, id: 'a', name: '账户甲', apiKey: 'fixture-a' },
+    { ...sharedConfig, id: 'b', name: '账户乙', apiKey: 'fixture-b' }
+  ];
+  const scoreByAccount = new Map([['Bearer fixture-a', 80], ['Bearer fixture-b', 60], ['Bearer fixture-c', 70]]);
+  const requests = [];
+  const service = createAiService({
+    getConfig: () => profiles[0], getRankProfiles: () => profiles,
+    fetchImpl: async (_url, options) => {
+      const account = options.headers.Authorization;
+      requests.push(account);
+      return reply({ items: [{ code: '600001', score: scoreByAccount.get(account) }] });
+    }
+  });
+  t.after(() => service.shutdown());
+  const input = { asOfDate: '2026-11-13', picks: [pick('600001', '甲')] };
+
+  const first = await service.rank(input);
+  assert.deepEqual(first.items[0].scores.map(({ id, score }) => [id, score]), [['a', 80], ['b', 60]]);
+  assert.equal(first.items[0].score, 70);
+  assert.deepEqual(requests.slice().sort(), ['Bearer fixture-a', 'Bearer fixture-b']);
+  assert.equal((await service.rank(input)).cached, true);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(service.historyDay(input.asOfDate).rank.models.map(({ id }) => id).sort(), ['a', 'b']);
+
+  profiles[0] = { ...profiles[0], apiKey: 'fixture-c' };
+  const afterKeyChange = await service.rank(input);
+  assert.deepEqual(afterKeyChange.items[0].scores.map(({ id, score }) => [id, score]), [['a', 70], ['b', 60]]);
+  assert.equal(afterKeyChange.items[0].score, 65);
+  assert.deepEqual(requests.slice(2), ['Bearer fixture-c']);
+});
+
 test('history lists past data days and replays a day with each model\'s latest scores and the summary', async () => {
   const profiles = [
     { id: 'a', name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat', apiKey: 'k1' },
@@ -651,6 +685,101 @@ test('删光模型配置后重启不会把旧设置里的 Key 迁移回来', () 
   assert.equal(make().list().profiles.length, 0); // 新进程（重启）
 });
 
+test('1.6.57 #04: queued AI jobs snapshot config, instructions and framework at enqueue time', async () => {
+  let currentConfig = { id: 'p1', name: '初始模型', baseUrl: 'https://first.example/v1', model: 'model-v1', apiKey: 'k1' };
+  let currentInstructions = { rank: '初始打分要求', summary: '初始总结要求' };
+  let currentFramework = { id: 'short_term' };
+  const calls = [];
+  let releaseHolders = [];
+  const hold = () => new Promise(resolve => { releaseHolders.push(resolve); });
+  const fetchImpl = async (url, options) => {
+    const body = JSON.parse(options.body);
+    const system = body.messages?.[0]?.content || '';
+    const userText = body.messages?.[1]?.content || '';
+    calls.push({ url, model: body.model, system, user: userText });
+    if (String(body.model || '').startsWith('hold-model')) await hold();
+    if (/记事助手/.test(system)) {
+      return reply({ text: '观察600001', when: null, repeat: 'none', code: '600001', condition: null, note: '' });
+    }
+    if (/盘后复盘/.test(system)) {
+      return reply({
+        headline: '市场修复', cycle: { phase: '修复', reason: '放量回暖' }, market: '情绪回暖',
+        mainlines: [{ name: '电网', comment: '强势' }], ladder: '3板', indices: '震荡',
+        nextDay: { posture: '观察', focus: ['电网'], avoid: ['高位'] }, risks: ['分歧'], confidence: '中'
+      });
+    }
+    let parsedUser = null;
+    try { parsedUser = JSON.parse(userText); } catch { parsedUser = null; }
+    if (parsedUser && /"headline"/.test(system) && !/"score"/.test(system)) {
+      return reply({ headline: '今日总结', market: '震荡', themes: ['电网'], focus: ['600001 甲'], risks: ['回落'] });
+    }
+    return reply({ items: [{ code: '600001', score: 80, highlights: 'ok' }] });
+  };
+  let stored = null;
+  const service = createAiService({
+    getConfig: () => currentConfig,
+    getInstructions: () => currentInstructions,
+    getFramework: () => currentFramework,
+    fetchImpl,
+    store: { read: () => stored, write: value => { stored = value; } }
+  });
+  // Saturate maxActive=2 with distinct keys so subsequent calls sit in the runtime queue.
+  const h1 = service.test({ baseUrl: 'https://hold.example/v1', model: 'hold-model-1', apiKey: 'hk' });
+  const h2 = service.test({ baseUrl: 'https://hold.example/v1', model: 'hold-model-2', apiKey: 'hk' });
+  const queuedSummary = service.summary({ asOfDate: '2026-11-05', picks: [pick('600001', '甲')] });
+  const queuedNote = service.parseNote({ text: '明天看600001', now: '2026-11-05 15:10', tradingDays: ['2026-11-06'] });
+  const queuedRank = service.rank({ asOfDate: '2026-11-05', picks: [pick('600001', '甲')] });
+
+  // Mutate active settings mid-queue before queued jobs run.
+  currentConfig = { id: 'p2', name: '新模型', baseUrl: 'https://second.example/v1', model: 'model-v2', apiKey: 'k2' };
+  currentInstructions = { rank: '新打分要求', summary: '新总结要求' };
+  currentFramework = { id: 'swing_trend' };
+
+  while (releaseHolders.length < 2) await new Promise(r => setTimeout(r, 5));
+  releaseHolders.forEach(fn => fn());
+  await Promise.all([h1, h2]);
+
+  const [sumOut, noteOut, rankOut] = await Promise.all([queuedSummary, queuedNote, queuedRank]);
+  assert.equal(sumOut.model, 'model-v1');
+  assert.equal(noteOut.model, 'model-v1');
+  assert.equal(rankOut.models[0].model, 'model-v1');
+  const sumCall = calls.find(c => /"headline"/.test(c.system) && !/"score"/.test(c.system));
+  assert.match(sumCall.url, /^https:\/\/first\.example/);
+  assert.match(sumCall.system, /初始总结要求/);
+  assert.doesNotMatch(sumCall.system, /新总结要求/);
+  const rankCall = calls.find(c => /初始打分要求/.test(c.system));
+  assert.ok(rankCall && /^https:\/\/first\.example/.test(rankCall.url));
+  assert.doesNotMatch(rankCall.system, /新打分要求/);
+});
+
+test('1.6.57 #10: historyDay disambiguates same-named models across endpoints by profileId/baseUrl', async () => {
+  const profiles = [
+    { id: 'ep-a', name: '东线同模', baseUrl: 'https://east.example/v1', model: 'shared-model', apiKey: 'k1' },
+    { id: 'ep-b', name: '西线同模', baseUrl: 'https://west.example/v1', model: 'shared-model', apiKey: 'k2' }
+  ];
+  const fetchImpl = async (url, options) => {
+    const body = JSON.parse(options.body);
+    const user = JSON.parse(body.messages[1].content);
+    const score = String(url).includes('west.example') ? 60 : 80;
+    return reply({ items: user.stocks.map(item => ({ code: item.code, score })) });
+  };
+  let stored = null;
+  const service = createAiService({
+    getConfig: () => profiles[0],
+    getRankProfiles: () => profiles,
+    fetchImpl,
+    store: { read: () => stored, write: value => { stored = value; } }
+  });
+  await service.rank({ asOfDate: '2026-11-05', picks: [pick('600001', '甲')] });
+  assert.equal(stored.entries.length, 2);
+  assert.deepEqual(stored.entries.map(e => e.value.profileId).sort(), ['ep-a', 'ep-b']);
+  assert.deepEqual(stored.entries.map(e => e.value.profileName).sort(), ['东线同模', '西线同模']);
+  const replay = service.historyDay('2026-11-05');
+  assert.equal(replay.rank.models.length, 2);
+  assert.deepEqual(replay.rank.models.map(m => [m.id, m.name]).sort(), [['ep-a', '东线同模'], ['ep-b', '西线同模']]);
+  assert.equal(replay.rank.items[0].score, 70);
+});
+
 test('a missing model response stays retryable and its base score does not count as an AI vote', () => {
   const { combineRankings } = require('./ai-service.cjs');
   const response = items => ({ status: 'fulfilled', value: { items, evaluated: items.length } });
@@ -697,4 +826,228 @@ test('a partial response reports omitted stocks and retries just those stocks on
   const second = await service.rankCustom(input);
   assert.deepEqual(requests, [['600519', '000001'], ['000001']]);
   assert.equal(second.evaluated, 2);
+});
+
+test('combineRankings preserves highlights and builds disagreementDetail when spread >= 20, and historyDayWithOutcomes computes T+1/3/5 win rates', async () => {
+  const { combineRankings } = require('./ai-service.cjs');
+  const combined = combineRankings([
+    { profile: { id: 'p1', name: '多头模型', model: 'm1' }, outcome: { status: 'fulfilled', value: { asOfDate: '2026-11-03', items: [{ code: '600519', name: '贵州茅台', score: 86, rating: '重点关注', highlights: '首推亮点', risks: '高估值' }] } } },
+    { profile: { id: 'p2', name: '风控模型', model: 'm2' }, outcome: { status: 'fulfilled', value: { asOfDate: '2026-11-03', items: [{ code: '600519', name: '贵州茅台', score: 52, rating: '观望', highlights: '有支撑', risks: '缩量回调风险' }] } } }
+  ], { asOfDate: '2026-11-03' });
+  assert.equal(combined.items[0].disagreement, true);
+  assert.equal(combined.items[0].highlights, '首推亮点');
+  assert.equal(combined.items[0].disagreementDetail.spread, 34);
+  assert.equal(combined.items[0].disagreementDetail.highest.rating, '重点关注');
+  assert.equal(combined.items[0].disagreementDetail.highest.thesis, '首推亮点');
+  assert.equal(combined.items[0].disagreementDetail.lowest.rating, '观望');
+  assert.equal(combined.items[0].disagreementDetail.lowest.thesis, '缩量回调风险');
+  assert.match(combined.items[0].disagreementDetail.verificationPoint, /次日核心验证点/);
+  assert.match(combined.items[0].disagreementDetail.summary, /看多\(多头模型 86分\)/);
+  assert.match(combined.items[0].disagreementDetail.summary, /谨慎\(风控模型 52分\)/);
+
+  let stored = null;
+  const service = createAiService({
+    getConfig: () => config,
+    store: { read: () => stored, write: value => { stored = value; } },
+    fetchImpl: async () => reply({ items: [{ code: '600519', score: 80, highlights: '强' }, { code: '000001', score: 72, highlights: '稳' }] }),
+    evaluateOutcomes: async (_date, codes) => {
+      assert.deepEqual(codes.sort(), ['000001', '600519']);
+      return {
+        '600519': { t1: 2.5, t3: 5.0, t5: 8.2, baseClose: 1500, asOfDate: '2026-11-03', latestDate: '2026-11-10' },
+        '000001': { t1: -1.2, t3: -2.0, t5: null, baseClose: 10, asOfDate: '2026-11-03', latestDate: '2026-11-06' }
+      };
+    }
+  });
+  await service.rank({ asOfDate: '2026-11-03', picks: [pick('600519', '贵州茅台'), pick('000001', '平安银行')] });
+  const replayed = await service.historyDayWithOutcomes('2026-11-03');
+  assert.equal(replayed.rank.items[0].outcome.t5, 8.2);
+  assert.equal(replayed.rank.outcomeSummary.evaluatedCount, 2);
+  assert.equal(replayed.rank.outcomeSummary.t1.winRatePct, 50);
+  assert.equal(replayed.rank.outcomeSummary.t5.winRatePct, 100);
+});
+
+test('Phase 2: AI client streams SSE chunks via onToken and falls back to non-stream JSON on HTTP 400', async () => {
+  const seenTokens = [];
+  const sseChunks = [
+    'data: {"choices":[{"delta":{"content":"{\\"headline\\":\\"强"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"势\\"}"}}]}\n\n',
+    'data: [DONE]\n\n'
+  ];
+  const client = createAiClient({
+    getConfig: () => config,
+    fetchImpl: async () => ({
+      ok: true,
+      headers: { get: name => name.toLowerCase() === 'content-type' ? 'text/event-stream' : '' },
+      body: new ReadableStream({
+        start(controller) {
+          for (const chunk of sseChunks) controller.enqueue(new TextEncoder().encode(chunk));
+          controller.close();
+        }
+      })
+    })
+  });
+  const streamed = await client.chat({
+    system: 'test',
+    user: 'hello',
+    onToken: (_delta, full) => seenTokens.push(full)
+  });
+  assert.equal(streamed.headline, '强势');
+  assert.ok(seenTokens.length >= 2);
+  assert.equal(seenTokens.at(-1), '{"headline":"强势"}');
+
+  const bodies = [];
+  const fallbackClient = createAiClient({
+    getConfig: () => config,
+    fetchImpl: async (_url, options) => {
+      const parsed = JSON.parse(options.body);
+      bodies.push(parsed);
+      if (parsed.stream) return { ok: false, status: 400 };
+      return reply({ ok: true });
+    }
+  });
+  const downgraded = await fallbackClient.chat({ system: 's', user: 'u', onToken: () => {} });
+  assert.equal(downgraded.ok, true);
+  assert.equal(bodies.at(-1).stream, false);
+});
+
+test('Phase 2: draftStrategy emits clarification, unsupportedTerms and alternatives for unsupported factors', async () => {
+  const aiSelection = createAiSelection({
+    ai: {
+      model: () => 'deepseek-chat',
+      chat: async () => ({
+        name: '低估值回踩',
+        description: '缺少市盈率因子',
+        conditions: [],
+        unsupportedTerms: ['PE<20', 'ROE>15%'],
+        clarification: '当前软件暂未接入财务估值(PE/ROE)，建议改用量价、均线与涨停结构条件替代。',
+        alternatives: [
+          { label: '换用低位首板回踩', prompt: '近10日首板，回调不破涨停低点且缩量' },
+          { label: '换用高成交活跃突破', prompt: '放量突破20日均线，成交额大于3亿' }
+        ],
+        notes: '已标注不支持的财务因子'
+      })
+    }
+  });
+  const res = await aiSelection.draftStrategy({ text: '市盈率低于20且ROE大于15%的股票', patterns: [{ id: 'p1', name: '首板回踩', detail: '缩量' }] });
+  assert.equal(res.strategy, null);
+  assert.equal(res.needsClarification, true);
+  assert.deepEqual(res.unsupportedTerms, ['PE<20', 'ROE>15%']);
+  assert.match(res.clarification, /PE\/ROE/);
+  assert.equal(res.alternatives.length, 2);
+});
+
+test('Phase 3A: outcomesLeaderboard aggregates by model, framework, market cycle and injects high-score miss lessons', async () => {
+  const storeData = {
+    version: 1,
+    entries: [
+      {
+        key: 'market:2026-10-10:m1',
+        kind: 'market',
+        savedAt: '2026-10-10T15:10:00Z',
+        value: { asOfDate: '2026-10-10', headline: '退潮分歧', cycle: { phase: '退潮', reason: '连板炸板多' } }
+      },
+      {
+        key: 'lookback:2026-10-11:m1',
+        kind: 'lookback',
+        savedAt: '2026-10-11T15:10:00Z',
+        value: { asOfDate: '2026-10-11', hitRatePct: 60, lessons: ['退潮期少追高位连板'] }
+      },
+      {
+        key: 'rank:2026-10-10:p1:fw1:h1',
+        kind: 'rank',
+        savedAt: '2026-10-10T15:20:00Z',
+        value: {
+          asOfDate: '2026-10-10',
+          model: 'model-a',
+          profileName: '模型A',
+          framework: { id: 'short', name: '短线接力' },
+          items: [
+            { code: '600519', name: '贵州茅台', score: 86, rating: '重点关注', highlights: '龙头企稳', risks: '缩量追高易回踩' },
+            { code: '000001', name: '平安银行', score: 78, rating: '关注', highlights: '温和放量', risks: '上方套牢盘' }
+          ]
+        }
+      }
+    ]
+  };
+  let capturedSystem = '';
+  const service = createAiService({
+    getConfig: () => ({ id: 'p1', name: '模型A', baseUrl: 'https://example.com/v1', model: 'model-a', apiKey: 'k1' }),
+    getRankProfiles: () => [{ id: 'p1', name: '模型A', baseUrl: 'https://example.com/v1', model: 'model-a', apiKey: 'k1' }],
+    store: { read: () => storeData, write: next => Object.assign(storeData, next) },
+    evaluateOutcomes: async (asOfDate) => {
+      if (asOfDate === '2026-10-10') {
+        return {
+          '600519': { t1: -2.1, t3: -5.6, t5: -6.2, maxDrawdownPct: -8.4, stopHit: true, baseClose: 100 },
+          '000001': { t1: 1.5, t3: 4.2, t5: 5.0, maxDrawdownPct: -1.2, stopHit: false, baseClose: 10 }
+        };
+      }
+      return {};
+    },
+    fetchImpl: async (_url, init) => {
+      const reqBody = JSON.parse(init.body);
+      capturedSystem = reqBody.messages.find(m => m.role === 'system')?.content || '';
+      const payload = {
+        choices: [{ message: { content: JSON.stringify({ items: [{ code: '000002', name: '万科A', score: 72, rating: '关注', highlights: '弱转强', risks: '注意回撤', nextDay: '看承接' }] }) } }]
+      };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => payload,
+        text: async () => JSON.stringify(payload)
+      };
+    }
+  });
+
+  const board = await service.outcomesLeaderboard({ days: 30 });
+  assert.equal(board.daysCovered, 1);
+  assert.equal(board.evaluatedSamples, 2);
+  assert.equal(board.byModel[0].label, '模型A');
+  assert.equal(board.byModel[0].t3.winRatePct, 50);
+  assert.equal(board.byModel[0].highScoreMisses, 1);
+  assert.equal(board.byModel[0].avgDrawdownPct, -4.8);
+  assert.equal(board.byModel[0].stopHits, 1);
+  assert.equal(board.byModel[0].stopHitRatePct, 50);
+  assert.equal(board.byFramework[0].label, '短线接力');
+  assert.equal(board.byCycle[0].label, '退潮');
+  assert.equal(board.recentMisses.length, 1);
+  assert.equal(board.recentMisses[0].code, '600519');
+  assert.equal(board.recentMisses[0].maxDrawdownPct, -8.4);
+  assert.equal(board.recentMisses[0].stopHit, true);
+  assert.match(board.recentLessons[0], /600519/);
+  assert.match(board.recentLessons[0], /最大回撤-8\.4%/);
+
+  const ohlcOutcome = evaluateRowsOutcome([
+    { date: '2026-10-09', low: 9.8, close: 10 },
+    { date: '2026-10-10', low: 9.9, close: 10 },
+    { date: '2026-10-11', low: 9.25, close: 9.7 },
+    { date: '2026-10-12', low: 9.5, close: 10.2 },
+    { date: '2026-10-13', low: 9.8, close: 10.4 },
+    { date: '2026-10-14', low: 9.9, close: 10.5 },
+    { date: '2026-10-15', low: 10.1, close: 10.6 }
+  ], '2026-10-10');
+  assert.equal(ohlcOutcome.t1, -3);
+  assert.equal(ohlcOutcome.t3, 4);
+  assert.equal(ohlcOutcome.t5, 6);
+  assert.equal(ohlcOutcome.maxDrawdownPct, -7.5);
+  assert.equal(ohlcOutcome.stopHit, true);
+  assert.equal(board.lookbackStats.count, 1);
+  assert.equal(board.lookbackStats.avgHitRatePct, 60);
+
+  await service.rank({
+    asOfDate: '2026-10-14',
+    picks: [{ code: '000002', name: '万科A', industry: '地产', latest: 8.5, changePct: 2.1, turnover: 3.5, amount: 5e8, strategies: ['放量'] }]
+  });
+  assert.match(capturedSystem, /近期高分后验错题教训/);
+  assert.match(capturedSystem, /600519/);
+});
+
+test("parseModelJson ignores stray brackets/braces in prose and string literals", () => {
+  assert.deepEqual(
+    parseModelJson('前文提到 {注意风险}，核心结论：{"ok":true,"note":"含]与{字符"} [风险自担]'),
+    { ok: true, note: "含]与{字符" }
+  );
+  assert.deepEqual(
+    parseModelJson('说明 [1]\n```json\n{"items":[{"code":"600519","score":91}]}\n```\n[注2]'),
+    { items: [{ code: "600519", score: 91 }] }
+  );
 });

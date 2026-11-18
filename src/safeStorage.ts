@@ -31,7 +31,16 @@ export const loadSafeLocalJson = <T>(key: string, fallback: T, validate = sameSt
   }
 };
 
+let writesPaused = false;
+
+/** Keep old in-memory state from writing over local data during backup restore. */
+export function pauseSafeLocalWrites(): () => void {
+  writesPaused = true;
+  return () => { writesPaused = false; };
+}
+
 export const saveSafeLocalJson = (key: string, value: unknown, validate = sameStoredShape(value)): boolean => {
+  if (writesPaused) return false;
   try {
     if (!validate(value)) return false;
     const serialized = JSON.stringify(value);

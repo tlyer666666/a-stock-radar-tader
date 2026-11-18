@@ -1,6 +1,7 @@
 'use strict';
 const { createTradingCalendar, shanghaiClock, validDate } = require('./trend-trading-calendar.cjs');
 const { isBseAshareCode } = require('./price-limit-rules.cjs');
+const { isRiskSecurityName } = require('./strategy-intelligence.cjs');
 const finitePositive = value => typeof value === 'number' && Number.isFinite(value) && value > 0;
 function sourceTime(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return new Date(value < 1e12 ? value * 1000 : value).getTime();
@@ -38,7 +39,7 @@ function createTrendExecutionChecker({ fetchQuote, now = () => new Date(), calen
     if(latest===null||upperLimit===null||lowerLimit===null||lowerLimit>=upperLimit||(latest!==null&&upperLimit!==null&&latest>upperLimit+.005)||(latest!==null&&lowerLimit!==null&&latest<lowerLimit-.005))reasons.push('实际价格或源端涨跌停价缺失/冲突');
     if(suspended===null)reasons.push('行情源未明确提供当前停牌状态，需接入可确认交易状态的数据');
     let state=reasons.length?'unknown':'ready';
-    if(suspended===true || /ST|退市|退$/i.test(String(quote?.name||security.name||''))) {state='blocked';reasons.push('当前停牌或风险警示/退市状态不满足开仓条件');}
+    if(suspended===true || isRiskSecurityName(String(quote?.name||security.name||''))) {state='blocked';reasons.push('当前停牌或风险警示/退市状态不满足开仓条件');}
     if(latest!==null&&upperLimit!==null&&latest>=upperLimit-.005){state='blocked';reasons.push('当前报价处于涨停价格，不据此假设能够成交');}
     if(!reasons.length)reasons.push('报价、源端限价与交易状态检查通过；仍须核对账户权限、公告及公司行为');
     const validUntil=Number.isFinite(quoteEpoch)?new Date(Math.min(quoteEpoch+60000,Date.parse(window.validUntil))).toISOString():null;

@@ -75,7 +75,6 @@ function createBeijingSectorSource({ readUniverse = loadBeijingUniverse, readQuo
   fallbackRoster = bundledRoster, now = () => Date.now(), concurrency = 4, timeoutMs = 90000 } = {}) {
   let cached = null;
   let pending = null;
-  let pendingSignal;
   let lastRoster = null;
   let progress = null;
   let ready;
@@ -127,25 +126,68 @@ function createBeijingSectorSource({ readUniverse = loadBeijingUniverse, readQuo
     if (callerSignal?.aborted) throw callerSignal.reason;
     return snapshotFor(roster, members, rosterError, false, now);
   }
+  let runController = null;
+  let activeWaiters = new Set();
+
+  function attachCallerSignal(promise, signal) {
+    if (!signal) {
+      const token = {};
+      activeWaiters.add(token);
+      return promise.finally(() => activeWaiters.delete(token));
+    }
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const token = signal;
+      activeWaiters.add(token);
+      const cleanup = () => {
+        activeWaiters.delete(token);
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        if (activeWaiters.size === 0 && runController) {
+          runController.abort(signal.reason);
+        }
+        reject(signal.reason || new DOMException("Aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (value) => { cleanup(); resolve(value); },
+        (error) => { cleanup(); reject(error); }
+      );
+    });
+  }
+
   return {
     async load({ forceRefresh = false, signal, waitForQuotes = true } = {}) {
       signal?.throwIfAborted();
-      if (pending && (signal === pendingSignal || !waitForQuotes)) return waitForQuotes ? pending : progress || ready;
+      if (pending) {
+        if (forceRefresh) {
+          try { await attachCallerSignal(pending, signal); } catch { signal?.throwIfAborted(); }
+          cached = null;
+          return this.load({ forceRefresh: true, signal, waitForQuotes });
+        }
+        return attachCallerSignal(waitForQuotes ? pending : progress || ready, signal);
+      }
       if (!forceRefresh && cached && cached.expiresAt > now()) return cached.value;
-      const boundedSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+      runController = new AbortController();
+      activeWaiters = new Set();
+      const boundedSignal = AbortSignal.any([runController.signal, AbortSignal.timeout(timeoutMs)]);
       progress = null;
       let resolveReady, rejectReady;
       ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
       ready.catch(() => {});
-      const request = fetchSnapshot(boundedSignal, signal, value => { progress = value; resolveReady(value); }).then(value => {
+      const request = fetchSnapshot(boundedSignal, runController.signal, value => { progress = value; resolveReady(value); }).then(value => {
         cached = { value, expiresAt: now() + (value.complete && value.quoteCoverage.complete ? 60000 : 15000) };
         progress = value;
         return value;
       }, error => { rejectReady(error); throw error; });
       pending = request;
-      pendingSignal = signal;
-      request.then(() => { if (pending === request) { pending = null; pendingSignal = undefined; } }, () => { if (pending === request) { pending = null; pendingSignal = undefined; } });
-      return waitForQuotes ? request : progress || ready;
+      request.then(
+        () => { if (pending === request) { pending = null; runController = null; } },
+        () => { if (pending === request) { pending = null; runController = null; } }
+      );
+      return attachCallerSignal(waitForQuotes ? request : progress || ready, signal);
     }
   };
 }

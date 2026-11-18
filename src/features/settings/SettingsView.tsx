@@ -6,7 +6,7 @@ import { BackupSettingsCard } from "../backup/BackupSettingsCard";
 import { quickStrategyPresets as strategyPresets } from "../../quickStrategyPresets";
 import { clampNumber, normalizeRiskProfile, riskProfilePresets, sameStrategySet, strategyOptions } from "../../domain/settings";
 import { sourceStatusLabel } from "../market/marketSourceHealth";
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 /* B-04 / B-11：行情来源的「最近成功时间」统一按北京时间显示，非法时间戳兜底 “--”。 */
 import { formatShanghaiTime } from "../../dateUtils";
 
@@ -14,7 +14,14 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
   const [draft, setDraft] = useState<Settings>({ ...value, provider: "ths" });
   const [category, setCategory] = useState("sources");
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<any>(null);
+  const [testResult, setTestResult] = useState<{
+    signature: string;
+    ok: boolean;
+    message?: string;
+    latency?: number;
+    lanes?: Array<{ id: string; label?: string; ok?: boolean; latency?: number; name?: string; latest?: unknown; message?: string }>;
+    [key: string]: unknown;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [sourceHealth, setSourceHealth] = useState<MarketSourceHealth | null>(null);
@@ -27,10 +34,8 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
         if (active) setSourceHealth(next);
       } catch { /* 状态读取失败时保留上次结果 */ }
     };
-    const readWhenVisible = whenVisible(read);
-    readWhenVisible();
-    const timer = window.setInterval(readWhenVisible, 10_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const stop = startVisibleInterval(() => { void read(); }, 10_000, { immediate: true });
+    return () => { active = false; stop(); };
   }, [category, testResult]);
   const healthById = new Map((sourceHealth?.quotes || []).map((entry) => [entry.id, entry]));
   const laneDetail = (id: string, fallback: string) => {
@@ -275,7 +280,7 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           {testResult?.signature === connectionSignature && <div className={`test-result ${testResult.ok ? "ok" : "fail"}`} role={testResult.ok ? "status" : "alert"}><span />{testResult.message}{Number.isFinite(testResult.latency) && <small>{testResult.latency} ms</small>}</div>}
           {testResult?.signature === connectionSignature && Array.isArray(testResult.lanes) && (
             <ul className="source-test-lanes" aria-label="各线路测试结果">
-              {testResult.lanes.map((lane: any) => <li key={lane.id} className={lane.ok ? "ok" : "fail"}><b>{lane.label}</b><span>{lane.ok ? `可用 · ${lane.latency}ms · ${lane.name || ""} ${lane.latest ?? ""}` : `不可用 · ${lane.message || ""}`}</span></li>)}
+              {testResult.lanes.map((lane) => <li key={lane.id} className={lane.ok ? "ok" : "fail"}><b>{lane.label}</b><span>{lane.ok ? `可用 · ${lane.latency}ms · ${lane.name || ""} ${String(lane.latest ?? "")}` : `不可用 · ${lane.message || ""}`}</span></li>)}
             </ul>
           )}
         </div>
@@ -289,12 +294,12 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           </label>
           <label className="field">
             <span>完整策略重算 <b>{draft.refreshSeconds} 秒</b></span>
-            <input type="range" min="60" max="300" step="30" value={draft.refreshSeconds} onChange={(e) => setDraft({ ...draft, refreshSeconds: Number(e.target.value) })} />
+            <input type="range" min="30" max="300" step="30" value={draft.refreshSeconds} onChange={(e) => setDraft({ ...draft, refreshSeconds: Number(e.target.value) })} />
             <small>重算板块、资讯、历史统计和风险项；默认90秒。</small>
           </label>
           <label className="field">
             <span>资讯页面轮询 <b>{draft.newsRefreshSeconds} 秒</b></span>
-            <input type="range" min="5" max="30" step="1" value={draft.newsRefreshSeconds} onChange={(e) => setDraft({ ...draft, newsRefreshSeconds: Number(e.target.value) })} />
+            <input type="range" min="5" max="45" step="1" value={draft.newsRefreshSeconds} onChange={(e) => setDraft({ ...draft, newsRefreshSeconds: Number(e.target.value) })} />
             <small>财联社与财经快讯10秒缓存，公告15秒复核；源平台发布时间延迟另计。</small>
           </label>
           <label className="switch-row">
@@ -304,7 +309,7 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           </label>
           <label className="field">
             <span>提醒分数线 <b>{draft.alertScore} 分</b></span>
-            <input type="range" min="50" max="90" step="5" value={draft.alertScore} onChange={(e) => setDraft({ ...draft, alertScore: Number(e.target.value) })} />
+            <input type="range" min="50" max="95" step="5" value={draft.alertScore} onChange={(e) => setDraft({ ...draft, alertScore: Number(e.target.value) })} />
             <small>MRS 达到该阈值时进入重点关注。</small>
           </label>
           <label className="switch-row">
@@ -398,7 +403,7 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           </label>
           <label className="field">
             <span>最小期望值 <b>{draft.minExpectancyPoints ?? 0.2}</b></span>
-            <input type="range" min="-2" max="5" step="0.05" value={draft.minExpectancyPoints ?? 0.2} onChange={(e) => setDraft({ ...draft, minExpectancyPoints: Number(e.target.value) })} />
+            <input type="range" min="-2" max="8" step="0.05" value={draft.minExpectancyPoints ?? 0.2} onChange={(e) => setDraft({ ...draft, minExpectancyPoints: Number(e.target.value) })} />
             <small>期望值越低说明该信号对组合贡献不足。</small>
           </label>
           <label className="field">

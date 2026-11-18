@@ -351,19 +351,12 @@ test('nested settings identities stay distinct and repeated reset cannot evade a
 
 // Keep the real review -> chart normalization -> cache -> provider URL path.
 // Only external JSON delivery and unrelated review aggregates are replaced.
+// P0-2b 拆分后改为共享夹具：http-client 覆盖递归作用于 services/runtime.cjs。
 function offlineReviewServices({ tencentFallback = false } = {}) {
-  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-  const { createRequire } = require('node:module');
+  const { loadServices, loadServiceModule, ELECTRON_DIR } = require('../qa/service-fixture.cjs');
+  const path = require('node:path');
   const urls = [];
-  const load = (name, overrides = {}) => {
-    const filename = path.join(__dirname, name), actual = createRequire(filename), module = { exports: {} };
-    vm.runInNewContext(fs.readFileSync(filename, 'utf8'), { module, exports: module.exports,
-      require: id => overrides[id] || actual(id), __dirname, __filename: filename, process, console,
-      URL, DOMException, AbortController, AbortSignal, TextDecoder, Buffer, setTimeout, clearTimeout,
-      setImmediate, queueMicrotask }, { filename });
-    return module.exports;
-  };
-  const service = load('services.cjs', { './http-client.cjs': { fetchJsonWithPolicy: async url => {
+  const service = loadServices('', {}, { './http-client.cjs': { fetchJsonWithPolicy: async url => {
     const endpoint = new URL(url); urls.push(endpoint);
     if (tencentFallback && endpoint.hostname === 'web.ifzq.gtimg.cn') {
       assert.equal(endpoint.searchParams.get('param'), 'sh000001,day,,,210,');
@@ -381,7 +374,7 @@ function offlineReviewServices({ tencentFallback = false } = {}) {
     currentLadderPools: async () => ({}), getLimitUpSectorBoard: async () => [],
     discoverLimitUps: async () => ({ rows: [] })
   });
-  return { service, review: load('review-service.cjs', { './services.cjs': service }), urls };
+  return { service, review: loadServiceModule(path.join(ELECTRON_DIR, 'review-service.cjs'), { './services.cjs': service }), urls };
 }
 
 test('professional review loads all five real index identities through chart caches and keeps stock 000001 separate', async () => {
@@ -474,4 +467,32 @@ test("a missing ladder pool retains confirmed market totals without manufacturin
   assert.deepEqual([e.limitDownCount, e.firstBoards, e.continuationBoards, e.maxHeight], [null, null, null, null]);
   const empty = buildProfessionalReviewSnapshot({ ladderPools: { currentPool: [] }, emotion: { limitDownCount: 0 } }).ecology;
   assert.deepEqual([empty.limitUpCount, empty.limitDownCount, empty.firstBoards, empty.continuationBoards, empty.maxHeight], [0, 0, 0, 0, 0]);
+});
+
+test("missing market breadth source leaves market averageReturn and breadth null instead of fake neutral defaults", async () => {
+  const originals = Object.fromEntries([
+    "getReviewIndexChart",
+    "marketEmotionSnapshot",
+    "wholeMarketSnapshot",
+    "currentLadderPools",
+    "getLimitUpSectorBoard",
+    "discoverLimitUps"
+  ].map((key) => [key, services[key]]));
+  try {
+    services.getReviewIndexChart = async () => chart(100);
+    services.marketEmotionSnapshot = async () => ({ date: "2026-08-10", limitUpCount: 10, limitDownCount: 2, score: 55, state: "中性" });
+    services.wholeMarketSnapshot = async () => null;
+    services.currentLadderPools = async () => ({ currentPool: [], previousPool: [], failedPool: [], failedPoolAvailable: true });
+    services.getLimitUpSectorBoard = async () => [];
+    services.discoverLimitUps = async () => ({ rows: [], meta: { dataDate: "2026-08-10", fetchedAt: new Date().toISOString(), providers: [] } });
+    resetProfessionalReviewCache();
+    const review = await getProfessionalReview({ refresh: true, settings: {} });
+    assert.equal(review.market.available, false);
+    assert.equal(review.market.breadth, null);
+    assert.equal(review.market.averageReturn, null);
+    assert.ok(review.evidence.some((line) => line.includes("全市场涨跌家数接口暂时降级")));
+  } finally {
+    Object.assign(services, originals);
+    resetProfessionalReviewCache();
+  }
 });

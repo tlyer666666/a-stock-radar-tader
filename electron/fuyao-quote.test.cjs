@@ -111,3 +111,24 @@ test("blank, absent and invalid quote fields stay unknown while explicit zero re
   assert.equal(quote.turnover, 0);
   assert.deepEqual(quote.missingFields, []);
 });
+
+test("batch response timestamp does not masquerade as per-stock trade lag or trade time", async () => {
+  const clock = at("2026-10-29T10:00:30");
+  const batchAt = at("2026-10-29T10:00:00");
+  const client = createFuyaoClient({
+    getApiKey: () => "sk-fuyao-quote_fixture_0000000000",
+    now: () => clock,
+    fetchJson: async () => ({
+      code: 0,
+      data: {
+        timestamp: batchAt,
+        item: [{ thscode: "600001.SH", ticker: "600001", last_price: 11, prev_price: 10, open_price: 10, high_price: 11, low_price: 10 }]
+      }
+    })
+  });
+  const source = createFuyaoQuoteSource({ fuyao: client, now: () => clock, batchWindowMs: 1 });
+  const quote = await source.quote({ code: "600001", assetType: "stock" });
+  assert.equal(quote.quoteAtIsBatchTime, true);
+  assert.equal(quote.quoteAtIsTradeTime, false);
+  assert.equal(quote.lagSeconds, null);
+});

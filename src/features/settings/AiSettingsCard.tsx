@@ -151,7 +151,7 @@ function AiFrameworkSettings() {
   useEffect(() => {
     if (!api?.frameworks) return;
     let active = true;
-    void api.frameworks().then(value => { if (active) { setCatalog(value); setDraft(structuredClone(value.custom)); } }).catch(() => {});
+    void api.frameworks().then(value => { if (active) { setCatalog(value); setDraft(structuredClone(value.custom)); } }).catch(() => undefined /* optional framework catalog */);
     return () => { active = false; };
   }, [api]);
   if (!api?.frameworks || !api.saveFramework || !catalog || !draft) return null;

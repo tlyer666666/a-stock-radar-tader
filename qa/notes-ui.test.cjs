@@ -189,6 +189,29 @@ describe('随心记 page in the actual renderer', () => {
     }, '?background');
   });
 
+  test('价格条件先触发，之后的循环提醒仍显示为时间提醒', async () => {
+    await pageTest(async page => {
+      const input = page.getByLabel('随心记内容');
+      await input.fill('每15分钟提醒我看 002594，跌破280提醒');
+      await input.press('Enter');
+      await page.waitForFunction(() => window.calls.watch.at(-1)?.items.length === 1);
+      const item = await page.evaluate(() => window.calls.watch.at(-1).items[0]);
+      await page.evaluate(id => {
+        window.nextHits = [{ id, at: new Date().toISOString(), detail: '价格样本已跌破280' }];
+      }, item.id);
+      await page.clock.fastForward('00:16');
+      const popup = page.locator('.notes-popup');
+      await popup.getByText('价格条件到了', { exact: true }).waitFor();
+      await popup.getByRole('button', { name: '收起这条提醒' }).click();
+      await page.clock.fastForward('15:00');
+      await popup.waitFor();
+      assert.equal(await popup.locator('.notes-popup-top b').textContent(), '随心记提醒');
+      assert.match(await popup.locator('.notes-popup-top small').textContent(), /14:15/);
+      await popup.getByRole('button', { name: /知道了/ }).click();
+      assert.equal(await page.locator('.notes-card').count(), 1);
+    });
+  });
+
   test('价格条件：识别「跌破 280」、交给主进程盯；触发后弹提醒、自动让 AI 看，结论显示在卡片里', async () => {
     await pageTest(async page => {
       const input = page.getByLabel('随心记内容');

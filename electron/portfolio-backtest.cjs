@@ -2,6 +2,7 @@
 
 const { isOpeningLimitUpEntry, isClosingLimitDownExit } = require("./price-limit-rules.cjs");
 const { intervalPriceBasisIssue, boardOrderRule } = require("./quant-history-safety.cjs");
+const { pickBacktestSettingOverrides } = require("./security-policy.cjs");
 
 const { DEFAULT_COSTS, roundTripBps, fees } = require("./backtest-costs.cjs");
 const DEFAULT_ANNUAL_TRADING_DAYS = 252;
@@ -429,21 +430,37 @@ function simulateStrategyPortfolio(
       thresholdPercent: MAX_NET_RETURN_GROSS_GAP_PERCENT
     }));
 
-  const entryGroups = new Map();
-  for (const sample of ordered) {
-    const rows = entryGroups.get(sample.entryDate) || [];
-    rows.push(sample);
-    entryGroups.set(sample.entryDate, rows);
-  }
   const firstDate = fullCalendar[0];
   const lastDate = fullCalendar.at(-1);
+  const missingNextDaySample = (sample) =>
+    !sample.executionRejection &&
+    (!sample.expectedMarketEntryDate || sample.entryDate !== sample.expectedMarketEntryDate);
   const outsideRange = ordered.find(
-    (sample) => !sample.executionRejection && (sample.entryDate < firstDate || sample.entryDate > lastDate)
+    (sample) =>
+      !sample.executionRejection &&
+      !missingNextDaySample(sample) &&
+      (sample.entryDate < firstDate || sample.entryDate > lastDate)
   );
   if (outsideRange) {
     throw new TypeError(
       `样本 ${outsideRange.sampleId} 的持有区间超出组合回测窗口 ${firstDate} 至 ${lastDate}`
     );
+  }
+  const entryGroups = new Map();
+  for (const sample of ordered) {
+    let bucketDate = sample.entryDate;
+    if (missingNextDaySample(sample)) {
+      if (sample.expectedMarketEntryDate && sample.expectedMarketEntryDate >= firstDate && sample.expectedMarketEntryDate <= lastDate) {
+        bucketDate = sample.expectedMarketEntryDate;
+      } else if (sample.signalDate >= firstDate && sample.signalDate <= lastDate) {
+        bucketDate = sample.signalDate;
+      } else {
+        bucketDate = firstDate;
+      }
+    }
+    const rows = entryGroups.get(bucketDate) || [];
+    rows.push(sample);
+    entryGroups.set(bucketDate, rows);
   }
   const calendar = fullCalendar;
 
@@ -834,6 +851,31 @@ function simulateStrategyPortfolio(
   };
 }
 
+function prepareSingleBacktestRequest(input, options = {}, deps = {}) {
+  const safeOptions = options && typeof options === "object" && !Array.isArray(options)
+    ? { ...options }
+    : {};
+  if (!safeOptions.externalFactorSnapshots && typeof deps.readExternalFactorSnapshots === "function") {
+    safeOptions.externalFactorSnapshots = deps.readExternalFactorSnapshots();
+  }
+  const allowedOverrides = pickBacktestSettingOverrides(safeOptions.settings);
+  const resolveSettings = typeof deps.settingsForService === "function"
+    ? deps.settingsForService
+    : overrides => overrides;
+  const mergedSettings = resolveSettings(allowedOverrides);
+  safeOptions.settings = pickBacktestSettingOverrides(mergedSettings);
+  return {
+    input,
+    settings: mergedSettings,
+    options: safeOptions,
+    runtimeInput: {
+      requestId: safeOptions.requestId ?? input?.requestId,
+      timeoutMs: safeOptions.timeoutMs ?? input?.timeoutMs
+    }
+  };
+}
+
 module.exports = {
-  simulateStrategyPortfolio
+  simulateStrategyPortfolio,
+  prepareSingleBacktestRequest
 };

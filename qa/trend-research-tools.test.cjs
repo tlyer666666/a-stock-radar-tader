@@ -12,7 +12,7 @@ before(async () => {
   const main = await fs.readFile(path.resolve(__dirname, '../src/main.tsx'), 'utf8');
   const styles = [...main.matchAll(/import\s+["']\.\/([^"']+\.css)["']/g)].map(match => `import '/src/${match[1]}';`).join('\n');
   const html = `<!doctype html><html data-theme="dark"><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module">
-    import React from 'react'; import { createRoot } from 'react-dom/client'; import Tools from '/src/TrendResearchTools.tsx'; ${styles}
+    import React from 'react'; import { createRoot } from 'react-dom/client'; import Tools from '/src/features/trend/TrendResearchTools.tsx'; ${styles}
     window.calls=[]; window.cancelled=[]; window.stockApi={cancelServiceJob:async id=>{window.cancelled.push(id);return true;}};
     window.report={qualification:{status:'REAL_DIAGNOSTIC',returnSuperiorityVerified:true,limitations:['fixture limitation']},baseline:{sharedAccount:{metrics:{closed:2,censored:1,unresolved:3,pending:4,completeEquityEvidence:false}}},advanced:{sharedAccount:{metrics:{closed:5,censored:6,unresolved:7,pending:8,completeEquityEvidence:true}}}};
     const mode=new URLSearchParams(location.search).get('mode');

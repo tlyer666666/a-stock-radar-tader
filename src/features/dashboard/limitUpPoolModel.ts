@@ -1,7 +1,7 @@
 import { nullableNumber } from '../../domain/formatters';
 import { clampNumber } from '../../domain/settings';
 
-export type LimitUpStock = Security & Record<string, any>;
+export type LimitUpStock = Security & Record<string, unknown>;
 export type LimitPoolSort = { key: string; direction: 'asc' | 'desc' };
 export type ColumnPreferences = { visible: string[]; widths: Record<string, number> };
 export const LIMIT_COLUMNS = [

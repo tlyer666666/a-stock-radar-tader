@@ -1,15 +1,15 @@
 'use strict';
 require('../qa/test-env.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const {createRequire}=require('node:module');
+const {loadServices}=require('../qa/service-fixture.cjs');
 const services=require('./services.cjs');
 const security={code:'600001',secid:'1.600001',assetType:'stock'};
 const bar=date=>({date,open:10,high:11,low:9,close:10,volume:1000,amount:1000000});
 const quote=patch=>({code:'600001',preClose:10,latest:10,open:10,high:11,low:9,volume:1000,volumeUnit:'lots',amount:1000000,quoteAt:'2026-10-30T07:00:00Z',quoteAtIsTradeTime:true,...patch});
 function serviceFixture(snapshot){
- const filename=path.join(__dirname,'services.cjs'),realRequire=createRequire(filename),module={exports:{}};
+ // P0-2b 拆分后：fuyao-client 拦截经共享夹具递归作用于 services/*.cjs 子模块。
  const fake={configured:()=>true,dailyHistory:async()=>Object.assign([bar('2026-10-29'),bar('2026-10-30')],{index:false,adjustment:0}),snapshot:async()=>new Map([['600001.SH',snapshot]])};
- vm.runInNewContext(fs.readFileSync(filename,'utf8'),{module,exports:module.exports,require:id=>id==='./fuyao-client.cjs'?{...realRequire(id),createFuyaoClient:()=>fake}:realRequire(id),__dirname,__filename:filename,process,console,URL,DOMException,AbortController,AbortSignal,TextDecoder,setTimeout,clearTimeout,setImmediate,Buffer},{filename});return module.exports;
+ return loadServices('',{},{'./fuyao-client.cjs':{...require('./fuyao-client.cjs'),createFuyaoClient:()=>fake}});
 }
 
 test('snapshot output time cannot stand in for actual stock trading evidence when appending daily bars',()=>{
@@ -32,7 +32,7 @@ test('real Fuyao history path keeps Friday unchanged for weekend and pre-open fl
 });
 
 function universeFixture(pages,cache={}){
- const source=fs.readFileSync(path.join(__dirname,'services.cjs'),'utf8'),start=source.indexOf('async function loadSelectionUniverse()'),end=source.indexOf('\nconst strategySelectionLoader',start);
+ const source=fs.readFileSync(path.join(__dirname,'services/strategy-scan.cjs'),'utf8'),start=source.indexOf('async function loadSelectionUniverse()'),end=source.indexOf('\nconst strategySelectionLoader',start);
  return vm.runInNewContext(`(${source.slice(start,end).trim()})`,{serviceSignal:()=>new AbortController().signal,SELECTION_UNIVERSE_BOARDS:[{label:'fixture',filter:'mock'}],serviceRuntime:{track:fn=>fn()},trackServiceRequest:p=>p,strategySelectionMarketData:{fetchUniversePage:async({page})=>{const value=typeof pages==='function'?pages(page):pages[page-1];if(value instanceof Error)throw value;return value;}},industryFromIndex:()=>null,
   readSelectionUniverseCache:()=>cache.saved||null,writeSelectionUniverseCache:boards=>{cache.written=boards.map(board=>board.rows.length);}});
 }
@@ -65,7 +65,7 @@ test('universe coverage uses unique valid codes and flags overlapping or malform
 });
 
 test('1.6.51: sector members mark ST limit-ups at the current exchange limit and never mark new listings by price', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'services/sectors.cjs'), 'utf8');
   const start = source.indexOf('function markMemberLimitUps('), end = source.indexOf('\nasync function analyzeSector', start);
   const rules = require('./price-limit-rules.cjs');
   const mark = vm.runInNewContext(`(${source.slice(start, end).trim()})`, { finiteOrNull: v => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v)), priceLimitRate: rules.priceLimitRate, isLimitUpPrice: rules.isLimitUpPrice, roundPrice: v => Math.round(v * 100 + 1e-7) / 100 });
@@ -79,9 +79,11 @@ test('1.6.51: sector members mark ST limit-ups at the current exchange limit and
 });
 
 test('1.6.51: Fuyao review data refreshes every minute only while the market can change', () => {
-  const source = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'services/fuyao-review.cjs'), 'utf8');
   const start = source.indexOf('function fuyaoDataMayChange('), end = source.indexOf('\nasync function getFuyaoReviewData', start);
-  const mayChange = vm.runInNewContext(`(${source.slice(start, end).trim()})`, { require });
+  // P0-2b：该函数已迁到 services/ 子目录，内部相对 require 需按新位置解析
+  const nestedRequire = require('node:module').createRequire(path.join(__dirname, 'services/fuyao-review.cjs'));
+  const mayChange = vm.runInNewContext(`(${source.slice(start, end).trim()})`, { require: nestedRequire });
   const at = text => Date.parse(`${text}+08:00`);
   assert.equal(mayChange(at('2026-11-04T09:20:00')), true, 'call auction');
   assert.equal(mayChange(at('2026-11-04T14:30:00')), true);
@@ -109,13 +111,12 @@ function fuyaoReviewFixture(start) {
     limitUpLadder: () => load({ days: [] }), hotStocks: () => load([]), skyrocket: () => load([]),
     dragonTiger: () => load({ date: '2026-11-04', count: 0, stocks: [], desks: [] }), anomalies: () => load({ rows: [] })
   };
-  const filename = path.join(__dirname, 'services.cjs'), realRequire = createRequire(filename), module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module, exports: module.exports, require: id => id === './fuyao-client.cjs' ? { ...realRequire(id), createFuyaoClient: () => fake } : realRequire(id),
-    __dirname, __filename: filename, process, console, URL, Date: Clock, DOMException, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, Buffer
-  }, { filename });
+  // P0-2b 拆分后：fuyao 单例在 services/runtime.cjs 里创建，拦截同样经共享夹具递归生效。
+  const service = loadServices('', { Date: Clock }, {
+    './fuyao-client.cjs': { ...require('./fuyao-client.cjs'), createFuyaoClient: () => fake }
+  });
   state.fake = fake;
-  return { service: module.exports, state, at: text => { state.now = Date.parse(`${text}+08:00`); } };
+  return { service, state, at: text => { state.now = Date.parse(`${text}+08:00`); } };
 }
 
 for (const [closed, opening] of [['09:09:00', '09:10:00'], ['12:54:00', '12:55:00']]) {
@@ -204,7 +205,7 @@ test('Fuyao opening-session requests do not subscribe to an unfinished closed-se
 });
 
 test('chart entry preserves the producer drain and invalid securities still reject asynchronously', async () => {
-  const source = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'services/quotes-and-charts.cjs'), 'utf8');
   const start = source.search(/(?:async )?function getChart\(/), end = source.indexOf('\n// Internal review-only identities.', start);
   let release;
   const task = Promise.resolve({ rows: [] });
@@ -226,8 +227,9 @@ for (const stage of ['industry list', 'industry members']) test(`actual industry
   const fs = require('node:fs'), vm = require('node:vm'), ts = require('typescript');
   const { createStockIndustryIndex } = require('./stock-industry-index.cjs');
   const { createFuyaoClient } = require('./fuyao-client.cjs');
-  const source = fs.readFileSync(require.resolve('./services.cjs'), 'utf8');
-  const ast = ts.createSourceFile('services.cjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  // P0-2b：createStockIndustryIndexWith 已迁到 services/runtime.cjs
+  const source = fs.readFileSync(require.resolve('./services/runtime.cjs'), 'utf8');
+  const ast = ts.createSourceFile('services/runtime.cjs', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'createStockIndustryIndexWith');
   let release; const physical = new Promise(resolve => { release = resolve; }); let sourceSignal;
   const transport = (_url, options) => {
@@ -257,7 +259,7 @@ for (const stage of ['industry list', 'industry members']) test(`actual industry
 });
 
 test('concept board leaves counts pending until actual membership is counted', async () => {
-  const source = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const source = fs.readFileSync(path.join(__dirname, 'services/sectors.cjs'), 'utf8');
   const start = source.indexOf('async function getSectorStrengthBoard(');
   const fn = source.slice(start, source.indexOf('async function getIndustrySectorBoard(', start)).trim();
   let pool = null;
@@ -282,7 +284,7 @@ test('concept board leaves counts pending until actual membership is counted', a
 });
 
 test('a selected concept loads members by its catalog ID and never falls through to a similarly named industry', async () => {
-  const src = fs.readFileSync(path.join(__dirname, 'services.cjs'), 'utf8');
+  const src = fs.readFileSync(path.join(__dirname, 'services/sectors.cjs'), 'utf8');
   const fn = src.slice(src.indexOf('async function loadSectorStrength('), src.indexOf('async function sectorStrength(')).trim();
   const requested = [];
   let available = true;
@@ -300,4 +302,30 @@ test('a selected concept loads members by its catalog ID and never falls through
   available = false;
   assert.equal(await load(row, context), null);
   assert.deepEqual(requested, ['301111', '301111']);
+});
+
+test('selection universe cache reads and writes asynchronously in order and cleans temp files on failure', async () => {
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'astock-universe-cache-'));
+  try {
+    const src = fs.readFileSync(path.join(__dirname, 'services/strategy-scan.cjs'), 'utf8');
+    const start = src.indexOf('async function readSelectionUniverseCache(');
+    const end = src.indexOf('\nfunction shanghaiDateText(', start);
+    const fn = vm.runInNewContext(`${src.slice(start, end)}\n({ readSelectionUniverseCache, writeSelectionUniverseCache })`, {
+      require,
+      SELECTION_UNIVERSE_CACHE_MAX_AGE_MS: 7 * 24 * 60 * 60 * 1000,
+      shanghaiDateText: () => '2026-11-17',
+      selectionUniverseCacheFile: () => path.join(dir, 'selection-universe.json')
+    });
+    const ok1 = await fn.writeSelectionUniverseCache([{ label: '深市主板', rows: [{ code: '000001', name: '平安银行' }] }]);
+    assert.equal(ok1, true);
+    const parsed = JSON.parse(fs.readFileSync(path.join(dir, 'selection-universe.json'), 'utf8'));
+    assert.equal(parsed.savedDate, '2026-11-17');
+    assert.equal(parsed.boards['深市主板'][0].code, '000001');
+    const reloaded = await fn.readSelectionUniverseCache();
+    assert.equal(reloaded.boards['深市主板'][0].code, '000001');
+    assert.equal(fs.existsSync(path.join(dir, 'selection-universe.json.tmp')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

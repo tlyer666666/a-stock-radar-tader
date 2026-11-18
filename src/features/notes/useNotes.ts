@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
+import { startVisibleInterval } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import {
   EMPTY_NOTES, MAX_NOTES, MAX_NOTE_LENGTH, NOTES_KEY, aiQuestion, awaiting, dueToFire, markFired, normalizeIntervalMinutes, normalizeNotes, snooze, watchingConditions,
@@ -7,6 +8,8 @@ import {
 } from "./notesModel";
 
 export type NotesApi = ReturnType<typeof useNotes>;
+type ReminderKind = "time" | "condition";
+type ReminderPopup = { id: string; kind: ReminderKind };
 const CHECK_MS = 15_000;
 const AI_POLL_MS = 1500;
 const isStore = (value: unknown) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -32,10 +35,15 @@ export function useNotes() {
   });
   const [saveError, setSaveError] = useState(false);
   /** 本次弹出、还没关掉的提醒卡片。 */
-  const [popup, setPopup] = useState<string[]>([]);
+  const [popup, setPopup] = useState<ReminderPopup[]>([]);
+  const showPopups = useCallback((notes: readonly { id: string }[], kind: ReminderKind) => {
+    const ids = new Set(notes.map(note => note.id));
+    setPopup(current => [...current.filter(entry => !ids.has(entry.id)), ...notes.map(note => ({ id: note.id, kind }))].slice(-6));
+  }, []);
   const [watch, setWatch] = useState<{ watching: number; session: boolean; error: string }>({ watching: 0, session: false, error: "" });
   const storeRef = useRef(store);
   const mountedRef = useRef(true);
+  const lastWatchingRef = useRef(0);
   const soonTimersRef = useRef(new Set<number>());
 
   useEffect(() => {
@@ -49,6 +57,7 @@ export function useNotes() {
   }, []);
 
   const commit = useCallback((update: (current: NotesStore) => NotesStore) => {
+    if (!mountedRef.current) return;
     const next = normalizeNotes(update(storeRef.current));
     storeRef.current = next;
     setStore(next);
@@ -83,8 +92,10 @@ export function useNotes() {
           if (previous && /已被删除/.test(errorText(reason))) return agent.start({ message: aiQuestion(note), focus, title: `随心记 · ${brief(note.text, 10)}` });
           throw reason;
         });
+      if (!mountedRef.current) return;
       patchNote(id, item => ({ ...item, ai: { ...item.ai!, conversationId: started.conversationId, runId: started.runId } }));
     } catch (reason) {
+      if (!mountedRef.current) return;
       patchNote(id, item => ({ ...item, ai: { ...item.ai!, status: "error", answer: errorText(reason) || "AI 分析没能开始", runId: null } }));
     }
   }, [patchNote]);
@@ -94,21 +105,24 @@ export function useNotes() {
   useEffect(() => {
     const agent = window.stockApi?.ai?.agent;
     if (!agent || !aiRunning) return;
-    let busy = false;
+    let busy = false, mounted = true;
     const tick = async () => {
-      if (busy) return;
+      if (busy || !mounted) return;
       busy = true;
       try {
         for (const note of storeRef.current.notes.filter(item => item.ai?.status === "running" && item.ai.runId)) {
+          if (!mounted) return;
           const runId = note.ai!.runId!;
           let run: AgentRun;
           try { run = await agent.poll(runId); }
           catch (reason) {
+            if (!mounted) return;
             const gone = /已结束或已过期|AGENT_RUN_GONE/.test(String(reason));
             patchNote(note.id, item => item.ai?.runId === runId ? { ...item, ai: { ...item.ai, status: "error", runId: null,
               answer: gone ? "上次的分析被中断了（软件重启或已过期），点「再问一次 AI」重新分析" : errorText(reason) } } : item);
             continue;
           }
+          if (!mounted) return;
           if (run.status === "running") continue;
           const ok = run.status === "done" && run.message && !run.message.error;
           const answer = ok ? run.message!.content : run.error || run.message?.content || "分析没有完成";
@@ -120,9 +134,8 @@ export function useNotes() {
         }
       } finally { busy = false; }
     };
-    const timer = window.setInterval(() => { void tick(); }, AI_POLL_MS);
-    void tick();
-    return () => window.clearInterval(timer);
+    const stop = startVisibleInterval(() => { void tick(); }, AI_POLL_MS, { immediate: true, resumeOnVisible: true });
+    return () => { mounted = false; stop(); };
   }, [aiRunning, patchNote]);
 
   /** 提醒发出后：开了「到点自动让 AI 先看」时，关联了股票的记录自动问一次。 */
@@ -139,13 +152,13 @@ export function useNotes() {
     if (!due.length) return;
     const ids = new Set(due.map(note => note.id));
     commit(current => ({ ...current, notes: current.notes.map(note => ids.has(note.id) ? markFired(note, now) : note) }));
-    setPopup(current => [...current.filter(id => !ids.has(id)), ...due.map(note => note.id)].slice(-6));
+    showPopups(due, "time");
     const title = due.length > 1 ? `随心记：${due.length} 条提醒到了` : "随心记提醒";
     const body = due.map(note => brief(note.text)).join("\n").slice(0, 240);
     if (storeRef.current.systemNotify) void window.stockApi?.notify?.({ title, body }).catch(() => undefined);
     speak(due.length > 1 ? `随心记，${due.length} 条提醒到了。第一条：${brief(due[0]!.text)}` : `随心记提醒：${brief(due[0]!.text)}`);
     autoAsk(due);
-  }, [commit, speak, autoAsk]);
+  }, [commit, speak, autoAsk, showPopups]);
 
   const syncingIntervals = useRef(false);
   const intervalsDirty = useRef(false);
@@ -182,40 +195,53 @@ export function useNotes() {
             return { ...note, remindAt: new Date(hit.nextAt).toISOString(), lastFiredAt: new Date(hit.lastFiredAt).toISOString(), firedFor: null };
           })
         }));
-        setPopup(current => [...current.filter(id => !ids.has(id)), ...due.map(note => note.id)].slice(-6));
+        showPopups(due, "time");
         speak(`随心记提醒：${brief(due[0]!.text)}`);
         autoAsk(due);
       }
     } catch { /* 应用通信中断时下次同步重试。 */ }
     finally { syncingIntervals.current = false; }
-  }, [autoAsk, commit, speak]);
+  }, [autoAsk, commit, speak, showPopups]);
 
   // ---------- 价格条件 ----------
   const syncing = useRef(false);
   const syncWatch = useCallback(async () => {
     const api = window.stockApi?.notesWatch;
-    if (!api || syncing.current) return;
+    if (!api || syncing.current || !mountedRef.current) return;
+    const items = watchingConditions(storeRef.current.notes).map(note => ({ id: note.id, code: note.stock!.code, name: note.stock!.name, secid: note.stock!.secid,
+      text: brief(note.text, 80), condition: note.condition! }));
+    if (!items.length && lastWatchingRef.current === 0) return;
     syncing.current = true;
     try {
-      const items = watchingConditions(storeRef.current.notes).map(note => ({ id: note.id, code: note.stock!.code, name: note.stock!.name, secid: note.stock!.secid,
-        text: brief(note.text, 80), condition: note.condition! }));
       const result = await api({ items, systemNotify: storeRef.current.systemNotify });
+      if (!mountedRef.current) return;
+      lastWatchingRef.current = result.watching;
       setWatch(current => current.watching === result.watching && current.session === result.session && current.error === (result.error || "")
         ? current : { watching: result.watching, session: result.session, error: result.error || "" });
-      const hits = result.hits.filter(hit => storeRef.current.notes.some(note => note.id === hit.id && !note.done && note.condition && !note.conditionHit));
+      const sent = new Map(items.map(item => [item.id, item]));
+      const current = new Map(storeRef.current.notes.map(note => [note.id, note]));
+      const hits = result.hits.filter(hit => {
+        const requested = sent.get(hit.id);
+        const note = current.get(hit.id);
+        return requested && note && !note.done && !note.conditionHit &&
+          note.stock?.code === requested.code && note.stock.secid === requested.secid &&
+          note.condition?.field === requested.condition.field && note.condition.op === requested.condition.op &&
+          note.condition.value === requested.condition.value;
+      });
       if (!hits.length) return;
       const byId = new Map(hits.map(hit => [hit.id, hit]));
       commit(current => ({ ...current, notes: current.notes.map(note => byId.has(note.id) ? { ...note, conditionHit: { at: byId.get(note.id)!.at, detail: byId.get(note.id)!.detail } } : note) }));
-      setPopup(current => [...current.filter(id => !byId.has(id)), ...hits.map(hit => hit.id)].slice(-6));
+      showPopups(hits, "condition");
       speak(`随心记，价格条件到了：${hits[0]!.detail}`);
       autoAsk(storeRef.current.notes.filter(note => byId.has(note.id)));
     } catch { /* 主进程暂时不可用：下次再同步 */ }
     finally { syncing.current = false; }
-  }, [commit, speak, autoAsk]);
+  }, [commit, speak, autoAsk, showPopups]);
 
   useEffect(() => {
     const run = () => { if (!mountedRef.current) return; check(); void syncWatch(); void syncIntervals(); };
     run();
+    // Deliberately not visibility-gated so due-date reminders & system notifications still fire while minimized.
     const timer = window.setInterval(run, CHECK_MS);
     // 电脑睡眠唤醒、窗口切回来时马上看一次，不等下一个 15 秒。
     const onVisible = () => { if (!document.hidden) run(); };
@@ -270,26 +296,27 @@ export function useNotes() {
         return next;
       })
     }));
-    if ("done" in patch || "remindAt" in patch || "condition" in patch) setPopup(current => current.filter(item => item !== id));
+    if ("done" in patch || "remindAt" in patch || "condition" in patch) setPopup(current => current.filter(item => item.id !== id));
     soon();
   }, [commit, soon]);
 
   const later = useCallback((id: string, at: number) => {
     commit(current => ({ ...current, notes: current.notes.map(note => note.id === id ? { ...snooze(note, at), conditionHit: null, condition: note.conditionHit ? null : note.condition } : note) }));
-    setPopup(current => current.filter(item => item !== id));
-  }, [commit]);
+    setPopup(current => current.filter(item => item.id !== id));
+    soon();
+  }, [commit, soon]);
 
   /** 条件触发后重新盯（例如价格又回来了，想再等一次）。 */
-  const rearm = useCallback((id: string) => { patchNote(id, note => ({ ...note, conditionHit: null, updatedAt: new Date().toISOString() })); setPopup(current => current.filter(item => item !== id)); soon(); }, [patchNote, soon]);
+  const rearm = useCallback((id: string) => { patchNote(id, note => ({ ...note, conditionHit: null, updatedAt: new Date().toISOString() })); setPopup(current => current.filter(item => item.id !== id)); soon(); }, [patchNote, soon]);
 
   const remove = useCallback((id: string) => {
     commit(current => ({ ...current, notes: current.notes.filter(note => note.id !== id) }));
-    setPopup(current => current.filter(item => item !== id));
+    setPopup(current => current.filter(item => item.id !== id));
     soon();
   }, [commit, soon]);
 
   const clearDone = useCallback(() => commit(current => ({ ...current, notes: current.notes.filter(note => !note.done) })), [commit]);
-  const dismiss = useCallback((id?: string) => setPopup(current => id ? current.filter(item => item !== id) : []), []);
+  const dismiss = useCallback((id?: string) => setPopup(current => id ? current.filter(item => item.id !== id) : []), []);
   const setVoice = useCallback((voice: boolean) => { if (!voice) window.speechSynthesis?.cancel(); commit(current => ({ ...current, voice })); }, [commit]);
   const setSystemNotify = useCallback((systemNotify: boolean) => {
     commit(current => ({ ...current, systemNotify }));
@@ -298,7 +325,10 @@ export function useNotes() {
   const setAiAuto = useCallback((aiAuto: boolean) => commit(current => ({ ...current, aiAuto })), [commit]);
   const clearAi = useCallback((id: string) => patchNote(id, note => ({ ...note, ai: null })), [patchNote]);
 
-  const popupNotes = popup.map(id => store.notes.find(note => note.id === id)).filter((note): note is Note => Boolean(note) && !note!.done);
+  const popupNotes = popup.flatMap(entry => {
+    const note = store.notes.find(item => item.id === entry.id);
+    return note && !note.done ? [{ note, kind: entry.kind }] : [];
+  });
   return {
     store, saveError, popupNotes, awaitingCount: awaiting(store.notes).length, watch,
     add, update, later, rearm, remove, clearDone, dismiss, setVoice, setSystemNotify, setAiAuto, askAi, clearAi

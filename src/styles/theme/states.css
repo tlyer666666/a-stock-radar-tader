@@ -228,5 +228,21 @@
   color: var(--ink-3);
 }
 
+.workspace-error-fallback {
+  min-height: 360px;
+  padding: var(--space-lg);
+}
+
+.workspace-error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
+
+.workspace-error-actions button.secondary {
+  background: var(--surface-2);
+  color: var(--ink-1);
+  border: 1px solid var(--line-1);
+}
 
 .paper-settlement-warning { color: var(--warn); white-space: normal; }

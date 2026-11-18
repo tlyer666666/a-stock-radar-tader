@@ -3,7 +3,8 @@ const assert = require("node:assert/strict");
 const { scanStrategySignals, shutdownServiceResources } = require("../electron/services.cjs");
 async function main() {
   try {
-    const report = await scanStrategySignals({ maxUniverse: Math.max(40, Math.min(300, Number(process.argv[2]) || 300)), strategyIds: [] });
+    const candidateLimit = Math.max(40, Math.min(300, Number(process.argv[2]) || 80));
+    const report = await scanStrategySignals({ maxUniverse: candidateLimit, candidateLimit, strategyIds: [] });
     assert.equal(report.mode, "selection");
     assert.ok(report.processed > 0);
     assert.equal(report.strategies.length, require("../electron/strategy-signal-engine.cjs").STRATEGY_DEFINITIONS.length);

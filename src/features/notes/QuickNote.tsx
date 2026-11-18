@@ -10,7 +10,8 @@ import type { NotesApi } from "./useNotes";
 export default function QuickNote({ api, stock }: { api: NotesApi; stock: NoteStock }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
-  const [message, setMessage] = useState("");
+  const [savedToast, setSavedToast] = useState("");
+  const [saveError, setSaveError] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const [conditionChoice, setConditionChoice] = useState<number | null>(null);
   const interpreted = inspectReminder(text);
@@ -19,8 +20,8 @@ export default function QuickNote({ api, stock }: { api: NotesApi; stock: NoteSt
   const otherStock = mentionedStockCodes(text, [stock]).some(code => code !== stock.code);
   const condition = conditions[conditionChoice ?? (conditions.length === 1 ? 0 : -1)] ?? null;
   useEffect(() => { if (open) ref.current?.focus(); }, [open]);
-  useEffect(() => { setOpen(false); setText(""); setConditionChoice(null); }, [stock.code]);
-  useEffect(() => { if (!message) return; const timer = window.setTimeout(() => setMessage(""), 4000); return () => window.clearTimeout(timer); }, [message]);
+  useEffect(() => { setOpen(false); setText(""); setConditionChoice(null); setSaveError(""); }, [stock.code]);
+  useEffect(() => { if (!savedToast) return; const timer = window.setTimeout(() => setSavedToast(""), 4000); return () => window.clearTimeout(timer); }, [savedToast]);
   const at = parsed?.at ?? null;
   const problem = otherStock ? "这条记录提到了其他股票，请在随心记里选择关联股票"
     : interpreted && "problem" in interpreted ? interpreted.problem
@@ -29,18 +30,18 @@ export default function QuickNote({ api, stock }: { api: NotesApi; stock: NoteSt
   const save = () => {
     if (problem) return;
     const error = api.add({ text: text.includes(stock.code) ? text : `${stock.name} ${stock.code}：${text.trim()}`, remindAt: at, repeat: at ? parsed!.repeat : "none", intervalMinutes: parsed?.intervalMinutes, stock, condition });
-    if (error) { setMessage(error); return; }
-    setText(""); setConditionChoice(null); setOpen(false); setMessage("已记到随心记");
+    if (error) { setSaveError(error); return; }
+    setSaveError(""); setText(""); setConditionChoice(null); setOpen(false); setSavedToast("已记到随心记");
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (text.trim()) save(); }
-    if (event.key === "Escape") setOpen(false);
+    if (event.key === "Escape") { setSaveError(""); setOpen(false); }
   };
   return <span className="quick-note">
-    <button type="button" className="secondary-btn" aria-expanded={open} onClick={() => setOpen(value => !value)}><NotebookPen size={17} />{message || "记一笔"}</button>
+    <button type="button" className="secondary-btn" aria-expanded={open} onClick={() => { setSaveError(""); setOpen(value => !value); }}><NotebookPen size={17} />{savedToast || "记一笔"}</button>
     {open && <div className="quick-note-pop panel" role="dialog" aria-label={`记一笔：${stock.name}`}>
-      <div className="quick-note-head"><b>记到随心记 · {stock.name}</b><button type="button" className="icon-btn" aria-label="关闭" onClick={() => setOpen(false)}><X size={14} /></button></div>
-      <textarea ref={ref} rows={3} maxLength={2000} value={text} aria-label="记一笔内容" onChange={event => { setText(event.target.value); setConditionChoice(null); }} onKeyDown={onKeyDown}
+      <div className="quick-note-head"><b>记到随心记 · {stock.name}</b><button type="button" className="icon-btn" aria-label="关闭" onClick={() => { setSaveError(""); setOpen(false); }}><X size={14} /></button></div>
+      <textarea ref={ref} rows={3} maxLength={2000} value={text} aria-label="记一笔内容" onChange={event => { setText(event.target.value); setConditionChoice(null); if (saveError) setSaveError(""); }} onKeyDown={onKeyDown}
         placeholder="想到什么就写，例如：明天开盘看是否高开；跌破 10.5 就减仓（回车保存）" />
       <div className="quick-note-foot">
         {at && !problem && <span className="notes-badge scheduled"><AlarmClock size={12} />{formatRemind(new Date(at).toISOString())}{parsed?.repeat && parsed.repeat !== "none" ? `（${repeatLabel(parsed.repeat, parsed.intervalMinutes)}）` : ""} 提醒</span>}
@@ -52,8 +53,8 @@ export default function QuickNote({ api, stock }: { api: NotesApi; stock: NoteSt
           </select>
         </label>}
         {condition && <span className="notes-badge awaiting"><Crosshair size={12} />盘中{describeCondition(condition)}时提醒</span>}
-        {problem && <span className="notes-warn" role="status">{problem}</span>}
-        {!problem && !at && !condition && <small>没写时间和价格条件就只记录</small>}
+        {(problem || saveError) && <span className="notes-warn" role={saveError ? "alert" : "status"}>{problem || saveError}</span>}
+        {!problem && !saveError && !at && !condition && <small>没写时间和价格条件就只记录</small>}
         <button type="button" className="primary-btn" disabled={!text.trim() || Boolean(problem)} onClick={save}>记下来</button>
       </div>
     </div>}

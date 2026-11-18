@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, ListPlus, LoaderCircle, MessagesSquare, RefreshCw, Sparkles } from "lucide-react";
 import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
 import { aiErrorMessage, ratingTone } from "../strategy-selection/aiSelectionModel";
-import { profileFacts } from "./aiCustomModel";
+import { AI_CUSTOM_MAX, mergeCustomStocks, profileFacts } from "./aiCustomModel";
 import { AiDimBreakdown, AiFrameworkPicker, useAiFrameworks } from "./AiFrameworkParts";
 
 const stamp = (value: AiRanking) => `${value.model} · 数据日 ${value.asOfDate || "--"} · ${new Date(value.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}${value.cached ? " · 本机已保存" : ""}`;
@@ -11,7 +11,11 @@ const stamp = (value: AiRanking) => `${value.model} · 数据日 ${value.asOfDat
  * 个股页「AI 点评」：任意一只 A 股都能让 AI 打分点评（勾选的几个模型一起打分）。
  * 打开时只读本机已保存的点评，点按钮才调用模型。价位由软件按均线和区间高低点算出，AI 只引用。
  */
-export function AiStockReviewPanel({ security, context }: { security: { code: string; name: string }; context?: string[] | undefined }) {
+export function AiStockReviewPanel({ security, context, agentContext }: {
+  security: { code: string; name: string };
+  context?: string[] | undefined;
+  agentContext?: Record<string, unknown> | undefined;
+}) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai;
   const [review, setReview] = useState<AiRanking | null>(null);
   const [busy, setBusy] = useState(false);
@@ -30,8 +34,8 @@ export function AiStockReviewPanel({ security, context }: { security: { code: st
     const stop = () => { generation.current += 1; };
     setReview(null); setBusy(false); setError(""); setNotice("");
     if (!api?.cachedReview) return stop;
-    void api.status().then(value => { if (generation.current === current) setConfigured(value.configured); }).catch(() => {});
-    void api.cachedReview(security.code).then(value => { if (generation.current === current && cacheRevision.current === cachedAt) setReview(value); }).catch(() => {});
+    void api.status().then(value => { if (generation.current === current) setConfigured(value.configured); }).catch(() => undefined /* optional AI status */);
+    void api.cachedReview(security.code).then(value => { if (generation.current === current && cacheRevision.current === cachedAt) setReview(value); }).catch(() => undefined /* optional AI cache */);
     return stop;
   }, [api, security.code, reload]);
 
@@ -49,16 +53,21 @@ export function AiStockReviewPanel({ security, context }: { security: { code: st
     } finally { if (generation.current === current) setBusy(false); }
   };
   const addToList = async () => {
-    if (!api.customList || !api.saveCustomList || adding.current) return; // 防连点：上一次还没保存完不重复读写
+    if ((!api.mutateCustomList && !(api.customList && api.saveCustomList)) || adding.current) return;
     adding.current = true;
     const current = generation.current;
     const say = (text: string) => { if (generation.current === current) setNotice(text); };
     try {
-      const list = await api.customList();
-      if (list.some(item => item.code === security.code)) { say("已在「AI 选股 → 我的股票」清单里。"); return; }
-      if (list.length >= 40) { say("「我的股票」清单已满 40 只，请先在 AI 选股页删掉一些。"); return; }
-      await api.saveCustomList([...list, { code: security.code, name: security.name }]);
-      say("已加入「AI 选股 → 我的股票」清单，可在那里和其他股票一起打分排名。");
+      const items = [{ code: security.code, name: security.name }];
+      const result = api.mutateCustomList
+        ? await api.mutateCustomList({ kind: "add", items })
+        : mergeCustomStocks(await api.customList!(), items);
+      if (result.duplicate) say("已在「AI 选股 → 我的股票」清单里。");
+      else if (result.overflow) say(`「我的股票」清单已满 ${AI_CUSTOM_MAX} 只，请先在 AI 选股页删掉一些。`);
+      else if (result.added) {
+        if (!api.mutateCustomList) await api.saveCustomList!(result.list);
+        say("已加入「AI 选股 → 我的股票」清单，可在那里和其他股票一起打分排名。");
+      } else say("请选择一只 A 股股票。");
     } catch (reason) { say(aiErrorMessage(reason)); }
     finally { adding.current = false; }
   };
@@ -72,9 +81,9 @@ export function AiStockReviewPanel({ security, context }: { security: { code: st
       <div><Bot size={18} /><span><b>AI 点评</b><small>{!configured ? "未配置模型：到「设置 → AI 助手」添加模型配置" : item ? "按日线体检数据和分析框架打分" : "按日线体检数据和分析框架打分点评；点一次调用一次模型，同一数据日的结果保存在本机"}</small></span></div>
       <div className="ai-selection-actions">
         {frameworks.available && <AiFrameworkPicker inline catalog={frameworks.catalog} onChoose={id => void frameworks.choose(id)} disabled={busy} />}
-        {api.saveCustomList && <button type="button" className="secondary-btn" onClick={() => void addToList()}><ListPlus size={15} />加入我的股票</button>}
+        {(api.mutateCustomList || (api.customList && api.saveCustomList)) && <button type="button" className="secondary-btn" onClick={() => void addToList()}><ListPlus size={15} />加入我的股票</button>}
         {api.agent && canOpenAgent() && <button type="button" className="secondary-btn" disabled={!configured} title="打开 AI 问股，让 AI 自己查数据做全面分析，可以继续追问"
-          onClick={() => openAgentFor({ code: security.code, name: security.name })}><MessagesSquare size={15} />AI 问股深入分析</button>}
+          onClick={() => openAgentFor({ code: security.code, name: security.name }, "full", agentContext)}><MessagesSquare size={15} />AI 问股深入分析</button>}
         <button type="button" className="primary-btn" onClick={() => void run()} disabled={busy || !configured}>
           {busy ? <LoaderCircle size={15} className="spin" /> : review ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "AI 点评中…" : review ? "重新点评" : "AI 点评"}</button>
       </div>
@@ -91,6 +100,22 @@ export function AiStockReviewPanel({ security, context }: { security: { code: st
         <small>{stamp(review)}</small>
       </div>
       <AiDimBreakdown item={item} />
+      {item.disagreement && item.disagreementDetail && (
+        <div className="ai-debate-panel standalone" role="region" aria-label={`多空分歧辩论（差${item.disagreementDetail.spread}分）`}>
+          <div className="ai-debate-head">多空辩论（模型分差 {item.disagreementDetail.spread} 分）</div>
+          <div className="ai-debate-sides">
+            <div className="ai-debate-side bull">
+              <b>看多 · {item.disagreementDetail.highest.model} ({item.disagreementDetail.highest.score}分{item.disagreementDetail.highest.rating ? `/${item.disagreementDetail.highest.rating}` : ""})</b>
+              <span>{item.disagreementDetail.highest.thesis || item.disagreementDetail.highest.highlights}</span>
+            </div>
+            <div className="ai-debate-side bear">
+              <b>谨慎 · {item.disagreementDetail.lowest.model} ({item.disagreementDetail.lowest.score}分{item.disagreementDetail.lowest.rating ? `/${item.disagreementDetail.lowest.rating}` : ""})</b>
+              <span>{item.disagreementDetail.lowest.thesis || item.disagreementDetail.lowest.risks}</span>
+            </div>
+          </div>
+          {item.disagreementDetail.verificationPoint && <div className="ai-debate-trigger">{item.disagreementDetail.verificationPoint}</div>}
+        </div>
+      )}
       <dl className="ai-stock-review-text">
         {item.trend && <><dt>趋势位置</dt><dd>{item.trend}</dd></>}
         {item.volume && <><dt>量能</dt><dd>{item.volume}</dd></>}

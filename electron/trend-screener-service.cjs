@@ -27,7 +27,8 @@ const MAX_HISTORY_CONCURRENCY = 6;
 const PIPELINE_VERSION = "trend-scan-3.3.0";
 // 只有涨停形态（classic/quality）要求近期涨停；经典技术策略库不要求。
 const LIMIT_STRATEGY_IDS = new Set(["classic-v1", "quality-v2"]);
-const TREND_LIBRARY = require("../config/trend-strategy-library.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const TREND_LIBRARY = loadNamedConfig("trend-strategy-library");
 const MAX_STRATEGIES = TREND_LIBRARY.length + 2;
 
 const FUNNEL_STAGES = ["rawValidated", "recentLimitPassed", "trendPassed", "technicalTriggered", "riskPassed"];

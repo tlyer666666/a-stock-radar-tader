@@ -24,7 +24,12 @@ async function run() {
     result.pid = identity.pid;
     const page = await app.firstWindow();
     page.on("pageerror", (error) => result.rendererErrors.push(error.message));
-    await page.getByRole("heading", { name: "趋势筛选", exact: true }).waitFor();
+    const openTrendWorkspace = async () => {
+      await page.getByRole("heading", { name: "策略选股", exact: true }).waitFor();
+      await page.locator(".strategy-library-item.trend").first().click();
+      await page.getByRole("heading", { name: /^趋势模型/ }).waitFor();
+    };
+    await openTrendWorkspace();
     await app.evaluate(({ BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0];
       w.webContents.setBackgroundThrottling(false);
@@ -47,7 +52,7 @@ async function run() {
       await page.getByRole("region", { name: "虚构方案算例", exact: true }).waitFor();
       await page.getByRole("button", { name: "方案算例", exact: true }).click();
       await page.reload();
-      await page.getByRole("heading", { name: "趋势筛选", exact: true }).waitFor();
+      await openTrendWorkspace();
       await delay(60);
       const sample = await app.evaluate(({ app, BrowserWindow }) => ({
         memory: process.memoryUsage(),

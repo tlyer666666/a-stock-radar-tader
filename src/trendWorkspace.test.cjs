@@ -84,3 +84,27 @@ test("scan journal is locally bounded, hashes exact parameters and preserves rea
   const csv = workspace.trendScanJournalCsv(rows);
   for (const text of ['参数指纹', '冻结参数', '研究起始', '2025-01-01', '复查 201', first.parameterHash]) assert.ok(csv.includes(text), text);
 });
+
+test("saveQuickObservationPlan creates valid non-duplicate plans readable by readTrendPlans", () => {
+  const store = storage();
+  const created = workspace.saveQuickObservationPlan(store, {
+    code: "300059",
+    name: "东方财富",
+    referencePrice: 22.5,
+    asOf: "2026-11-15",
+    reason: "AI综合分 84 · 放量突破"
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.created, true);
+  assert.equal(created.plan.candidate.board, "growth");
+  assert.equal(workspace.readTrendPlans(store).plans.length, 1);
+
+  const duplicate = workspace.saveQuickObservationPlan(store, {
+    code: "300059",
+    name: "东方财富",
+    referencePrice: 23.0
+  });
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.created, false);
+  assert.equal(workspace.readTrendPlans(store).plans.length, 1);
+});

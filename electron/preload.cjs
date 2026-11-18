@@ -45,10 +45,12 @@ contextBridge.exposeInMainWorld("stockApi", {
     setRankModels: (ids) => invoke("ai:rank-models", ids),
     history: () => invoke("ai:history"),
     historyDay: (asOfDate) => invoke("ai:history-day", asOfDate),
+    outcomesLeaderboard: (input = {}) => invoke("ai:outcomes-leaderboard", input),
     review: (input = {}) => invoke("ai:review", input),
     cachedReview: (code) => invoke("ai:review-cached", code),
     customList: () => invoke("ai:custom-list"),
     saveCustomList: (items) => invoke("ai:custom-save", items),
+    mutateCustomList: (input) => invoke("ai:custom-mutate", input),
     rankCustom: (input = {}) => invoke("ai:custom-rank", input),
     cachedCustom: () => invoke("ai:custom-cached"),
     frameworks: () => invoke("ai:frameworks"),
@@ -58,6 +60,12 @@ contextBridge.exposeInMainWorld("stockApi", {
     cachedMarketReview: (asOfDate) => invoke("ai:market-review-cached", asOfDate),
     interpret: (input = {}) => invoke("ai:interpret", input),
     cachedInterpret: (input = {}) => invoke("ai:interpret-cached", input),
+    onStream: (listener) => {
+      if (typeof listener !== "function") return () => {};
+      const handler = (_event, payload) => listener(payload);
+      ipcRenderer.on("ai:stream", handler);
+      return () => ipcRenderer.removeListener("ai:stream", handler);
+    },
     agent: {
       state: () => invoke("agent:state"),
       conversation: (id) => invoke("agent:conversation", id),
@@ -67,7 +75,8 @@ contextBridge.exposeInMainWorld("stockApi", {
       remove: (id) => invoke("agent:delete", id),
       settings: (input = {}) => invoke("agent:settings", input),
       saveSkill: (input = {}) => invoke("agent:skill-save", input),
-      removeSkill: (id) => invoke("agent:skill-delete", id)
+      removeSkill: (id) => invoke("agent:skill-delete", id),
+      syncWorkspace: (input = {}) => invoke("agent:sync-workspace", input)
     }
   },
   thsWeb: {
@@ -109,9 +118,11 @@ contextBridge.exposeInMainWorld("stockApi", {
   getConceptChain: (query) => invoke("market:concept-chain", query),
   analyzeSector: (sector) => invoke("market:analyze-sector", sector),
   getProfessionalReview: (options = {}) => invoke("review:get-market", options),
+  getExternalFactorArchive: () => invoke("strategy:external-archive"),
   openProfessionalReviewWindow: () => invoke("review:open-window"),
   getNewsFeed: (input) => invoke("news:get-feed", input),
   refreshNewsFeed: (input) => invoke("news:refresh", input),
+  analyzeNewsImpact: (input) => invoke("news:analyze-impact", input),
   runBacktest: (security, options = {}) =>
     invoke("backtest:run", security, options),
   runPortfolioBacktest: (input = {}) =>
@@ -136,8 +147,9 @@ contextBridge.exposeInMainWorld("stockApi", {
     configure: (patch) => invoke("backup:configure", patch),
     run: (local, options) => invoke("backup:run", local, options),
     inspect: (name, password) => invoke("backup:inspect", name, password),
-    restore: (name, password) => invoke("backup:restore", name, password),
-    relaunch: () => invoke("backup:relaunch")
+    prepareRestore: (name, password) => invoke("backup:prepare-restore", name, password),
+    cancelRestore: token => invoke("backup:cancel-restore", token),
+    restore: token => invoke("backup:restore", token)
   },
   openExternal: (url) => invoke("shell:open-external", url),
   getPlatform: () => process.platform,

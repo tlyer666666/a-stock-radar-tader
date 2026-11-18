@@ -1,22 +1,24 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { AlarmClock, BellRing, Bot, Check, CircleAlert, Clock3, Crosshair, Loader2, MessageSquareText, NotebookPen, Pencil, Repeat2, RotateCcw, Search, Sparkles, Trash2, Volume2, VolumeX, X } from "lucide-react";
+import { AlarmClock, ArrowDownUp, BellRing, Bot, Check, CircleAlert, Clock3, Crosshair, Loader2, NotebookPen, Pencil, Repeat2, RotateCcw, Search, Sparkles, Star, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import {
   MAX_INTERVAL_MINUTES, REPEAT_LABELS, cnParts, cnTime, describeCondition, formatRemind, inspectReminder, isAwaiting, mentionedStockCodes, nextTradingDay, normalizeCondition, normalizeIntervalMinutes, parseConditions, parseNoteClock, presetTimes, repeatLabel, sortNotes,
   tradingDayOnOrAfter, type Note, type NoteCondition, type NoteRepeat, type NoteStock
 } from "./notesModel";
-import { AgentMarkdown } from "../ai-agent/AnswerMarkdown";
-import { stanceTone } from "../ai-agent/agentModel";
-import { openAgentConversation } from "../ai-agent/useAgentConversation";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import type { NotesApi } from "./useNotes";
+import { AiButton, AiResult, NoteReminderStack, securityOf } from "./NoteReminderStack";
+import { inferSecid } from "../../domain/securityIdentifiers";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
+import { startVisibleInterval } from "../../visiblePolling";
+
+export { NoteReminderStack };
 
 type Filter = "active" | "awaiting" | "scheduled" | "plain" | "done" | "all";
 const FILTERS: Array<[Filter, string]> = [["active", "进行中"], ["awaiting", "到点待处理"], ["scheduled", "待提醒"], ["plain", "随手记"], ["done", "已完成"], ["all", "全部"]];
 const toLocalInput = (ms: number) => { const { date, minutes } = cnParts(ms); return `${date}T${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`; };
 const fromLocalInput = parseNoteClock;
 const stateOf = (note: Note) => note.done ? "done" : isAwaiting(note) ? "awaiting" : note.remindAt || (note.condition && note.stock) ? "scheduled" : "plain";
-const secidOf = (code: string) => `${code.startsWith("6") || code.startsWith("9") ? "1" : "0"}.${code}`;
+const secidOf = inferSecid;
 
 /** 稍后提醒的几个常用选项。 */
 function laterOptions(now = Date.now()) {
@@ -29,11 +31,24 @@ function laterOptions(now = Date.now()) {
   ];
 }
 
-export default function NotesView({ api, onOpenStock, holdings = [], watchlist = [] }: {
+export default function NotesView({
+  api,
+  onOpenStock,
+  holdings = [],
+  watchlist = [],
+  onAddMonitor,
+  onAddToT,
+  onAddFavorite,
+  favoriteCodes
+}: {
   api: NotesApi;
   onOpenStock: (security: Security) => void;
   holdings?: readonly Pick<NoteStock, "code" | "name">[];
   watchlist?: readonly Pick<NoteStock, "code" | "name">[];
+  onAddMonitor?: ((stock: Security, condition?: NoteCondition | null) => void) | undefined;
+  onAddToT?: ((stock: Security) => void) | undefined;
+  onAddFavorite?: ((stock: Security) => void) | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
 }) {
   const { store } = api;
   const [filter, setFilter] = useState<Filter>("active");
@@ -42,7 +57,7 @@ export default function NotesView({ api, onOpenStock, holdings = [], watchlist =
   const [tick, setTick] = useState(Date.now());
   const [confirm, setConfirm] = useState<{ request: ConfirmDialogRequest; run: () => void } | null>(null);
   const ask = (request: ConfirmDialogRequest, run: () => void) => setConfirm({ request, run });
-  useEffect(() => { const timer = window.setInterval(() => setTick(Date.now()), 30_000); return () => window.clearInterval(timer); }, []);
+  useEffect(() => startVisibleInterval(() => setTick(Date.now()), 30_000, { resumeOnVisible: true }), []);
 
   const counts = useMemo(() => {
     const result: Record<Filter, number> = { active: 0, awaiting: 0, scheduled: 0, plain: 0, done: 0, all: store.notes.length };
@@ -92,8 +107,9 @@ export default function NotesView({ api, onOpenStock, holdings = [], watchlist =
         <p>{store.notes.length ? "换个筛选看看。" : "在上面输入框写下你的想法，回车或点「记下来」。"}</p>
       </div> : <ul className="notes-list">
         {visible.map(note => editing === note.id
-          ? <li key={note.id}><NoteEditor note={note} now={tick} onCancel={() => setEditing(null)} onSave={patch => { api.update(note.id, patch); setEditing(null); }} /></li>
-          : <li key={note.id}><NoteCard note={note} now={tick} api={api} onEdit={() => setEditing(note.id)} onOpenStock={onOpenStock}
+          ? <li key={note.id}><NoteEditor note={note} now={tick} knownStocks={[...holdings, ...watchlist]} onCancel={() => setEditing(null)} onSave={patch => { api.update(note.id, patch); setEditing(null); }} /></li>
+          : <li key={note.id}><NoteCard note={note} now={tick} api={api} knownStocks={[...holdings, ...watchlist]} onEdit={() => setEditing(note.id)} onOpenStock={onOpenStock}
+            onAddMonitor={onAddMonitor} onAddToT={onAddToT} onAddFavorite={onAddFavorite} favoriteCodes={favoriteCodes}
             onDelete={() => ask({ title: "删除这条记录？", message: note.text.slice(0, 80), confirmLabel: "删除", tone: "danger" }, () => api.remove(note.id))} /></li>)}
       </ul>}
     </section>
@@ -268,9 +284,12 @@ function Composer({ api, now, knownStocks }: {
     <textarea ref={inputRef} value={text} rows={3} maxLength={2000} aria-label="随心记内容"
       placeholder="例如：每个交易日开盘前半小时看 600519，或 002594 跌破 280 时提醒我（回车保存，Shift+回车换行）"
       onChange={event => {
+        const nextText = event.target.value;
         changeDraft();
-        if (ai) { ai.undo(); setAi(null); }
-        setText(event.target.value); setStockChoice(null); setConditionChoice(null);
+        if (ai) setAi(null);
+        setText(nextText);
+        setStockChoice(current => current && mentionedStockCodes(nextText, knownStocks).includes(current) ? current : null);
+        setConditionChoice(null);
       }} onKeyDown={onKeyDown} />
     <div className="notes-remind-row">
       <span className="notes-remind-label"><AlarmClock size={14} />提醒</span>
@@ -326,12 +345,42 @@ function WatchStatus({ api }: { api: NotesApi }) {
     {api.watch.error && <span className="notes-warn">报价暂时取不到：{api.watch.error}</span>}</p>;
 }
 
-const securityOf = (stock: NoteStock): Security => ({ code: stock.code, name: stock.name, secid: stock.secid, assetType: "stock" });
-
-function NoteCard({ note, now, api, onEdit, onDelete, onOpenStock }: { note: Note; now: number; api: NotesApi; onEdit: () => void; onDelete: () => void; onOpenStock: (security: Security) => void }) {
+function NoteCard({
+  note,
+  now,
+  api,
+  knownStocks,
+  onEdit,
+  onDelete,
+  onOpenStock,
+  onAddMonitor,
+  onAddToT,
+  onAddFavorite,
+  favoriteCodes
+}: {
+  note: Note;
+  now: number;
+  api: NotesApi;
+  knownStocks: readonly Pick<NoteStock, "code" | "name">[];
+  onEdit: () => void;
+  onDelete: () => void;
+  onOpenStock: (security: Security) => void;
+  onAddMonitor?: ((stock: Security, condition?: NoteCondition | null) => void) | undefined;
+  onAddToT?: ((stock: Security) => void) | undefined;
+  onAddFavorite?: ((stock: Security) => void) | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+}) {
   const state = stateOf(note);
   const [later, setLater] = useState(false);
   const timeFired = Boolean(note.remindAt && note.firedFor === note.remindAt);
+  const mentionedCode = !note.stock ? mentionedStockCodes(note.text, knownStocks)[0] : undefined;
+  const known = mentionedCode ? knownStocks.find(item => item.code === mentionedCode) : undefined;
+  const actionStock: Security | null = note.stock
+    ? securityOf(note.stock)
+    : mentionedCode
+      ? { code: mentionedCode, name: known?.name || mentionedCode, secid: secidOf(mentionedCode), assetType: "stock" }
+      : null;
+  const isFav = actionStock ? Boolean(favoriteCodes?.has(actionStock.code)) : false;
   return <article className={`notes-card ${state}`}>
     <p className="notes-text">{note.text}</p>
     <div className="notes-meta">
@@ -345,6 +394,28 @@ function NoteCard({ note, now, api, onEdit, onDelete, onOpenStock }: { note: Not
       <small>记于 {formatRemind(note.createdAt, now)}</small>
       <span className="notes-card-actions">
         {!note.done && <AiButton note={note} api={api} />}
+        {actionStock && (
+          <>
+            {onAddMonitor && (note.condition || note.stock) && (
+              <button type="button" className="link-btn" title="同步到个股实时盯盘规则" onClick={() => onAddMonitor(actionStock, note.condition)}>
+                <Crosshair size={13} />{note.condition ? "同步盯盘" : "设为盯盘"}
+              </button>
+            )}
+            {onAddToT && (
+              <button type="button" className="link-btn" title="一键加入做T助手实时跟踪" onClick={() => onAddToT(actionStock)}>
+                <ArrowDownUp size={13} />加入做T
+              </button>
+            )}
+            {onAddFavorite && !isFav && (
+              <button type="button" className="link-btn" title="一键加入自选板块" onClick={() => onAddFavorite(actionStock)}>
+                <Star size={13} />加自选
+              </button>
+            )}
+            {!note.stock && (
+              <button type="button" className="link-btn" onClick={() => onOpenStock(actionStock)}>看 {actionStock.name}</button>
+            )}
+          </>
+        )}
         {!note.done && note.conditionHit && <button type="button" className="link-btn" title="价格条件重新开始盯" onClick={() => api.rearm(note.id)}><Crosshair size={13} />重新盯</button>}
         {!note.done && (note.remindAt || note.conditionHit) && note.repeat === "none" && <span className="notes-later">
           <button type="button" className="link-btn" aria-expanded={later} onClick={() => setLater(value => !value)}><AlarmClock size={13} />稍后提醒</button>
@@ -357,40 +428,23 @@ function NoteCard({ note, now, api, onEdit, onDelete, onOpenStock }: { note: Not
         <button type="button" className="link-btn danger" aria-label="删除这条" onClick={onDelete}><Trash2 size={13} /></button>
       </span>
     </div>
-    {note.ai && <AiResult note={note} api={api} now={now} />}
+    {note.ai && <AiResult note={note} api={api} now={now} onOpenStock={onOpenStock} />}
   </article>;
 }
 
-function AiButton({ note, api, primary = false }: { note: Note; api: NotesApi; primary?: boolean }) {
-  if (!window.stockApi?.ai?.agent) return null;
-  const running = note.ai?.status === "running";
-  return <button type="button" className={primary ? "secondary-btn" : "link-btn"} disabled={running} title="让 AI 读取实时行情，判断这件事现在该怎么做"
-    onClick={() => void api.askAi(note.id)}>{running ? <Loader2 size={13} className="spin" /> : <Bot size={13} />}{running ? "AI 在看…" : note.ai ? "再问一次 AI" : "让 AI 看看"}</button>;
-}
-
-/** AI 的判断：结论、时间，正文默认收起一部分；可以去 AI 问股接着追问。 */
-function AiResult({ note, api, now, compact = false }: { note: Note; api: NotesApi; now: number; compact?: boolean }) {
-  const ai = note.ai!;
-  const [open, setOpen] = useState(!compact);
-  const tone = stanceTone((ai.stance || undefined) as AgentStance | undefined);
-  const canContinue = ai.status !== "running" && !["pending", "none"].includes(ai.conversationId);
-  return <div className={`notes-ai ${ai.status}`} aria-label="AI 的看法">
-    <div className="notes-ai-head">
-      <Bot size={14} /><b>{ai.status === "running" ? "AI 正在读行情、想办法…" : ai.status === "error" ? "AI 没看成" : "AI 的看法"}</b>
-      {ai.status === "done" && ai.stance && ai.stance !== "不适用" && <span className={`agent-stance ${tone}`}>{ai.stance}</span>}
-      {ai.status !== "running" && <small>{ai.trigger === "auto" ? "到点自动 · " : ""}{formatRemind(ai.at, now)}</small>}
-      <span className="notes-card-actions">
-        {ai.status === "done" && <button type="button" className="link-btn" aria-expanded={open} onClick={() => setOpen(value => !value)}>{open ? "收起" : "展开"}</button>}
-        {canContinue && <button type="button" className="link-btn" onClick={() => openAgentConversation(ai.conversationId)}><MessageSquareText size={13} />去 AI 问股追问</button>}
-        {ai.status !== "running" && !compact && <button type="button" className="link-btn" aria-label="清除 AI 的看法" onClick={() => api.clearAi(note.id)}><X size={13} /></button>}
-      </span>
-    </div>
-    {ai.status === "error" && <p className="notes-ai-error">{ai.answer}</p>}
-    {ai.status === "done" && <div className={open ? "notes-ai-body" : "notes-ai-body clipped"}><AgentMarkdown text={ai.answer} /></div>}
-  </div>;
-}
-
-function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; onSave: (patch: Partial<Note>) => void; onCancel: () => void }) {
+function NoteEditor({
+  note,
+  now,
+  knownStocks,
+  onSave,
+  onCancel
+}: {
+  note: Note;
+  now: number;
+  knownStocks: readonly Pick<NoteStock, "code" | "name">[];
+  onSave: (patch: Partial<Note>) => void;
+  onCancel: () => void;
+}) {
   const [text, setText] = useState(note.text);
   const [time, setTime] = useState(note.remindAt ? toLocalInput(Date.parse(note.remindAt)) : "");
   const [repeat, setRepeat] = useState<NoteRepeat>(note.repeat);
@@ -409,10 +463,26 @@ function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; 
   const condition = value.trim() && Number.isFinite(number) ? normalizeCondition({ field, op, value: field === "changePct" ? (op === "gte" ? Math.abs(number) : -Math.abs(number)) : number }) : null;
   const badCondition = Boolean(value.trim()) && !condition;
   const sameCondition = JSON.stringify(condition) === JSON.stringify(note.condition);
+  const mentionedCodes = useMemo(() => mentionedStockCodes(text.trim(), knownStocks), [text, knownStocks]);
+  const updatedStock = useMemo(() => {
+    if (text.trim() === note.text.trim() || mentionedCodes.length !== 1) return undefined;
+    const nextCode = mentionedCodes[0]!;
+    if (nextCode === note.stock?.code) return undefined;
+    const known = knownStocks.find(item => item.code === nextCode && item.name && item.name !== nextCode);
+    return { code: nextCode, name: known?.name || nextCode, secid: secidOf(nextCode) };
+  }, [text, note.text, note.stock?.code, mentionedCodes, knownStocks]);
+  const activeStock = updatedStock ?? note.stock;
   return <form className="notes-card editing" onSubmit={event => {
     event.preventDefault();
     if (!text.trim() || past || badCondition || badInterval) return;
-    onSave({ text: text.trim(), ...(changedTime ? { remindAt: at ? new Date(at).toISOString() : null } : {}), repeat: at ? repeat : "none", intervalMinutes, ...(sameCondition ? {} : { condition }) });
+    onSave({
+      text: text.trim(),
+      ...(updatedStock ? { stock: updatedStock } : {}),
+      ...(changedTime ? { remindAt: at ? new Date(at).toISOString() : null } : {}),
+      repeat: at ? repeat : "none",
+      intervalMinutes,
+      ...(sameCondition ? {} : { condition })
+    });
   }}>
     <textarea value={text} rows={3} maxLength={2000} aria-label="编辑内容" onChange={event => setText(event.target.value)} />
     <div className="notes-meta">
@@ -423,8 +493,8 @@ function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; 
       {past && <span className="notes-warn"><CircleAlert size={13} />这个时间已经过了</span>}
       {at !== null && !past && <small>{formatRemind(new Date(at).toISOString(), now)} 提醒</small>}
     </div>
-    {note.stock && <div className="notes-meta notes-condition-edit">
-      <span className="notes-remind-label"><Crosshair size={14} />盯盘 {note.stock.name}</span>
+    {activeStock && <div className="notes-meta notes-condition-edit">
+      <span className="notes-remind-label"><Crosshair size={14} />盯盘 {activeStock.name}</span>
       <select value={field} aria-label="条件类型" onChange={event => setField(event.target.value as NoteCondition["field"])}><option value="latest">价格</option><option value="changePct">涨跌幅</option></select>
       <select value={op} aria-label="条件方向" onChange={event => setOp(event.target.value as NoteCondition["op"])}>
         {field === "latest" ? <><option value="lte">跌到（≤）</option><option value="gte">涨到（≥）</option></> : <><option value="gte">涨超（%）</option><option value="lte">跌超（%）</option></>}
@@ -440,34 +510,4 @@ function NoteEditor({ note, now, onSave, onCancel }: { note: Note; now: number; 
       </span>
     </div>
   </form>;
-}
-
-/** 到点的提醒卡片：浮在右下角，在任何页面都会出现，处理完才消失。 */
-export function NoteReminderStack({ api, onOpenNotes, onOpenStock }: { api: NotesApi; onOpenNotes: () => void; onOpenStock: (security: Security) => void }) {
-  const notes = api.popupNotes;
-  if (!notes.length) return null;
-  return <aside className="notes-popup-stack" aria-label="随心记提醒" role="alert">
-    {notes.length > 1 && <div className="notes-popup-head"><BellRing size={14} />{notes.length} 条提醒<button type="button" className="link-btn" onClick={() => api.dismiss()}>全部收起</button></div>}
-    {notes.map(note => {
-      const byCondition = Boolean(note.conditionHit) && !(note.remindAt && note.firedFor === note.remindAt);
-      return <div key={note.id} className="notes-popup">
-        <div className="notes-popup-top">{byCondition ? <Crosshair size={15} /> : <BellRing size={15} />}<b>{byCondition ? "价格条件到了" : "随心记提醒"}</b>
-          <small>{byCondition ? formatRemind(note.conditionHit!.at) : (note.lastFiredAt || note.firedFor || note.remindAt) ? formatRemind((note.lastFiredAt || note.firedFor || note.remindAt)!) : ""}</small>
-          <button type="button" className="icon-btn" aria-label="收起这条提醒" onClick={() => api.dismiss(note.id)}><X size={14} /></button></div>
-        {byCondition && <p className="notes-popup-detail">{note.conditionHit!.detail}</p>}
-        <p>{note.text}</p>
-        {note.ai && <AiResult note={note} api={api} now={Date.now()} compact />}
-        <div className="notes-popup-actions">
-          {note.repeat === "none" || byCondition ? <>
-            <button type="button" className="primary-btn" onClick={() => api.update(note.id, { done: true })}><Check size={14} />完成</button>
-            <button type="button" className="secondary-btn" onClick={() => api.later(note.id, Date.now() + 600_000)}>10 分钟后</button>
-            <button type="button" className="secondary-btn" onClick={() => api.later(note.id, Date.now() + 3600_000)}>1 小时后</button>
-          </> : <button type="button" className="primary-btn" onClick={() => api.dismiss(note.id)}><Check size={14} />知道了（{note.remindAt ? `下次 ${formatRemind(note.remindAt)}` : "不再重复"}）</button>}
-          {!note.ai && <AiButton note={note} api={api} primary />}
-          {note.stock && <button type="button" className="link-btn" onClick={() => { onOpenStock(securityOf(note.stock!)); api.dismiss(note.id); }}>看 {note.stock.name}</button>}
-          <button type="button" className="link-btn" onClick={() => { onOpenNotes(); api.dismiss(note.id); }}>打开随心记</button>
-        </div>
-      </div>;
-    })}
-  </aside>;
 }

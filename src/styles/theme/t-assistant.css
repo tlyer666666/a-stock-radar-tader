@@ -136,7 +136,7 @@
 .t-assistant-side { display: inline-flex; border: 1px solid var(--line-2); border-radius: var(--radius-sm); overflow: hidden; }
 .t-assistant-side button { height: var(--control-h-sm); padding: 0 14px; border: 0; background: var(--surface-2); color: var(--ink-2); font: inherit; font-size: var(--fs-sm); cursor: pointer; }
 .t-assistant-side button.active.sell { background: var(--down); color: var(--ink-on-accent); }
-.t-assistant-side button.active.buy { background: var(--up); color: var(--on-up); }
+.t-assistant-side button.active.buy { background: var(--up); color: var(--ink-on-accent); }
 .t-assistant-table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .t-assistant-table th { padding: 4px 6px; border-bottom: 1px solid var(--line-1); color: var(--ink-3); font-weight: 500; text-align: right; }
 .t-assistant-table td { padding: 4px 6px; border-bottom: 1px solid var(--line-1); color: var(--ink-1); text-align: right; }
@@ -153,6 +153,15 @@
 .t-assistant-fields small { color: var(--ink-4); font-size: var(--fs-2xs); line-height: 1.5; }
 
 .t-assistant-disclaimer { margin: 0; color: var(--ink-4); font-size: var(--fs-2xs); line-height: 1.7; }
+.t-assistant-diagnosis { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); flex-wrap: wrap; padding: var(--space-sm) var(--space-md); }
+.t-assistant-diagnosis-info { display: flex; align-items: center; gap: var(--space-sm); flex-wrap: wrap; min-width: 0; flex: 1; }
+.t-assistant-diagnosis-info p { margin: 0; font-size: var(--fs-xs); color: var(--ink-2); line-height: 1.5; }
+.t-assistant-diagnosis-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-full); font-size: var(--fs-xs); font-weight: 700; color: var(--ink-1); background: var(--surface-3); }
+.t-assistant-diagnosis-badge.buy { color: var(--up); background: var(--up-soft); }
+.t-assistant-diagnosis-badge.sell { color: var(--down); background: var(--down-soft); }
+.t-assistant-diagnosis-badge.warn { color: var(--warn); background: var(--warn-soft); }
+.t-assistant-winrate { color: var(--ink-3); font-size: var(--fs-2xs); font-variant-numeric: tabular-nums; }
+.t-assistant-config-sync { display: flex; align-items: center; justify-content: flex-end; margin-top: var(--space-xs); }
 
 @media (max-width: 1100px) {
   .t-assistant-head { grid-template-columns: 1fr; }

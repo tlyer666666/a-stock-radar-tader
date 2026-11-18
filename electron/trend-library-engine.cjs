@@ -1,6 +1,7 @@
 "use strict";
 
-const catalog = require("../config/trend-strategy-library.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const catalog = loadNamedConfig("trend-strategy-library");
 const { trendMath } = require("./trend-screener-engine.cjs");
 const indicators = require("./trend-indicators.cjs");
 const { prepareAlignedTrendSeries, maAt, atr14, ceilCents, floorCents } = trendMath;

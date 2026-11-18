@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronUp, Flame, Layers3, Landmark, Radar, ScrollText } from "lucide-react";
 import { Fragment, useState } from "react";
-import type { ReactNode } from "react";
+import type { ElementType, ReactNode } from "react";
 import { fmtMoney } from "../../domain/formatters";
 import { formatShanghaiDateTime } from "../../dateUtils";
 
@@ -11,7 +11,7 @@ import { formatShanghaiDateTime } from "../../dateUtils";
 type Stock = { code: string; name: string; thscode?: string };
 type HotRow = Stock & { rank: number | null; heat: number | null; heatText?: string; rankChange: number | null; latest?: number | null; changePct?: number | null };
 type HotPeriod = { hot: HotRow[] | null; skyrocket: HotRow[] | null };
-type FuyaoReview = {
+export type FuyaoReview = {
   available: boolean;
   reason?: string;
   source?: string;
@@ -33,17 +33,17 @@ type FuyaoReview = {
 
 const pctText = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) ? "--" : `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
 const tone = (value: number | null | undefined) => value === null || value === undefined || !Number.isFinite(value) || value === 0 ? "" : value > 0 ? "fy-up" : "fy-down";
-const toSecurity = (stock: Stock) => ({ code: stock.code, name: stock.name, secid: `${/^6/.test(stock.code) ? 1 : 0}.${stock.code}`,
+const toSecurity = (stock: Stock): Security => ({ code: stock.code, name: stock.name, secid: `${/^6/.test(stock.code) ? 1 : 0}.${stock.code}`,
   thscode: stock.thscode || `${stock.code}.${/^6/.test(stock.code) ? "SH" : /^(?:[48]|920)/.test(stock.code) ? "BJ" : "SZ"}`, assetType: "stock" });
 
-function Card({ icon: Icon, title, subtitle, children, wide = false }: { icon: any; title: string; subtitle?: string; children: ReactNode; wide?: boolean }) {
+function Card({ icon: Icon, title, subtitle, children, wide = false }: { icon: ElementType; title: string; subtitle?: string; children: ReactNode; wide?: boolean }) {
   return <section className={`review-panel fy-card${wide ? " fy-wide" : ""}`}>
     <div className="fy-card-title"><Icon size={16} /><b>{title}</b>{subtitle && <small>{subtitle}</small>}</div>
     {children}
   </section>;
 }
 
-function StockChip({ stock, extra, onOpen }: { stock: Stock; extra?: ReactNode; onOpen: (stock: any) => void }) {
+function StockChip({ stock, extra, onOpen }: { stock: Stock; extra?: ReactNode; onOpen: (stock: Security) => void }) {
   return <button type="button" className="fy-chip" onClick={() => onOpen(toSecurity(stock))} title={`${stock.name} ${stock.code}，打开个股复盘`}>
     <b>{stock.name}</b>{extra}
   </button>;
@@ -55,7 +55,7 @@ const heatText = (row: HotRow) => row.heatText || (row.heat === null || !Number.
 const rankChangeText = (value: number | null) => value === null || !Number.isFinite(value) || value === 0 ? "—" : value > 0 ? `↑${value}` : `↓${-value}`;
 
 /** 同花顺热榜：与同花顺App一致分「1小时」「24小时」两个页签，每个页签可看热股榜或飙升榜（各最多30只）。 */
-export function HotListCard({ data, onOpenStock }: { data: FuyaoReview; onOpenStock: (stock: any) => void }) {
+export function HotListCard({ data, onOpenStock }: { data: FuyaoReview; onOpenStock: (stock: Security) => void }) {
   const lists = data.hotLists || (data.hot?.length || data.skyrocket?.length ? { hour: null, day: { hot: data.hot || null, skyrocket: data.skyrocket || null } } : null);
   const [period, setPeriod] = useState<"hour" | "day">(() => lists?.[rememberedHotPeriod] ? rememberedHotPeriod : lists?.hour ? "hour" : "day");
   const [kind, setKind] = useState<"hot" | "skyrocket">(rememberedHotKind);
@@ -93,7 +93,7 @@ let rememberedEcologyTab: string | null = null;
  * layout="grid"：各块卡片平铺（默认）。
  * layout="tabs"：涨停监控页顶部用——各块名称一字排开，点一下展开该块，再点一下收起，一次只展开一块。
  */
-export default function FuyaoReviewSection({ data, onOpenStock, actions, extra, layout = "grid" }: { data: FuyaoReview | null | undefined; onOpenStock: (stock: any) => void; actions?: ReactNode; extra?: ReactNode; layout?: "grid" | "tabs" }) {
+export default function FuyaoReviewSection({ data, onOpenStock, actions, extra, layout = "grid" }: { data: FuyaoReview | null | undefined; onOpenStock: (stock: Security) => void; actions?: ReactNode; extra?: ReactNode; layout?: "grid" | "tabs" }) {
   const [open, setOpen] = useState<string | null>(rememberedEcologyTab);
   if (!data) return null;
   if (!data.available) return <p className="fy-unavailable">同花顺扶摇数据（连板天梯、涨停原因、热股榜、龙虎榜、异动解读）：{data.reason || "暂不可用"}</p>;

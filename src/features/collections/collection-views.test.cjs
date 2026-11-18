@@ -77,6 +77,24 @@ test("observation filtering exposes visible coverage and links the trading-day e
   assert.doesNotMatch(markup, /第三只<\/strong>/);
 });
 
+test("holdings view exposes entry mode tabs, stop-loss banner, and privacy mask mode", () => {
+  const markup = renderToStaticMarkup(React.createElement(HoldingsView, {
+    items: [{ code: "600519", name: "贵州茅台", secid: "1.600519", shares: 300, costPrice: 1450, createdAt: "", updatedAt: "" }],
+    settings: initialSettings,
+    live: false,
+    privacyMask: true,
+    monitors: { configs: {}, runtimes: {}, latestQuotes: {}, alerts: [], refreshing: false, storageError: "", save: noop, remove: noop },
+    onTransferToT: noop,
+    onSave: async () => true,
+    onOpen: noop
+  }));
+
+  for (const marker of ["加减仓记账", "粘贴批量导入", "一键加 -5% 止损", "转做T", "*** 股", "未设止损预警"]) {
+    assert.ok(markup.includes(marker), `missing enhanced holdings marker: ${marker}`);
+  }
+  assert.equal(markup.includes("300 股"), false, "privacyMask should mask share count");
+});
+
 after(() => {
   restoreTypeScript?.();
   if (previousCssLoader) require.extensions[".css"] = previousCssLoader;

@@ -31,6 +31,8 @@ function pump() {
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
+      job.cancelling = true;
+      if (jobs.get(key) === job) jobs.delete(key);
       for (const listener of job.listeners) listener(null, 'K线请求超时，请稍后重试');
       void job.scope.cancelAll();
     }, 45_000);

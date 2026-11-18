@@ -51,8 +51,10 @@ def managed_path(root, path):
 def source_paths(root):
     """Code, tests and build inputs; document content/generators are not runtime inputs."""
     files = set()
-    for folder in ('src', 'electron', 'config', '.github', 'qa', 'assets', 'public'):
+    for folder in ('src', 'electron', 'config', '.github', 'qa', 'assets', 'public', 'patches'):
         managed_path(root, root / folder)
+        if folder == 'patches' and not (root / folder).exists():
+            continue
         for path in (root / folder).rglob('*'):
             if '__pycache__' in path.parts or path.name == '.DS_Store':
                 continue
@@ -62,7 +64,7 @@ def source_paths(root):
             if path.is_file():
                 files.add(path)
     files.update(path for path in root.iterdir() if path.is_file() and
-                 (path.suffix in ('.json', '.yaml', '.yml', '.ts', '.html', '.ico', '.png', '.svg') or path.name == '.npmrc'))
+                 (path.suffix in ('.json', '.yaml', '.yml', '.ts', '.mts', '.cts', '.mjs', '.cjs', '.html', '.ico', '.png', '.svg') or path.name == '.npmrc'))
     require(files, 'Source manifest cannot be empty')
     for path in files:
         require(not path.is_symlink() and path.resolve().is_relative_to(root.resolve()), f'Unsafe source: {path}')

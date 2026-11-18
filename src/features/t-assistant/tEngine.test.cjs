@@ -172,3 +172,55 @@ test('尾盘倒T涨停不能假定接回成交；正T接近跌停但未封死仍
   const falling = engine.analyzeT(share([...Array(60).fill(10), 9.2, 9.1, 9.08]), ctx, config(), [{id:'b',side:'buy',price:10,shares:1000,time:'10:00'}]);
   assert.equal(falling.signal.action, 'stopSellBack');
 });
+
+test('settleTrades computes wins and winRatePct cleanly', () => {
+  const { stats } = engine.settleTrades([
+    { id: '1', side: 'sell', price: 10.4, shares: 500, time: '10:00' },
+    { id: '2', side: 'buy', price: 10.0, shares: 500, time: '10:20' },
+    { id: '3', side: 'buy', price: 10.2, shares: 500, time: '11:00' },
+    { id: '4', side: 'sell', price: 10.0, shares: 500, time: '11:20' }
+  ], config());
+  assert.equal(stats.rounds, 2);
+  assert.equal(stats.wins, 1);
+  assert.equal(stats.winRatePct, 50);
+});
+
+test('calibrateTAdvice recommends conservative steady mode on narrow amplitude and dynamic spread on oscillating waveform', () => {
+  const narrow = Array.from({ length: 40 }, (_, i) => Number((10 + 0.01 * Math.sin(i / 3)).toFixed(2)));
+  const narrowCal = engine.calibrateTAdvice(share(narrow), config({ style: 'active', minSpreadPct: 0.8 }), null);
+  assert.equal(narrowCal.suitability, '振幅过窄宜观望');
+  assert.equal(narrowCal.recommendedStyle, 'steady');
+
+  const wide = Array.from({ length: 60 }, (_, i) => Number((10 + 0.25 * Math.sin(i / 4)).toFixed(2)));
+  const wideAnalysis = engine.analyzeT(share(wide), ctx, config(), []);
+  assert.ok(wideAnalysis);
+  assert.ok(wideAnalysis.sigmaPct > 0);
+  const wideCal = engine.calibrateTAdvice(share(wide), config(), wideAnalysis);
+  assert.ok(['适宜正T', '适宜反T'].includes(wideCal.suitability));
+  assert.ok(wideCal.recommendedMinSpreadPct >= 0.8 && wideCal.recommendedMinSpreadPct <= 3.5);
+});
+
+test('Phase 3E: analyzeT adapts smart calibration style & win rate from prior rounds and 10d volatility', () => {
+  const prices = Array.from({ length: 120 }, (_, i) => Number((10 + 0.14 * Math.sin(i / 8)).toFixed(2)));
+  const highConviction = engine.analyzeT(share(prices), ctx, config(), [], {
+    priorRounds: 10,
+    priorWins: 8,
+    dailyVolatilityPct: 4.5
+  });
+  const lowConviction = engine.analyzeT(share(prices), ctx, config(), [], {
+    priorRounds: 10,
+    priorWins: 3,
+    dailyVolatilityPct: 1.5
+  });
+  assert.ok(highConviction?.calibration);
+  assert.ok(lowConviction?.calibration);
+  assert.equal(highConviction.calibration.totalRounds, 10);
+  assert.equal(highConviction.calibration.historicalWinRatePct, 80);
+  assert.equal(highConviction.calibration.dailyVolatilityPct, 4.5);
+  assert.equal(highConviction.calibration.recommendedStyle, 'active');
+  assert.equal(lowConviction.calibration.historicalWinRatePct, 30);
+  assert.equal(lowConviction.calibration.dailyVolatilityPct, 1.5);
+  assert.equal(lowConviction.calibration.recommendedStyle, 'steady');
+  assert.match(highConviction.calibration.reason, /近10日振幅 4\.5%/);
+  assert.match(highConviction.calibration.reason, /累计 10 轮胜率 80%/);
+});

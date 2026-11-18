@@ -1,37 +1,29 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { loadServices } = require('../qa/service-fixture.cjs');
 const history = Array.from({ length: 420 }, (_, i) => {
   const close = i >= 40 && i % 20 === 0 ? 11 : 10;
   return { date: new Date(Date.UTC(2020, 0, i + 1)).toISOString().slice(0, 10), open: 10, high: Math.max(10.2, close), low: 9.9, close, volume: 1000000, amount: 10000000 };
 });
+// P0-2b 拆分后改为共享夹具：子模块每次加载都是全新实例，worker/serviceRuntime
+// 不会被上一个用例 shutdown 的真实单例污染；内部实现重绑定统一走 rebindAll。
+const { rebindAll } = require('../qa/service-fixture.cjs');
 function service() {
-  const filename = path.join(__dirname, 'services.cjs'), realRequire = createRequire(filename), module = { exports: {} };
-  const code = fs.readFileSync(filename, 'utf8') + `
-    dataByProvider = async () => ({ quote: { code: '600000', name: '离线银行', latest: 10, preClose: 10, industry: '银行' }, history: fixtureHistory, actualProvider: 'eastmoney' });
-    announcements = async () => [];
-    marketEmotionSnapshot = async () => null;
-    wholeMarketSnapshot = async () => ({ breadth: 0.5, averageReturn: 0 });
-    currentLadderPools = async () => ({ currentPool: [], previousPool: [], failedPool: [] });
-    eastHistoryCached = async () => fixtureHistory;
-    quoteFederation = async () => ({});
-    sectorStrength = async () => null;
-    topicPoolForDate = async () => ({ pool: [] });
-    loadBacktestHistory = async () => fixtureHistory;
-  `;
-  vm.runInNewContext(code, { module, exports: module.exports, __dirname, __filename: filename,
-    require: id => id === './strategy-intelligence.cjs'
-      ? { ...realRequire(id), buildHistoricalStrategyStats() { throw new Error('Legacy history CPU executed on the main thread'); } }
-      : realRequire(id),
-    fixtureHistory: history, process, console, URL, DOMException, AbortController, AbortSignal,
-    TextDecoder, setTimeout, clearTimeout, setImmediate, queueMicrotask, Buffer,
-    fetch: async () => { throw new Error('Unexpected live network'); }
-  }, { filename });
-  return module.exports;
+  const s = loadServices('', { fixtureHistory: history }, {
+    './strategy-intelligence.cjs': { ...require('./strategy-intelligence.cjs'), buildHistoricalStrategyStats() { throw new Error('Legacy history CPU executed on the main thread'); } }
+  });
+  rebindAll(s, 'dataByProvider', async () => ({ quote: { code: '600000', name: '离线银行', latest: 10, preClose: 10, industry: '银行' }, history, actualProvider: 'eastmoney' }));
+  rebindAll(s, 'announcements', async () => []);
+  rebindAll(s, 'marketEmotionSnapshot', async () => null);
+  rebindAll(s, 'wholeMarketSnapshot', async () => ({ breadth: 0.5, averageReturn: 0 }));
+  rebindAll(s, 'currentLadderPools', async () => ({ currentPool: [], previousPool: [], failedPool: [] }));
+  rebindAll(s, 'eastHistoryCached', async () => history);
+  rebindAll(s, 'quoteFederation', async () => ({}));
+  rebindAll(s, 'sectorStrength', async () => null);
+  rebindAll(s, 'topicPoolForDate', async () => ({ pool: [] }));
+  rebindAll(s, 'loadBacktestHistory', async () => history);
+  return s;
 }
 const stock = { code: '600000', name: '离线银行', secid: '1.600000', thscode: '600000.SH', assetType: 'stock' };
 test('stock analysis loads offline data but sends legacy historical CPU to the real worker', async t => {

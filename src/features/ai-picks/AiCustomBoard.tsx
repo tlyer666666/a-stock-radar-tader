@@ -5,11 +5,10 @@ import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
 import { aiErrorMessage, buildAiBoardRows, ratingTone, secidFor } from "../strategy-selection/aiSelectionModel";
-import { AI_CUSTOM_MAX, mergeCustomStocks, mergeNotice, profileFacts } from "./aiCustomModel";
+import { AI_CUSTOM_MAX, applyCustomListMutation, mergeNotice, profileFacts } from "./aiCustomModel";
 import { AiDimChips, AiScoreCell } from "./AiFrameworkParts";
 import { AiScoringCoverage, AiSelectAllHeader, AiSelectCell, AiSelectionBar, scoreAction, scoringCoverage, useRowSelection } from "./AiRowSelection";
 import { AiCommentRow } from "./AiCommentRow";
-import { createCollectionWriter } from "../../collectionWriter";
 
 const RATING_FILTERS = ["全部", "重点关注", "关注", "观望", "回避"] as const;
 const PAGE_SIZE = 20;
@@ -31,15 +30,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
   const listReady = useRef(false);
   const mutationRevision = useRef(0);
   const pendingWrites = useRef(0);
-  const writeList = useMemo(() => createCollectionWriter<AiCustomStock>({
-    read: () => listRef.current,
-    persist: items => {
-      const save = api?.saveCustomList;
-      if (!save) return Promise.reject(new Error("清单保存接口不可用"));
-      return save(items);
-    },
-    accept: items => { listRef.current = items; setList(items); }
-  }), [api]);
+  const writeTail = useRef<Promise<unknown>>(Promise.resolve());
   const [ranking, setRanking] = useState<AiRanking | null>(null);
   const [failed, setFailed] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -51,7 +42,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<Security[]>([]);
   const [suggestionQuery, setSuggestionQuery] = useState("");
-  const [confirmClear, setConfirmClear] = useState<ConfirmDialogRequest | null>(null);
+  const [confirmClear, setConfirmClear] = useState<{ request: ConfirmDialogRequest; codes: string[] } | null>(null);
   const [filter, setFilter] = useState<(typeof RATING_FILTERS)[number]>("全部");
   const [page, setPage] = useState(1);
   const searchSeq = useRef(0);
@@ -75,8 +66,10 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
         listRef.current = value; listReady.current = true; setList(value);
         setReadError("");
       }
-    }).catch(reason => { if (active) setReadError(`清单读取失败：${aiErrorMessage(reason)}`); });
-    void api.cachedCustom?.().then(value => { if (generation.current === current && cacheRevision.current === cachedAt) setRanking(value); }).catch(() => {});
+    }).catch(reason => {
+      if (active && revision === mutationRevision.current) setReadError(`清单读取失败：${aiErrorMessage(reason)}`);
+    });
+    void api.cachedCustom?.().then(value => { if (generation.current === current && cacheRevision.current === cachedAt) setRanking(value); }).catch(() => undefined /* optional cached custom ranking */);
     return stop;
   }, [api, reload]);
 
@@ -103,26 +96,34 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
   }, [query]);
   useEffect(() => { setPage(1); }, [filter, historyDate, ranking]);
 
-  const save = async (update: (current: AiCustomStock[]) => { list: AiCustomStock[]; message: string }) => {
-    if (!api?.saveCustomList) return;
+  const save = async (operation: AiCustomListMutation, describe: (result: AiCustomListMutationResult) => string) => {
+    const mutate = api?.mutateCustomList;
+    const replace = api?.saveCustomList;
+    if (!mutate && !replace) return;
     if (!listReady.current) { setReadError("清单尚未读取完成，请稍后重试"); return; }
     mutationRevision.current++;
     pendingWrites.current++;
-    let message = "";
+    const pending = writeTail.current.then(async () => {
+      let result: AiCustomListMutationResult;
+      if (mutate) result = await mutate(operation);
+      else {
+        result = applyCustomListMutation(listRef.current, operation);
+        if (result.added || result.removed.length) result.list = await replace!(result.list);
+      }
+      listRef.current = result.list;
+      setList(result.list);
+      return result;
+    });
+    writeTail.current = pending.catch(() => undefined);
     try {
-      await writeList(current => {
-        const next = update(current); message = next.message; return next.list;
-      });
-      setNotice(message); setError("");
+      const result = await pending;
+      setNotice(describe(result)); setError(""); setReadError("");
     }
     catch (reason) { setError(aiErrorMessage(reason)); }
     finally { pendingWrites.current--; }
   };
   const add = (items: Array<{ code: string; name?: string | undefined }>, source: string) => {
-    void save(current => {
-      const result = mergeCustomStocks(current, items);
-      return { list: result.list, message: mergeNotice(source, result) };
-    });
+    void save({ kind: "add", items }, result => mergeNotice(source, result));
   };
   const importFrom = async (kind: "favorites" | "watchlist" | "holdings") => {
     try {
@@ -145,13 +146,10 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
     } catch (reason) { if (generation.current === current) setError(aiErrorMessage(reason)); }
     finally { if (generation.current === current) setBusy(false); }
   };
-  const remove = (codes: string[]) => {
-    const drop = new Set(codes);
-    void save(current => {
-      const next = current.filter(item => !drop.has(item.code));
-      return { list: next, message: codes.length === 1 ? `已删除 ${current.find(item => item.code === codes[0])?.name || codes[0]}。` : `已删除 ${current.length - next.length} 只。` };
-    });
-    selection.clear();
+  const remove = (codes: string[], clearSelection = false) => {
+    void save({ kind: "remove", codes }, result => result.removed.length === 1
+      ? `已删除 ${result.removed[0]!.name}。` : `已删除 ${result.removed.length} 只。`);
+    if (clearSelection) selection.clear();
   };
 
   const shown = isHistory ? historyRanking || null : ranking;
@@ -190,10 +188,13 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
           <button type="button" className="secondary-btn" onClick={() => void importFrom("watchlist")}><Eye size={15} />导入观察池</button>
           <button type="button" className="secondary-btn" onClick={() => void importFrom("holdings")}><Briefcase size={15} />导入持仓</button>
           {!!list.length && <button type="button" className="secondary-btn danger-btn" disabled={busy} onClick={() => setConfirmClear({
-            title: `清空「我的股票」清单里的 ${list.length} 只股票？`,
-            message: "清空后需要重新搜索或导入股票；已保存的历史打分记录不受影响。",
-            confirmLabel: "清空清单",
-            tone: "danger"
+            codes: listCodes,
+            request: {
+              title: `清空「我的股票」清单里的 ${list.length} 只股票？`,
+              message: "清空后需要重新搜索或导入股票；已保存的历史打分记录不受影响。",
+              confirmLabel: "清空清单",
+              tone: "danger"
+            }
           })}><Trash2 size={15} />清空</button>}
           <button type="button" className="primary-btn" onClick={() => void run(action.force, action.only)} disabled={!configured || busy || !list.length}>
             {busy ? <LoaderCircle size={15} className="spin" /> : action.force && !action.only ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "读取日线并打分…" : action.label}</button>
@@ -222,14 +223,22 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
     </section>}
 
     <section className="panel ai-ranking ai-picks-board" aria-label="我的股票 AI 打分榜">
-      <div className="ai-ranking-head"><span><b>我的股票 · AI 打分榜</b>{shown ? ` · ${multi ? "多模型评分" : "单模型评分"} · AI 已返回 ${shown.evaluated} 只 · ${stamp(shown)}` : isHistory ? " · 这一天没有保存「我的股票」打分" : " · 还没打分"}</span>
+      <div className="ai-ranking-head"><span><b>我的股票 · AI 打分榜</b>{shown ? ` · ${multi ? "多模型评分" : "单模型评分"} · AI 已返回 ${shown.evaluated} 只 · ${stamp(shown)}` : isHistory ? " · 这一天没有保存「我的股票」打分" : " · 还没打分"}
+        {shown?.outcomeSummary && <em className="ai-disagreement" title={`基于本机已缓存日线核对 ${shown.outcomeSummary.evaluatedCount} 只`}>
+          {[
+            `后验(${shown.outcomeSummary.evaluatedCount}只)`,
+            shown.outcomeSummary.t1 ? `T+1胜率${shown.outcomeSummary.t1.winRatePct}%` : "",
+            shown.outcomeSummary.t5 ? `T+5胜率${shown.outcomeSummary.t5.winRatePct}%` : "",
+            shown.outcomeSummary.avgDrawdownPct !== null && shown.outcomeSummary.avgDrawdownPct !== undefined ? `均回撤${shown.outcomeSummary.avgDrawdownPct}%` : ""
+          ].filter(Boolean).join(" · ")}
+        </em>}</span>
         {shown && <div role="group" aria-label="按评级筛选">{RATING_FILTERS.map(item => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}{item !== "全部" ? ` ${shown.items.filter(row => !row.fallback && row.rating === item).length}` : ""}</button>)}</div>}</div>
       {!isHistory && ranking && <AiScoringCoverage coverage={coverage} expectedModels={expectedModels} />}
       {partialModels.length > 0 && <div className="test-result fail" role="status"><span />{partialModels.map(item => `${item.name} 有 ${item.missed} 只这一批没有返回`).join("；")}，这些股票按基础分显示或暂缺 AI 点评，可点「重新打分」再试。</div>}
       {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}</div>}
       <div className="ai-board-toolbar">
       {!isHistory && !!list.length && <AiSelectionBar selection={selection} removeLabel="删除" hint="勾选几只可以只给它们打分；点行首 × 从清单删除"
-        onRemoveSelected={() => remove(selection.list)} />}
+        onRemoveSelected={() => remove(selection.list, true)} />}
       {!isHistory && !!pageRows.length && <SelectionQuoteControls total={pageRows.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />}
       </div>
       {!!pageRows.length && <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="我的股票打分表格，可横向滚动">
@@ -242,7 +251,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
             const facts = profile ? profileFacts(profile).join(" · ") : "";
             return <Fragment key={row.code}><tr className={`${onOpen ? "clickable" : ""}${selected ? " selected" : ""}${row.ai || facts ? " has-comment" : ""}`} onClick={() => onOpen?.(toSecurity(row))}>
               {!isHistory && <AiSelectCell selection={selection} code={row.code} name={row.name} removeLabel="从清单删除" onRemove={() => remove([row.code])} />}
-              <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? 1 : expectedModels} /> : <small>未打分</small>}</td>
+              <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? (shown?.models?.length || 1) : expectedModels} /> : <small>未打分</small>}</td>
               {multi && <td className="ai-model-scores">{(row.ai?.scores || []).map(score => <span key={score.id} className={ratingTone(score.rating)}>{score.name} <b>{score.score}</b></span>)}
                 {row.ai?.disagreement && <em className="ai-disagreement" title={`各模型分差 ${row.ai.spread} 分`}>模型分歧</em>}</td>}
               <th scope="row" className="strategy-stock-name"><b>{row.name}</b><small>{row.code}{profile?.industry ? ` · ${profile.industry}` : ""}</small></th>
@@ -260,9 +269,10 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
         <button type="button" className="secondary-btn" disabled={currentPage === totalPages} onClick={() => setPage(currentPage + 1)}>下一页</button></div>}
       <p className="ai-selection-note">「选股收盘」列显示的是打分时日线最后一根的收盘价。发给 AI 的只有代码、名称、行业、行情指标和公开的公司公告标题，不含持仓数量或成本。</p>
     </section>
-    <ConfirmDialog request={confirmClear} onResolve={confirmed => {
+    <ConfirmDialog request={confirmClear?.request || null} onResolve={confirmed => {
       setConfirmClear(null);
-      if (confirmed) void save(() => ({ list: [], message: "已清空清单。" }));
+      if (confirmed && confirmClear) void save({ kind: "remove", codes: confirmClear.codes }, result => result.list.length
+        ? `已删除 ${result.removed.length} 只，清单还剩 ${result.list.length} 只。` : "已清空清单。");
     }} />
   </>;
 }

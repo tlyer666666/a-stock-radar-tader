@@ -21,6 +21,7 @@ export type TrendPositionInput = {
   commissionRate?: number;
   minimumCommission?: number;
   sellTaxRate?: number;
+  transferFeeRate?: number;
   slippageRate?: number;
   /** Additional adverse move below S. Included in the sizing constraint when configured. */
   gapStressRatio?: number;
@@ -57,7 +58,7 @@ export type TrendPositionResult = {
 const positive = (value: number) => Number.isFinite(value) && value > 0;
 const nonnegative = (value: number) => Number.isFinite(value) && value >= 0;
 const ratio = (value: number) => nonnegative(value) && value <= 1;
-const money = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+const money = (value: number) => (value < 0 ? -1 : 1) * Math.round(Math.abs(value) * 100 + 1e-7) / 100;
 
 export function calculateTrendPosition(input: TrendPositionInput): TrendPositionResult {
   const reasons: string[] = [];
@@ -84,12 +85,13 @@ export function calculateTrendPosition(input: TrendPositionInput): TrendPosition
   const commissionRate = input.commissionRate ?? 0;
   const minimumCommission = input.minimumCommission ?? 0;
   const sellTaxRate = input.sellTaxRate ?? 0;
+  const transferFeeRate = input.transferFeeRate ?? 0;
   const slippageRate = input.slippageRate ?? 0;
   const gapStressRatio = input.gapStressRatio ?? 0;
   const portfolioRiskUsed = input.portfolioRiskUsed ?? 0;
   const portfolioRiskCapRatio = input.portfolioRiskCapRatio ?? 0.03;
   const maxParticipationRatio = input.maxParticipationRatio ?? 0.01;
-  if (![commissionRate, sellTaxRate, slippageRate, gapStressRatio, portfolioRiskCapRatio, maxParticipationRatio].every(ratio) ||
+  if (![commissionRate, sellTaxRate, transferFeeRate, slippageRate, gapStressRatio, portfolioRiskCapRatio, maxParticipationRatio].every(ratio) ||
       slippageRate >= 1 || gapStressRatio >= 1 || portfolioRiskCapRatio <= 0 || maxParticipationRatio <= 0 ||
       !nonnegative(minimumCommission) || !nonnegative(portfolioRiskUsed)) reasons.push("费用、滑点、跳空压力与组合风险额度必须为有效非负参数");
   if (input.medianAmount20 !== undefined && !positive(input.medianAmount20)) reasons.push("20日成交额中位数无效，不能核验订单参与比例");
@@ -129,13 +131,13 @@ export function calculateTrendPosition(input: TrendPositionInput): TrendPosition
   const commission = (principal: number) => Math.max(minimumCommission, principal * commissionRate);
   const amounts = (shares: number) => {
     const cost = shares * entryFill;
-    const buyFee = commission(cost);
+    const buyFee = commission(cost) + cost * transferFeeRate;
     const exitProceeds = shares * exitFill;
     const stressProceeds = shares * stressFill;
-    const roundTripCosts = buyFee + commission(exitProceeds) + exitProceeds * sellTaxRate;
+    const roundTripCosts = buyFee + commission(exitProceeds) + exitProceeds * (sellTaxRate + transferFeeRate);
     return { cost, roundTripCosts,
       plannedLoss: cost - exitProceeds + roundTripCosts,
-      stressLoss: cost - stressProceeds + buyFee + commission(stressProceeds) + stressProceeds * sellTaxRate,
+      stressLoss: cost - stressProceeds + buyFee + commission(stressProceeds) + stressProceeds * (sellTaxRate + transferFeeRate),
       totalCashRequired: cost + buyFee + input.feeReserve };
   };
   const maximumShares = Math.floor(principalBudget / entryFill + 1e-8);

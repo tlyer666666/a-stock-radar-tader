@@ -4,7 +4,8 @@
 // 只描述“选什么”，不含任何函数或代码；保存在主进程 custom-strategies.json。
 // 条件词表来自 config/strategy-custom-conditions.json（前后端共用）。
 
-const catalog = require("../config/strategy-custom-conditions.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const catalog = loadNamedConfig("strategy-custom-conditions");
 const { isBseAshareCode } = require("./price-limit-rules.cjs");
 const { presetForSelection } = require("./analysis-selection-policy.cjs");
 

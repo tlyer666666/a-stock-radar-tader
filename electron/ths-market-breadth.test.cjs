@@ -3,24 +3,18 @@
 require('../qa/test-env.cjs'); // 自防御：不依赖运行器预加载，直接 node --test 本文件也禁网
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { loadServices, rebindAll } = require('../qa/service-fixture.cjs');
 
 const ALL_A_ROWS = ['2026-10-20', '2026-10-21', '2026-10-22'].map((date, i) => ({ date, open: 1800, high: 1810, low: 1790, close: [1780, 1761.513, 1714.472][i], volume: 1, amount: 1 }));
 
+// P0-2b 拆分后改为共享夹具：services/*.cjs 子模块每次 load 都是全新实例；
+// fetchJson 已迁到 services/runtime.cjs，用 rebindAll 在声明处重绑定（跨模块传播）。
 function load({ fetchJson, quote = async () => ({ changePct: -2.67 }), history = async () => ALL_A_ROWS } = {}) {
-  const filename = path.join(__dirname, 'services.cjs'), module = { exports: {} }, realRequire = createRequire(filename);
-  const ths = { ...realRequire('./ths-free-market.cjs'), thsFreeQuote: quote, thsFreeDailyHistory: history };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + `
-    module.exports.probe = { wholeMarketSnapshot, marketEmotionSnapshot, topicPoolForDate, recentTradingDates, fuyao,
-      setFetch(fn) { fetchJson = fn; } };`, {
-    module, exports: module.exports, require: (id) => id === './ths-free-market.cjs' ? ths : realRequire(id), __dirname,
-    __filename: filename, process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, Buffer
-  }, { filename });
-  module.exports.probe.setFetch(fetchJson);
-  return module.exports;
+  const ths = { ...require('./ths-free-market.cjs'), thsFreeQuote: quote, thsFreeDailyHistory: history };
+  const service = loadServices(`
+    module.exports.probe = { wholeMarketSnapshot, marketEmotionSnapshot, topicPoolForDate, recentTradingDates, fuyao: _runtime.fuyao };`, {}, { './ths-free-market.cjs': ths });
+  rebindAll(service, 'fetchJson', fetchJson);
+  return service;
 }
 
 // 2026-10-22 收盘后同花顺 dq.10jqka.com.cn 涨跌分布的真实响应。
@@ -130,16 +124,15 @@ test('the trading calendar comes from the THS all-A index', async () => {
 });
 
 function loadWithFuyao(fake) {
-  const filename = path.join(__dirname, 'services.cjs'), module = { exports: {} }, realRequire = createRequire(filename);
-  const realFuyao = realRequire('./fuyao-client.cjs');
-  const ths = { ...realRequire('./ths-free-market.cjs'), thsFreeDailyHistory: async () => { throw Object.assign(new Error('free THS must not be used'), { code: 'THS_FREE_UNSUPPORTED' }); }, thsFreeQuote: async () => null };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + `
-    module.exports.probe = { eastHistory, loadBacktestHistory, serviceRuntime, setFetch(fn) { fetchJson = fn; } };`, {
-    module, exports: module.exports, require: (id) => id === './ths-free-market.cjs' ? ths : id === './fuyao-client.cjs' ? { ...realFuyao, createFuyaoClient: () => fake } : realRequire(id), __dirname,
-    __filename: filename, process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, Buffer
-  }, { filename });
-  module.exports.probe.setFetch(async () => { throw new Error('no Eastmoney'); });
-  return module.exports;
+  // P0-2b：fuyao 单例在 services/runtime.cjs 创建，拦截必须递归生效（共享夹具）。
+  const ths = { ...require('./ths-free-market.cjs'), thsFreeDailyHistory: async () => { throw Object.assign(new Error('free THS must not be used'), { code: 'THS_FREE_UNSUPPORTED' }); }, thsFreeQuote: async () => null };
+  const service = loadServices(`
+    module.exports.probe = { eastHistory: _backtest.eastHistory, loadBacktestHistory, serviceRuntime };`, {}, {
+    './ths-free-market.cjs': ths,
+    './fuyao-client.cjs': { ...require('./fuyao-client.cjs'), createFuyaoClient: () => fake }
+  });
+  rebindAll(service, 'fetchJson', async () => { throw new Error('no Eastmoney'); });
+  return service;
 }
 
 const WEEKDAYS = Array.from({ length: 60 }, (_, i) => new Date(Date.now() - (59 - i) * 86400000)).filter((d) => d.getUTCDay() % 6 !== 0).map((d) => d.toISOString().slice(0, 10)).slice(-30);

@@ -8,7 +8,7 @@
  * - 复用 http-client 的超时、并发和响应体字节上限。
  * - 要求模型输出 JSON；先带 response_format，接口不支持（HTTP 400）时去掉再试一次。
  */
-const { fetchJsonWithPolicy } = require("./http-client.cjs");
+const { fetchWithPolicy, fetchJsonWithPolicy } = require("./http-client.cjs");
 
 const AI_TIMEOUT_MS = 120_000;
 const AI_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
@@ -32,18 +32,49 @@ function chatCompletionsUrl(baseUrl) {
   return url.href;
 }
 
+/** 按字符串状态与引号转义扫描平衡 JSON 片段，避免注释里的散落括号干扰截取。 */
+function extractBalancedJsonCandidates(text) {
+  const results = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const startCh = text[i];
+    if (startCh !== "{" && startCh !== "[") continue;
+    const stack = [startCh === "{" ? "}" : "]"];
+    let inString = false;
+    let escaped = false;
+    for (let j = i + 1; j < text.length; j += 1) {
+      const ch = text[j];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === "\\") escaped = true;
+        else if (ch === "\"") inString = false;
+        continue;
+      }
+      if (ch === "\"") { inString = true; continue; }
+      if (ch === "{") stack.push("}");
+      else if (ch === "[") stack.push("]");
+      else if (ch === "}" || ch === "]") {
+        if (stack[stack.length - 1] !== ch) break;
+        stack.pop();
+        if (stack.length === 0) {
+          results.push(text.slice(i, j + 1));
+          break;
+        }
+      }
+    }
+  }
+  return results;
+}
+
 /** 从模型回复里取出 JSON：容忍 ```json 代码块和前后多余文字。 */
 function parseModelJson(text) {
   const source = String(text || "").trim();
-  const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidates = [fenced?.[1], source];
+  const fencedMatches = [...source.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map(match => match[1]);
+  const candidates = [...fencedMatches, source];
   for (const candidate of candidates) {
     if (!candidate) continue;
-    try { return JSON.parse(candidate); } catch { /* 再试截取 */ }
-    const start = candidate.search(/[[{]/);
-    const end = Math.max(candidate.lastIndexOf("}"), candidate.lastIndexOf("]"));
-    if (start >= 0 && end > start) {
-      try { return JSON.parse(candidate.slice(start, end + 1)); } catch { /* 继续 */ }
+    try { return JSON.parse(candidate); } catch { /* 再试平衡括号提取 */ }
+    for (const slice of extractBalancedJsonCandidates(candidate)) {
+      try { return JSON.parse(slice); } catch { /* 继续尝试下一个候选 */ }
     }
   }
   throw aiError("AI 返回的内容不是有效的 JSON，请重试或换一个模型", "AI_BAD_JSON");
@@ -71,8 +102,88 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
     return Boolean(chatCompletionsUrl(baseUrl) && model && apiKey);
   }
 
-  async function post(url, apiKey, body, signal) {
+  async function consumeSseResponse(response, signal, onToken) {
+    if (response && response.ok === false) {
+      const error = new Error(`HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    const contentType = String(response?.headers?.get?.("content-type") || "").toLowerCase();
+    if (!contentType.includes("text/event-stream") || !response?.body?.getReader) {
+      return response.json();
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let content = "";
+    let reasoning = "";
+    const handleLine = line => {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("data:")) return;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === "[DONE]") return;
+      let parsed;
+      try { parsed = JSON.parse(data); } catch { return; }
+      const delta = parsed?.choices?.[0]?.delta;
+      if (!delta || typeof delta !== "object") return;
+      const textDelta = typeof delta.content === "string" ? delta.content : "";
+      const reasonDelta = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+      if (!textDelta && !reasonDelta) return;
+      content += textDelta;
+      reasoning += reasonDelta;
+      try { onToken(textDelta, content, { reasoningDelta: reasonDelta, reasoning }); } catch { /* ignore UI progress errors */ }
+    };
+    try {
+      while (true) {
+        signal?.throwIfAborted();
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newlineIndex;
+        while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+          const line = buffer.slice(0, newlineIndex);
+          buffer = buffer.slice(newlineIndex + 1);
+          handleLine(line);
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer) {
+        for (const line of buffer.split(/\r?\n/)) handleLine(line);
+      }
+    } catch (error) {
+      try { await reader.cancel(error); } catch { /* preserve stream error */ }
+      throw error;
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released */ }
+    }
+    return { choices: [{ message: { content: content || reasoning, ...(reasoning ? { reasoning_content: reasoning } : {}) } }] };
+  }
+
+  async function post(url, apiKey, body, signal, onToken) {
     signal?.throwIfAborted();
+    if (body?.stream && typeof onToken === "function") {
+      if (fetchImpl) {
+        const response = await track(() => fetchImpl(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, Accept: "text/event-stream, application/json" },
+          body: JSON.stringify(body),
+          redirect: "error",
+          signal
+        }));
+        signal?.throwIfAborted();
+        return track(() => consumeSseResponse(response, signal, onToken));
+      }
+      const response = await track(() => fetchWithPolicy(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}`, Accept: "text/event-stream, application/json" },
+        body: JSON.stringify(body),
+        redirect: "error",
+        streamResponse: true,
+        signal
+      }, { timeoutMs: requestTimeoutMs, retries: 0, maxResponseBytes: AI_MAX_RESPONSE_BYTES }));
+      signal?.throwIfAborted();
+      return track(() => consumeSseResponse(response, signal, onToken));
+    }
     const response = await track(() => (fetchImpl || fetchJsonWithPolicy)(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
@@ -90,9 +201,9 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
   /**
    * 发一轮对话，返回模型文本（json=true 时返回解析后的对象）。
    * 多轮对话时传 messages（[{ role: "user" | "assistant", content }]），代替 user。
-   * @param {{ system: string, user?: string, messages?: Array<{role: string, content: string}>, json?: boolean, temperature?: number, maxTokens?: number, signal?: AbortSignal }} options
+   * @param {{ system: string, user?: string, messages?: Array<{role: string, content: string}>, json?: boolean, temperature?: number, maxTokens?: number, signal?: AbortSignal, onToken?: Function }} options
    */
-  async function chat({ system, user, messages, json = true, temperature = 0.3, maxTokens = 3000, signal } = {}) {
+  async function chat({ system, user, messages, json = true, temperature = 0.3, maxTokens = 3000, signal, onToken } = {}) {
     const signals = [...new Set([getSignal(), signal].filter(Boolean))];
     signal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
     signal?.throwIfAborted();
@@ -104,9 +215,10 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
     const turns = Array.isArray(messages) && messages.length
       ? messages.filter(item => item && (item.role === "user" || item.role === "assistant")).map(item => ({ role: item.role, content: String(item.content || "") }))
       : [{ role: "user", content: String(user || "") }];
-    const base = { model, temperature, max_tokens: maxTokens, stream: false,
+    const useStream = typeof onToken === "function";
+    const base = { model, temperature, max_tokens: maxTokens, stream: useStream,
       messages: [{ role: "system", content: String(system || "") }, ...turns] };
-    // 依次尝试：带 JSON 输出格式 → 去掉输出格式 → 只留模型和消息（部分推理模型不接受 temperature / max_tokens）。
+    // 依次尝试：带 JSON 输出格式 → 去掉输出格式 → 降级非流式最小请求（部分模型拒绝 stream / temperature / response_format）。
     // 只有 HTTP 400（参数不被接受）才换下一种写法，其他错误直接报出。
     const attempts = [
       ...(json ? [{ ...base, response_format: { type: "json_object" } }] : []),
@@ -116,7 +228,7 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
     let payload;
     for (let index = 0; index < attempts.length; index += 1) {
       signal?.throwIfAborted();
-      try { payload = await post(url, apiKey, attempts[index], signal); break; }
+      try { payload = await post(url, apiKey, attempts[index], signal, attempts[index].stream ? onToken : undefined); break; }
       catch (error) {
         signal?.throwIfAborted();
         const status = Number(error?.status);

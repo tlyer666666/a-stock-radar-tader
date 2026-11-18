@@ -1,25 +1,19 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { loadServiceModule, rebindAll } = require('../qa/service-fixture.cjs');
+// P0-2b 拆分后改为共享夹具：services/*.cjs 子模块每次 load 都是全新实例，
+// globals（如 Clock）对子模块同样生效；内部实现重绑定统一走 rebindAll（在声明处生效并跨模块传播）。
 function load(name, append = '', globals = {}) {
-  const filename = path.join(__dirname, name), module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\n' + append, {
-    module, exports: module.exports, require: createRequire(filename), __dirname,
-    __filename: filename, process, console, URL, DOMException, AbortController,
-    AbortSignal, TextDecoder, setTimeout, clearTimeout, setImmediate, Buffer, ...globals
-  }, { filename });
-  return module.exports;
+  return loadServiceModule(path.join(__dirname, name), {}, globals, append);
 }
 const stock = { code: '600000', secid: '1.600000', thscode: '600000.SH' };
 function deferred() { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; }
 
 test('ladder cache reaccounts a completed producer and does not retain its oversized result', async () => {
-  const s = load('services.cjs', `module.exports.probe = { currentLadderPools, ladderPoolsCaches,
-    setLoader(fn) { recentLimitUpPools = fn; topicPoolForDate = async () => ({ pool: [] }); } };`);
+  const s = load('services.cjs', `module.exports.probe = { currentLadderPools, ladderPoolsCaches: _runtime.ladderPoolsCaches };`);
+  s.probe.setLoader = fn => { rebindAll(s, 'recentLimitUpPools', fn); rebindAll(s, 'topicPoolForDate', async () => ({ pool: [] })); };
   s.probe.ladderPoolsCaches.maxBytes = 512;
   s.probe.ladderPoolsCaches.maxEntryBytes = 512;
   let loads = 0;
@@ -32,12 +26,10 @@ test('ladder cache reaccounts a completed producer and does not retain its overs
 });
 
 test('credential changes isolate THS history and federation, including token suffix collisions', async () => {
-  const s = load('services.cjs', `module.exports.probe = { thsHistoryCached, setLoaders() {
-    thsHistory = async (_, settings) => [{ owner: settings.refreshToken === 'fixture-A' ? 'A' : 'B' }];
-    getQuoteSnapshot = async () => ({ quote: {} });
-    quoteFederation = async (_, __, settings) => ({ owner: settings.refreshToken === 'fixture-A' ? 'A' : 'B' });
-  } };`);
-  s.probe.setLoaders();
+  const s = load('services.cjs', `module.exports.probe = { thsHistoryCached: _backtest.thsHistoryCached };`);
+  rebindAll(s, 'thsHistory', async (_, settings) => [{ owner: settings.refreshToken === 'fixture-A' ? 'A' : 'B' }]);
+  rebindAll(s, 'getQuoteSnapshot', async () => ({ quote: {} }));
+  rebindAll(s, 'quoteFederation', async (_, __, settings) => ({ owner: settings.refreshToken === 'fixture-A' ? 'A' : 'B' }));
   await s.probe.thsHistoryCached(stock, { refreshToken: 'fixture-A' });
   assert.equal((await s.probe.thsHistoryCached(stock, { refreshToken: 'fixture-B' }))[0].owner, 'B');
   await s.getDataFederation(stock, { refreshToken: 'fixture-A' });
@@ -51,11 +43,12 @@ for (const [kind, capacity, bars] of [['history', 128, 320], ['chart', 96, 160]]
   test(`${kind} cache bounds completed rows, expires idle keys and retains active single-flight`, async () => {
     let now = 1_000_000;
     class Clock extends Date { static now() { return now; } }
-    const s = load('services.cjs', `module.exports.probe = { historyCache, chartCache, eastHistoryCached, eastChartCached,
-      setLoader(fn) { eastHistory = fn; eastChart = fn; } };`, { Date: Clock });
+    const s = load('services.cjs', `module.exports.probe = { historyCache: _runtime.historyCache, chartCache: _runtime.chartCache, eastHistoryCached: _backtest.eastHistoryCached, eastChartCached: _quotes_and_charts.eastChartCached };`, { Date: Clock });
     let calls = 0;
     const active = deferred();
-    s.probe.setLoader(async security => { calls++; return security.code === '600000' ? active.promise : Array(bars).fill({ close: 10 }); });
+    const loader = async security => { calls++; return security.code === '600000' ? active.promise : Array(bars).fill({ close: 10 }); };
+    rebindAll(s, 'eastHistory', loader);
+    rebindAll(s, 'eastChart', loader);
     const call = code => kind === 'history'
       ? s.probe.eastHistoryCached({ ...stock, code, secid: `1.${code}` }, bars, 1, 10)
       : s.probe.eastChartCached({ ...stock, code, secid: `1.${code}` }, '101', bars, 1, 10);
@@ -103,11 +96,11 @@ test('news first-seen identities have bounded retention while repeated current s
 });
 
 test('sector lookup stale fallback releases failed promise so the next call can recover', async () => {
-  const s = load('services.cjs', `module.exports.probe = { findSector, sectorLookupCache, setLoader(fn) { fetchJson = fn; } };`);
+  const s = load('services.cjs', `module.exports.probe = { findSector: _sectors.findSector, sectorLookupCache: _runtime.sectorLookupCache };`);
   s.probe.sectorLookupCache.set('银行', { value: { name: 'old' }, expiresAt: Date.now() - 1 });
-  s.probe.setLoader(async () => { throw new Error('offline'); });
+  rebindAll(s, 'fetchJson', async () => { throw new Error('offline'); });
   assert.equal((await s.probe.findSector('银行')).name, 'old');
-  s.probe.setLoader(async () => ({ QuotationCodeTable: { Data: [{ Classify: 'BK', Name: '银行', Code: 'BK001', QuoteID: '90.BK001' }] } }));
+  rebindAll(s, 'fetchJson', async () => ({ QuotationCodeTable: { Data: [{ Classify: 'BK', Name: '银行', Code: 'BK001', QuoteID: '90.BK001' }] } }));
   assert.equal((await s.probe.findSector('银行')).code, 'BK001');
 });
 
@@ -122,9 +115,13 @@ test('negative cache results expire even when their completed value is null', ()
 });
 
 function searchFixture() {
-  return load('services.cjs', `module.exports.probe = {
-    setLoader(fn) { fetchJson = fn; thsSearchSuggestions = async () => []; }
-  };`);
+  const s = load('services.cjs');
+  rebindAll(s, 'thsSearchSuggestions', async () => []);
+  return {
+    searchSecurities: (...args) => s.searchSecurities(...args),
+    setLoader(fn) { rebindAll(s, 'fetchJson', fn); },
+    shutdownServiceResources: () => s.shutdownServiceResources()
+  };
 }
 
 const searchResponse = { QuotationCodeTable: { Data: [
@@ -134,7 +131,7 @@ const searchResponse = { QuotationCodeTable: { Data: [
 test('concurrent equivalent security searches share one producer and keep completed result caching', async () => {
   const s = searchFixture(), gate = deferred();
   let requests = 0;
-  s.probe.setLoader(async url => {
+  s.setLoader(async url => {
     assert.equal(new URL(url).searchParams.get('input'), '浦发银行');
     requests++;
     await gate.promise;
@@ -158,7 +155,7 @@ test('concurrent equivalent security searches share one producer and keep comple
 test('malformed and failed security suggestions are not cached and later searches recover', async () => {
   const s = searchFixture();
   let requests = 0;
-  s.probe.setLoader(async () => {
+  s.setLoader(async () => {
     requests++;
     if (requests === 1) return { QuotationCodeTable: { Data: { unexpected: true } } };
     if (requests === 2) throw new Error('offline fixture');
@@ -174,7 +171,7 @@ test('malformed and failed security suggestions are not cached and later searche
 
 test('security search skips malformed individual rows while retaining valid suggestions', async () => {
   const s = searchFixture();
-  s.probe.setLoader(async () => ({ QuotationCodeTable: {
+  s.setLoader(async () => ({ QuotationCodeTable: {
     Data: [null, 'bad row', [], ...searchResponse.QuotationCodeTable.Data]
   } }));
   try {

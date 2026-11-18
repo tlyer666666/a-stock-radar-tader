@@ -8,13 +8,14 @@ export const DEFAULT_SINGLE_BACKTEST_BARS = 120;
 
 export const defaultBacktestStartDate = () => shiftShanghaiDate(-1);
 
-export const normalizeBacktestStrategyIds = (value: any): string[] => {
+export const normalizeBacktestStrategyIds = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];
   return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
 };
 
-export const normalizeBacktestStrategyContext = (input: any): StrategyBacktestRequest | undefined => {
-  if (!input || typeof input !== "object") return undefined;
+export const normalizeBacktestStrategyContext = (rawInput: unknown): StrategyBacktestRequest | undefined => {
+  if (!rawInput || typeof rawInput !== "object") return undefined;
+  const input = rawInput as Record<string, unknown> & { security?: Record<string, unknown> };
   const strategyId = String(input.strategyId || "").trim();
   const strategyIds = normalizeBacktestStrategyIds(
     Array.isArray(input.strategyIds) && input.strategyIds.length
@@ -26,18 +27,19 @@ export const normalizeBacktestStrategyContext = (input: any): StrategyBacktestRe
   if (!strategyId || !strategyIds.length) return undefined;
   const security = input.security && /^\d{6}$/.test(String(input.security.code || ""))
     ? {
-      ...input.security,
+      ...(input.security as Partial<Security>),
       code: String(input.security.code),
       name: String(input.security.name || input.security.code),
       secid: String(input.security.secid || "")
     } as Security
     : undefined;
   const securities: Security[] = Array.isArray(input.securities)
-    ? [...new Map<string, Security>(input.securities.flatMap((item: any): Array<[string, Security]> => {
-      const code = String(item?.code || "").trim();
+    ? [...new Map<string, Security>(input.securities.flatMap((rawItem: unknown): Array<[string, Security]> => {
+      const item = (rawItem && typeof rawItem === "object" ? rawItem : {}) as Record<string, unknown>;
+      const code = String(item.code || "").trim();
       if (!/^\d{6}$/.test(code)) return [];
       return [[code, {
-        ...item,
+        ...(item as Partial<Security>),
         code,
         name: String(item.name || code),
         secid: String(item.secid || "")
@@ -99,13 +101,13 @@ export const normalizeBacktestDraft = (input: Partial<BacktestDraft> = {}): Back
 });
 
 export const normalizeBacktestStrategyProfile = (
-  input: any,
+  input: unknown,
   fallbackSettings: Settings,
   draft: BacktestDraft,
   strategyIds: string[]
 ): BacktestStrategyProfile => {
   const safeSettings = normalizeSettings(fallbackSettings);
-  const normalizedProfile = input && typeof input === "object" ? input : {};
+  const normalizedProfile = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
   const selected = normalizeBacktestStrategyIds(normalizedProfile.selectedStrategies);
   const selectedStrategies = selected.length ? selected : strategyIds;
   return {
@@ -113,7 +115,7 @@ export const normalizeBacktestStrategyProfile = (
       selectedStrategies.length ? selectedStrategies : safeSettings.selectedStrategies
     ),
     riskProfile: normalizeRiskProfile(
-      input?.riskProfile || input?.riskProfileName || safeSettings.riskProfile || "balanced"
+      normalizedProfile.riskProfile || normalizedProfile.riskProfileName || safeSettings.riskProfile || "balanced"
     ),
     minProjectedNetEdgePercent: clampNumber(
       normalizedProfile.minProjectedNetEdgePercent,

@@ -7,17 +7,37 @@
  * 要求请求携带 `Cookie: v=<token>`，其中 token 由一段混淆 JS 现场计算，
  * 每次调用结果不同、且与时间相关。网页端就是用这段 JS 生成的。
  *
- * 本模块在 Node 里用最小 DOM stub 执行同源 JS 算法，产出等价 token。
+ * 本模块在 Node `vm` 隔离上下文里执行同源 JS 算法，产出等价 token。
  * JS 原文来自开源项目 AKShare（akshare/stock_feature/ths.js），
  * 属公开算法的移植，用于访问同花顺**公开**行情页自身的接口。
  *
  * 设计要点：
+ *   · 算法源码**内嵌**为字符串常量（不读外部文件、不走网络），并带 SHA-256
+ *     完整性指纹：指纹不匹配直接拒绝执行，防止源码被篡改/意外损坏后以主进程
+ *     权限静默运行（2026-11-15 审核 P0-1）
+ *   · `node:vm` 独立上下文执行：脚本只能看到注入的 window/document/navigator
+ *     stub，拿不到 process/require/文件系统等任何主进程能力，也不再污染
+ *     global 对象
  *   · 懒加载 + 缓存：算法执行有开销，按 TTL 复用同一个 token
- *   · 失败降级：算不出来就返回空串，调用方走"无 token"路径（能拿到就不带，拿不到再想办法）
- *   · 绝不影响主流程：任何异常都被吞掉并记录，不让反爬失败拖垮行情
+ *   · 失败降级：算不出来就返回空串，调用方走"无 token"路径
+ *   · 绝不影响主流程，但**不再吞错**：所有失败都记录到 lastError 并经
+ *     getHexinDiagnostics 进入服务诊断
  */
 
+const crypto = require("node:crypto");
+const vm = require("node:vm");
+
 const TOKEN_TTL_MS = 55 * 1000; // 实测网页端约 1 分钟刷新一次
+
+/**
+ * 内嵌算法源码的完整性指纹（刻意做成评审门禁）。
+ * 任何对 HEXIN_V_SOURCE 的有意修改都必须同步更新本常量；指纹不匹配时模块拒绝
+ * 执行该脚本，把「静默运行被篡改代码」变成「显式失败 + 诊断可见」。
+ */
+const EXPECTED_SOURCE_SHA256 = "0163e41dfdcbd889755142f4179a83a8d9f575f5343a56413546cc7fc0262376";
+
+/** 单次脚本执行硬超时：算法是纯计算，正常远低于此值，超时即视为异常拒绝。 */
+const EXECUTION_TIMEOUT_MS = 1000;
 
 /**
  * 反爬算法源码**内嵌**（不读外部文件）。
@@ -36,50 +56,67 @@ let cachedToken = "";
 let cachedAt = 0;
 let lastError = null;
 
-/** 构建一次执行环境，返回 token 生成函数（失败返回 null） */
+/** 统一记录失败原因，供 getHexinDiagnostics 上报到服务诊断（不再静默吞错）。 */
+function recordError(code, error) {
+  const detail = error && error.message ? error.message : String(error);
+  lastError = new Error(`[ths-hexin-v] ${code}: ${detail}`);
+}
+
+/**
+ * 构建一次执行环境，返回 token 生成函数（失败返回 null）。
+ *
+ * 执行边界：脚本运行在 node:vm 独立上下文，全局对象里只有注入的
+ * window/document/navigator/setTimeout 等最小 stub；没有 process、require、
+ * 文件系统或主进程任何能力。源码先过 SHA-256 完整性校验再执行，且每次执行
+ * 都有硬超时。旧实现用 `new Function` 在主进程全局作用域执行并临时改写
+ * global.window/document，2026-11-15 审核 P0-1 整改为当前形态。
+ */
 function buildFactory() {
   if (cachedFactory) return cachedFactory;
-  const source = HEXIN_V_SOURCE;
-  // 该算法预期在浏览器里运行，需要 window/navigator/document 的最小 stub。
-  const previousWindow = global.window;
-  const previousNavigator = global.navigator;
-  const previousDocument = global.document;
-  try {
-    global.window = global;
-    // Node 已内置 navigator（只读），无需也不应覆盖；有 userAgent 即可。
-    if (!global.navigator || !global.navigator.userAgent) {
-      try {
-        Object.defineProperty(global, "navigator", {
-          configurable: true,
-          value: {
-            userAgent:
-              "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-          }
-        });
-      } catch { /* 无法覆盖时保持 Node 默认 */ }
-    }
-    if (!global.document) {
-      global.document = { cookie: "", createElement: () => ({}) };
-    }
-    const factory = new Function(
-      `${source}\n;return (typeof v === "function") ? v : (window && typeof window.v === "function" ? window.v : null);`
+  const digest = crypto.createHash("sha256").update(HEXIN_V_SOURCE).digest("hex");
+  if (digest !== EXPECTED_SOURCE_SHA256) {
+    recordError(
+      "source-integrity-mismatch",
+      new Error(`期望 ${EXPECTED_SOURCE_SHA256}，实际 ${digest}；若为有意修改请同步更新 EXPECTED_SOURCE_SHA256`)
     );
-    const fn = factory();
-    cachedFactory = typeof fn === "function" ? fn : null;
-    if (!cachedFactory) lastError = new Error("ths-hexin-v.js 未暴露 v() 函数");
-  } catch (error) {
-    lastError = error;
     cachedFactory = null;
-  } finally {
-    // navigator 在 Node 里是只读 getter，不能用赋值还原；
-    // 我们只在脚本执行期间临时挂 stub，执行完按需清掉自己加的属性即可。
-    try { global.window = previousWindow; } catch { /* 忽略 */ }
-    try { global.document = previousDocument; } catch { /* 忽略 */ }
-    if (!previousNavigator) {
-      try { delete global.navigator; } catch { /* Node 内置 navigator 不可删，保持原样也无副作用 */ }
-    }
+    return null;
   }
-  return cachedFactory;
+  try {
+    // 该算法预期在浏览器里运行，需要 window/navigator/document 的最小 stub。
+    const sandbox = {
+      navigator: {
+        userAgent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+      },
+      document: { cookie: "", createElement: () => ({}) },
+      setTimeout: () => 0,
+      clearTimeout: () => {}
+    };
+    sandbox.window = sandbox;
+    sandbox.top = sandbox;
+    const context = vm.createContext(sandbox, { name: "ths-hexin-v" });
+    const factory = new vm.Script(
+      `${HEXIN_V_SOURCE}\n;(typeof v === "function") ? v : null;`,
+      { filename: "ths-hexin-v.js" }
+    ).runInContext(context, { timeout: EXECUTION_TIMEOUT_MS });
+    if (typeof factory !== "function") {
+      recordError("factory-missing", new Error("ths-hexin-v.js 未暴露 v() 函数"));
+      cachedFactory = null;
+      return null;
+    }
+    // 每次取 token 都通过 runInContext 调用，保证硬超时对生成过程同样生效
+    // （直接调用上下文返回的函数不受 timeout 约束）。
+    new vm.Script("globalThis.__hexinNext = () => v();", { filename: "ths-hexin-v-call.js" })
+      .runInContext(context, { timeout: EXECUTION_TIMEOUT_MS });
+    const callScript = new vm.Script("__hexinNext()", { filename: "ths-hexin-v-invoke.js" });
+    cachedFactory = () => callScript.runInContext(context, { timeout: EXECUTION_TIMEOUT_MS });
+    return cachedFactory;
+  } catch (error) {
+    recordError("factory-build-failed", error);
+    cachedFactory = null;
+    return null;
+  }
 }
 
 /**
@@ -94,14 +131,15 @@ function getHexinToken(forceRefresh = false) {
   try {
     const token = String(factory() || "");
     if (token.length < 20) {
-      lastError = new Error("hexin-v token 长度异常");
+      recordError("token-too-short", new Error(`hexin-v token 长度异常（${token.length}）`));
       return "";
     }
     cachedToken = token;
     cachedAt = now;
+    lastError = null;
     return token;
   } catch (error) {
-    lastError = error;
+    recordError("token-generate-failed", error);
     return "";
   }
 }

@@ -95,3 +95,42 @@ test('verification requires an installed binary without auto-installing or accep
   fs.writeFileSync(path.join(electron, 'path.txt'), '../package.json');
   assert.throws(() => run(root), /outside its installed distribution/);
 });
+
+test('in-tree patched picomatch advisory is verified dynamically and blocks unpatched versions', () => {
+  const { verifyInTreePatchedAdvisories } = require('./verify-dependencies.cjs');
+  const repoRoot = path.resolve(__dirname, '..');
+  const mitigated = verifyInTreePatchedAdvisories(repoRoot);
+  assert.equal(mitigated.has('GHSA-fc5q-39xc-vjpf'), true);
+
+  const patchedPayload = audit(
+    {
+      '1247710': {
+        module_name: 'picomatch',
+        severity: 'high',
+        github_advisory_id: 'GHSA-fc5q-39xc-vjpf',
+        findings: [{ version: '4.0.7', paths: ['.>vite>picomatch'], dev: true }]
+      }
+    },
+    { high: 1 }
+  );
+  const res = evaluateAudit(patchedPayload, 1, { mitigatedAdvisories: mitigated });
+  assert.equal(res.records, 0);
+  assert.equal(res.severity.high, 0);
+  assert.deepEqual(res.mitigatedAdvisories, ['GHSA-fc5q-39xc-vjpf']);
+
+  const unpatchedVersionPayload = audit(
+    {
+      '1247710': {
+        module_name: 'picomatch',
+        severity: 'high',
+        github_advisory_id: 'GHSA-fc5q-39xc-vjpf',
+        findings: [{ version: '4.0.6', paths: ['.>vite>picomatch'], dev: true }]
+      }
+    },
+    { high: 1 }
+  );
+  assert.throws(
+    () => evaluateAudit(unpatchedVersionPayload, 1, { mitigatedAdvisories: mitigated }),
+    /GHSA-fc5q-39xc-vjpf/
+  );
+});

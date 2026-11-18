@@ -12,16 +12,9 @@ const {
   expectedWindowControls
 } = require("./packaged-layout.cjs");
 
-function cleanupPackagedScreenshots(root = __dirname) {
-  const removed = [];
-  for (const name of fs.readdirSync(root)) {
-    if (!/^(?:v\d+|packaged-.+)-(?:professional-review-(?:dark|light)|backtest-layout)\.png$/i.test(name)) {
-      continue;
-    }
-    fs.rmSync(path.join(root, name), { force: true });
-    removed.push(name);
-  }
-  return removed.sort();
+function createScreenshotDirectory(root = path.resolve(__dirname, "../artifacts/packaged-e2e")) {
+  fs.mkdirSync(root, { recursive: true });
+  return fs.mkdtempSync(path.join(root, "run-"));
 }
 
 function resolveExecutablePath(input = process.argv[2] || process.env.PACKAGED_EXE) {
@@ -77,7 +70,7 @@ async function run() {
         `Packaged version mismatch: package=${expectedVersion}, app=${appVersion}, renderer=${rendererVersion}`
       );
     }
-    const removedOldScreenshots = cleanupPackagedScreenshots();
+    const screenshotDirectory = createScreenshotDirectory(process.env.PACKAGED_E2E_ARTIFACTS || undefined);
 
     mark("chrome-layout");
     const chrome = await page.evaluate(() => {
@@ -168,7 +161,7 @@ async function run() {
         throw new Error("The no-leader review state is missing its explicit explanation");
       }
     }
-    await page.screenshot({ path: `qa/packaged-${expectedVersion}-professional-review-dark.png`, fullPage: true });
+    await page.screenshot({ path: path.join(screenshotDirectory, `packaged-${expectedVersion}-professional-review-dark.png`), fullPage: true });
 
     mark("professional-review-light");
     await page.getByRole("button", { name: "白天" }).click();
@@ -176,7 +169,7 @@ async function run() {
     if ((await page.locator("html").getAttribute("data-theme")) !== "light") {
       throw new Error("Light theme did not activate");
     }
-    await page.screenshot({ path: `qa/packaged-${expectedVersion}-professional-review-light.png`, fullPage: true });
+    await page.screenshot({ path: path.join(screenshotDirectory, `packaged-${expectedVersion}-professional-review-light.png`), fullPage: true });
 
     mark("failed-board-today");
     await page.getByRole("button", { name: "炸板观察", exact: true }).click();
@@ -387,7 +380,7 @@ async function run() {
       throw new Error(`Single-stock backtest workflow is incomplete: ${JSON.stringify(backtestWorkflow)}`);
     }
     await page.locator("[data-single-stock-backtest]").scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `qa/packaged-${expectedVersion}-backtest-layout.png` });
+    await page.screenshot({ path: path.join(screenshotDirectory, `packaged-${expectedVersion}-backtest-layout.png`) });
 
     // 「涨停趋势」与「策略信号」已合并为「策略选股」：趋势模型从策略库打开，规则说明折叠在模型内。
     mark("trend-screener");
@@ -552,7 +545,7 @@ async function run() {
           fiveDayState,
           trendState,
           signalState,
-          removedOldScreenshots,
+          screenshotDirectory,
           overlap
         },
         null,
@@ -572,4 +565,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { cleanupPackagedScreenshots, resolveExecutablePath, run };
+module.exports = { createScreenshotDirectory, resolveExecutablePath, run };

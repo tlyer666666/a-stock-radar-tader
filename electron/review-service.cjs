@@ -513,7 +513,10 @@ async function loadProfessionalReview(options) {
     Promise.all(indexPromises)
   ]);
   const limitUps = Array.isArray(limitUpSnapshot?.rows) ? limitUpSnapshot.rows : [];
-  const fallbackDate = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); // 北京时间日期
+  const latestIndexDate = Array.isArray(indices)
+    ? indices.map((item) => String(item?.date || "").slice(0, 10)).find((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    : "";
+  const fallbackDate = latestIndexDate || new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); // 优先最近指数交易日，兜底北京时间日期
   const safeEmotion = emotion || {
     date: fallbackDate,
     limitUpCount: Array.isArray(limitUpSnapshot?.rows) ? limitUps.length : null,
@@ -522,15 +525,7 @@ async function loadProfessionalReview(options) {
     score: limitUps.length >= 70 ? 68 : limitUps.length >= 35 ? 55 : 45,
     state: "数据降级"
   };
-  const safeMarket = market || sectors[0]?.marketSnapshot || {
-    stockCount: 0,
-    upCount: 0,
-    downCount: 0,
-    flatCount: 0,
-    breadth: 0.5,
-    averageReturn: 0,
-    fetchedAt: new Date().toISOString()
-  };
+  const safeMarket = market || sectors[0]?.marketSnapshot || null;
   const value = buildProfessionalReviewSnapshot({
     generatedAt: new Date().toISOString(),
     emotion: safeEmotion,

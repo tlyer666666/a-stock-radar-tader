@@ -5,7 +5,7 @@ const path = require('node:path');
 const { createHash } = require('node:crypto');
 const RECEIPT = 'build-provenance.json';
 const INPUT_FOLDERS = ['src', 'electron', 'config', '.github', 'qa', 'assets', 'public', 'patches'];
-const ROOT_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.ts', '.html', '.ico', '.png', '.svg']);
+const ROOT_EXTENSIONS = new Set(['.json', '.yaml', '.yml', '.ts', '.mts', '.cts', '.mjs', '.cjs', '.html', '.ico', '.png', '.svg']);
 const sha = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
 function assertManagedPath(root, target) {

@@ -13,7 +13,8 @@
  */
 const customStrategy = require("./custom-strategy.cjs");
 const frameworks = require("./ai-frameworks.cjs");
-const catalog = require("../config/strategy-custom-conditions.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const catalog = loadNamedConfig("strategy-custom-conditions");
 
 const MAX_PICKS = 40;
 // 每次请求最多评 10 只、同时最多 3 个请求：40 只一次性评估时输出常超过模型的输出上限（被截断成无效 JSON）或超时。
@@ -270,12 +271,13 @@ function strategyCatalogText(patterns) {
 
 const STRATEGY_SYSTEM = `你是A股选股软件的策略配置助手。用户用大白话描述想要的选股条件，你要把它翻译成软件「我的策略」的配置。
 规则：
-- 只能使用下面列出的条件 ref 和过滤项，不能自创条件；描述里无法对应的部分写进 notes 说明“无法实现”。
+- 只能使用下面列出的条件 ref 和过滤项，不能自创条件。
+- 如果用户描述里包含条件库不支持的内容（如 PE/PB/ROE/财务指标、融资融券、龙虎榜游资席位、逐笔/盘口/分钟分时等），必须如实列入 unsupportedTerms，并在 clarification 中用大白话反问用户（说明缺什么、软件能用什么近似替代），同时在 alternatives 里给出 1–2 个改用本软件已有条件替代的可执行描述。
 - conditions 是数组，每项 {"ref":"factor:xxx 或 pattern:xxx","required":true/false}；required=true 表示必须满足。
 - minMatchPercent：非必要条件中至少满足的比例（0–100 整数，默认 70）。
 - requiredAnyGroups：可选，“至少满足其一”的分组，每组是两个以上已选 ref 的数组。
 - name ≤ 20 字，description ≤ 80 字。
-只输出 JSON：{"name":"…","description":"…","universe":"limit_pool","conditions":[{"ref":"…","required":true}],"requiredAnyGroups":[],"minMatchPercent":70,"filters":{},"notes":"…"}`;
+只输出 JSON：{"name":"…","description":"…","universe":"limit_pool","conditions":[{"ref":"…","required":true}],"requiredAnyGroups":[],"minMatchPercent":70,"filters":{},"notes":"…","unsupportedTerms":[],"clarification":"","alternatives":[{"label":"…","prompt":"…"}]}`;
 
 /** 用户在设置里写的额外要求：追加在系统提示后面，内置规则（不编造、输出格式、分数范围）仍然优先。 */
 function withInstructions(system, instructions) {
@@ -286,14 +288,24 @@ function withInstructions(system, instructions) {
 ${extra}` : system;
 }
 
+function withLessons(system, recentLessons) {
+  const lessons = (Array.isArray(recentLessons) ? recentLessons : []).map(item => clip(item, 90)).filter(Boolean).slice(0, 4);
+  if (!lessons.length) return system;
+  return `${system}
+
+近期高分后验错题教训（打分、评级与写 risks 时请对照避坑，不要重复高估同类形态）：
+${lessons.map(item => `- ${item}`).join("\n")}`;
+}
+
 function createAiSelection({ ai }) {
-  async function rankPicks({ picks, market, asOfDate, instructions } = {}, { signal } = {}) {
+  async function rankPicks({ picks, market, asOfDate, instructions, recentLessons } = {}, { signal } = {}) {
     const list = sanitizePicks(picks);
     if (!list.length) throw Object.assign(new Error("本轮没有可供 AI 评估的股票"), { code: "AI_NO_INPUT" });
     const cleanMarket = sanitizeMarket(market);
+    const system = withInstructions(withLessons(RANK_SYSTEM, recentLessons), instructions);
     const outcomes = await inBatches(list, async batch => {
       const user = JSON.stringify({ asOfDate: String(asOfDate || ""), market: cleanMarket, stocks: batch });
-      const result = await ai.chat({ system: withInstructions(RANK_SYSTEM, instructions), user, json: true, temperature: 0.2, maxTokens: 4000, signal });
+      const result = await ai.chat({ system, user, json: true, temperature: 0.2, maxTokens: 4000, signal });
       return validateRanking(result, batch);
     });
     const items = outcomes.flatMap(item => item.ok ? item.value : []).sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
@@ -335,23 +347,51 @@ function createAiSelection({ ai }) {
       minMatchPercent: Number.isFinite(Number(result?.minMatchPercent)) ? Math.round(Math.min(100, Math.max(0, Number(result.minMatchPercent)))) : catalog.defaults.minMatchPercent,
       filters: result?.filters && typeof result.filters === "object" && !Array.isArray(result.filters) ? result.filters : {}
     };
+    const unsupportedTerms = (Array.isArray(result?.unsupportedTerms) ? result.unsupportedTerms : [])
+      .map(item => clip(item, 24)).filter(Boolean).slice(0, 5);
+    const clarification = clip(result?.clarification, 180);
+    const alternatives = (Array.isArray(result?.alternatives) ? result.alternatives : [])
+      .map(item => ({ label: clip(item?.label, 24), prompt: clip(item?.prompt, 200) }))
+      .filter(item => item.label && item.prompt)
+      .slice(0, 3);
     let strategy;
     try { strategy = customStrategy.normalizeCustomStrategy(draft, { patternIds }); }
     catch (error) {
       // 过滤项不合法时去掉过滤再试一次，条件本身仍需有效。
       try { strategy = customStrategy.normalizeCustomStrategy({ ...draft, filters: {} }, { patternIds }); }
-      catch { throw Object.assign(new Error(`AI 生成的策略不完整：${error?.message || error}。换个说法再试试`), { code: "AI_BAD_OUTPUT" }); }
+      catch {
+        if (clarification || alternatives.length || unsupportedTerms.length) {
+          return {
+            strategy: null,
+            needsClarification: true,
+            clarification: clarification || clip(result?.notes, 180) || "描述包含当前条件库暂不支持的条件，请补充说明或选用下方替代方案。",
+            unsupportedTerms,
+            alternatives,
+            notes: clip(result?.notes, 200),
+            model: ai.model()
+          };
+        }
+        throw Object.assign(new Error(`AI 生成的策略不完整：${error?.message || error}。换个说法再试试`), { code: "AI_BAD_OUTPUT" });
+      }
     }
-    return { strategy: { ...strategy, id: null, origin: "user" }, notes: clip(result?.notes, 200), model: ai.model() };
+    return {
+      strategy: { ...strategy, id: null, origin: "user" },
+      notes: clip(result?.notes, 200),
+      model: ai.model(),
+      ...(unsupportedTerms.length ? { unsupportedTerms } : {}),
+      ...(clarification ? { clarification, needsClarification: Boolean(unsupportedTerms.length) } : {}),
+      ...(alternatives.length ? { alternatives } : {})
+    };
   }
 
   /** 用户自己挑的股票（体检数据）一起打分；输出与 rankPicks 相同的结构。 */
-  async function rankProfiles({ profiles, market, asOfDate, instructions, framework } = {}, { signal } = {}) {
+  async function rankProfiles({ profiles, market, asOfDate, instructions, framework, recentLessons } = {}, { signal } = {}) {
     const list = sanitizeProfiles(profiles);
     if (!list.length) throw Object.assign(new Error("还没有可供 AI 评估的股票"), { code: "AI_NO_INPUT" });
     const cleanMarket = sanitizeMarket(market);
     const evaluations = framework ? new Map(list.map(stock => [stock.code, frameworks.evaluateFramework(framework, stock, cleanMarket)])) : null;
-    const system = framework ? `${PROFILE_RANK_SYSTEM}\n\n${frameworks.frameworkPrompt(framework)}` : PROFILE_RANK_SYSTEM;
+    const baseSystem = framework ? `${PROFILE_RANK_SYSTEM}\n\n${frameworks.frameworkPrompt(framework)}` : PROFILE_RANK_SYSTEM;
+    const system = withLessons(baseSystem, recentLessons);
     const outcomes = await inBatches(list, async batch => {
       const stocks = evaluations ? batch.map(stock => ({ ...stock, framework: frameworkInput(evaluations.get(stock.code)) })) : batch;
       const user = JSON.stringify({ asOfDate: String(asOfDate || ""), market: cleanMarket, stocks });

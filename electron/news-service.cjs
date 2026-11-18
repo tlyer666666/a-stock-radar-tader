@@ -79,13 +79,32 @@ function normalizeTitle(value = "") {
 }
 
 function parseTime(value) {
-  const normalized = String(value || "").replace(/:(\d{3})$/, ".$1");
+  let normalized = String(value || "").trim().replace(/:(\d{3})$/, ".$1");
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    normalized = `${normalized}T00:00:00+08:00`;
+  } else if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?$/.test(normalized)) {
+    normalized = `${normalized.replace(" ", "T")}+08:00`;
+  }
   const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? new Date() : date;
 }
 
 function ageMinutes(value) {
   return Math.max(0, Math.round((Date.now() - parseTime(value).getTime()) / 60000));
+}
+
+function refreshFreshnessFields(item) {
+  const minutes = ageMinutes(item.publishedAt);
+  const isAnnouncement = item.type === "announcement";
+  const freshnessScore = isAnnouncement
+    ? (minutes <= 30 ? 100 : minutes <= 180 ? 90 : minutes <= 720 ? 75 : minutes <= 1440 ? 60 : 35)
+    : (minutes <= 10 ? 100 : minutes <= 30 ? 90 : minutes <= 120 ? 75 : minutes <= 720 ? 55 : 30);
+  return {
+    ...item,
+    ageMinutes: minutes,
+    freshnessScore,
+    isOld: minutes > (isAnnouncement ? 2880 : 1440)
+  };
 }
 
 function matchTerms(text, terms) {
@@ -602,14 +621,170 @@ function dedupeItems(items) {
   return result;
 }
 
-function matchesCollection(item, collection = []) {
-  const codes = new Set(collection.map((entry) => String(entry.code || "")));
-  const names = collection.map((entry) => String(entry.name || "")).filter(Boolean);
-  const industries = collection.map((entry) => String(entry.industry || "")).filter(Boolean);
+function findMatchedEntry(item, collection = []) {
+  const entries = (Array.isArray(collection) ? collection : [])
+    .map((entry) => (typeof entry === "string" ? { name: entry, industry: entry } : entry))
+    .filter((entry) => entry && typeof entry === "object");
+  if (!entries.length) return null;
   const text = `${item.title} ${item.summary}`;
-  return item.relatedStocks.some((stock) => codes.has(String(stock.code))) ||
-    names.some((name) => text.includes(name)) ||
-    industries.some((industry) => item.relatedSectors.includes(industry) || text.includes(industry));
+  return entries.find((entry) => {
+    const code = String(entry.code || "");
+    const name = String(entry.name || "");
+    const industry = String(entry.industry || "");
+    return (code && item.relatedStocks.some((stock) => String(stock.code) === code)) ||
+      (name && text.includes(name)) ||
+      (industry && (item.relatedSectors.includes(industry) || text.includes(industry)));
+  }) || null;
+}
+
+function matchesCollection(item, collection = []) {
+  return Boolean(findMatchedEntry(item, collection));
+}
+
+function confirmDirectionFromChange(item, label, chg, isCurrentStock = false) {
+  if (!Number.isFinite(chg)) return null;
+  const pctText = `${chg >= 0 ? "+" : ""}${chg.toFixed(1)}%`;
+  const weakSubject = isCurrentStock ? "股价" : label;
+  if (item.direction === "positive" && chg >= 2) {
+    return { confirmed: true, text: `${label}走强(${pctText})已确认` };
+  }
+  if (item.direction === "negative" && chg <= -2) {
+    return { confirmed: true, text: `${label}承压(${pctText})已确认` };
+  }
+  if (item.direction === "positive" && chg <= -2) {
+    return { confirmed: false, text: `利好但${weakSubject}偏弱(${pctText})` };
+  }
+  if (item.direction === "negative" && chg >= 2) {
+    return { confirmed: false, text: isCurrentStock ? `利空但抗跌(${pctText})` : `利空但${label}抗跌(${pctText})` };
+  }
+  return null;
+}
+
+function findMatchedQuote(item, liveQuotes) {
+  if (!liveQuotes || !Array.isArray(item?.relatedStocks) || !item.relatedStocks.length) return null;
+  const rows = Array.isArray(liveQuotes) ? liveQuotes : Object.values(liveQuotes);
+  for (const stock of item.relatedStocks) {
+    const code = String(stock?.code || "");
+    if (!code) continue;
+    const direct = !Array.isArray(liveQuotes) ? liveQuotes[code] : null;
+    const found = direct || rows.find(row => String(row?.code || "") === code);
+    if (found && Number.isFinite(Number(found.changePct))) return found;
+  }
+  return null;
+}
+
+function findMatchedSectorStrength(item, sectorStrength) {
+  if (!Array.isArray(sectorStrength) || !sectorStrength.length) return null;
+  const sectors = Array.isArray(item?.relatedSectors) ? item.relatedSectors : [];
+  const text = `${item?.title || ""} ${item?.summary || ""}`;
+  return sectorStrength.find(sec => {
+    const name = String(sec?.name || "").trim();
+    return name && (sectors.some(s => s === name || s.includes(name) || name.includes(s)) || text.includes(name));
+  }) || null;
+}
+
+function confirmWithMarket(item, input = {}) {
+  let marketConfirmed = item.marketConfirmed === true;
+  let marketConfirmation = String(item.marketConfirmation || "待行情确认");
+  let confirmedStockChangePct = null;
+  const stock = input.currentStock && matchesCollection(item, [input.currentStock]) ? input.currentStock : null;
+  if (stock) {
+    const chg = Number(stock?.changePct);
+    const verdict = confirmDirectionFromChange(item, "个股", chg, true);
+    if (verdict) {
+      marketConfirmed = verdict.confirmed;
+      marketConfirmation = verdict.text;
+      confirmedStockChangePct = chg;
+    }
+  } else {
+    const quoted = findMatchedQuote(item, input.liveQuotes);
+    if (quoted) {
+      const chg = Number(quoted.changePct);
+      const label = String(quoted.name || quoted.code || "关联股").slice(0, 6);
+      const verdict = confirmDirectionFromChange(item, label, chg);
+      if (verdict) {
+        marketConfirmed = verdict.confirmed;
+        marketConfirmation = verdict.text;
+        confirmedStockChangePct = chg;
+      } else if (Number.isFinite(chg)) {
+        marketConfirmation = `${label}(${chg >= 0 ? "+" : ""}${chg.toFixed(1)}%)观望`;
+        confirmedStockChangePct = chg;
+      }
+    }
+  }
+  const limitMatch = findMatchedEntry(item, input.limitUps);
+  if (!marketConfirmed && limitMatch) {
+    marketConfirmed = true;
+    const label = limitMatch.name || limitMatch.code || "涨停标的";
+    marketConfirmation = item.direction === "negative" ? `涨停遇利空分歧(${label})` : `涨停梯队已印证(${label})`;
+  }
+  const matchedSector = findMatchedSectorStrength(item, input.sectorStrength);
+  let matchedSectorStrength = null;
+  if (matchedSector) {
+    const secChg = Number(matchedSector.changePct);
+    const secScore = Number(matchedSector.strengthScore ?? matchedSector.score);
+    const secName = String(matchedSector.name || "").slice(0, 8);
+    matchedSectorStrength = {
+      name: secName,
+      changePct: Number.isFinite(secChg) ? Number(secChg.toFixed(2)) : null,
+      score: Number.isFinite(secScore) ? Math.round(secScore) : null
+    };
+    if (!marketConfirmed && Number.isFinite(secChg)) {
+      const secPct = `${secChg >= 0 ? "+" : ""}${secChg.toFixed(1)}%`;
+      if ((item.direction === "positive" && secChg >= 1.2) || (Number.isFinite(secScore) && secScore >= 70)) {
+        marketConfirmed = true;
+        marketConfirmation = `板块共振(${secName} ${secPct})`;
+      } else if (marketConfirmation === "待行情确认") {
+        marketConfirmation = `板块(${secName} ${secPct})`;
+      }
+    }
+  }
+  const holdingMatch = findMatchedEntry(item, input.holdings);
+  const watchlistMatch = !holdingMatch ? findMatchedEntry(item, input.watchlist) : null;
+  const favoriteMatch = !holdingMatch && !watchlistMatch ? findMatchedEntry(item, input.favorites) : null;
+  const portfolioImpact = holdingMatch ? "holding" : watchlistMatch ? "watchlist" : favoriteMatch ? "favorite" : limitMatch ? "limitUp" : null;
+  return {
+    ...item,
+    marketConfirmed,
+    marketConfirmation,
+    portfolioImpact,
+    ...(confirmedStockChangePct !== null ? { confirmedStockChangePct } : {}),
+    ...(matchedSectorStrength ? { matchedSectorStrength } : {})
+  };
+}
+
+function buildNewsImpactPromptInput(item = {}, input = {}) {
+  const safeMatched = collection => (Array.isArray(collection) ? collection : [])
+    .filter(entry => entry && typeof entry === "object" && matchesCollection(item, [entry]))
+    .slice(0, 6)
+    .map(entry => ({
+      code: String(entry.code || "").slice(0, 6),
+      name: String(entry.name || "").slice(0, 12),
+      industry: String(entry.industry || "").slice(0, 16)
+    }));
+  return {
+    title: String(item.title || "").slice(0, 120),
+    summary: String(item.summary || "").slice(0, 420),
+    type: String(item.type || "flash"),
+    eventType: String(item.eventType || ""),
+    direction: String(item.direction || "neutral"),
+    impactHorizon: String(item.impactHorizon || ""),
+    marketConfirmation: String(item.marketConfirmation || ""),
+    relatedSectors: (Array.isArray(item.relatedSectors) ? item.relatedSectors : []).slice(0, 6),
+    relatedStocks: (Array.isArray(item.relatedStocks) ? item.relatedStocks : []).slice(0, 8).map(s => ({ code: String(s.code || ""), name: String(s.name || "") })),
+    holdingsMatched: safeMatched(input.holdings),
+    watchlistMatched: safeMatched(input.watchlist),
+    favoritesMatched: (Array.isArray(input.favorites) ? input.favorites : [])
+      .map(entry => (typeof entry === "string" ? entry : String(entry?.name || entry?.industry || "")))
+      .filter(Boolean)
+      .filter(name => `${item.title || ""} ${item.summary || ""}`.includes(name) || (item.relatedSectors || []).some(s => s.includes(name)))
+      .slice(0, 6),
+    sectorStrength: (Array.isArray(input.sectorStrength) ? input.sectorStrength : []).slice(0, 5).map(sec => ({
+      name: String(sec?.name || "").slice(0, 12),
+      changePct: Number.isFinite(Number(sec?.changePct)) ? Number(Number(sec.changePct).toFixed(2)) : null,
+      score: Number.isFinite(Number(sec?.strengthScore ?? sec?.score)) ? Math.round(Number(sec.strengthScore ?? sec.score)) : null
+    }))
+  };
 }
 
 function filterItems(items, input) {
@@ -631,6 +806,7 @@ function filterItems(items, input) {
     if (direction !== "all" && item.direction !== direction) return false;
     if (scope === "limitUp" && !matchesCollection(item, input.limitUps)) return false;
     if (scope === "watchlist" && !matchesCollection(item, input.watchlist)) return false;
+    if (scope === "favorites" && !matchesCollection(item, input.favorites)) return false;
     if (scope === "holdings" && !matchesCollection(item, input.holdings)) return false;
     if (scope === "stock") {
       const stock = input.currentStock;
@@ -660,10 +836,13 @@ async function getNewsFeed(input = {}, settings = {}) {
   const filtered = filterItems(deduped, input);
   const limit = Math.max(10, Math.min(200, Number(input.limit) || 100));
   return {
-    items: filtered.slice(0, limit).map((item) => ({
-      ...item,
-      autoBroadcast: isBroadcastWorthy(item)
-    })),
+    items: filtered.slice(0, limit).map((rawItem) => {
+      const item = refreshFreshnessFields(rawItem);
+      return {
+        ...confirmWithMarket(item, input),
+        autoBroadcast: isBroadcastWorthy(item)
+      };
+    }),
     total: filtered.length,
     unfilteredTotal: deduped.length,
     updatedAt: new Date().toISOString(),
@@ -701,6 +880,8 @@ module.exports = {
   thsRows,
   dedupeItems,
   filterItems,
+  confirmWithMarket,
+  buildNewsImpactPromptInput,
   classifyEvent,
   isBroadcastWorthy
 };

@@ -1,4 +1,5 @@
 export type WorkspaceView =
+  | "cockpit"
   | "dashboard"
   | "previous-limit-up-failed"
   | "favorites"

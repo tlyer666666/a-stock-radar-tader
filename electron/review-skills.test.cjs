@@ -89,3 +89,22 @@ test("without skills the review still works the old single-shot way", async () =
   assert.equal(review.mode, undefined);
   assert.deepEqual(review.mainlines.map(item => item.name), [], "without skill results only the page's sectors and themes count");
 });
+
+test("history_reviews exposes lookbackHitRatePct and lookbackLessons when available", async () => {
+  const skills = createReviewSkills(sources({
+    previousReviews: () => [{
+      asOfDate: "2026-11-02",
+      headline: "分歧",
+      cycle: { phase: "分歧" },
+      mainlines: [{ name: "机器人" }],
+      nextDay: { posture: "低吸" },
+      lookbackHitRatePct: 75,
+      lookbackLessons: ["避免追高四板以上孤立妖股"]
+    }]
+  }));
+  const res = await skills.runSkill("history_reviews", { count: 2 });
+  assert.equal(res.ok, true);
+  assert.match(res.summary, /兑现75%/);
+  assert.equal(res.data.reviews[0].lookbackHitRatePct, 75);
+  assert.deepEqual(res.data.reviews[0].lookbackLessons, ["避免追高四板以上孤立妖股"]);
+});

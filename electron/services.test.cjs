@@ -225,6 +225,27 @@ test("public quote and chart entry points return their documented production con
   assert.equal(chart.availableTo, chart.rows.at(-1).date);
 });
 
+test("eastQuote preserves missing market cap fields as null rather than zero", async (t) => {
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  global.fetch = async (url) => {
+    const requestUrl = String(url);
+    if (requestUrl.includes("/stock/get?")) {
+      return mockJsonResponse({
+        data: {
+          f43: 1234, f44: 1250, f45: 1200, f46: 1210, f47: 100000, f48: 123400000,
+          f50: 110, f51: 1357, f52: 1111, f57: "600518", f58: "样本股", f59: 2, f60: 1220,
+          f116: "-", f117: null, f127: "医药", f168: 250, f169: 14, f170: 115, f171: 410
+        }
+      });
+    }
+    throw new Error(`unexpected request: ${requestUrl}`);
+  };
+  const res = await getQuoteSnapshot("600518", { provider: "eastmoney" });
+  assert.equal(res.quote.totalMarketCap, null);
+  assert.equal(res.quote.floatMarketCap, null);
+});
+
 test("service entry points reject inconsistent identifiers before any network request", async () => {
   const invalid = { code: "600519", secid: "0.600519", thscode: "600519.SH" };
   await assert.rejects(getQuoteSnapshot(invalid), /Invalid secid/);
@@ -438,6 +459,23 @@ test("E-06 an uncomputable 3-day return keeps relative sector strength unknown a
   assert.equal(sectorStrategy.matched, false, "null >= 0 的隐式成立必须被挡住");
   assert.match(sectorStrategy.detail, /未知/);
   assert.match(strategies.find((item) => item.id === "sectorLeader").detail, /未知/, "展示层不能在 null 上调用 toFixed");
+
+  const validRows = Array.from({ length: 30 }, (_, index) => ({
+    date: new Date(Date.UTC(2026, 0, index + 1)).toISOString().slice(0, 10),
+    open: 10, high: 10.5, low: 9.8, close: index === 29 ? 10.5 : 10, volume: 100, amount: 100000, turnover: 2
+  }));
+  const missingSectorR3 = analyzeHistory({ code: "600001" }, { name: "样本", latest: 10.5 }, validRows, { returns: { r3: null }, score: 70, memberCount: 20 }, null, [], []);
+  assert.equal(missingSectorR3.rsSector, null, "板块 3 日涨幅为 null 时不得按 0 处理");
+  const mismatchedWindow = analyzeHistory(
+    { code: "600001" },
+    { name: "样本", latest: 10.5 },
+    validRows,
+    { returns: { r3: 1 }, returnWindows: { r3: { startDate: "2026-01-25", endDate: "2026-01-29" } }, score: 70, memberCount: 20 },
+    null,
+    [],
+    []
+  );
+  assert.equal(mismatchedWindow.rsSector, null, "股票与板块 3 日起止日期不一致时 rsSector 必须为 null");
 });
 
 test("THS primary pool is enriched from Eastmoney and retains Eastmoney-only Beijing stocks", async (t) => {
@@ -1283,6 +1321,72 @@ test("portfolio backtest service keeps a no-signal basket as an all-cash diagnos
   assert.match(result.methodology.summary, /共享现金/);
 });
 
+test("portfolio amount strategies exclude stocks without an evaluable window and keep genuine zero signals", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T02:00:00Z") });
+  const dates = require("./trend-trading-calendar.cjs").createTradingCalendar().sessionsThrough("2026-10-22", 200);
+  const complete = dates.map(date => ({
+    date, open: 10, high: 10.1, low: 9.9, close: 10, volume: 1000, amount: 1000000
+  }));
+  const noAmount = complete.map(row => ({ ...row, amount: null }));
+  const calendarGaps = complete.filter((_, index) => (index + 1) % 50 !== 0);
+  const validShort = [...complete.slice(-130), { ...complete.at(-1), date: "2026-10-23", amount: null }];
+  const byCode = { "600001": noAmount, "600002": validShort, "600003": calendarGaps, "000985": noAmount };
+  const missing = { code: "600001", name: "缺成交额", assetType: "stock" };
+  const valid = { code: "600002", name: "有效零信号", assetType: "stock" };
+  const gapped = { code: "600003", name: "日线缺页", assetType: "stock" };
+  const request = { strategyIds: ["limit_macd_pullback_resonance"] };
+  const runtime = { resolveSecurity: async security => toSecurity(security), loadHistory: async security => byCode[security.code] };
+  const settings = { fallbackEnabled: false };
+
+  await assert.rejects(runPortfolioBacktest({ ...request, securities: [missing] }, settings, runtime), /600001.*amount 缺失\/无效/);
+
+  const result = await runPortfolioBacktest({ ...request, securities: [missing, valid, gapped] }, settings, runtime);
+  assert.deepEqual(result.universe.usableCodes, ["600002"]);
+  assert.deepEqual(result.dataQuality.failedStocks.map(stock => stock.code), ["600001", "600003"]);
+  assert.match(result.dataQuality.failedStocks[0].reason, /amount 缺失\/无效/);
+  assert.match(result.dataQuality.failedStocks[1].reason, /连续80根正量额可评估窗口/);
+  assert.equal(result.dataQuality.signalWindow.to, "2026-10-22");
+  assert.equal(result.dataQuality.partial, true);
+  assert.equal(result.metrics.totalSignals, 0);
+  assert.equal(result.metrics.tradeCount, 0);
+});
+
+test("portfolio amount strategies use the verified fallback only when enabled", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-23T08:00:00Z") });
+  const originalFetch = global.fetch;
+  t.after(() => { global.fetch = originalFetch; });
+  const dates = require("./trend-trading-calendar.cjs").createTradingCalendar().sessionsThrough("2026-10-23", 200);
+  let stockReads = 0;
+  global.fetch = async (url) => {
+    const target = new URL(String(url));
+    if (target.hostname !== "push2his.eastmoney.com") {
+      throw Object.assign(new Error("fixture source unavailable"), { status: 400 });
+    }
+    const code = target.searchParams.get("secid").split(".")[1];
+    if (code === "600004") stockReads++;
+    const klines = dates.map((date, index) => [
+      date, 10, 10, 10.1, 9.9, 1000,
+      code === "600004" && stockReads === 1 && index === 30 ? "" : 1000000,
+      2, 0, 0, 1
+    ].join(","));
+    return mockJsonResponse({ data: { code, klines } });
+  };
+  const request = {
+    securities: [{ code: "600004", name: "备用量额样本", assetType: "stock" }],
+    strategyIds: ["limit_macd_pullback_resonance"]
+  };
+  const runtime = { resolveSecurity: async security => toSecurity(security) };
+  await assert.rejects(runPortfolioBacktest(request, { fallbackEnabled: false }, runtime), /600004.*amount 缺失\/无效/);
+  assert.equal(stockReads, 1);
+  stockReads = 0;
+
+  const result = await runPortfolioBacktest(request, { fallbackEnabled: true }, runtime);
+  assert.equal(stockReads, 2);
+  assert.equal(result.universe.usedCount, 1);
+  assert.equal(result.dataQuality.partial, false);
+  assert.equal(result.metrics.totalSignals, 0);
+});
+
 test("strategy-derived portfolio is labeled separately from a manual basket", async () => {
   const rows = Array.from({ length: 150 }, (_, index) => ({
     date: new Date(Date.UTC(2025, 0, 1 + index)).toISOString().slice(0, 10),
@@ -1421,6 +1525,27 @@ test("sector fallback scoring never turns missing history into zero returns", ()
   assert.equal(summaryOnly.breadth, null);
   assert.equal(summaryOnly.returns.r3, null);
   assert.equal(summaryOnly.memberCount, 100);
+
+  const dates = ["2026-10-12", "2026-10-13", "2026-10-14", "2026-10-15", "2026-10-16", "2026-10-19"];
+  const makeBars = (list, baseClose = 100, step = 1) => list.map((date, idx) => ({ date, close: baseClose + idx * step, amount: 1e8, changePct: 1 }));
+  const aligned = buildSectorStrengthFromData({
+    sector: { code: "881101", name: "煤炭", secid: "" },
+    members: [{ code: "600001", name: "甲", changePct: 2, turnover: 3, amount: 100, isLimitUp: false }],
+    history: makeBars(dates, 100, 2),
+    benchmark: makeBars(dates, 100, 1),
+    context: { marketBreadth: 0.5, marketAverageReturn: 0.2 },
+    source: "同花顺 QuantAPI"
+  });
+  assert.ok(Number.isFinite(aligned.excess) && aligned.excess > 0);
+  const misaligned = buildSectorStrengthFromData({
+    sector: { code: "881101", name: "煤炭", secid: "" },
+    members: [{ code: "600001", name: "甲", changePct: 2, turnover: 3, amount: 100, isLimitUp: false }],
+    history: makeBars(["2026-10-09", ...dates.slice(0, 5)], 100, 2),
+    benchmark: makeBars(dates, 100, 1),
+    context: { marketBreadth: 0.5, marketAverageReturn: 0.2 },
+    source: "同花顺 QuantAPI"
+  });
+  assert.equal(misaligned.excess, null, "板块与基准交易日窗口起止不一致时不得产生错位超额");
 });
 
 test("回测余量：15:10 前多取 1 根，收盘后与非交易日为 0", () => {

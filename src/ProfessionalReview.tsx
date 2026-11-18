@@ -23,7 +23,13 @@ import {
   TrendingUp,
   X
 } from "lucide-react";
-import { FormEvent, useEffect, useRef, useState, type ReactNode } from "react";
+import { FormEvent, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
+import type {
+  AnalysisHistoricalEdge,
+  AnalysisPayload,
+  AnalysisQuote,
+  AnalysisSummaryData
+} from "./features/market/analysisTypes";
 import { buildStockReviewDecision, legacyReviewDecision, type ReviewDecision } from "./reviewDecision";
 export { buildStockReviewDecision } from "./reviewDecision";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
@@ -34,16 +40,198 @@ import { createNumberFormatters } from "./domain/formatters";
 import { isPreviewStockApi } from "./runtimeBridge";
 import { AiMarketReviewPanel } from "./features/ai-review/AiMarketReviewPanel";
 import { AiStockReviewPanel } from "./features/ai-picks/AiStockReviewPanel";
+import { readTrendPlans } from "./trendWorkspace";
+import { strategyName } from "./trendStrategyConfig";
+import { reconcilePlansAfterClose, type PlanReconciliationRow } from "./features/cockpit/cockpitModel";
+import { canOpenAgent, openAgentFor, openAgentPage } from "./features/ai-agent/agentModel";
 
 type ReviewTab = "market" | "stock" | "archive";
-type Security = {
+type ReviewSecurityRef = {
   code: string;
-  name?: string;
-  secid?: string;
-  thscode?: string;
-  marketName?: string;
-  assetType?: "stock" | "etf" | "convertibleBond";
-  defaultVisible?: boolean;
+  name?: string | undefined;
+  secid?: string | undefined;
+  thscode?: string | undefined;
+  marketName?: string | undefined;
+  assetType?: "stock" | "etf" | "convertibleBond" | undefined;
+  defaultVisible?: boolean | undefined;
+};
+
+type ReviewRecordObject = Record<string, unknown>;
+type ReviewHistoryBar = {
+  date?: string | undefined;
+  open?: number | undefined;
+  high?: number | undefined;
+  low?: number | undefined;
+  close?: number | undefined;
+  volume?: number | null | undefined;
+  [key: string]: unknown;
+};
+type ReviewReturns = {
+  r1?: number | null | undefined;
+  r3?: number | null | undefined;
+  r5?: number | null | undefined;
+};
+type MarketReviewIndexRow = {
+  code: string;
+  name?: string | undefined;
+  date?: string | undefined;
+  trend?: string | undefined;
+  ma5?: number | null | undefined;
+  ma20?: number | null | undefined;
+  volumeRatio?: number | null | undefined;
+  score?: number | null | undefined;
+  returns?: ReviewReturns | undefined;
+};
+type MarketReviewSectorRow = {
+  name: string;
+  reviewRank?: number | undefined;
+  state?: string | undefined;
+  verdict?: string | undefined;
+  poolLimitUps?: number | null | undefined;
+  limitUps?: number | null | undefined;
+  returns?: ReviewReturns | undefined;
+  breadth?: number | null | undefined;
+  amountHeat?: number | null | undefined;
+  score?: number | null | undefined;
+};
+type MarketReviewLeaderRow = ReviewSecurityRef & {
+  consecutiveBoards?: number | undefined;
+  industry?: string | undefined;
+  thsReason?: string | undefined;
+  reason?: string | undefined;
+};
+type MarketReviewScenario = {
+  id: string;
+  tone?: string | undefined;
+  name?: string | undefined;
+  conditions?: string[] | undefined;
+  action?: string | undefined;
+  invalidation?: string | undefined;
+};
+type MarketReviewSnapshot = {
+  date?: string | undefined;
+  session?: string | undefined;
+  generatedAt?: string | undefined;
+  score?: number | undefined;
+  verdict?: string | undefined;
+  decision?: ReviewDecision | undefined;
+  regime?: { tone?: string | undefined; name?: string | undefined; posture?: string | undefined } | undefined;
+  market?: {
+    available?: boolean | undefined;
+    upCount?: number | undefined;
+    flatCount?: number | undefined;
+    downCount?: number | undefined;
+    stockCount?: number | undefined;
+    breadth?: number | undefined;
+    averageReturn?: number | null | undefined;
+  } | undefined;
+  ecology?: {
+    limitUpCount?: number | undefined;
+    limitDownCount?: number | undefined;
+    failedBoards?: number | undefined;
+    promotionRate?: number | null | undefined;
+    maxHeight?: number | null | undefined;
+    sealRate?: number | null | undefined;
+    firstBoards?: number | undefined;
+    continuationBoards?: number | undefined;
+  } | undefined;
+  evidence?: string[] | undefined;
+  riskSignals?: string[] | undefined;
+  indices?: MarketReviewIndexRow[] | undefined;
+  focusSectors?: MarketReviewSectorRow[] | undefined;
+  leaders?: MarketReviewLeaderRow[] | undefined;
+  dimensions?: Record<string, number> | undefined;
+  scenarios?: MarketReviewScenario[] | undefined;
+  nextPlan?: { focus?: string[]; observe?: string[]; avoid?: string[] } | undefined;
+  methodology?: { description?: string | undefined; name?: string | undefined; note?: string | undefined } | undefined;
+  sources?: string[] | undefined;
+  fuyao?: FuyaoArchivePayload | undefined;
+  dataNature?: string | undefined;
+  [key: string]: unknown;
+};
+type FuyaoArchivePayload = {
+  available?: boolean | undefined;
+  anomalies?: unknown[] | undefined;
+  limitUp?: ({ byCode?: unknown } & Record<string, unknown>) | undefined;
+  [key: string]: unknown;
+};
+type StockReviewFactor = {
+  id: string;
+  name: string;
+  score: number;
+  passed: boolean;
+  detail: string;
+  weight: number;
+  source: string;
+  available: boolean;
+  status: string;
+};
+type StockReviewKeyLevel = {
+  id: string;
+  label: string;
+  tone?: string | undefined;
+  value: number | null | undefined;
+  source: string;
+};
+type StockReviewScenario = {
+  id: string;
+  name: string;
+  probability: string;
+  condition: string;
+  action: string;
+  invalidation: string;
+};
+type StockReviewPlanRow = PlanReconciliationRow;
+type StockReviewSnapshot = {
+  security?: Security | ReviewSecurityRef | undefined;
+  quote?: AnalysisQuote | undefined;
+  analysis?: AnalysisSummaryData | undefined;
+  score?: number | undefined;
+  grade?: string | undefined;
+  verdict?: string | undefined;
+  decision?: ReviewDecision | undefined;
+  factors: StockReviewFactor[];
+  factorEngine: {
+    total: number;
+    available: number;
+    coverage: number;
+    strong: number;
+    risk: number;
+    weightedScore: number;
+    thsActive: boolean;
+    providerLabel: string;
+    note: string;
+  };
+  certainty?: { score?: number | undefined; label?: string | undefined; note?: string | undefined; passed?: number | undefined; available?: number | undefined; total?: number | undefined } | undefined;
+  factorLeaders?: { strong: StockReviewFactor[]; risk: StockReviewFactor[]; pending: StockReviewFactor[] } | undefined;
+  checklist?: { confirmed: string[]; risks: string[]; pending: string[] } | undefined;
+  diagnostics?: {
+    return1?: number | null | undefined;
+    return3?: number | null | undefined;
+    return5?: number | null | undefined;
+    return10?: number | null | undefined;
+    atrPercent?: number | null | undefined;
+    recentAmplitude?: number | null | undefined;
+    compressionRatio?: number | null | undefined;
+    rangePosition20?: number | null | undefined;
+    maxDrawdown?: number | null | undefined;
+    maxDrawdownLabel?: string | undefined;
+    closePosition?: number | null | undefined;
+    volumeRatio?: number | null | undefined;
+    relativeTurnover?: number | null | undefined;
+    low20?: number | null | undefined;
+    high20?: number | null | undefined;
+    [key: string]: unknown;
+  } | undefined;
+  keyLevels?: StockReviewKeyLevel[] | undefined;
+  scenarios?: StockReviewScenario[] | undefined;
+  evidence?: string[] | undefined;
+  risks?: string[] | undefined;
+  plan?: { signal?: string | undefined; trigger?: number | null | undefined; stop?: number | null | undefined; target?: number | null | undefined; riskReward?: number | null | undefined; position?: number | null | undefined; invalidations: string[] } | undefined;
+  updatedAt?: string | undefined;
+  legacyDetailUnavailable?: boolean | undefined;
+  dataNature?: string | undefined;
+  [key: string]: unknown;
 };
 
 
@@ -83,8 +271,8 @@ export const FACTOR_GROUPS = [
   }
 ];
 
-function api(): any {
-  return typeof window === 'undefined' ? undefined : (window as any).stockApi;
+function api(): Window["stockApi"] | undefined {
+  return typeof window === 'undefined' ? undefined : window.stockApi;
 }
 
 function clamp(value: number, min = 0, max = 100) {
@@ -106,12 +294,12 @@ const { number, fmt, pct, unit, money } = createNumberFormatters(nullableNumber,
 
 // 说明：这个函数与 number/fmt/pct/unit/money 是同一批展示辅助，
 // 但它的职责是「按正负给出涨跌语义色名」，不属于格式化收敛范围，保留在本文件。
-function changeTone(value: any) {
+function changeTone(value: unknown) {
   const numeric = nullableNumber(value);
   return numeric === null ? "" : numeric >= 0 ? "up" : "down";
 }
 
-function executionStatusLabel(value: any) {
+function executionStatusLabel(value: unknown) {
   const status = String(value || "WAIT").toUpperCase();
   if (status === "PASS" || status === "APPROVED") return "允许执行";
   if (status === "BLOCK" || status === "BLOCKED" || status === "REJECTED") {
@@ -120,7 +308,7 @@ function executionStatusLabel(value: any) {
   return "等待条件确认";
 }
 
-function tradeSignalLabel(value: any) {
+function tradeSignalLabel(value: unknown) {
   const signal = String(value || "WAIT").toUpperCase();
   if (signal === "BUY_AGGRESSIVE") return "强势买入条件满足";
   if (signal === "BUY") return "买入条件满足";
@@ -145,19 +333,22 @@ function loadArchive(key = REVIEW_ARCHIVE_KEY): ReviewRecord[] {
 
 // Existing previews already carry source labels. Preserve those labels and use
 // them to keep legacy preview snapshots out of the formal journal/export.
-function archivedFuyao(value: any) {
+function archivedFuyao(value: FuyaoArchivePayload | null | undefined) {
   if (!value || !value.available) return value ?? undefined;
   const { anomalies: _anomalies, ...rest } = value;
   return { ...rest, limitUp: rest.limitUp ? { ...rest.limitUp, byCode: undefined } : rest.limitUp, anomalies: (value.anomalies || []).slice(0, 8) };
 }
 
-function isPreviewReviewSnapshot(snapshot: any): boolean {
-  if (snapshot?.dataNature === "preview") return true;
-  if (snapshot?.dataNature === "market") return false;
+function isPreviewReviewSnapshot(snapshot: ReviewRecordObject | null | undefined): boolean {
+  if (!snapshot) return false;
+  if (snapshot.dataNature === "preview") return true;
+  if (snapshot.dataNature === "market") return false;
+  const decision = snapshot.decision && typeof snapshot.decision === "object" ? (snapshot.decision as ReviewRecordObject) : undefined;
+  const factorEngine = snapshot.factorEngine && typeof snapshot.factorEngine === "object" ? (snapshot.factorEngine as ReviewRecordObject) : undefined;
   return /preview|浏览器预览|合成 \/ 预览/i.test([
-    snapshot?.actualProvider, snapshot?.sourceClass, snapshot?.session,
-    snapshot?.decision?.sourceNature, snapshot?.factorEngine?.providerLabel,
-    ...(Array.isArray(snapshot?.sources) ? snapshot.sources : [])
+    snapshot.actualProvider, snapshot.sourceClass, snapshot.session,
+    decision?.sourceNature, factorEngine?.providerLabel,
+    ...(Array.isArray(snapshot.sources) ? snapshot.sources : [])
   ].filter(Boolean).join(" "));
 }
 
@@ -170,7 +361,7 @@ function loadCurrentArchive(preview: boolean): ReviewRecord[] {
     .slice(0, MAX_REVIEW_RECORDS);
 }
 
-function downloadJson(value: any, filename: string) {
+function downloadJson(value: unknown, filename: string) {
   const blob = new Blob([JSON.stringify(value, null, 2)], {
     type: "application/json;charset=utf-8"
   });
@@ -187,7 +378,7 @@ function average(values: number[]) {
   return valid.length ? valid.reduce((sum, item) => sum + item, 0) / valid.length : 0;
 }
 
-function periodReturn(history: any[], days: number) {
+function periodReturn(history: ReviewHistoryBar[], days: number) {
   if (!Array.isArray(history) || history.length <= days) return null;
   const latest = nullableNumber(history.at(-1)?.close);
   const base = nullableNumber(history.at(-(days + 1))?.close);
@@ -196,7 +387,7 @@ function periodReturn(history: any[], days: number) {
     : null;
 }
 
-function technicalDiagnostics(history: any[]) {
+function technicalDiagnostics(history: ReviewHistoryBar[]) {
   const rows = Array.isArray(history) ? history.filter((item) => number(item?.close) > 0) : [];
   const amplitudes = rows.slice(1).map((item, index) => {
     const previousClose = number(rows[index]?.close);
@@ -269,9 +460,12 @@ function factor(input: {
   };
 }
 
-export function stockReviewFromPayload(payload: any, marketSnapshot?: any) {
-  const quote = payload?.quote || {};
-  const analysis = payload?.analysis || {};
+export function stockReviewFromPayload(
+  payload: AnalysisPayload | null | undefined,
+  marketSnapshot?: MarketReviewSnapshot | null
+) {
+  const quote: AnalysisQuote = payload?.quote || {};
+  const analysis: AnalysisSummaryData = payload?.analysis || {};
   const history = Array.isArray(payload?.history) ? payload.history : [];
   const diagnostics = technicalDiagnostics(history);
   const latest = number(quote.latest || payload?.history?.at(-1)?.close);
@@ -286,7 +480,10 @@ export function stockReviewFromPayload(payload: any, marketSnapshot?: any) {
   const assetLabel = analysis.assetLabel || quote.assetLabel || "证券";
   const firstBoard = analysis.firstBoardQuality || {};
   const ladder = analysis.sectorLadder || {};
-  const historicalEdge = analysis.historicalEdge || {};
+  const historicalEdge: AnalysisHistoricalEdge =
+    typeof analysis.historicalEdge === "object" && analysis.historicalEdge !== null
+      ? analysis.historicalEdge
+      : {};
   const executionReadiness = analysis.tradeExecutionReadiness || analysis.executionReadiness || {};
   const announcements = Array.isArray(payload?.announcements) ? payload.announcements : [];
   const actualProvider = String(payload?.actualProvider || "");
@@ -699,20 +896,20 @@ export function stockReviewFromPayload(payload: any, marketSnapshot?: any) {
         avwap ? `放量跌破 ${fmt(avwap, 2)} 且次日不能收回` : "放量下跌且板块同步转弱",
         "板块强度连续两日跌出市场前50%"
       ];
-  const validHistory = history.filter((item: any) => number(item?.close) > 0);
+  const validHistory = history.filter((item: ReviewHistoryBar) => number(item?.close) > 0);
   const recent20 = validHistory.slice(-20);
   const recent60 = validHistory.slice(-60);
   const high20 = recent20.length >= 20
-    ? Math.max(...recent20.map((item: any) => number(item.high)))
+    ? Math.max(...recent20.map((item: ReviewHistoryBar) => number(item.high)))
     : null;
   const low20 = recent20.length >= 20
-    ? Math.min(...recent20.map((item: any) => number(item.low)))
+    ? Math.min(...recent20.map((item: ReviewHistoryBar) => number(item.low)))
     : null;
   const high60 = recent60.length >= 60
-    ? Math.max(...recent60.map((item: any) => number(item.high)))
+    ? Math.max(...recent60.map((item: ReviewHistoryBar) => number(item.high)))
     : null;
   const low60 = recent60.length >= 60
-    ? Math.min(...recent60.map((item: any) => number(item.low)))
+    ? Math.min(...recent60.map((item: ReviewHistoryBar) => number(item.low)))
     : null;
   const rangePosition20 =
     high20 !== null && low20 !== null && high20 > low20
@@ -781,7 +978,11 @@ export function stockReviewFromPayload(payload: any, marketSnapshot?: any) {
   ];
   return {
     decision: buildStockReviewDecision(payload, marketSnapshot),
-    security: payload?.security || { code: quote.code, name: quote.name },
+    security: payload?.security || {
+      code: quote.code || "",
+      name: quote.name || quote.code || "",
+      secid: quote.secid || ""
+    },
     quote,
     analysis,
     score,
@@ -876,31 +1077,33 @@ export function stockReviewFromPayload(payload: any, marketSnapshot?: any) {
   };
 }
 
-function restoreStockReviewSnapshot(snapshot: any) {
-  if (!snapshot || typeof snapshot !== "object") return snapshot;
+export function restoreStockReviewSnapshot(snapshot: StockReviewSnapshot | Record<string, unknown> | null | undefined): StockReviewSnapshot | null {
+  if (!snapshot || typeof snapshot !== "object") return null;
+  const typed = snapshot as Partial<StockReviewSnapshot>;
   const hasDetailedEvidence =
-    snapshot.diagnostics &&
-    Array.isArray(snapshot.keyLevels) &&
-    snapshot.factorLeaders &&
-    snapshot.checklist &&
-    Array.isArray(snapshot.scenarios);
-  if (hasDetailedEvidence) return snapshot;
-  const factors = Array.isArray(snapshot.factors) ? snapshot.factors : [];
+    typed.diagnostics &&
+    Array.isArray(typed.keyLevels) &&
+    typed.factorLeaders &&
+    typed.checklist &&
+    Array.isArray(typed.scenarios);
+  if (hasDetailedEvidence) return typed as StockReviewSnapshot;
+  const factors: StockReviewFactor[] = Array.isArray(typed.factors) ? typed.factors : [];
+  const rawPlan = typed.plan;
   return {
-    ...snapshot,
+    ...typed,
     factors,
-    factorEngine: snapshot.factorEngine || {
+    factorEngine: typed.factorEngine || {
       total: factors.length,
-      available: factors.filter((item: any) => item?.available !== false).length,
+      available: factors.filter((item) => item?.available !== false).length,
       coverage: 0,
       strong: 0,
       risk: 0,
-      weightedScore: number(snapshot.score, 50),
+      weightedScore: number(typed.score, 50),
       thsActive: false,
       providerLabel: "旧版复盘档案",
       note: "该档案未保存新版详细证据，系统不会用缺失字段回填历史结论。"
     },
-    certainty: snapshot.certainty || {
+    certainty: typed.certainty || {
       score: 50,
       label: "旧档案不可回填",
       passed: 0,
@@ -908,21 +1111,53 @@ function restoreStockReviewSnapshot(snapshot: any) {
       total: 4,
       note: "旧版没有保存确定性证据，不根据事后数据补写。"
     },
-    risks: Array.isArray(snapshot.risks) ? snapshot.risks : [],
-    evidence: Array.isArray(snapshot.evidence) ? snapshot.evidence : [],
+    risks: Array.isArray(typed.risks) ? typed.risks : [],
+    evidence: Array.isArray(typed.evidence) ? typed.evidence : [],
     plan: {
-      ...(snapshot.plan || {}),
-      invalidations: Array.isArray(snapshot?.plan?.invalidations)
-        ? snapshot.plan.invalidations
+      ...(rawPlan || {}),
+      invalidations: Array.isArray(rawPlan?.invalidations)
+        ? rawPlan.invalidations
         : []
     },
     legacyDetailUnavailable: true
   };
 }
 
-export default function ProfessionalReview() {
+export function resolveStockReviewPlanRows(data: StockReviewSnapshot | null | undefined): StockReviewPlanRow[] {
+  const code = String(data?.security?.code || "");
+  if (!code || typeof window === "undefined") return [];
+  try {
+    const matched = readTrendPlans(window.localStorage).plans.filter((item) => item.candidate?.security?.code === code);
+    if (!matched.length) return [];
+    const latest = Number(data?.quote?.latest ?? data?.analysis?.quote?.latest);
+    const changePct = Number(data?.quote?.changePct);
+    const quotes = Number.isFinite(latest) && latest > 0
+      ? { [code]: { code, name: data?.quote?.name || data?.security?.name || code, latest, changePct: Number.isFinite(changePct) ? changePct : null } }
+      : {};
+    return reconcilePlansAfterClose(matched, quotes);
+  } catch {
+    return [];
+  }
+}
+
+type ProfessionalReviewProps = {
+  onOpenStock?: (stock: { code: string; name: string; secid: string }) => void;
+  onAddToT?: (stock: { code: string; name: string; secid: string }) => void;
+  onOpenBacktest?: (stock?: { code: string; name: string; secid: string }) => void;
+  onNavigate?: (view: string) => void;
+  holdings?: Array<{ code?: string; shares?: number; costPrice?: number }>;
+};
+
+export default function ProfessionalReview({
+  onOpenStock,
+  onAddToT,
+  onOpenBacktest,
+  onNavigate,
+  holdings
+}: ProfessionalReviewProps = {}) {
   const [tab, setTab] = useState<ReviewTab>("market");
-  const [market, setMarket] = useState<any>(null);
+  const [market, setMarket] = useState<MarketReviewSnapshot | null>(null);
+  const [viewingArchivedMarket, setViewingArchivedMarket] = useState(false);
   const [marketLoading, setMarketLoading] = useState(false);
   const [marketError, setMarketError] = useState("");
   const [query, setQuery] = useState("");
@@ -930,7 +1165,7 @@ export default function ProfessionalReview() {
   const [searching, setSearching] = useState(false);
   const [stockLoading, setStockLoading] = useState(false);
   const [stockError, setStockError] = useState("");
-  const [stock, setStock] = useState<any>(null);
+  const [stock, setStock] = useState<StockReviewSnapshot | null>(null);
   const [marketNote, setMarketNote] = useState("");
   const [aiMarket, setAiMarket] = useState<AiMarketReview | null>(null);
   const [stockNote, setStockNote] = useState("");
@@ -950,6 +1185,7 @@ export default function ProfessionalReview() {
   const suggestionQuery = useRef("");
   const marketRef = useRef(market);
   marketRef.current = market;
+  const liveMarketRef = useRef<MarketReviewSnapshot | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const changeQuery = (value: string) => {
     suppressNextSearch.current = false;
@@ -1001,8 +1237,13 @@ export default function ProfessionalReview() {
     setMarketLoading(true);
     setMarketError("");
     try {
-      const result = await api().getProfessionalReview({ refresh });
-      if (requestId === marketRequestId.current) setMarket(result);
+      const bridge = api();
+      const result = bridge ? await bridge.getProfessionalReview({ refresh }) : null;
+      if (requestId === marketRequestId.current) {
+        liveMarketRef.current = result;
+        setViewingArchivedMarket(false);
+        setMarket(result);
+      }
     } catch (error) {
       if (requestId === marketRequestId.current) setMarketError(error instanceof Error ? error.message : "市场复盘生成失败");
     } finally {
@@ -1035,7 +1276,8 @@ export default function ProfessionalReview() {
     searchTimer.current = window.setTimeout(async () => {
       setSearching(true);
       try {
-        const next = await api().search(searchText);
+        const bridge = api();
+        const next = bridge ? await bridge.search(searchText) : [];
         if (requestId === searchRequestId.current && queryRef.current.trim() === searchText) {
           suggestionQuery.current = searchText;
           setSuggestions(Array.isArray(next) ? next : []);
@@ -1052,7 +1294,7 @@ export default function ProfessionalReview() {
     };
   }, [query]);
 
-  const loadStock = async (security: Security | string) => {
+  const loadStock = async (security: Security | ReviewSecurityRef | string) => {
     intentId.current += 1;
     searchRequestId.current += 1;
     const requestId = ++stockRequestId.current;
@@ -1062,9 +1304,22 @@ export default function ProfessionalReview() {
     setSuggestions([]);
     setTab("stock");
     try {
-      const payload = await api().analyze(security);
+      const bridge = api();
+      const target =
+        typeof security === "string"
+          ? security
+          : {
+              code: security.code,
+              name: security.name || security.code,
+              secid: security.secid || "",
+              ...(security.thscode ? { thscode: security.thscode } : {}),
+              ...(security.marketName ? { marketName: security.marketName } : {}),
+              ...(security.assetType ? { assetType: security.assetType } : {}),
+              ...(security.defaultVisible !== undefined ? { defaultVisible: security.defaultVisible } : {})
+            };
+      const payload = bridge ? await bridge.analyze(target) : null;
       if (requestId !== stockRequestId.current) return;
-      setStock(stockReviewFromPayload(payload, marketRef.current));
+      setStock(payload ? stockReviewFromPayload(payload, liveMarketRef.current ?? marketRef.current) : null);
       suppressNextSearch.current = true;
       const nextQuery = payload?.quote?.name || payload?.security?.name || payload?.security?.code || "";
       queryRef.current = nextQuery;
@@ -1090,7 +1345,8 @@ export default function ProfessionalReview() {
     if (!text) return;
     const submitId = ++intentId.current;
     try {
-      const matches = await api().search(text);
+      const bridge = api();
+      const matches = bridge ? await bridge.search(text) : [];
       if (submitId !== intentId.current || queryRef.current.trim() !== text) return;
       if (matches[0]) {
         void loadStock(matches[0]);
@@ -1104,17 +1360,18 @@ export default function ProfessionalReview() {
 
   const saveMarketReview = async () => {
     if (!market) return;
+    const marketDate = market.date || shanghaiDateTag();
     const record: ReviewRecord = {
-      id: `market-${market.date}-${Date.now()}`,
+      id: `market-${marketDate}-${Date.now()}`,
       type: "market",
-      title: `${market.date} 市场复盘`,
-      date: market.date,
-      score: market.score,
+      title: `${marketDate} 市场复盘`,
+      date: marketDate,
+      score: typeof market.score === "number" && Number.isFinite(market.score) ? market.score : 50,
       verdict: market.decision?.headline || market.regime?.name || "市场复盘",
       note: marketNote,
       createdAt: new Date().toISOString(),
       // 当时的 AI 复盘结论一并存档，第二天「回看」与档案都能对照。
-      ...(aiMarket && aiMarket.asOfDate === market.date ? { ai: { headline: aiMarket.headline, cycle: aiMarket.cycle.phase, posture: aiMarket.nextDay.posture,
+      ...(aiMarket && aiMarket.asOfDate === marketDate ? { ai: { headline: aiMarket.headline, cycle: aiMarket.cycle.phase, posture: aiMarket.nextDay.posture,
         focus: aiMarket.nextDay.focus.slice(0, 5), model: aiMarket.model, generatedAt: aiMarket.generatedAt } } : {}),
       // 归档时不保存扶摇的逐股原始明细（每条可达数十 KB），结论、证据和题材已并入复盘本身。
       snapshot: { ...market, fuyao: archivedFuyao(market.fuyao), dataNature: previewMode || isPreviewReviewSnapshot(market) ? "preview" : "market" }
@@ -1132,11 +1389,15 @@ export default function ProfessionalReview() {
       type: "stock",
       title: `${stock.quote?.name || stock.security?.name || stock.security?.code} 个股复盘`,
       date: shanghaiDateTagFrom(stock.updatedAt, new Date()),
-      score: stock.score,
-      verdict: stock.decision?.headline || stock.verdict,
+      score: typeof stock.score === "number" && Number.isFinite(stock.score) ? stock.score : 50,
+      verdict: stock.decision?.headline || stock.verdict || "个股复盘",
       note: stockNote,
       createdAt: new Date().toISOString(),
-      snapshot: { ...stock, dataNature: previewMode || isPreviewReviewSnapshot(stock) ? "preview" : "market" }
+      snapshot: {
+        ...stock,
+        security: stock.security ? { code: stock.security.code, ...(stock.security.name !== undefined ? { name: stock.security.name } : {}) } : undefined,
+        dataNature: previewMode || isPreviewReviewSnapshot(stock) ? "preview" : "market"
+      }
     };
     if (await persistArchive(record)) {
       setStockNote("");
@@ -1155,6 +1416,7 @@ export default function ProfessionalReview() {
     setMarketError("");
     setStockError("");
     if (record.type === "market") {
+      setViewingArchivedMarket(true);
       setMarketNote(record.note || "");
       setMarket(record.snapshot);
       setTab("market");
@@ -1225,6 +1487,15 @@ export default function ProfessionalReview() {
       {tab === "stock" && stock?.security?.code && !stock.analysis?.isSearchOnlyAsset && (!stock.security.assetType || stock.security.assetType === "stock") &&
         <AiStockReviewPanel security={{ code: stock.security.code, name: stock.quote?.name || stock.security.name || stock.security.code }} context={stockReviewContext(stock)} />}
 
+      {tab === "market" && viewingArchivedMarket && (
+        <div className="review-inline-notice" role="status">
+          <span>正在查看历史市场复盘存档（{market?.date || "--"}）</span>
+          <button type="button" className="secondary-btn" onClick={() => void loadMarket(false)}>
+            返回最新市场复盘
+          </button>
+        </div>
+      )}
+
       {tab === "market" && (
         <MarketReview
           data={market}
@@ -1234,6 +1505,9 @@ export default function ProfessionalReview() {
           onNote={setMarketNote}
           onSave={saveMarketReview}
           onOpenStock={loadStock}
+          onOpenBacktest={onOpenBacktest}
+          onNavigate={onNavigate}
+          onAskAgent={canOpenAgent() ? () => openAgentPage() : undefined}
         />
       )}
 
@@ -1252,6 +1526,12 @@ export default function ProfessionalReview() {
           onNote={setStockNote}
           onSave={saveStockReview}
           onBack={() => changeTab("market")}
+          onOpenStock={onOpenStock}
+          onAddToT={onAddToT}
+          onOpenBacktest={onOpenBacktest}
+          onAskAgent={canOpenAgent() ? (sec: { code: string; name: string }, costPrice?: number | null) =>
+            openAgentFor(sec, "plan", costPrice && costPrice > 0 ? { costPrice } : undefined) : undefined}
+          holdings={holdings}
         />
       )}
 
@@ -1300,10 +1580,24 @@ export function DecisionReview({ decision, journal }: { decision: ReviewDecision
   </section>;
 }
 
-function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock }: any) {
+type MarketReviewProps = {
+  data: MarketReviewSnapshot | null;
+  loading: boolean;
+  error: string;
+  note: string;
+  onNote: (value: string) => void;
+  onSave: () => void;
+  onOpenStock: (stock: ReviewSecurityRef) => void;
+  onOpenBacktest?: ((stock?: { code: string; name: string; secid: string }) => void) | undefined;
+  onNavigate?: ((view: string) => void) | undefined;
+  onAskAgent?: (() => void) | undefined;
+};
+
+function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock, onOpenBacktest, onNavigate, onAskAgent }: MarketReviewProps) {
   if (loading && !data) return <ReviewLoading text="正在汇总指数、市场广度、涨停生态和主线板块…" />;
   if (error && !data) return <ReviewError text={error} />;
   if (!data) return null;
+  const marketBreadth = data.market?.available ? data.market : null;
   const dimensionLabels: Record<string, string> = {
     trend: "指数趋势",
     breadth: "市场广度",
@@ -1317,6 +1611,14 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
   return (
     <div className="review-content">
       {error && <div className="review-inline-warning"><AlertTriangle size={16} />{error}</div>}
+      {(onNavigate || onOpenBacktest || onAskAgent) && (
+        <div className="review-closed-loop-bar" aria-label="市场复盘闭环操作">
+          {onNavigate && <button type="button" className="review-link-btn" onClick={() => onNavigate("cockpit")}>前往今日驾驶舱</button>}
+          {onNavigate && <button type="button" className="review-link-btn" onClick={() => onNavigate("ai-picks")}>查看 AI 每日选股</button>}
+          {onOpenBacktest && <button type="button" className="review-link-btn" onClick={() => onOpenBacktest()}>策略回测验证</button>}
+          {onAskAgent && <button type="button" className="review-link-btn" onClick={() => onAskAgent()}>AI 问股推演</button>}
+        </div>
+      )}
       <DecisionReview decision={data.decision || legacyReviewDecision("市场", data.date)} journal={<ReviewJournal title="记录你的条件判断" note={note} onNote={onNote} onSave={onSave} placeholder="记录支持证据、主要反证、明天需满足的条件，以及本次哪些数据尚未齐备。" />} />
       <details className="review-legacy-details">
         <summary>展开原 8 维市场资料与诊断详情</summary>
@@ -1324,7 +1626,7 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
       <div className="terminal-market-grid">
         <div className="terminal-market-main">
       <section className={`review-regime-card tone-${data.regime?.tone || "neutral"}`}>
-        <div className="review-score-ring" style={{ "--score": data.score } as any}>
+        <div className="review-score-ring" style={{ "--score": data.score } as CSSProperties}>
           <strong>{data.score}</strong><span>/100</span>
         </div>
         <div className="review-regime-main">
@@ -1343,17 +1645,17 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
           <ReviewTitle icon={Activity} title="市场广度与情绪" subtitle="先看赚钱效应，再看指数涨跌" />
           <div className="review-breadth">
             <div>
-              <span>上涨 <b className="review-up">{data.market?.available ? data.market.upCount : "--"}</b></span>
-              <span>平盘 <b>{data.market?.available ? data.market.flatCount : "--"}</b></span>
-              <span>下跌 <b className="review-down">{data.market?.available ? data.market.downCount : "--"}</b></span>
+              <span>上涨 <b className="review-up">{marketBreadth ? marketBreadth.upCount : "--"}</b></span>
+              <span>平盘 <b>{marketBreadth ? marketBreadth.flatCount : "--"}</b></span>
+              <span>下跌 <b className="review-down">{marketBreadth ? marketBreadth.downCount : "--"}</b></span>
             </div>
             <i>
-              <em className="up" style={{ width: `${data.market?.available ? data.market.breadth * 100 : 50}%` }} />
-              <em className="flat" style={{ width: `${data.market?.available && data.market.stockCount ? data.market.flatCount / data.market.stockCount * 100 : 0}%` }} />
+              <em className="up" style={{ width: `${marketBreadth ? number(marketBreadth.breadth) * 100 : 50}%` }} />
+              <em className="flat" style={{ width: `${marketBreadth && number(marketBreadth.stockCount) ? number(marketBreadth.flatCount) / number(marketBreadth.stockCount) * 100 : 0}%` }} />
             </i>
             <small>
-              {data.market?.available
-                ? `上涨广度 ${(data.market.breadth * 100).toFixed(1)}% · 全市场代理涨幅 ${pct(data.market.averageReturn)}`
+              {marketBreadth
+                ? `上涨广度 ${(number(marketBreadth.breadth) * 100).toFixed(1)}% · 全市场代理涨幅 ${pct(marketBreadth.averageReturn)}`
                 : "涨跌家数接口暂时降级 · 广度维度按中性处理"}
             </small>
           </div>
@@ -1387,12 +1689,12 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
           <div className="review-index-row head">
             <span>指数</span><span>1日</span><span>3日</span><span>5日</span><span>MA结构</span><span>量能</span><span>评分</span>
           </div>
-          {(data.indices || []).map((item: any) => (
+          {(data.indices || []).map((item: MarketReviewIndexRow) => (
             <div className="review-index-row" key={item.code}>
               <span><b>{item.name}</b><small>{item.date}</small></span>
-              <span className={item.returns?.r1 >= 0 ? "review-up" : "review-down"}>{pct(item.returns?.r1)}</span>
-              <span className={item.returns?.r3 >= 0 ? "review-up" : "review-down"}>{pct(item.returns?.r3)}</span>
-              <span className={item.returns?.r5 >= 0 ? "review-up" : "review-down"}>{pct(item.returns?.r5)}</span>
+              <span className={number(item.returns?.r1) >= 0 ? "review-up" : "review-down"}>{pct(item.returns?.r1)}</span>
+              <span className={number(item.returns?.r3) >= 0 ? "review-up" : "review-down"}>{pct(item.returns?.r3)}</span>
+              <span className={number(item.returns?.r5) >= 0 ? "review-up" : "review-down"}>{pct(item.returns?.r5)}</span>
               <span><b>{item.trend}</b><small>MA5 {fmt(item.ma5, 0)} / MA20 {fmt(item.ma20, 0)}</small></span>
               <span>{fmt(item.volumeRatio, 2)}x</span>
               <span><strong>{item.score}</strong></span>
@@ -1407,7 +1709,7 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
           <div className="review-sector-row head">
             <span>排名/板块</span><span>结论</span><span>涨停</span><span>1/3/5日</span><span>上涨广度</span><span>成交热度</span><span>强度</span>
           </div>
-          {(data.focusSectors || []).map((item: any) => (
+          {(data.focusSectors || []).map((item: MarketReviewSectorRow) => (
             <div className="review-sector-row" key={`${item.name}-${item.reviewRank}`}>
               <span><b>#{item.reviewRank} {item.name}</b><small>{item.state || "板块跟踪"}</small></span>
               <span><em>{item.verdict}</em></span>
@@ -1424,9 +1726,9 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
       <section className="review-panel">
         <ReviewTitle icon={Sparkles} title="涨停核心梯队" subtitle="点击股票直接进入该股专业复盘" />
         <div className="review-leader-grid">
-          {(data.leaders || []).map((item: any) => (
+          {(data.leaders || []).map((item: MarketReviewLeaderRow) => (
             <button key={item.code} onClick={() => onOpenStock(item)}>
-              <span>{item.consecutiveBoards > 1 ? `${item.consecutiveBoards}连板` : "首板"}</span>
+              <span>{number(item.consecutiveBoards) > 1 ? `${item.consecutiveBoards}连板` : "首板"}</span>
               <b>{item.name}</b>
               <small>{item.code} · {item.industry || "未分类"}</small>
               <em>{item.thsReason || item.reason}<ChevronRight size={14} /></em>
@@ -1453,7 +1755,7 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
       </section>
 
       <section className="review-scenario-grid">
-        {(data.scenarios || []).map((scenario: any) => (
+        {(data.scenarios || []).map((scenario: MarketReviewScenario) => (
           <div className={`review-panel review-scenario tone-${scenario.tone}`} key={scenario.id}>
             <span>{scenario.name}</span>
             <ul>{(scenario.conditions || []).map((item: string) => <li key={item}>{item}</li>)}</ul>
@@ -1484,6 +1786,27 @@ function MarketReview({ data, loading, error, note, onNote, onSave, onOpenStock 
   );
 }
 
+type StockReviewProps = {
+  query: string;
+  onQuery: (value: string) => void;
+  suggestions: Security[];
+  searching: boolean;
+  onSubmit: (event: FormEvent) => void;
+  onSelect: (stock: Security) => void;
+  loading: boolean;
+  error: string;
+  data: StockReviewSnapshot | null;
+  note: string;
+  onNote: (value: string) => void;
+  onSave: () => void;
+  onBack: () => void;
+  onOpenStock?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
+  onAddToT?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
+  onOpenBacktest?: ((stock?: { code: string; name: string; secid: string }) => void) | undefined;
+  onAskAgent?: ((stock: { code: string; name: string }, costPrice?: number | null) => void) | undefined;
+  holdings?: Array<{ code?: string; shares?: number; costPrice?: number }> | undefined;
+};
+
 function StockReview({
   query,
   onQuery,
@@ -1497,9 +1820,29 @@ function StockReview({
   note,
   onNote,
   onSave,
-  onBack
-}: any) {
+  onBack,
+  onOpenStock,
+  onAddToT,
+  onOpenBacktest,
+  onAskAgent,
+  holdings
+}: StockReviewProps) {
   const composing = useRef(false);
+  const stockCode = String(data?.security?.code || "");
+  const stockName = String(data?.quote?.name || data?.security?.name || stockCode);
+  const stockSecid = String(data?.security?.secid || "");
+  const stockSecurity = stockCode ? { code: stockCode, name: stockName, secid: stockSecid } : null;
+  const planRows = data ? resolveStockReviewPlanRows(data) : [];
+  const matchedHolding = data && Array.isArray(holdings)
+    ? holdings.find((item) => item?.code === stockCode && Number(item?.shares) > 0)
+    : null;
+  const latestPrice = Number(data?.quote?.latest ?? data?.analysis?.quote?.latest);
+  const holdingCost = Number(matchedHolding?.costPrice);
+  const holdingPnlPct = Number.isFinite(latestPrice) && latestPrice > 0 && Number.isFinite(holdingCost) && holdingCost > 0
+    ? ((latestPrice - holdingCost) / holdingCost) * 100
+    : null;
+  const planTone = (status: string) =>
+    status === "stop-hit" ? "down" : status === "in-band" ? "up" : status === "above-band" ? "warn" : "flat";
   return (
     <div className="review-content">
       <div className="review-stock-toolbar">
@@ -1544,6 +1887,59 @@ function StockReview({
             <div className="review-horizon"><strong>2–6 周</strong><span>趋势观察</span></div>
           </section>
 
+          {(stockSecurity && (onOpenStock || onAddToT || onOpenBacktest || onAskAgent)) && (
+            <div className="review-closed-loop-bar" aria-label="个股复盘闭环操作">
+              {onOpenStock && (
+                <button type="button" className="review-link-btn primary" onClick={() => onOpenStock(stockSecurity)}>
+                  打开个股深度分析
+                </button>
+              )}
+              {onAddToT && /^\d{6}$/.test(stockCode) && (
+                <button type="button" className="review-link-btn" onClick={() => onAddToT(stockSecurity)}>
+                  加入做T助手
+                </button>
+              )}
+              {onOpenBacktest && (
+                <button type="button" className="review-link-btn" onClick={() => onOpenBacktest(stockSecurity)}>
+                  带入历史回测
+                </button>
+              )}
+              {onAskAgent && !data.analysis?.isSearchOnlyAsset && (!data.security?.assetType || data.security.assetType === "stock") && (
+                <button type="button" className="review-link-btn" onClick={() => onAskAgent({ code: stockCode, name: stockName }, holdingCost)}>
+                  AI 问股深入复盘
+                </button>
+              )}
+            </div>
+          )}
+
+          {(planRows.length > 0 || matchedHolding) && (
+            <section className="review-panel review-plan-compare" aria-label="冻结计划与持仓对照">
+              <div className="review-plan-compare-head">
+                <b>冻结计划与持仓对照</b>
+                <small>与趋势工作台冻结计划及本地持仓实时核对，不自动修改原冻结止损</small>
+              </div>
+              <div className="review-plan-compare-list">
+                {matchedHolding && (
+                  <div className="review-plan-compare-row">
+                    <span>本地持仓</span>
+                    <b>{matchedHolding.shares} 股 · 成本 {fmt(holdingCost, 2)}</b>
+                    <em className={holdingPnlPct != null && holdingPnlPct >= 0 ? "review-up" : "review-down"}>
+                      {holdingPnlPct == null ? "成本待核" : `浮盈亏 ${pct(holdingPnlPct)}`}
+                    </em>
+                  </div>
+                )}
+                {planRows.map((row: StockReviewPlanRow) => (
+                  <div key={row.plan.id} className="review-plan-compare-row">
+                    <span>{row.plan.candidate?.setup?.label || (row.plan.candidate?.strategy ? strategyName(row.plan.candidate.strategy) : "趋势冻结计划")}</span>
+                    <b>{row.planBaseline ? `基准 ${fmt(row.planBaseline, 2)}` : "--"}{row.plan.candidate?.plan?.stop ? ` · 止损 ${fmt(row.plan.candidate.plan.stop, 2)}` : ""}</b>
+                    <em className={`tone-${planTone(row.status)}`}>{row.statusLabel}</em>
+                    <small>{row.detail}</small>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           <DecisionReview decision={data.decision || legacyReviewDecision("个股", data.updatedAt?.slice(0,10))} journal={<ReviewJournal title="填写个股条件复盘" note={note} onNote={onNote} onSave={onSave} placeholder="写下已确认结构、缺失资料、反证和次日需满足的条件。" />} />
           <details className="review-legacy-details">
             <summary>展开原 20 因子与行情诊断详情</summary>
@@ -1576,7 +1972,7 @@ function StockReview({
 
           <div className="terminal-stock-grid">
             <div className="terminal-stock-main">
-          {!data.legacyDetailUnavailable && (
+          {!data.legacyDetailUnavailable && data.diagnostics && (
             <>
             <section className="review-panel review-stock-diagnostics">
             <ReviewTitle
@@ -1609,16 +2005,16 @@ function StockReview({
 
           {FACTOR_GROUPS.map((group) => {
             const groupFactors = group.factors
-              .map((id) => data.factors.find((item: any) => item.id === id))
-              .filter(Boolean);
+              .map((id) => data.factors.find((item: StockReviewFactor) => item.id === id))
+              .filter((item): item is StockReviewFactor => Boolean(item));
             return (
               <section className="review-factor-group" key={group.id}>
                 <header className="review-factor-group-title">
                   <div><i /><b>{group.label}</b><span>{group.description}</span></div>
-                  <span>{groupFactors.filter((item: any) => item.available).length}/{groupFactors.length} 可用</span>
+                  <span>{groupFactors.filter((item) => item.available).length}/{groupFactors.length} 可用</span>
                 </header>
                 <div className="review-factor-grid">
-                  {groupFactors.map((item: any) => (
+                  {groupFactors.map((item) => (
                     <div className={`review-panel review-factor ${item.status}`} key={item.id}>
                       <div className="review-factor-head">
                         <span>
@@ -1649,7 +2045,7 @@ function StockReview({
             <div className="review-panel">
               <ReviewTitle icon={Activity} title="事实证据" subtitle="结论必须能追溯到行情与结构" />
               <div className="review-evidence-list">
-                {data.evidence.map((item: string, index: number) => (
+                {(data.evidence || []).map((item: string, index: number) => (
                   <div key={item}><span>{index + 1}</span><p>{item}</p></div>
                 ))}
               </div>
@@ -1661,15 +2057,15 @@ function StockReview({
               </div>
             </div>
             <div className="review-panel review-trade-plan">
-              <ReviewTitle icon={Target} title="原上游计划资料（未冻结）" subtitle={`旧系统信号：${tradeSignalLabel(data.plan.signal)}`} />
+              <ReviewTitle icon={Target} title="原上游计划资料（未冻结）" subtitle={`旧系统信号：${tradeSignalLabel(data.plan?.signal)}`} />
               <div className="review-plan-price-grid">
-                <ReviewMetric label="确认价" value={fmt(data.plan.trigger, 2)} tone="up" />
-                <ReviewMetric label="失效价" value={fmt(data.plan.stop, 2)} tone="down" />
-                <ReviewMetric label="目标参考" value={fmt(data.plan.target, 2)} />
-                <ReviewMetric label="风险收益比" value={`${fmt(data.plan.riskReward, 2)}x`} />
+                <ReviewMetric label="确认价" value={fmt(data.plan?.trigger, 2)} tone="up" />
+                <ReviewMetric label="失效价" value={fmt(data.plan?.stop, 2)} tone="down" />
+                <ReviewMetric label="目标参考" value={fmt(data.plan?.target, 2)} />
+                <ReviewMetric label="风险收益比" value={`${fmt(data.plan?.riskReward, 2)}x`} />
               </div>
               <b>结构失效条件</b>
-              <ul>{data.plan.invalidations.map((item: string) => <li key={item}>{item}</li>)}</ul>
+              <ul>{(data.plan?.invalidations || []).map((item: string) => <li key={item}>{item}</li>)}</ul>
               <small>仅保留上游返回值，缺失不补。该资料不代表已通过新版趋势计划的价格口径、市场、限价与风险检查。</small>
             </div>
           </section>
@@ -1682,7 +2078,7 @@ function StockReview({
             <div className="review-panel">
               <ReviewTitle icon={Target} title="关键价位地图" subtitle="确认、成本、支撑与失效边界分开呈现" />
               <div className="review-key-level-grid">
-                {data.keyLevels.map((item: any) => (
+                {(data.keyLevels || []).map((item: StockReviewKeyLevel) => (
                   <div className={item.tone || ""} key={item.id}>
                     <span>{item.label}</span>
                     <b>{number(item.value) > 0 ? fmt(item.value, 2) : "--"}</b>
@@ -1690,15 +2086,15 @@ function StockReview({
                   </div>
                 ))}
               </div>
-              <div className={`review-range-map ${nullableNumber(data.diagnostics.rangePosition20) === null ? "pending" : ""}`}>
+              <div className={`review-range-map ${nullableNumber(data.diagnostics?.rangePosition20) === null ? "pending" : ""}`}>
                 <span>20日区间</span>
                 <div>
-                  {nullableNumber(data.diagnostics.rangePosition20) !== null && (
-                    <i style={{ width: `${clamp(data.diagnostics.rangePosition20)}%` }} />
+                  {nullableNumber(data.diagnostics?.rangePosition20) !== null && (
+                    <i style={{ width: `${clamp(number(data.diagnostics?.rangePosition20))}%` }} />
                   )}
                 </div>
                 <small>
-                  {fmt(data.diagnostics.low20, 2)} · 当前 {fmt(data.quote?.latest, 2)} · {fmt(data.diagnostics.high20, 2)}
+                  {fmt(data.diagnostics?.low20, 2)} · 当前 {fmt(data.quote?.latest, 2)} · {fmt(data.diagnostics?.high20, 2)}
                 </small>
               </div>
             </div>
@@ -1706,19 +2102,19 @@ function StockReview({
               <ReviewTitle icon={ClipboardCheck} title="复核清单" subtitle="已确认、风险与待补证据不混在一起" />
               <div className="review-checklist-columns">
                 <div className="confirmed">
-                  <b>已确认 {data.factorLeaders.strong.length}</b>
-                  {data.checklist.confirmed.map((item: string) => <p key={item}>{item}</p>)}
-                  {!data.checklist.confirmed.length && <p>暂无达到强项阈值的因子</p>}
+                  <b>已确认 {data.factorLeaders?.strong.length ?? 0}</b>
+                  {(data.checklist?.confirmed || []).map((item: string) => <p key={item}>{item}</p>)}
+                  {!(data.checklist?.confirmed?.length) && <p>暂无达到强项阈值的因子</p>}
                 </div>
                 <div className="risks">
-                  <b>未通过/风险 {data.factorLeaders.risk.length}</b>
-                  {data.checklist.risks.map((item: string) => <p key={item}>{item}</p>)}
-                  {!data.checklist.risks.length && <p>当前无未通过因子</p>}
+                  <b>未通过/风险 {data.factorLeaders?.risk.length ?? 0}</b>
+                  {(data.checklist?.risks || []).map((item: string) => <p key={item}>{item}</p>)}
+                  {!(data.checklist?.risks?.length) && <p>当前无未通过因子</p>}
                 </div>
                 <div className="pending">
-                  <b>待补 {data.factorLeaders.pending.length}</b>
-                  {data.checklist.pending.map((item: string) => <p key={item}>{item}</p>)}
-                  {!data.checklist.pending.length && <p>当前因子覆盖完整</p>}
+                  <b>待补 {data.factorLeaders?.pending.length ?? 0}</b>
+                  {(data.checklist?.pending || []).map((item: string) => <p key={item}>{item}</p>)}
+                  {!(data.checklist?.pending?.length) && <p>当前因子覆盖完整</p>}
                 </div>
               </div>
             </div>
@@ -1727,7 +2123,7 @@ function StockReview({
           <section className="review-panel review-scenario-panel">
             <ReviewTitle icon={Sparkles} title="次日三情景推演" subtitle="每个情景均给出触发条件、观察动作与失效标准" />
             <div className="review-scenario-grid">
-              {data.scenarios.map((scenario: any) => (
+              {(data.scenarios || []).map((scenario: StockReviewScenario) => (
                 <article className={scenario.id} key={scenario.id}>
                   <header><b>{scenario.name}</b><span>{scenario.probability}</span></header>
                   <div><span>触发</span><p>{scenario.condition}</p></div>
@@ -1744,7 +2140,7 @@ function StockReview({
             <div className="review-panel">
               <ReviewTitle icon={ShieldAlert} title="风险与反证" subtitle="先寻找自己可能错在哪里" />
               <div className="review-counter-evidence">
-                {data.risks.length
+                {data.risks?.length
                   ? data.risks.map((item: string) => <p key={item}><TrendingDown size={15} />{item}</p>)
                   : <p className="safe"><CheckCircle2 size={15} />当前模型未发现硬否决；这不代表没有风险。</p>}
                 <p><AlertTriangle size={15} />如果板块强度退潮，即使个股暂时抗跌也要降低预期。</p>
@@ -1767,7 +2163,14 @@ function StockReview({
   );
 }
 
-function ArchiveView({ records, preview, onOpen, onExport }: any) {
+type ArchiveViewProps = {
+  records: ReviewRecord[];
+  preview: boolean;
+  onOpen: (record: ReviewRecord) => void;
+  onExport: () => void;
+};
+
+export function ArchiveView({ records, preview, onOpen, onExport }: ArchiveViewProps) {
   return (
     <div className="review-content">
       <section className="review-panel review-archive-head">
@@ -1798,27 +2201,27 @@ function ArchiveView({ records, preview, onOpen, onExport }: any) {
 }
 
 /** 个股复盘页给 AI 的补充要点：复盘结论、已确认事实、风险和强弱因子（只取文字，最多 8 条）。 */
-function stockReviewContext(stock: any): string[] {
+export function stockReviewContext(stock: StockReviewSnapshot | null | undefined): string[] {
   const lines = [
     stock?.decision?.headline ? `复盘结论：${stock.decision.headline}` : "",
     stock?.verdict ? `诊断：${stock.verdict}` : "",
     ...(Array.isArray(stock?.checklist?.confirmed) ? stock.checklist.confirmed.slice(0, 2).map((item: string) => `已确认：${item}`) : []),
     ...(Array.isArray(stock?.checklist?.risks) ? stock.checklist.risks.slice(0, 2).map((item: string) => `风险：${item}`) : []),
-    ...(Array.isArray(stock?.factorLeaders?.strong) && stock.factorLeaders.strong.length ? [`强势因子：${stock.factorLeaders.strong.slice(0, 4).map((item: any) => item?.name).filter(Boolean).join("、")}`] : []),
-    ...(Array.isArray(stock?.factorLeaders?.risk) && stock.factorLeaders.risk.length ? [`风险因子：${stock.factorLeaders.risk.slice(0, 4).map((item: any) => item?.name).filter(Boolean).join("、")}`] : [])
+    ...(Array.isArray(stock?.factorLeaders?.strong) && stock.factorLeaders.strong.length ? [`强势因子：${stock.factorLeaders.strong.slice(0, 4).map((item) => item?.name).filter(Boolean).join("、")}`] : []),
+    ...(Array.isArray(stock?.factorLeaders?.risk) && stock.factorLeaders.risk.length ? [`风险因子：${stock.factorLeaders.risk.slice(0, 4).map((item) => item?.name).filter(Boolean).join("、")}`] : [])
   ];
   return lines.filter(line => typeof line === "string" && line.trim()).map(line => line.slice(0, 60)).slice(0, 8);
 }
 
-function ReviewTitle({ icon: Icon, title, subtitle }: any) {
+function ReviewTitle({ icon: Icon, title, subtitle }: { icon: ComponentType<{ size?: number | string }>; title: string; subtitle?: string | undefined }) {
   return <div className="review-title"><Icon size={18} /><div><b>{title}</b><small>{subtitle}</small></div></div>;
 }
 
-function ReviewMetric({ label, value, tone = "" }: any) {
+function ReviewMetric({ label, value, tone = "" }: { label: string; value: ReactNode; tone?: string | undefined }) {
   return <div className={`review-metric ${tone}`}><span>{label}</span><b>{value ?? "--"}</b></div>;
 }
 
-function ReviewPlanGroup({ title, items, tone }: any) {
+function ReviewPlanGroup({ title, items, tone }: { title: string; items: string[]; tone: string }) {
   return (
     <div className={`review-plan-group ${tone}`}>
       <b>{title}</b>
@@ -1827,7 +2230,7 @@ function ReviewPlanGroup({ title, items, tone }: any) {
   );
 }
 
-function ReviewJournal({ title, note, onNote, onSave, placeholder }: any) {
+function ReviewJournal({ title, note, onNote, onSave, placeholder }: { title: string; note: string; onNote: (value: string) => void; onSave: () => void; placeholder: string }) {
   return (
     <div className="review-panel review-journal">
       <ReviewTitle icon={ClipboardCheck} title={title} subtitle="记录当时的判断，而不是事后解释" />

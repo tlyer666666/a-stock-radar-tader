@@ -67,7 +67,7 @@
 .selection-chart-legend .ma-10::before { background: var(--chart-4); }
 .selection-chart-legend .ma-20::before { background: var(--chart-5); }
 
-.selection-quote-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); padding: 8px 12px; border-bottom: 1px solid var(--line-1); }
+.selection-quote-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-sm); padding: 8px 12px; border-bottom: 1px solid var(--line-1); }
 .selection-quote-controls > small { color: var(--ink-2); font-size: var(--fs-xs); }
 .selection-quote-controls button { min-height: 30px; }
 .selection-quote-meta { overflow-wrap: anywhere; font-style: normal; }

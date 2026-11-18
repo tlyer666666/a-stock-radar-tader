@@ -9,11 +9,11 @@ const { registerTypeScript } = require("../qa/register-typescript.cjs");
 let restoreTypeScript;
 let ProfessionalReview;
 let FACTOR_GROUPS;
-let buildStockReviewDecision, stockReviewFromPayload, DecisionReview;
+let buildStockReviewDecision, stockReviewFromPayload, DecisionReview, restoreStockReviewSnapshot, resolveStockReviewPlanRows, stockReviewContext, ArchiveView;
 
 before(() => {
   restoreTypeScript = registerTypeScript();
-  ({ default: ProfessionalReview, FACTOR_GROUPS, buildStockReviewDecision, stockReviewFromPayload, DecisionReview } = require("./ProfessionalReview.tsx"));
+  ({ default: ProfessionalReview, FACTOR_GROUPS, buildStockReviewDecision, stockReviewFromPayload, DecisionReview, restoreStockReviewSnapshot, resolveStockReviewPlanRows, stockReviewContext, ArchiveView } = require("./ProfessionalReview.tsx"));
 });
 
 function stockFixture() {
@@ -227,4 +227,60 @@ test('market archive boundary covers market/ecology, index returns and every map
     const candidate=archiveRecord(build(),'market');const parts=path.split('.');const leaf=parts.pop();let parent=candidate.snapshot;
     for(const part of parts)parent=parent[part];parent[leaf]=value;assert.equal(isReviewRecord(candidate),false,path);
   }
+});
+
+test('stockReviewFromPayload maps sectorLadder, marketEmotion, firstBoardQuality and historicalEdge cleanly', () => {
+  const payload = stockFixture();
+  payload.actualProvider = 'ths';
+  payload.announcements = [{ title: '签约公告', direction: 'positive', score: 2, category: '业务', display_time: '2026-09-30' }];
+  payload.analysis = {
+    ...payload.analysis,
+    score: 82,
+    platformHigh: 13.8,
+    supportLow: 12.1,
+    ma5: 13.4,
+    ma10: 13.1,
+    volumeRatio: 1.1,
+    relativeTurnover: 1.2,
+    closePosition: 0.85,
+    maxDrawdown: 5.2,
+    sectorScore: 76,
+    marketScore: 72,
+    sectorLadderScore: 78,
+    sectorLadder: { state: '主线强化', currentLimitUps: 6, maxHeight: 4, promotionRate: 0.5, breakRate: 0.15 },
+    marketEmotion: { state: '情绪活跃', limitUpCount: 65, limitDownCount: 3, limitDownRatio: 0.04 },
+    firstBoardQuality: { available: true, dataComplete: true, matched: true, score: 84, grade: 'A', summary: '首板扎实' },
+    historicalEdge: { passed: true, sampleCount: 40, winRate5: 62, average5: 3.8, worstMdd5: 6.5 }
+  };
+  const review = stockReviewFromPayload(payload, { date: '2026-09-30', decision: { asOf: '2026-09-30', marketGate: 'open' } });
+  assert.equal(review.factorEngine.thsActive, true);
+  assert.equal(review.factors.find(f => f.id === 'ladder').passed, true);
+  assert.equal(review.factors.find(f => f.id === 'firstBoard').passed, true);
+  assert.equal(review.factors.find(f => f.id === 'historical').passed, true);
+
+  assert.equal(restoreStockReviewSnapshot(null), null);
+  const modern = restoreStockReviewSnapshot(review);
+  assert.equal(modern.legacyDetailUnavailable, undefined);
+  const restoredLegacy = restoreStockReviewSnapshot({ score: 66, verdict: '趋势观察', factors: [{ id: 'support', name: '支撑', score: 75, passed: true, detail: 'ok', weight: 10, source: 'test', available: true, status: 'strong' }] });
+  assert.equal(restoredLegacy.legacyDetailUnavailable, true);
+  assert.equal(restoredLegacy.factorEngine.providerLabel, '旧版复盘档案');
+
+  assert.deepEqual(resolveStockReviewPlanRows(review), []);
+  const contextLines = stockReviewContext(review);
+  assert.ok(contextLines.some(line => line.startsWith('复盘结论：')));
+
+  const archiveHtml = renderToStaticMarkup(React.createElement(ArchiveView, {
+    records: [archiveRecord(review)],
+    preview: false,
+    onOpen: () => {},
+    onExport: () => {}
+  }));
+  assert.ok(archiveHtml.includes('合成档案'));
+  const emptyArchiveHtml = renderToStaticMarkup(React.createElement(ArchiveView, {
+    records: [],
+    preview: true,
+    onOpen: () => {},
+    onExport: () => {}
+  }));
+  assert.ok(emptyArchiveHtml.includes('预览复盘档案'));
 });
