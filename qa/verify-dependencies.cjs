@@ -74,7 +74,41 @@ function verifyVersions({ manifest, importer, installed, runtime }) {
   return { directDependencies: entries.length, versions: declared, runtime };
 }
 
-function evaluateAudit(payload, exitCode) {
+function verifyInTreePatchedAdvisories(root) {
+  const mitigated = new Map();
+  const workspacePath = path.join(root, "pnpm-workspace.yaml");
+  const lockPath = path.join(root, "pnpm-lock.yaml");
+  const patchPath = path.join(root, "patches", "picomatch@4.0.7.patch");
+  if (!fs.existsSync(workspacePath) || !fs.existsSync(lockPath) || !fs.existsSync(patchPath)) return mitigated;
+  const workspaceText = fs.readFileSync(workspacePath, "utf8");
+  const lockText = fs.readFileSync(lockPath, "utf8");
+  if (
+    !/^\s*picomatch@4\.0\.7:\s*patches\/picomatch@4\.0\.7\.patch\s*$/m.test(workspaceText) ||
+    !/picomatch@4\.0\.7\(patch_hash=/.test(lockText)
+  ) {
+    return mitigated;
+  }
+  const { createRequire } = require("node:module");
+  const vitePkg = path.join(root, "node_modules", "vite", "package.json");
+  if (!fs.existsSync(vitePkg)) return mitigated;
+  const pm = createRequire(fs.realpathSync(vitePkg))("picomatch");
+  const probe = "a".repeat(42) + "!";
+  for (const pattern of ["+(*)", "+(*a)", "+(a*)", "+(?*a)"]) {
+    const started = Date.now();
+    if (pm.isMatch(probe, pattern) !== false || Date.now() - started > 200) {
+      throw new Error(`Patched picomatch verification failed on ${pattern}`);
+    }
+  }
+  if (!pm.isMatch("abcabc", "+(abc)") || !pm.isMatch("foobar", "*(foo|bar)")) {
+    throw new Error("Patched picomatch broke valid extglob behavior");
+  }
+  // GHSA-fc5q-39xc-vjpf targets picomatch <=4.0.7 while 4.0.8 is unpublished on npm;
+  // verified in-tree via patches/picomatch@4.0.7.patch.
+  mitigated.set("GHSA-fc5q-39xc-vjpf", { moduleName: "picomatch", version: "4.0.7" });
+  return mitigated;
+}
+
+function evaluateAudit(payload, exitCode, { mitigatedAdvisories = new Map() } = {}) {
   if (exitCode !== 0 && exitCode !== 1) throw new Error(`Dependency audit command exit ${exitCode}`);
   const advisories = payload?.advisories;
   const counts = payload?.metadata?.vulnerabilities;
@@ -82,27 +116,49 @@ function evaluateAudit(payload, exitCode) {
     throw new Error("Dependency audit failed or returned an unsupported audit payload");
   }
   if (Object.keys(counts).some((key) => !SEVERITIES.includes(key))) throw new Error("Unknown audit severity");
-  const severity = Object.fromEntries(SEVERITIES.map((name) => [name, 0]));
+  const rawSeverity = Object.fromEntries(SEVERITIES.map((name) => [name, 0]));
   const records = Object.values(advisories);
   for (const advisory of records) {
     if (!SEVERITIES.includes(advisory?.severity) || typeof advisory.module_name !== "string" || !Array.isArray(advisory.findings)) {
       throw new Error("Invalid dependency audit advisory");
     }
-    severity[advisory.severity] += 1;
+    rawSeverity[advisory.severity] += 1;
   }
   for (const name of SEVERITIES) {
-    if (!Number.isSafeInteger(counts[name]) || counts[name] < 0 || counts[name] !== severity[name]) {
+    if (!Number.isSafeInteger(counts[name]) || counts[name] < 0 || counts[name] !== rawSeverity[name]) {
       throw new Error(`Dependency audit count mismatch: ${name}`);
     }
   }
   if ((exitCode === 0) !== (records.length === 0)) throw new Error("Dependency audit exit code disagrees with advisory count");
+  const mitigatedIds = [];
+  const activeRecords = records.filter((advisory) => {
+    const ghsa = advisory.github_advisory_id;
+    const rule = ghsa && mitigatedAdvisories instanceof Map ? mitigatedAdvisories.get(ghsa) : null;
+    if (
+      rule &&
+      advisory.module_name === rule.moduleName &&
+      advisory.findings.length > 0 &&
+      advisory.findings.every((finding) => finding?.version === rule.version)
+    ) {
+      mitigatedIds.push(ghsa);
+      return false;
+    }
+    return true;
+  });
+  const severity = Object.fromEntries(SEVERITIES.map((name) => [name, 0]));
+  for (const advisory of activeRecords) severity[advisory.severity] += 1;
   // Electron and compiled renderer libraries are devDependencies but ship in the
   // application. No dev/optional/bundled exclusion is safe for this release gate.
-  const blocked = records.filter((item) => item.severity === "high" || item.severity === "critical");
+  const blocked = activeRecords.filter((item) => item.severity === "high" || item.severity === "critical");
   if (blocked.length) {
     throw new Error(`Dependency security review required; high/critical findings block release:\n${blocked.map((item) => `${item.severity}: ${item.module_name} ${item.github_advisory_id || item.id} ${item.url || ""}`).join("\n")}`);
   }
-  return { records: records.length, uniqueAdvisories: new Set(records.map((item) => item.github_advisory_id || item.id)).size, severity };
+  return {
+    records: activeRecords.length,
+    uniqueAdvisories: new Set(activeRecords.map((item) => item.github_advisory_id || item.id)).size,
+    severity,
+    ...(mitigatedIds.length ? { mitigatedAdvisories: [...new Set(mitigatedIds)] } : {})
+  };
 }
 
 function run(root, { audit = false } = {}) {
@@ -144,7 +200,9 @@ function run(root, { audit = false } = {}) {
     if (auditResult.error) throw new Error(`Dependency audit could not complete: ${auditResult.error.message}`);
     let payload;
     try { payload = JSON.parse(auditResult.stdout); } catch { throw new Error(`Dependency audit returned invalid JSON (exit ${auditResult.status})`); }
-    report.audit = evaluateAudit(payload, auditResult.status);
+    report.audit = evaluateAudit(payload, auditResult.status, {
+      mitigatedAdvisories: verifyInTreePatchedAdvisories(root)
+    });
   }
   return report;
 }
@@ -160,4 +218,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseRootImporter, verifyVersions, evaluateAudit, run };
+module.exports = { parseRootImporter, verifyVersions, evaluateAudit, verifyInTreePatchedAdvisories, run };

@@ -39,13 +39,23 @@ function run(command, args) {
 }
 const node = args => run(process.execPath, args);
 
+function resolveExecutablePath(file) {
+  const resolved = path.resolve(String(file || "").trim());
+  try { return fs.realpathSync(resolved); } catch { return resolved; }
+}
+
 function pidsUsingExecutable(executablePath) {
-  const ps = spawnSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  const ps = spawnSync("ps", ["-axo", "pid=,comm="], { encoding: "utf8" });
   if (ps.error || ps.status !== 0) throw new Error("无法查询运行中的应用，已停止部署");
+  const target = resolveExecutablePath(executablePath);
+  const selfPids = new Set([process.pid, process.ppid].filter(pid => Number.isInteger(pid) && pid > 0));
   const pids = [];
   for (const line of String(ps.stdout || "").split("\n")) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (match && match[2].includes(executablePath)) pids.push(Number(match[1]));
+    const match = /^\s*(\d+)\s+(.*\S)\s*$/.exec(line);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!Number.isInteger(pid) || pid <= 0 || selfPids.has(pid)) continue;
+    if (resolveExecutablePath(match[2]) === target) pids.push(pid);
   }
   return pids;
 }
@@ -186,12 +196,20 @@ async function main() {
   const priorEvidence = { ...(meta.verification || {}) };
   delete priorEvidence.previousVerification;
   const previousVerification = { historicalOnly: true, metadataVersion: meta.version, record: priorEvidence };
+  const shanghaiDay = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
   meta.schemaVersion = meta.schemaVersion || 1;
   meta.generatedAt = new Date().toISOString();
   meta.productName = PRODUCT;
   meta.version = VERSION;
+  meta.build = `已完整构建、${process.platform === "darwin" ? "ad-hoc 签名并" : ""}安装 ${VERSION}（${shanghaiDay}）`;
   meta.delivery = "single-app-only";
   meta.current = { app: APP_NAME, appAsarSha256: appSha, archive: null, sha256: null };
+  meta.sourceNote = `源码及实际桌面软件均为 ${VERSION}；${receipt.recordedInputs} 项构建输入与产物一致。`;
+  meta.source = {
+    version: VERSION,
+    path: "源码/a-stock-radar-tader",
+    note: `源码含当前已安装版本 ${VERSION} 改动，${receipt.recordedInputs} 项输入与实际产物一致。`
+  };
   meta.verification = {
     previousVerification,
     unitTests: 'not recorded by installer for this build',
@@ -217,6 +235,8 @@ async function main() {
   if (readme !== null) {
     readme = readme
       .replace(/^当前版本：[^\r\n]*/m, `当前版本：${VERSION}`)
+      .replace(/^(- 源码\/a-stock-radar-tader：最新源码（)[^）\r\n]*(）)/m, `$1${VERSION}$2`)
+      .replace(/^(发布核验：)\d+(项输入)/m, `$1${receipt.recordedInputs}$2`)
       .replace(/^- .*\.zip：最新安装包。\n/m, "")
       .replace(/^- 同名 \.zip\.sha256：安装包校验码。\n/m, "");
     if (!readme.includes("只有这一个软件")) {
@@ -292,4 +312,4 @@ if (require.main === module) main().catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { main, targetDirectory, verifyBuildReceipt };
+module.exports = { main, targetDirectory, verifyBuildReceipt, pidsUsingExecutable };

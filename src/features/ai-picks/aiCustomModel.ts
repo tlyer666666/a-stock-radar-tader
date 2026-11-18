@@ -44,6 +44,12 @@ export function mergeCustomStocks(list: AiCustomStock[], additions: Array<{ code
   return { list: next, added, duplicate, overflow };
 }
 
+export function applyCustomListMutation(list: AiCustomStock[], operation: AiCustomListMutation): AiCustomListMutationResult {
+  if (operation.kind === "add") return { ...mergeCustomStocks(list, operation.items), removed: [] };
+  const codes = new Set(operation.codes);
+  return { list: list.filter(item => !codes.has(item.code)), removed: list.filter(item => codes.has(item.code)), added: 0, duplicate: 0, overflow: 0 };
+}
+
 /** 导入结果的一句话提示。 */
 export function mergeNotice(source: string, result: { added: number; duplicate: number; overflow: number }) {
   const parts = [`从${source}加入 ${result.added} 只`];

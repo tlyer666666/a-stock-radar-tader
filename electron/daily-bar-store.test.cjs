@@ -62,6 +62,7 @@ test('snapshots that cannot prove a completed, continuous, same-unit bar fall ba
   const cases = {
     'ex-rights preClose mismatch': snapshot({ preClose: 8 }),
     'delayed intraday trade time': snapshot({ quoteAt: '2026-10-21T06:57:00.000Z', quoteAtIsTradeTime: true }),
+    'fuyao batch response time cannot prove per-stock final bar': snapshot({ quoteAtIsBatchTime: true, quoteAtIsTradeTime: false }),
     'suspended stock': snapshot({ volume: 0, amount: 0 }),
     'fetched before the close': snapshot({ fetchedAt: Date.parse('2026-10-21T14:30:00+08:00'), quoteAt: '2026-10-21T06:30:00.000Z' }),
     'fetched after the next open': snapshot({ fetchedAt: Date.parse('2026-10-22T09:40:00+08:00'), quoteAt: '2026-10-22T01:40:00.000Z' }),
@@ -265,4 +266,47 @@ test('A06 zero-activity suspension rows and gapped young histories remain valid 
   assert.equal(result.rows.length, 19);
   assert.equal(result.rows[8].volume, 0);
   assert.equal(result.rows[8].amount, 0);
+});
+
+test('prepareDay + history avoids double full validation in the same scan even past the 64-entry LRU', async t => {
+  const dir = tempDir(t);
+  const codes = Array.from({ length: 70 }, (_, i) => ({ code: String(600000 + i), secid: `1.${600000 + i}`, name: `样本${i}` }));
+  const seedStore = store(dir);
+  const initial = download('2026-10-20');
+  for (const item of codes) {
+    await seedStore.history(item, '2026-10-20', async () => initial, { bars: 320 });
+  }
+
+  const validationMod = require('./daily-bar-validation.cjs');
+  const origValidate = validationMod.validateDailyBarRows;
+  let validateCalls = 0;
+  validationMod.validateDailyBarRows = (...args) => {
+    validateCalls += 1;
+    return origValidate(...args);
+  };
+  const storePath = require.resolve('./daily-bar-store.cjs');
+  delete require.cache[storePath];
+  t.after(() => {
+    validationMod.validateDailyBarRows = origValidate;
+    delete require.cache[storePath];
+  });
+
+  const { createDailyBarStore: createFreshStore } = require('./daily-bar-store.cjs');
+  const day = createFreshStore({
+    directory: dir,
+    previousSession: date => calendar.previousSession(date),
+    nextSession: date => calendar.nextSession(date),
+    snapshot: async () => new Map()
+  });
+
+  await day.prepareDay(codes, '2026-10-21');
+  assert.equal(validateCalls, 70);
+  // Repeating prepareDay on the same day should reuse verified stamps via stat without re-validating.
+  await day.prepareDay(codes, '2026-10-21');
+  assert.equal(validateCalls, 70);
+  for (const item of codes) {
+    const out = await day.history(item, '2026-10-20', async () => { throw Error('must read from disk cache'); }, { bars: 320 });
+    assert.equal(out.rows.length, 330);
+  }
+  assert.equal(validateCalls, 70, 'evicted entries reuse verified file stamps instead of double-validating');
 });

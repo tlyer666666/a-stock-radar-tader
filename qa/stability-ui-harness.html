@@ -3,8 +3,8 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App, * as appModule from '/src/App.tsx';
 import {initialSettings} from '/src/domain/settings.ts';
-import StrategySignalsView from '/src/StrategySignalsView.tsx';
-import MultiStockCompareView from '/src/MultiStockCompareView.tsx';
+import StrategySignalsView from '/src/features/strategy-selection/StrategySignalsView.tsx';
+import MultiStockCompareView from '/src/features/market/MultiStockCompareView.tsx';
 import { createPreviewApi } from '/src/previewApi.ts';
 window.fixtureSecurities = [
   { code: '600000', secid:'1.600000', name:'甲银行', assetType:'stock' },

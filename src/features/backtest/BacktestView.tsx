@@ -11,6 +11,7 @@ import { shanghaiDateTag as todayTag } from "../../dateUtils";
 import { normalizeBacktestDraft, normalizeBacktestStrategyIds, normalizeBacktestStrategyProfile } from "./backtestModel";
 import { overfitRiskLabel } from "./backtestLabels";
 import type { BacktestExecutionReadiness } from "../../domain/executionReadiness";
+import type { StrategyDefinitionItem } from "../../shared/ipc-contract";
 import type { BacktestBenchmark, BacktestDraft, BacktestHistoryRecord, BacktestViewProps } from "./backtestTypes";
 
 export function BacktestView({
@@ -181,7 +182,7 @@ export function BacktestView({
         : draft.customEntryPrice === null ? "" : String(draft.customEntryPrice);
     });
   }, [draft.customEntryPrice]);
-  const [verifiedStrategies, setVerifiedStrategies] = useState<any[]>([]);
+  const [verifiedStrategies, setVerifiedStrategies] = useState<StrategyDefinitionItem[]>([]);
   const [strategyDefinitionError, setStrategyDefinitionError] = useState("");
 
   useEffect(() => {
@@ -197,7 +198,7 @@ export function BacktestView({
               ? value.definitions
               : [];
         // 已从策略选股下线的策略仍可回测复核，名称后标注「已下线」。
-        const definitions = rows.filter((item: any) => item?.id && item?.name).map((item: any) => item.retired === true ? { ...item, name: `${item.name}（已下线）` } : item);
+        const definitions = rows.filter((item) => Boolean(item?.id && item?.name)).map((item) => item.retired === true ? { ...item, name: `${item.name}（已下线）` } : item);
         setVerifiedStrategies(definitions);
         setStrategyDefinitionError(definitions.length ? "" : "未取得可回放策略定义");
         if (!latestDraft.current.strategyContext && definitions[0]) {
@@ -985,7 +986,7 @@ export function BacktestView({
                   <span>实际回测区间</span>
                   <b>{backtestRange?.signalFrom || resultDraft.startDate} 至 {backtestRange?.signalTo || "最新交易日"}</b>
                   <small>
-                    历史行情 {backtestRange?.historyBars ?? result.lookbackBars ?? "--"} 根 · 起始资金 {fmt(profitSummary?.startingCapital)} 元 · 单次仓位 {format(profitSummary?.positionPercent)}% · {result.entryPriceMode === "custom_limit_price" ? `自定义买入价 ${format(result.customEntryPrice, 3)} 元` : "次日开盘买入"}
+                    历史行情 {backtestRange?.historyBars ?? result.lookbackBars ?? "--"} 根 · 起始资金 {fmt(typeof profitSummary?.startingCapital === "number" ? profitSummary.startingCapital : null)} 元 · 单次仓位 {format(profitSummary?.positionPercent)}% · {result.entryPriceMode === "custom_limit_price" ? `自定义买入价 ${format(result.customEntryPrice, 3)} 元` : "次日开盘买入"}
                   </small>
                 </div>
                 <div className="backtest-profit-grid">
@@ -998,7 +999,7 @@ export function BacktestView({
                   <div>
                     <span>累计盈亏</span>
                     <b className={Number(profitSummary?.totalProfitAmount) >= 0 ? "red" : "green"}>
-                      {fmt(profitSummary?.totalProfitAmount)} 元
+                      {fmt(typeof profitSummary?.totalProfitAmount === "number" ? profitSummary.totalProfitAmount : null)} 元
                     </b>
                   </div>
                   <div><span>完成交易</span><b>{profitSummary?.tradeCount ?? 0} 笔</b></div>
@@ -1017,14 +1018,14 @@ export function BacktestView({
                     <table className="backtest-trade-table backtest-strategy-table">
                       <thead><tr><th>策略</th><th>完成交易</th><th>盈利 / 亏损</th><th>胜率</th><th>累计净收益</th><th>累计盈亏</th><th>最大回撤</th></tr></thead>
                       <tbody>
-                        {strategyBreakdown.map((item: any) => (
+                        {strategyBreakdown.map((item) => (
                           <tr key={String(item.strategyId)}>
-                            <td>{item.strategyName}<small>{item.strategyId}</small></td>
-                            <td>{item.tradeCount ?? 0} 笔</td>
-                            <td>{item.profitableTrades ?? 0} / {item.losingTrades ?? 0}</td>
+                            <td>{String(item.strategyName || "")}<small>{String(item.strategyId || "")}</small></td>
+                            <td>{String(item.tradeCount ?? 0)} 笔</td>
+                            <td>{String(item.profitableTrades ?? 0)} / {String(item.losingTrades ?? 0)}</td>
                             <td>{format(item.winRatePercent)}%</td>
                             <td className={Number(item.totalNetReturnPercent) >= 0 ? "red" : "green"}>{format(item.totalNetReturnPercent)}%</td>
-                            <td className={Number(item.totalProfitAmount) >= 0 ? "red" : "green"}>{fmt(item.totalProfitAmount)}</td>
+                            <td className={Number(item.totalProfitAmount) >= 0 ? "red" : "green"}>{fmt(typeof item.totalProfitAmount === "number" ? item.totalProfitAmount : null)}</td>
                             <td className="green">{format(item.maxDrawdownPercent)}%</td>
                           </tr>
                         ))}
@@ -1045,11 +1046,11 @@ export function BacktestView({
                         <tr><th>序号</th><th>命中策略</th><th>信号日</th><th>买入日 / 价</th><th>卖出日 / 价</th><th>单笔净收益</th><th>单笔盈亏</th><th>累计收益</th></tr>
                       </thead>
                       <tbody>
-                        {tradeLedger.map((trade: any) => (
-                          <tr key={`${trade.sequence}-${trade.signalDate}-${trade.entryDate}`}>
-                            <td>{trade.sequence}</td>
+                        {tradeLedger.map((trade) => (
+                          <tr key={`${String(trade.sequence)}-${String(trade.signalDate)}-${String(trade.entryDate)}`}>
+                            <td>{String(trade.sequence ?? "")}</td>
                             <td>
-                              {(Array.isArray(trade.strategyIds) ? trade.strategyIds : [])
+                              {(Array.isArray(trade.strategyIds) ? (trade.strategyIds as string[]) : [])
                                 .slice(0, 2)
                                 .map((id: string) => verifiedStrategyNameById.get(id) || id)
                                 .join("、") || "组合信号"}
@@ -1057,11 +1058,11 @@ export function BacktestView({
                                 ? <small>+{trade.strategyIds.length - 2} 套</small>
                                 : null}
                             </td>
-                            <td>{trade.signalDate}</td>
-                            <td>{trade.entryDate}<small>{format(trade.entryPrice, 3)}</small></td>
-                            <td>{trade.exitDate}<small>{format(trade.exitPrice, 3)}</small></td>
+                            <td>{String(trade.signalDate ?? "")}</td>
+                            <td>{String(trade.entryDate ?? "")}<small>{format(trade.entryPrice, 3)}</small></td>
+                            <td>{String(trade.exitDate ?? "")}<small>{format(trade.exitPrice, 3)}</small></td>
                             <td className={Number(trade.netReturnPercent) >= 0 ? "red" : "green"}>{format(trade.netReturnPercent)}%</td>
-                            <td className={Number(trade.profitAmount) >= 0 ? "red" : "green"}>{fmt(trade.profitAmount)}</td>
+                            <td className={Number(trade.profitAmount) >= 0 ? "red" : "green"}>{fmt(typeof trade.profitAmount === "number" ? trade.profitAmount : null)}</td>
                             <td className={Number(trade.cumulativeReturnPercent) >= 0 ? "red" : "green"}>{format(trade.cumulativeReturnPercent)}%</td>
                           </tr>
                         ))}
@@ -1100,9 +1101,9 @@ export function BacktestView({
                 </div>
                 {!!walkForwardValidation?.folds?.length && (
                   <div className="backtest-walk-forward-folds">
-                    {walkForwardValidation.folds.map((fold: any) => (
-                      <div key={fold.fold}>
-                        <span>窗口 {fold.fold} · {fold.testStart || "--"} 至 {fold.testEnd || "--"}</span>
+                    {walkForwardValidation.folds.map((fold) => (
+                      <div key={String(fold.fold)}>
+                        <span>窗口 {String(fold.fold)} · {String(fold.testStart || "--")} 至 {String(fold.testEnd || "--")}</span>
                         <b className={fold.accepted ? "red" : "green"}>
                           {fold.accepted ? "通过" : "未通过"} · 净边际 {format(fold.oosProjectedNetEdge)}%
                         </b>
@@ -1208,12 +1209,12 @@ export function BacktestView({
                 <div className="backtest-summary-card">
                   <span>真实历史样本结算轨迹（按入场日顺序，重叠信号不重复计入）</span>
                   <small>
-                    起始资金 {fmt(historicalSamplePath?.startingCapital)} · 单笔上限 {format(historicalSamplePath?.positionPercent)}% · 往返成本 {format(historicalSamplePath?.roundTripCostPercent)}%
+                    起始资金 {fmt(typeof historicalSamplePath?.startingCapital === "number" ? historicalSamplePath.startingCapital : null)} · 单笔上限 {format(historicalSamplePath?.positionPercent)}% · 往返成本 {format(historicalSamplePath?.roundTripCostPercent)}%
                   </small>
                   <ol>
-                    {historicalSamplePoints.slice(-10).map((item: any) => (
-                      <li key={`${item.entryDate}-${item.exitDate}-${item.node}`}>
-                        {item.entryDate} → {item.exitDate}：净 {format(item.netReturnPercent)}% · 资金 {fmt(item.capital)}
+                    {historicalSamplePoints.slice(-10).map((item) => (
+                      <li key={`${String(item.entryDate)}-${String(item.exitDate)}-${String(item.node)}`}>
+                        {String(item.entryDate || "")} → {String(item.exitDate || "")}：净 {format(item.netReturnPercent)}% · 资金 {fmt(typeof item.capital === "number" ? item.capital : null)}
                       </li>
                     ))}
                   </ol>
@@ -1339,7 +1340,7 @@ export function BacktestView({
                         <p>{recordReadiness.recommendation}</p>
                         <p>
                           回测时间：{new Date(record.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} |
-                          净收益：{fmt(record.metrics?.projectedNetEdge)} | 样本：{record.metrics?.replayableSignals ?? "--"}
+                          净收益：{fmt(typeof record.metrics?.projectedNetEdge === "number" ? record.metrics.projectedNetEdge : null)} | 样本：{record.metrics?.replayableSignals ?? "--"}
                         </p>
                         <p>
                           策略：{record.rawResult?.strategyContext?.strategyName || record.strategyProfile?.selectedStrategies?.slice(0, 6).join(" / ") || "--"}
@@ -1347,7 +1348,7 @@ export function BacktestView({
                         <p>风险档位：{riskProfileLabel(record.strategyProfile.riskProfile)}</p>
                         <p>
                           样本外：{record.metrics?.oosSampleCount ?? "--"} 条 |
-                          净边际：{fmt(record.metrics?.oosProjectedNetEdge)}% |
+                          净边际：{fmt(typeof record.metrics?.oosProjectedNetEdge === "number" ? record.metrics.oosProjectedNetEdge : null)}% |
                           过拟合风险：{overfitRiskLabel(record.metrics?.overfitRisk)}
                         </p>
                         {(() => {

@@ -1,16 +1,18 @@
-import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
-import { resolve } from "node:path";
-import packageJson from "./package.json";
-import { createBuildProvenancePlugin } from "./qa/build-provenance.cjs";
-import { readFileSync } from 'node:fs';
-import { injectCspConnectSources } from './src/contentSecurityPolicy';
+const { defineConfig } = require("vite");
+const reactPlugin = require("@vitejs/plugin-react");
+const { resolve } = require("node:path");
+const packageJson = require("./package.json");
+const { createBuildProvenancePlugin } = require("./qa/build-provenance.cjs");
+const { readFileSync } = require("node:fs");
+const { injectCspConnectSources } = require("./qa/vite-csp.cjs");
 
-export default defineConfig({
+const react = reactPlugin.default || reactPlugin;
+
+module.exports = defineConfig({
   plugins: [react(), {
     name: 'review-standalone-entry',
-    transformIndexHtml(html) { return injectCspConnectSources(html, 'serve'); },
-    generateBundle() {
+    transformIndexHtml(html: string) { return injectCspConnectSources(html, 'serve'); },
+    generateBundle(this: { emitFile: (file: { type: "asset"; fileName: string; source: string }) => void }) {
       const html = injectCspConnectSources(readFileSync(resolve(__dirname, 'review.html'), 'utf8'), 'build')
         .replace('src="/src/review-entry.tsx"', 'src="./review-module.js"')
         .replace('</head>', '<link rel="stylesheet" href="./review-style.css" /></head>');

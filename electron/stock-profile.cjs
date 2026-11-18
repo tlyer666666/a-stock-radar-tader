@@ -32,7 +32,7 @@ const movingAverage = (rows, size, end = rows.length) => end >= size ? average(r
 
 /** 以涨跌幅判断涨停（复权价对涨停价的四舍五入不敏感）：收盘涨幅达到限幅且收在最高价附近。 */
 function limitState(previous, row, code, name) {
-  if (!previous) return { limitUp: false, touched: false };
+  if (!previous || row?.noPriceLimit === true || /^[NC]/i.test(String(name || "").trim())) return { limitUp: false, touched: false };
   const rate = priceLimitRate(code, name, row.date);
   const tolerance = rate >= 0.2 ? 0.004 : 0.003;
   const closeGain = row.close / previous.close - 1;

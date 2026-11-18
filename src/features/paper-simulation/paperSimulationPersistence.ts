@@ -13,8 +13,9 @@ export const EXECUTION_DECISION_LOG_LIMIT = 30;
 
 const todayTag = shanghaiDateTag;
 
-const normalizeExecutionDecisionLogEntry = (input: any): ExecutionDecisionLog | null => {
-  if (!input || typeof input !== "object") return null;
+const normalizeExecutionDecisionLogEntry = (rawInput: unknown): ExecutionDecisionLog | null => {
+  if (!rawInput || typeof rawInput !== "object") return null;
+  const input = rawInput as Record<string, unknown>;
   const source = input.source === "BACKTEST_CURRENT" || input.source === "BACKTEST_HISTORY" || input.source === "PAPER_TRADE"
     ? input.source as ExecutionDecisionSource
     : null;

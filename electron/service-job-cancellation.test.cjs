@@ -3,20 +3,15 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { loadServiceModule, rebindAll } = require('../qa/service-fixture.cjs');
 const { Worker } = require('node:worker_threads');
 const os = require('node:os');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
+// P0-2b 拆分后改为共享夹具：'./services/*.cjs' 递归加载，require 覆盖对子模块同样生效。
 function loadFile(name, append = '', globals = {}, requires = {}) {
-  const filename = path.join(__dirname, name), module = { exports: {} }, realRequire = createRequire(filename);
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\n' + append, { module, exports: module.exports,
-    require: id => Object.hasOwn(requires, id) ? requires[id] : realRequire(id), __dirname, __filename: filename,
-    process, console, URL, DOMException, AbortController, AbortSignal, TextDecoder, Headers, Response, ReadableStream, Buffer,
-    setTimeout, clearTimeout, setImmediate, queueMicrotask, fetch: () => { throw new Error('Unexpected external fetch'); }, ...globals }, { filename });
-  return module.exports;
+  return loadServiceModule(path.join(__dirname, name), requires, globals, append);
 }
 function payload(close = 10) {
   return { data: { klines: Array.from({ length: 90 }, (_, i) => `${new Date(Date.now() - (89 - i) * 86400000).toISOString().slice(0, 10)},${close},${close},${close + 0.1},${close - 0.1},100000,100000000,1,0,0,1`) } };
@@ -24,9 +19,8 @@ function payload(close = 10) {
 function response(value) { return { ok: true, status: 200, json: async () => value }; }
 function service({ fetch, requires = {}, append = '' } = {}) {
   const network = loadFile('http-client.cjs', '', { fetch: fetch || (() => { throw new Error('Unexpected network'); }) });
-  return loadFile('services.cjs', `
-    module.exports.probe = { serviceRuntime, eastHistoryCached, historyCache, loadBacktestHistory, tencentHistory, fetchJsonWithCurl,
-      setScanToCachedHistory() { loadStrategySignals = async () => ({ rows: await eastHistoryCached({code:'600000',secid:'1.600000'},90,1) }); },
+  const s = loadFile('services.cjs', `
+    module.exports.probe = { serviceRuntime, eastHistoryCached: _backtest.eastHistoryCached, historyCache: _runtime.historyCache, loadBacktestHistory, tencentHistory: _backtest.tencentHistory, fetchJsonWithCurl: _runtime.fetchJsonWithCurl,
       worker(filename) { return serviceRuntime.run('single','worker',{owner:'worker',requestId:'worker'},()=>serviceRuntime.track(()=>workerRunner.run(filename,{}, {signal:serviceSignal()}))); }
     }; ${append}`, {}, {
     './http-client.cjs': network,
@@ -40,6 +34,9 @@ function service({ fetch, requires = {}, append = '' } = {}) {
       thsFreeKline: async () => { throw Object.assign(new Error('ths offline fixture'), { code: 'THS_FREE_UNSUPPORTED' }); } },
     ...requires
   });
+  // P0-2b：loadStrategySignals 已迁到 services/strategy-scan.cjs，重绑定须在声明处生效。
+  s.probe.setScanToCachedHistory = () => rebindAll(s, 'loadStrategySignals', async () => ({ rows: await s.probe.eastHistoryCached({ code: '600000', secid: '1.600000' }, 90, 1) }));
+  return s;
 }
 
 test('two distinct scan jobs share real cached history; cancelling A cannot abort B or release A before physical drain', { timeout: 5000 }, async t => {

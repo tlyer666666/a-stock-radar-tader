@@ -1,11 +1,11 @@
-import { lazy, Suspense, useEffect, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { ArrowDownUp, CircleAlert, Eye, EyeOff, MessagesSquare, Plus, RefreshCw, Search, Trash2, Volume2, VolumeX, WalletCards, X } from "lucide-react";
 import { fmt, fmtMoney } from "../../domain/formatters";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
 import { TIME_SHARE_SLOTS, timeShareSlot, type TimeShare } from "../market/timeShareModel";
 import { paperRoundShares } from "../paper-simulation/paperTradingRules";
-import { MAX_ROUNDS, STYLE_LABELS, actionSide, isActionable, type TAnalysis, type TConfig, type TMarker, type TStyle, type TTrade } from "./tEngine";
-import { MAX_T_ITEMS, inTradingSession, secidForCode, shanghaiClock, type TItem } from "./tStore";
+import { MAX_ROUNDS, STYLE_LABELS, actionSide, calibrateTAdvice, isActionable, replayT, type TAnalysis, type TConfig, type TMarker, type TStyle, type TTrade } from "./tEngine";
+import { MAX_T_ITEMS, inTradingSession, secidForCode, shanghaiClock, shanghaiDay, type TItem } from "./tStore";
 import type { TAssistantApi, TRuntime } from "./useTAssistant";
 
 import TToolbox, { type TToolboxDisplay } from "./TToolbox";
@@ -21,6 +21,8 @@ type Props = {
   onOpenStock: (security: Security) => void;
   onToast: (message: string) => void;
 };
+
+type TradeDraft = { day: string; side: "buy" | "sell"; price: string; shares: string; time: string };
 
 const signed = (value: number, digits = 2) => `${value > 0 ? "+" : ""}${value.toFixed(digits)}`;
 const toneOf = (value: number | null | undefined) => !value ? "" : value > 0 ? "up" : "down";
@@ -112,34 +114,58 @@ function StockRow({ item, runtime, active, onSelect }: { item: TItem; runtime: T
 }
 
 function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; display: TToolboxDisplay }) {
-  const { analysis, share, replay } = runtime;
+  const { analysis, share } = runtime;
+  const replay = useMemo(
+    () => (showReplay && share ? replayT(share, { code: item.code, name: item.name }, item.config) : runtime.replay ?? null),
+    [showReplay, share, item.code, item.name, item.config, runtime.replay]
+  );
   const day = share?.date || "";
   const trades = day ? api.store.trades[day]?.[item.code] || [] : [];
-  const [draft, setDraft] = useState<{ side: "buy" | "sell"; price: string; shares: string; time: string } | null>(null);
+  const [draft, setDraft] = useState<TradeDraft | null>(null);
   const security: Security = { code: item.code, name: item.name, secid: item.secid || secidForCode(item.code), assetType: "stock" };
+  const calibration = useMemo(() => calibrateTAdvice(share ?? null, item, analysis ?? null), [share, item, analysis]);
+  const needsApply = Boolean(analysis) && (Math.abs(calibration.recommendedMinSpreadPct - item.config.minSpreadPct) >= 0.2 || calibration.recommendedStyle !== item.config.style);
+  const agentContext = useMemo(() => ({
+    origin: "individual_t_assistant",
+    ...(item.config.costPrice > 0 ? { costPrice: item.config.costPrice } : {}),
+    ...(item.config.baseShares > 0 ? { sellableRatioPct: Math.round((item.config.sellableShares / item.config.baseShares) * 100) } : {}),
+    style: item.config.style,
+    minSpreadPct: item.config.minSpreadPct,
+    suitability: calibration.suitability,
+    ...(analysis ? {
+      regime: analysis.regime,
+      vwap: analysis.vwap,
+      sigmaPct: analysis.sigmaPct,
+      hasOpenT: Boolean(analysis.open),
+      settledRounds: analysis.stats.rounds,
+      realizedProfit: analysis.stats.realized
+    } : {})
+  }), [item.config.costPrice, item.config.baseShares, item.config.sellableShares, item.config.style, item.config.minSpreadPct, calibration.suitability, analysis]);
 
   const [aiOpened, setAiOpened] = useState(false), [aiVisible, setAiVisible] = useState(false);
   const stale = runtime.signalNote;
   const [tradeError, setTradeError] = useState("");
 
   const startDraft = (fromSignal: boolean) => {
+    if (!day) return;
     const signal = analysis?.signal;
     const side = fromSignal && signal ? actionSide(signal.action) : null;
     const open = analysis?.open;
     const defaultSide = side || (open?.kind === "reverse" ? "buy" : open?.kind === "forward" ? "sell" : "sell");
     const shares = fromSignal && signal?.shares ? signal.shares : open?.shares || item.config.tShares;
     setDraft({
+      day,
       side: defaultSide,
       price: analysis ? analysis.price.toFixed(2) : "",
       shares: String(shares || ""),
-      time: inTradingSession() ? shanghaiClock() : analysis?.time || "10:00"
+      time: day === shanghaiDay() && inTradingSession() ? shanghaiClock() : analysis?.time || "10:00"
     });
   };
   const submitDraft = () => {
-    if (!draft || !day) return;
+    if (!draft) return;
     const price = Number(draft.price), shares = Math.floor(Number(draft.shares));
     if (!(price > 0) || !(shares > 0) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(draft.time)) return;
-    const error = api.addTrade(day, item.code, { side: draft.side, price, shares, time: draft.time });
+    const error = api.addTrade(draft.day, item.code, { side: draft.side, price, shares, time: draft.time });
     setTradeError(error);
     if (!error) setDraft(null);
   };
@@ -167,7 +193,7 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, displa
 
     {aiOpened && <section className="panel t-inline-ai" aria-label="做T AI分析" hidden={!aiVisible}>
       <div className="t-inline-ai-actions"><button type="button" className="link-btn" onClick={() => setAiVisible(false)}>收起AI分析</button></div>
-      <Suspense fallback={<p role="status">正在打开AI分析…</p>}><InlineAiAgent embeddedFocus={{ code: item.code, name: item.name }} /></Suspense>
+      <Suspense fallback={<p role="status">正在打开AI分析…</p>}><InlineAiAgent embeddedFocus={{ code: item.code, name: item.name }} userContext={agentContext} /></Suspense>
     </section>}
     <TToolbox security={security} live={live} analysis={analysis} display={display} />
 
@@ -175,6 +201,15 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, displa
     {stale && <div className="warning-banner" role="alert"><CircleAlert size={17} />{stale}</div>}
     {runtime.error && <div className="warning-banner" role="alert"><CircleAlert size={17} />分时读取失败：{runtime.error}{share ? "（显示上次成功读取的数据）" : ""}</div>}
     {!analysis ? <div className="panel t-assistant-loading">{runtime.loading ? "正在读取分时…" : "暂无分时数据"}</div> : <>
+      <div className="panel t-assistant-diagnosis" aria-label="智能做T诊断">
+        <div className="t-assistant-diagnosis-info">
+          <span className={`t-assistant-diagnosis-badge ${calibration.suitability === "适宜正T" ? "buy" : calibration.suitability === "适宜反T" ? "sell" : "warn"}`}>{calibration.suitability}</span>
+          {typeof calibration.dailyVolatilityPct === "number" && <small className="t-assistant-winrate">10日均振幅 {calibration.dailyVolatilityPct.toFixed(1)}%</small>}
+          {calibration.historicalWinRatePct !== null && <small className="t-assistant-winrate">累计{calibration.totalRounds ? ` ${calibration.totalRounds} 轮` : ""}胜率 {calibration.historicalWinRatePct}%</small>}
+          <p>{calibration.reason}</p>
+        </div>
+        {needsApply && <button type="button" className="secondary-btn" onClick={() => api.updateConfig(item.code, { style: calibration.recommendedStyle, minSpreadPct: calibration.recommendedMinSpreadPct })}>一键套用建议参数（{STYLE_LABELS[calibration.recommendedStyle]} · {calibration.recommendedMinSpreadPct.toFixed(1)}%）</button>}
+      </div>
       <div className="t-assistant-grid">
         <SignalCard analysis={analysis} referenceNote={runtime.signalNote} onRecord={() => startDraft(true)} />
         <LevelsCard analysis={analysis} />
@@ -186,7 +221,7 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, displa
           <button type="button" className="link-btn" onClick={() => api.setShowReplay(!showReplay)}>{showReplay ? <EyeOff size={14} /> : <Eye size={14} />}{showReplay ? "隐藏回放" : "显示回放"}</button>
         </div>
         {share && <TChart share={share} analysis={analysis} trades={trades} markers={showReplay ? replay?.markers || [] : []} />}
-        {replay && item.config.sellableShares > 0 && <p className="t-assistant-note">信号回放：如果今天从开盘起完全按提示做（每次 {item.config.tShares} 股），共完成 {replay.rounds} 次T，模拟盈亏 <b className={toneOf(replay.realized)}>{signed(replay.realized, 0)} 元</b>（已扣模型手续费，未计滑点和排队）{replay.open ? `，还有${replay.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${replay.open.shares} 股` : ""}。回放按分钟报价假设成交，仅核对规则，不是收益预测；未完成T的浮动盈亏未计入。</p>}
+        {showReplay && replay && item.config.sellableShares > 0 && <p className="t-assistant-note">信号回放：如果今天从开盘起完全按提示做（每次 {item.config.tShares} 股），共完成 {replay.rounds} 次T，模拟盈亏 <b className={toneOf(replay.realized)}>{signed(replay.realized, 0)} 元</b>（已扣模型手续费，未计滑点和排队）{replay.open ? `，还有${replay.open.kind === "reverse" ? "倒T未接回" : "正T未卖出"} ${replay.open.shares} 股` : ""}。回放按分钟报价假设成交，仅核对规则，不是收益预测；未完成T的浮动盈亏未计入。</p>}
       </div>
       {tradeError && <p className="warning-banner" role="alert">{tradeError}</p>}
       <div className="t-assistant-grid">
@@ -241,8 +276,8 @@ function LevelsCard({ analysis }: { analysis: TAnalysis }) {
 
 function TradesCard({ analysis, trades, day, item, draft, setDraft, startDraft, submitDraft, onRemove }: {
   analysis: TAnalysis; trades: TTrade[]; day: string; item: TItem;
-  draft: { side: "buy" | "sell"; price: string; shares: string; time: string } | null;
-  setDraft: (draft: { side: "buy" | "sell"; price: string; shares: string; time: string } | null) => void;
+  draft: TradeDraft | null;
+  setDraft: (draft: TradeDraft | null) => void;
   startDraft: () => void; submitDraft: () => void; onRemove: (id: string) => void;
 }) {
   const sorted = [...trades].sort((a, b) => a.time.localeCompare(b.time));
@@ -255,6 +290,7 @@ function TradesCard({ analysis, trades, day, item, draft, setDraft, startDraft, 
     </div>
     {open && <p className="t-assistant-open">{open.kind === "reverse" ? `倒T进行中：${open.time} 卖出 ${open.shares} 股，均价 ${fmt(open.price)}，等回落接回` : `正T进行中：${open.time} 买入 ${open.shares} 股，均价 ${fmt(open.price)}，等反弹卖出等量底仓`}</p>}
     {draft && <form className="t-assistant-form" onSubmit={event => { event.preventDefault(); submitDraft(); }}>
+      <p className="t-assistant-muted">成交日期 {draft.day}</p>
       <div className="t-assistant-side" role="radiogroup" aria-label="买卖方向">
         <button type="button" role="radio" aria-checked={draft.side === "sell"} className={draft.side === "sell" ? "active sell" : ""} onClick={() => setDraft({ ...draft, side: "sell" })}>卖出</button>
         <button type="button" role="radio" aria-checked={draft.side === "buy"} className={draft.side === "buy" ? "active buy" : ""} onClick={() => setDraft({ ...draft, side: "buy" })}>买入</button>
@@ -312,6 +348,9 @@ function ConfigCard({ item, onChange }: { item: TItem; onChange: (patch: Partial
         <small>{config.style === "steady" ? "波动带更宽、信号更少，每天最多 2 次" : config.style === "active" ? "波动带更窄、信号更多，每天最多 4 次" : "默认，每天最多 3 次"}</small>
       </label>
     </div>
+    {config.baseShares > 0 && config.sellableShares !== config.baseShares && <div className="t-assistant-config-sync">
+      <button type="button" className="link-btn" onClick={() => onChange({ sellableShares: config.baseShares })}>按底仓同步可卖（{config.baseShares} 股）</button>
+    </div>}
     <p className="t-assistant-muted">开盘15分钟不新开T；回到均价的空间须覆盖费用与净价差，连续两次价格转向才确认。止损按价格风险触发，不保证成交；请每日核对可卖底仓。</p>
   </div>;
 }
@@ -394,33 +433,59 @@ function TChart({ share, analysis, trades, markers }: { share: TimeShare; analys
 function StockAdder({ onAdd }: { onAdd: (security: Security) => void }) {
   const [query, setQuery] = useState("");
   const [options, setOptions] = useState<Security[]>([]);
+  const [suggestionQuery, setSuggestionQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const searchSeq = useRef(0);
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const composingRef = useRef(false);
   const search = typeof window === "undefined" ? undefined : window.stockApi?.search;
   useEffect(() => {
     const text = query.trim();
-    if (!text || !search) { setOptions([]); return; }
+    const current = ++searchSeq.current;
+    setOptions([]);
+    setSuggestionQuery("");
+    if (!text || !search) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void search(text).then(rows => { if (!cancelled) { setOptions((rows || []).filter(row => /^\d{6}$/.test(row.code) && (!row.assetType || row.assetType === "stock")).slice(0, 8)); setActive(0); } }).catch(() => { if (!cancelled) setOptions([]); });
+      void search(text).then(rows => {
+        if (cancelled || searchSeq.current !== current || queryRef.current.trim() !== text) return;
+        setOptions((rows || []).filter(row => /^\d{6}$/.test(row.code) && (!row.assetType || row.assetType === "stock")).slice(0, 8));
+        setSuggestionQuery(text);
+        setActive(0);
+      }).catch(() => {
+        if (!cancelled && searchSeq.current === current) {
+          setOptions([]);
+          setSuggestionQuery("");
+        }
+      });
     }, 220);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [query, search]);
+  const visibleOptions = suggestionQuery === query.trim() ? options : [];
   const choose = (security: Security | undefined) => {
     if (!security) return;
-    onAdd(security); setQuery(""); setOptions([]); setOpen(false);
+    onAdd(security); setQuery(""); setOptions([]); setSuggestionQuery(""); setOpen(false);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown") { event.preventDefault(); setActive(index => Math.min(options.length - 1, index + 1)); }
+    if (event.key === "ArrowDown") { event.preventDefault(); setActive(index => Math.min(Math.max(0, visibleOptions.length - 1), index + 1)); }
     else if (event.key === "ArrowUp") { event.preventDefault(); setActive(index => Math.max(0, index - 1)); }
-    else if (event.key === "Enter") { event.preventDefault(); choose(options[active] || options[0]); }
+    else if (event.key === "Enter") {
+      if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      if (suggestionQuery === query.trim()) choose(visibleOptions[active] || visibleOptions[0]);
+    }
     else if (event.key === "Escape") setOpen(false);
   };
-  return <div className="t-assistant-search" role="combobox" aria-expanded={open && options.length > 0} aria-haspopup="listbox">
+  return <div className="t-assistant-search" role="combobox" aria-expanded={open && visibleOptions.length > 0} aria-haspopup="listbox">
     <Search size={15} />
-    <input value={query} aria-label="添加做T股票" placeholder="添加股票：代码 / 名称 / 拼音" onChange={event => { setQuery(event.target.value); setOpen(true); }}
+    <input value={query} aria-label="添加做T股票" placeholder="添加股票：代码 / 名称 / 拼音"
+      onChange={event => { searchSeq.current += 1; setQuery(event.target.value); setOptions([]); setSuggestionQuery(""); setOpen(true); }}
+      onCompositionStart={() => { composingRef.current = true; }}
+      onCompositionEnd={() => { composingRef.current = false; }}
       onFocus={() => setOpen(true)} onBlur={() => window.setTimeout(() => setOpen(false), 150)} onKeyDown={onKeyDown} />
-    {open && options.length > 0 && <ul role="listbox" className="t-assistant-options">{options.map((option, index) => <li key={option.code} role="option" aria-selected={index === active}>
+    {open && visibleOptions.length > 0 && <ul role="listbox" className="t-assistant-options">{visibleOptions.map((option, index) => <li key={option.code} role="option" aria-selected={index === active}>
       <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => choose(option)}><b>{option.name}</b><small>{option.code}{option.marketName ? ` · ${option.marketName}` : ""}</small></button>
     </li>)}</ul>}
   </div>;

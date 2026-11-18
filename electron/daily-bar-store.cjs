@@ -20,6 +20,7 @@ const { validateDailyBarRows } = require("./daily-bar-validation.cjs");
 
 const STORE_VERSION = 1;
 const MEMORY_ENTRIES = 64;
+const VERIFIED_ENTRIES = 8192;
 const STALE_RETRY_MS = 5 * 60 * 1000;
 // 与日线来源返回的字段一致（含涨跌停价、ST、无涨跌幅限制等核验字段），保存后不丢信息。
 const FIELDS = ["date", "open", "high", "low", "close", "volume", "amount", "preClose", "previousClose", "changePct", "change", "amplitude", "turnover",
@@ -37,11 +38,25 @@ function decodeRows(rows) {
   return rows.map(values => Object.fromEntries(FIELDS.map((key, index) => [key, values[index]]).filter(([, value]) => value !== null)));
 }
 
-function storedRows(value) {
+function storedRows(value, { validate = true } = {}) {
   if (!value || typeof value !== "object" || value.version !== STORE_VERSION || !Array.isArray(value.rows) ||
       !value.rows.every(row => Array.isArray(row) && row.length === FIELDS.length)) return null;
-  try { return validateDailyBarRows(decodeRows(value.rows), { label: "本地日线" }); }
+  try {
+    const decoded = decodeRows(value.rows);
+    return validate ? validateDailyBarRows(decoded, { label: "本地日线" }) : decoded;
+  }
   catch { return null; }
+}
+
+async function readFileWithStat(file) {
+  const handle = await fs.promises.open(file, "r");
+  try {
+    const stat = await handle.stat();
+    const text = await handle.readFile("utf8");
+    return { stat, text };
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -66,6 +81,7 @@ function lotsConsistent(row) {
 function createDailyBarStore({ directory = null, snapshot = null, previousSession, nextSession = null, maxRows = 420, now = () => Date.now() } = {}) {
   if (typeof previousSession !== "function") throw new TypeError("本地日线库需要交易日历");
   const memory = new Map();
+  const verified = new Map();
   let writeSequence = 0;
   let prepared = { asOf: "", quotes: new Map() };
   const stats = { hits: 0, appended: 0, downloads: 0, writeFailures: 0 };
@@ -79,39 +95,70 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     memory.set(code, entry);
     if (memory.size > MEMORY_ENTRIES) memory.delete(memory.keys().next().value);
   };
+  const rememberVerified = (code, stamp) => {
+    verified.delete(code);
+    verified.set(code, stamp);
+    if (verified.size > VERIFIED_ENTRIES) verified.delete(verified.keys().next().value);
+  };
 
   async function read(code) {
     if (memory.has(code)) return memory.get(code);
     const file = fileFor(code);
     if (!file) return null;
     try {
-      const parsed = JSON.parse(await fs.promises.readFile(file, "utf8"));
-      const rows = storedRows(parsed);
-      if (!rows) return null;
+      const { stat, text } = await readFileWithStat(file);
+      const parsed = JSON.parse(text);
+      const stamp = verified.get(code);
+      const alreadyVerified = Boolean(
+        stamp && stamp.size === stat.size && stamp.mtimeMs === stat.mtimeMs && stamp.ctimeMs === stat.ctimeMs
+      );
+      const rows = storedRows(parsed, { validate: !alreadyVerified });
+      if (!rows) {
+        verified.delete(code);
+        return null;
+      }
+      if (!alreadyVerified) {
+        rememberVerified(code, {
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          ctimeMs: stat.ctimeMs,
+          lastDate: rows.at(-1)?.date || null
+        });
+      }
       const entry = { rows, source: String(parsed.source || ""), checkedAsOf: String(parsed.checkedAsOf || ""),
         checkedAt: Number.isFinite(parsed.checkedAt) ? parsed.checkedAt : null, requested: Number(parsed.requested) || 0 };
       remember(code, entry);
       return entry;
     } catch {
+      verified.delete(code);
       return null;
     }
   }
 
-  /** 只读最后一根的日期（预取快照时判断用），不把整只股票的日线留在内存。 */
+  /** 只取最后一根日期：先复核文件印记或调用 read() 一次完成校验，避免同轮扫描对未改文件重复全量校验。 */
   async function lastDate(code) {
     if (memory.has(code)) return memory.get(code).rows.at(-1)?.date || null;
     const file = fileFor(code);
     if (!file) return null;
-    try {
-      const parsed = JSON.parse(await fs.promises.readFile(file, "utf8"));
-      return storedRows(parsed)?.at(-1)?.date || null;
-    } catch {
-      return null;
+    const stamp = verified.get(code);
+    if (stamp) {
+      try {
+        const stat = await fs.promises.stat(file);
+        if (stamp.size === stat.size && stamp.mtimeMs === stat.mtimeMs && stamp.ctimeMs === stat.ctimeMs) {
+          return stamp.lastDate;
+        }
+      } catch {
+        verified.delete(code);
+        return null;
+      }
     }
+    const entry = await read(code);
+    return entry?.rows.at(-1)?.date || null;
   }
 
   async function write(code, entry) {
     remember(code, entry);
+    verified.delete(code);
     const file = fileFor(code);
     if (!file) return;
     const temp = `${file}.${process.pid}.${++writeSequence}.tmp`;
@@ -165,12 +212,13 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     const to = next ? Date.parse(`${next}T09:15:00+08:00`) : from + 18 * 3600 * 1000;
     const at = Date.parse(quote.quoteAt || "");
     const fetched = Number.isFinite(Number(quote.fetchedAt)) ? Number(quote.fetchedAt) : at;
-    if (!Number.isFinite(at) || !(fetched >= from && fetched < to)) return false;
+    if (!quote || !Number.isFinite(at) || !(fetched >= from && fetched < to)) return false;
     if (quote.quoteAtIsTradeTime === true) {
       // 最后成交时间：必须是 asOf 当天收盘竞价之后（停牌股停在更早的日期，延迟行情停在盘中）。
       const text = shanghaiText(at);
       return text.slice(0, 10) === asOf && text.slice(11, 16) >= "15:00";
     }
+    if (quote.quoteAtIsBatchTime === true) return false;
     return at >= from && at < to;
   }
 
@@ -185,6 +233,12 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     if (!(volume > 0) || !(amount > 0)) return null; // 停牌
     const bar = { date: asOf, open, high, low, close, volume, amount, preClose,
       changePct: (close / preClose - 1) * 100, change: close - preClose, amplitude: (high - low) / preClose * 100 };
+    const upperLimit = Number(quote.limitUp ?? quote.upperLimit);
+    const lowerLimit = Number(quote.limitDown ?? quote.lowerLimit);
+    if (Number.isFinite(upperLimit) && upperLimit > 0) bar.upperLimit = upperLimit;
+    if (Number.isFinite(lowerLimit) && lowerLimit > 0) bar.lowerLimit = lowerLimit;
+    if (typeof quote.isST === "boolean") bar.isST = quote.isST;
+    if (typeof quote.noPriceLimit === "boolean") bar.noPriceLimit = quote.noPriceLimit;
     if (!lotsConsistent(bar) || !lotsConsistent(lastRow)) return null;
     // 换手率：快照自带的直接用；没有时按上一根日线的“成交量 / 换手率”推出流通股本再换算（股本短期不变）。
     const ownTurnover = Number(quote.turnover);
@@ -229,10 +283,11 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     const allRows = fresh?.adjustment === "none" && fresh?.rows?.length !== 0
       ? validateDailyBarRows(fresh?.rows) : [];
     const rows = allRows.filter(row => row.date <= asOf);
-    if (rows.length) await write(code, { rows: rows.slice(-maxRows).map(row => Object.fromEntries(FIELDS.filter(key => row[key] !== undefined && row[key] !== null).map(key => [key, row[key]]))),
+    const cleanRow = row => Object.fromEntries(FIELDS.filter(key => row[key] !== undefined && row[key] !== null).map(key => [key, row[key]]));
+    if (rows.length) await write(code, { rows: rows.slice(-maxRows).map(cleanRow),
       source: String(fresh.source || ""), checkedAsOf: asOf, checkedAt: now(), requested: Math.max(bars, rows.length) });
-    // 下载与之后命中缓存返回同样的日期范围（都截到 asOf），结果不随缓存状态变化。
-    return fresh?.adjustment === "none" && Array.isArray(fresh?.rows) ? { ...fresh, rows: fresh.rows.filter(row => String(row?.date || "") <= asOf) } : fresh;
+    // 下载与之后命中缓存返回同样的日期范围与字段口径（都截到 asOf 并去掉 null 占位），结果不随缓存状态变化。
+    return fresh?.adjustment === "none" && Array.isArray(fresh?.rows) ? { ...fresh, rows: fresh.rows.filter(row => String(row?.date || "") <= asOf).map(cleanRow) } : fresh;
   }
 
   function result(entry, cacheState) {
@@ -240,7 +295,12 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
       provenance: { source: entry.source || "local-store", amountUnit: "CNY", volumeUnit: "lot", cache: cacheState } };
   }
 
-  return { prepareDay, history, stats: () => ({ ...stats }) };
+  const peek = code => {
+    const clean = safeCode(code);
+    return clean ? read(clean) : Promise.resolve(null);
+  };
+
+  return { prepareDay, history, peek, stats: () => ({ ...stats }) };
 }
 
 module.exports = { createDailyBarStore, STORE_VERSION, lotsConsistent };

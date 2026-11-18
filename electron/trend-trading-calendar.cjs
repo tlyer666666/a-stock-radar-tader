@@ -1,5 +1,6 @@
 'use strict';
-const bundled = require('../config/a-share-market-calendar.json');
+const { loadNamedConfig } = require('./config-loader.cjs');
+const bundled = loadNamedConfig('a-share-market-calendar');
 // Beyond the bundled exchange calendar, sessions may be inferred only from an
 // observed index series. A stale series must not stand in for "today".
 const MAX_INFERRED_STALENESS_DAYS = 10;

@@ -215,3 +215,13 @@ test("THS K-line synthesis uses the supplied observation time for incomplete sou
   assert.equal(forming[0].date, "2026-10-21 15:00");
   assert.equal(forming[0].volume, 200);
 });
+
+test("missing market caps and missing intraday volume stay null rather than zero", () => {
+  const quote = market.normalizeThsFreeQuote(security, realheadItems({ 13: "", 3475914: "", 3541450: "" }));
+  assert.equal(quote.totalMarketCap, null);
+  assert.equal(quote.floatMarketCap, null);
+  assert.equal(quote.volume, null);
+  const rows = [{ date: "2026-10-20", open: 11, high: 11.5, low: 10.9, close: 11.44, volume: 1, volumeUnit: "lots" }];
+  const merged = market.mergeQuoteIntoDailyRows(rows, quote);
+  assert.equal(merged[1].volume, null);
+});

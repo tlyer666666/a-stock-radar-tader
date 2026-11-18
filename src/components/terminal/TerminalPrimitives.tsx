@@ -1,7 +1,13 @@
+import type { ElementType, ReactNode } from "react";
 import { CircleAlert, Radar } from "lucide-react";
 import { fmt } from "../../domain/formatters";
 
-export function PageHeading({ eyebrow, title, description, actions }: any) {
+export function PageHeading({ eyebrow, title, description, actions }: {
+  eyebrow?: ReactNode;
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+}) {
   return (
     <div className="page-heading">
       <div className="page-heading-identity">
@@ -13,7 +19,12 @@ export function PageHeading({ eyebrow, title, description, actions }: any) {
   );
 }
 
-export function PanelTitle({ title, subtitle, icon: Icon, badge }: any) {
+export function PanelTitle({ title, subtitle, icon: Icon, badge }: {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  icon: ElementType;
+  badge?: ReactNode;
+}) {
   return (
     <div className="panel-title">
       <div className="panel-title-icon"><Icon size={17} /></div>

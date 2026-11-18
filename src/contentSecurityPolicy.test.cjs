@@ -38,5 +38,8 @@ test("both packaged local entry points disable inline style injection and still 
     assert.match(shipped, /style-src 'self'; style-src-attr 'none';/);
     assert.doesNotMatch(shipped, /unsafe-inline|__CSP_/);
     assert.match(csp.injectCspConnectSources(source, "serve"), /style-src 'self' 'unsafe-inline';/);
+    const viteCsp = require("../qa/vite-csp.cjs");
+    assert.equal(viteCsp.injectCspConnectSources(source, "build"), shipped);
+    assert.equal(viteCsp.injectCspConnectSources(source, "serve"), csp.injectCspConnectSources(source, "serve"));
   }
 });

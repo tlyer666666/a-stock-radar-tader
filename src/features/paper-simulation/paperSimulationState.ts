@@ -47,44 +47,45 @@ export const normalizePaperState = (input: unknown): PaperSimulationState => {
   const lastOpenAt = typeof raw.lastOpenAt === "string" && raw.lastOpenAt ? raw.lastOpenAt : "";
   const openPositions = Array.isArray(raw.openPositions)
     ? raw.openPositions
-        .map((item: any) => {
+        .map((entry: unknown) => {
+          const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
           // 科创板、北交所可按 1 股递增，读回时只取整数，不能再按 100 股取整（否则会凭空多出或少掉股数）。
-          const shares = Math.max(0, Math.floor(clampNumber(item?.shares, 0, 1e7, 0)));
+          const shares = Math.max(0, Math.floor(clampNumber(item.shares, 0, 1e7, 0)));
           return {
-            id: typeof item?.id === "string" && item.id ? item.id : `sim-${Date.now()}-${Math.random().toFixed(6)}`,
-            code: String(item?.code || ""),
-            name: String(item?.name || item?.code || "UNKNOWN"),
+            id: typeof item.id === "string" && item.id ? item.id : `sim-${Date.now()}-${Math.random().toFixed(6)}`,
+            code: String(item.code || ""),
+            name: String(item.name || item.code || "UNKNOWN"),
             shares,
-            quoteDate: typeof item?.quoteDate === "string" ? item.quoteDate : "",
-            ...(item?.quoteVolume !== undefined && item?.quoteVolume !== null ? { quoteVolume: clampNumber(item.quoteVolume, 0, 1e14, 0) } : {}),
-            ...(item?.quotePreClose !== undefined && item?.quotePreClose !== null ? { quotePreClose: clampNumber(item.quotePreClose, 0, 1e9, 0) } : {}),
-            quoteName: String(item?.quoteName || item?.name || ""),
-            lastObservedClose: clampNumber(item?.lastObservedClose, 0, 1e9, 0),
-            lastObservedCloseDate: String(item?.lastObservedCloseDate || ""),
-            settlementBlockedReason: String(item?.settlementBlockedReason || ""),
-            entryPrice: clampNumber(item?.entryPrice, 0.01, 1e9, 0),
-            latestPrice: clampNumber(item?.latestPrice, 0.01, 1e9, item?.entryPrice || 0.01),
-            stopPrice: clampNumber(item?.stopPrice, 0.01, 1e9, 0.01),
-            takePrice: clampNumber(item?.takePrice, 0.01, 1e9, 0.01),
-            holdingBars: clampNumber(item?.holdingBars, 0, 500, 0),
-            ...(typeof item?.lastHoldingBarDate === "string" ? { lastHoldingBarDate: item.lastHoldingBarDate } : {}),
-            entryFee: clampNumber(item?.entryFee, 0, 1e9, 0),
-            feeRatePercent: clampNumber(item?.feeRatePercent, 0, 5, 0.09),
-            sectorName: String(item?.sectorName || ""),
-            openedAt: typeof item?.openedAt === "string" && item.openedAt ? item.openedAt : todayTag(),
-            planSignal: String(item?.planSignal || "BUY"),
-            strategySignature: String(item?.strategySignature || "legacy"),
-            riskProfile: normalizeRiskProfile(item?.riskProfile),
-            strategyIds: Array.isArray(item?.strategyIds)
+            quoteDate: typeof item.quoteDate === "string" ? item.quoteDate : "",
+            ...(item.quoteVolume !== undefined && item.quoteVolume !== null ? { quoteVolume: clampNumber(item.quoteVolume, 0, 1e14, 0) } : {}),
+            ...(item.quotePreClose !== undefined && item.quotePreClose !== null ? { quotePreClose: clampNumber(item.quotePreClose, 0, 1e9, 0) } : {}),
+            quoteName: String(item.quoteName || item.name || ""),
+            lastObservedClose: clampNumber(item.lastObservedClose, 0, 1e9, 0),
+            lastObservedCloseDate: String(item.lastObservedCloseDate || ""),
+            settlementBlockedReason: String(item.settlementBlockedReason || ""),
+            entryPrice: clampNumber(item.entryPrice, 0.01, 1e9, 0),
+            latestPrice: clampNumber(item.latestPrice, 0.01, 1e9, Number(item.entryPrice) || 0.01),
+            stopPrice: clampNumber(item.stopPrice, 0.01, 1e9, 0.01),
+            takePrice: clampNumber(item.takePrice, 0.01, 1e9, 0.01),
+            holdingBars: clampNumber(item.holdingBars, 0, 500, 0),
+            ...(typeof item.lastHoldingBarDate === "string" ? { lastHoldingBarDate: item.lastHoldingBarDate } : {}),
+            entryFee: clampNumber(item.entryFee, 0, 1e9, 0),
+            feeRatePercent: clampNumber(item.feeRatePercent, 0, 5, 0.09),
+            sectorName: String(item.sectorName || ""),
+            openedAt: typeof item.openedAt === "string" && item.openedAt ? item.openedAt : todayTag(),
+            planSignal: String(item.planSignal || "BUY"),
+            strategySignature: String(item.strategySignature || "legacy"),
+            riskProfile: normalizeRiskProfile(item.riskProfile),
+            strategyIds: Array.isArray(item.strategyIds)
               ? item.strategyIds.filter((id: unknown): id is string => typeof id === "string" && Boolean(id))
               : [],
-            entryReadinessScore: clampNumber(item?.entryReadinessScore, 0, 100, 0),
-            entryExecutionFillRatePercent: clampNumber(item?.entryExecutionFillRatePercent, 0, 100, 0),
+            entryReadinessScore: clampNumber(item.entryReadinessScore, 0, 100, 0),
+            entryExecutionFillRatePercent: clampNumber(item.entryExecutionFillRatePercent, 0, 100, 0),
             highWaterMark: clampNumber(
-              item?.highWaterMark,
+              item.highWaterMark,
               0.01,
               1e9,
-              clampNumber(item?.latestPrice, 0.01, 1e9, item?.entryPrice || 0.01)
+              clampNumber(item.latestPrice, 0.01, 1e9, Number(item.entryPrice) || 0.01)
             )
           };
         })
@@ -92,21 +93,23 @@ export const normalizePaperState = (input: unknown): PaperSimulationState => {
     : [];
   const closedPositions = Array.isArray(raw.closedPositions)
     ? raw.closedPositions
-        .map((item: any) => ({
+        .map((entry: unknown) => {
+          const item = (entry && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+          return {
           ...{
-            id: typeof item?.id === "string" && item.id ? item.id : `sim-${Date.now()}-${Math.random().toFixed(6)}`,
-            code: String(item?.code || ""),
-            name: String(item?.name || item?.code || "UNKNOWN"),
-            shares: Math.max(0, Math.floor(clampNumber(item?.shares, 0, 1e7, 0))),
-            quoteDate: typeof item?.quoteDate === "string" ? item.quoteDate : "",
-            ...(item?.quoteVolume !== undefined && item?.quoteVolume !== null ? { quoteVolume: clampNumber(item.quoteVolume, 0, 1e14, 0) } : {}),
-            ...(item?.quotePreClose !== undefined && item?.quotePreClose !== null ? { quotePreClose: clampNumber(item.quotePreClose, 0, 1e9, 0) } : {}),
-            quoteName: String(item?.quoteName || item?.name || ""),
-            lastObservedClose: clampNumber(item?.lastObservedClose, 0, 1e9, 0),
+            id: typeof item.id === "string" && item.id ? item.id : `sim-${Date.now()}-${Math.random().toFixed(6)}`,
+            code: String(item.code || ""),
+            name: String(item.name || item.code || "UNKNOWN"),
+            shares: Math.max(0, Math.floor(clampNumber(item.shares, 0, 1e7, 0))),
+            quoteDate: typeof item.quoteDate === "string" ? item.quoteDate : "",
+            ...(item.quoteVolume !== undefined && item.quoteVolume !== null ? { quoteVolume: clampNumber(item.quoteVolume, 0, 1e14, 0) } : {}),
+            ...(item.quotePreClose !== undefined && item.quotePreClose !== null ? { quotePreClose: clampNumber(item.quotePreClose, 0, 1e9, 0) } : {}),
+            quoteName: String(item.quoteName || item.name || ""),
+            lastObservedClose: clampNumber(item.lastObservedClose, 0, 1e9, 0),
             lastObservedCloseDate: String(item?.lastObservedCloseDate || ""),
             settlementBlockedReason: String(item?.settlementBlockedReason || ""),
             entryPrice: clampNumber(item?.entryPrice, 0.01, 1e9, 0),
-            latestPrice: clampNumber(item?.latestPrice, 0.01, 1e9, item?.entryPrice || 0.01),
+            latestPrice: clampNumber(item?.latestPrice, 0.01, 1e9, Number(item?.entryPrice) || 0.01),
             stopPrice: clampNumber(item?.stopPrice, 0.01, 1e9, 0.01),
             takePrice: clampNumber(item?.takePrice, 0.01, 1e9, 0.01),
             holdingBars: clampNumber(item?.holdingBars, 0, 500, 0),
@@ -135,7 +138,8 @@ export const normalizePaperState = (input: unknown): PaperSimulationState => {
           closeReason: (item?.closeReason as PaperClosedPosition["closeReason"]) || "MANUAL",
           realizedPnl: clampNumber(item?.realizedPnl, -1e9, 1e9, 0),
           realizedPnlPercent: clampNumber(item?.realizedPnlPercent, -1e6, 1e6, 0)
-        }))
+          };
+        })
         .filter((position) => position.code && position.shares > 0)
     : [];
 

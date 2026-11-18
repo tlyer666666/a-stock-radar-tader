@@ -1,31 +1,33 @@
 "use strict";
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const os = require("node:os");
 const path = require("node:path");
-const { _electron: electron } = require("playwright-core");
+const { appExecutable, launchPackaged } = require("./packaged-session.cjs");
+const trendLibrary = require("../config/trend-strategy-library.json");
+const signalDefinitions = require("../electron/strategy-signal-engine.cjs").ALL_STRATEGY_DEFINITIONS;
 
 async function run() {
   const executablePath = process.argv[2];
   if (!executablePath) throw new Error("Pass the packaged application executable path");
-  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "trend-desktop-qa-"));
-  const app = await electron.launch({ executablePath, args: [], env: {
-    ...process.env, A_STOCK_E2E_USER_DATA: userData, A_STOCK_E2E_HIDDEN: "1"
-  } });
+  const session = await launchPackaged(appExecutable(executablePath), { hidden: true });
   try {
-    const page = await app.firstWindow();
+    const page = session.page;
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    await page.getByRole("heading", { name: "趋势筛选", exact: true }).waitFor();
+    await page.getByRole("heading", { name: "策略选股", exact: true }).waitFor();
+    await page.locator(".strategy-library-item.trend").first().click();
+    await page.getByRole("heading", { name: /^趋势模型/ }).waitFor();
     await page.getByRole("button", {name:"黑夜",exact:true}).click();
-    assert.equal(await page.locator(".trend-library-choice").count(), 14);
+    assert.equal(await page.locator(".trend-library-choice").count(), trendLibrary.length + 2);
     assert.equal(await page.locator(".brand").count(), 0);
     assert.doesNotMatch(await page.locator("body").innerText(), /2–6 周 · A股波段工作台|近期涨停 · 上涨趋势/);
     const metadata = await page.evaluate(async () => ({ version: await window.stockApi.getVersion(), definitions: await window.stockApi.getStrategyDefinitions() }));
+    const expectedComposites = signalDefinitions.filter(item => item.type === "composite").length;
     assert.equal(metadata.version, require("../package.json").version);
-    assert.equal(metadata.definitions.length, 32);
-    assert.equal(metadata.definitions.filter(item => item.type === "composite").length, 18);
+    assert.equal(metadata.definitions.length, signalDefinitions.length);
+    assert.equal(metadata.definitions.filter(item => item.type === "composite").length, expectedComposites);
     assert.ok(metadata.definitions.find(item => item.id === "limit_macd_pullback_resonance").sources.length > 0);
+    assert.ok(metadata.definitions.find(item => item.id === "limit_gap_ma_resonance").sources.length > 0);
     const sectorContract = await page.evaluate(async () => {
       const methods = ['getSectorCatalog', 'getSectorClassifications', 'getSectorDetail', 'cancelSectorRequest'];
       let invalidRejected = false;
@@ -86,18 +88,19 @@ async function run() {
     assert.equal(await page.getByRole('tab', { name: '全部', exact: true }).getAttribute('aria-selected'), 'true');
     await page.getByRole('tab', { name: '公司公告', exact: true }).click();
     assert.equal(await page.getByRole('tab', { name: '公司公告', exact: true }).getAttribute('aria-selected'), 'true');
-    await page.getByRole('button', { name: '涨停趋势', exact: true }).click();
+    await page.getByRole('button', { name: '策略选股', exact: true }).click();
+    await page.locator('.strategy-library-item.trend').first().click();
+    await page.getByRole("heading", { name: /^趋势模型/ }).waitFor();
     assert.equal(result.cancelled.phase, "cancelled");
     assert.equal(result.cancelled.coverageComplete, false);
     assert.equal(result.cancelled.validation, "unvalidated");
     await page.getByRole("button", { name: "刷新扫描状态", exact: true }).click();
-    await page.getByRole("heading", { name: "扫描已取消", exact: true }).waitFor();
+    await page.locator(".research-command-bar", { hasText: "扫描已取消" }).waitFor();
     assert.deepEqual(errors, []);
-    fs.writeFileSync(path.join(output, "native-smoke.json"), JSON.stringify({ passed:true, appVersion:metadata.version, isolatedUserData:true, liveFullMarketVerified:false, checks:["no branding or fake native candidates","32 definitions and 18 composites with source metadata","four sector native IPC methods and invalid A-share rejection","single and batch native IPC","cancel isolation","sizing example","information center default all"] }, null, 2));
+    fs.writeFileSync(path.join(output, "native-smoke.json"), JSON.stringify({ passed:true, appVersion:metadata.version, isolatedUserData:true, liveFullMarketVerified:false, checks:["no branding or fake native candidates",`${signalDefinitions.length} definitions and ${expectedComposites} composites with source metadata`,"four sector native IPC methods and invalid A-share rejection","single and batch native IPC","cancel isolation","sizing example","information center default all"] }, null, 2));
     console.log("Packaged Electron app: default workspace, no fake live results, Word sizing example, native single/batch IPC, merged information center and cancellation passed.");
   } finally {
-    await app.close();
-    fs.rmSync(userData, { recursive: true, force: true });
+    await session.close();
   }
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

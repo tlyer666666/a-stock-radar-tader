@@ -321,6 +321,7 @@ test("the limit-free prefilter checks the raw trend only when no corporate actio
   const engine = require("./trend-screener-engine.cjs");
   const falling = fixture(19);
   for (let i = 240; i < 300; i++) change(falling, i, { close: Math.round((20 - (i - 240) * .1) * 100) / 100, open: 20 - (i - 240) * .1, high: 20.2 - (i - 240) * .1, low: 19.8 - (i - 240) * .1 });
+  for (let i = 1; i < falling.rawRows.length; i++) change(falling, i, { preClose: falling.rawRows[i - 1].close });
   assert.match(engine.prefilterTrendStock(falling, { requireLimit: false }).reason, /MA20/);
   const split = structuredClone(falling);
   split.rawRows[280].changePct = 1; // 报告涨跌幅与原始收盘不符：疑似除权，原始价不能判断趋势

@@ -743,6 +743,7 @@ function featureSnapshot(
       !(closePosition < 0.25 && volumeRatio !== null && volumeRatio > 1.5)
   };
   // 实测过热指标与低位判断（strategy-field-rules）：只用到 index 及之前的日线。
+  result.ma20 = ma20;
   result.ma20ExtensionPercent = ma20 ? (Number(current.close) / ma20 - 1) * 100 : null;
   const close60 = index >= 60 ? Number(history[index - 60]?.close) : null;
   result.return60Percent = close60 > 0 ? (Number(current.close) / close60 - 1) * 100 : null;
@@ -916,6 +917,7 @@ function enhanceCurrentFeature(baseFeature, candidate, _code, _name) {
       baseFeature?.latest
     ),
     changePct,
+    currentReturn: changePct ?? baseFeature?.currentReturn ?? null,
     isCurrentLimit: Boolean(baseFeature?.isCurrentLimit || poolSaysCurrentLimit),
     daysSinceLimit: numberOrNull(
       baseFeature?.daysSinceLimit,
@@ -1025,6 +1027,13 @@ function enhanceCurrentFeature(baseFeature, candidate, _code, _name) {
         ? false
         : baseFeature?.riskVeto ?? explicitHeldSupport !== false
   };
+  if (finite(feature.ma20) && Number(feature.ma20) > 0 && finite(feature.latest)) {
+    feature.ma20ExtensionPercent = (Number(feature.latest) / Number(feature.ma20) - 1) * 100;
+  }
+  const refreshedOverheat = fieldRules.overheatAssessment(feature);
+  feature.overheatFlags = refreshedOverheat.flags;
+  feature.overheatCount = refreshedOverheat.count;
+  feature.overheatVeto = refreshedOverheat.veto;
   return feature;
 }
 
@@ -1775,6 +1784,7 @@ function replayStrategy(
     ? history.findLastIndex(row => row.date <= options.signalTo)
     : history.length - 1;
   let lastSignalIndex = -Infinity;
+  let lastOccupiedExitIndex = -Infinity;
   const startIndex = Math.max(20, 1);
   for (let index = startIndex; index < history.length; index += 1) {
     const feature = featureTimeline
@@ -1782,6 +1792,7 @@ function replayStrategy(
       : featureSnapshot(history, index, code, code);
     if (history[index].isST === true || !feature || !definition.matches(feature)) continue;
     if (index - lastSignalIndex <= options.cooldownDays) continue;
+    if (options.cooldownDays > 0 && index < lastOccupiedExitIndex) continue;
     const signal = history[index];
     if (
       (options.signalFrom && signal.date < options.signalFrom) ||
@@ -1917,6 +1928,7 @@ function replayStrategy(
         reason: "corporate_action_unresolved", priceBasisIssue,
         reasonText: "持有区间原始价格与涨跌幅或参考价不一致，缺少可核验的除权结算数据，收益不可结算" });
       lastSignalIndex = index;
+      lastOccupiedExitIndex = Math.max(lastOccupiedExitIndex, Math.min(exitIndex, observationEndIndex));
       continue;
     }
     lastSignalIndex = index;
@@ -1929,6 +1941,7 @@ function replayStrategy(
         reason: "pending_exit_horizon",
         reasonText: `信号已命中，但尚未走完${options.horizonDays}个交易日持有期，暂不计入收益`
       });
+      lastOccupiedExitIndex = Math.max(lastOccupiedExitIndex, Math.min(exitIndex, observationEndIndex));
       continue;
     }
     const exitPrice = Number(exitRow.close);
@@ -1945,6 +1958,7 @@ function replayStrategy(
       });
       continue;
     }
+    lastOccupiedExitIndex = Math.max(lastOccupiedExitIndex, exitIndex);
     const grossReturn = ((exitPrice / entryPrice) - 1) * 100;
     const netReturn = grossReturn - options.roundTripCostBps / 100;
     const holdingRows = history.slice(entryIndex, exitIndex + 1);
@@ -3516,6 +3530,23 @@ function buildStrategySignalReport(
     const history = normalizeHistory(rawHistory, historicalDataQuality);
     if (identity.code && history.length) replayHistories.set(identity.code, history);
   }
+  const marketDateSet = new Set(benchmark.map((row) => row.date));
+  if (Array.isArray(rawOptions?.marketDates)) {
+    for (const rawDate of rawOptions.marketDates) {
+      const normalized = normalizeDate(rawDate);
+      if (normalized) marketDateSet.add(normalized);
+    }
+  }
+  for (const history of replayHistories.values()) {
+    for (const row of history) {
+      if (row?.date) marketDateSet.add(row.date);
+    }
+  }
+  const observedMarketDates = [...marketDateSet].sort();
+  const nextMarketDateByDate = new Map(
+    observedMarketDates.slice(0, -1).map((date, idx) => [date, observedMarketDates[idx + 1]])
+  );
+  const requireNextMarketDay = observedMarketDates.length > 0;
 
   const replayByStrategyId = new Map(
     ALL_STRATEGY_DEFINITIONS.map((definition) => [
@@ -3550,7 +3581,7 @@ function buildStrategySignalReport(
         history,
         benchmarkByDate,
         options,
-        { featureTimeline }
+        { featureTimeline, requireNextMarketDay, nextMarketDateByDate }
       );
       const accumulator = replayByStrategyId.get(definition.id);
       accumulator.allSamples.push(...replay.samples);
@@ -3599,6 +3630,7 @@ function buildStrategySignalReport(
         : history.length
           ? featureSnapshot(history, history.length - 1, identity.code, identity.name)
           : null;
+      if (!baseFeature) continue;
       const feature = enhanceCurrentFeature(
         baseFeature,
         candidate,
@@ -4058,6 +4090,7 @@ module.exports = {
     VOLUME_REBOUND_HOLD,
     buildFeatureTimeline,
     featureSnapshot,
+    enhanceCurrentFeature,
     isLimitUpAt,
     replayStrategy,
     resolvedOptions,

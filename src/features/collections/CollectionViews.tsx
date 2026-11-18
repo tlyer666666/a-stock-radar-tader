@@ -1,25 +1,38 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
+  ArrowLeftRight,
   Bell,
   Bookmark,
   BookmarkCheck,
   ChevronRight,
+  ClipboardPaste,
   LineChart,
   LoaderCircle,
+  PlusCircle,
   RefreshCw,
   Search,
+  ShieldAlert,
   SlidersHorizontal,
   Star,
   WalletCards,
   X
 } from "lucide-react";
 import { PageHeading, PanelTitle, Fact } from "../../components/terminal/TerminalPrimitives";
-import StockMonitorEditor from "../../StockMonitorEditor";
+import StockMonitorEditor from "../../components/StockMonitorEditor";
 import useStockMonitors from "../../useStockMonitors";
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 import { fmt, fmtMoney, nullableNumber } from "../../domain/formatters";
 import { formatShanghaiTime, formatShanghaiDateTime } from "../../dateUtils";
 import { summarizeStockMonitor } from "../../stockMonitorRules";
+import {
+  applyHoldingTrade,
+  buildStopLossMonitorConfig,
+  computeMonitorStopPrice,
+  maskSensitiveText,
+  mergeImportedHoldings,
+  parseHoldingsPaste,
+  type HoldingTradeSide
+} from "./holdingsLedger";
 
 export function FavoritesView({
   items,
@@ -72,20 +85,35 @@ export function HoldingsView({
   items,
   settings,
   live,
+  monitors,
+  privacyMask = false,
+  onTransferToT,
   onSave,
   onOpen
 }: {
   items: HoldingItem[];
   settings: Settings;
   live: boolean;
+  monitors?: ReturnType<typeof useStockMonitors> | undefined;
+  privacyMask?: boolean;
+  onTransferToT?: ((item: HoldingItem) => void) | undefined;
   onSave: (update: (items: HoldingItem[]) => HoldingItem[]) => Promise<boolean>;
   onOpen: (item: HoldingItem) => void;
 }) {
+  const [entryMode, setEntryMode] = useState<"single" | "trade" | "paste">("single");
   const [code, setCode] = useState("");
   const [shares, setShares] = useState("");
   const [costPrice, setCostPrice] = useState("");
   const [note, setNote] = useState("");
-  const [quotes, setQuotes] = useState<Record<string, { quote: any; updatedAt: string; failed: boolean }>>({});
+  const [tradeSide, setTradeSide] = useState<HoldingTradeSide>("buy");
+  const [tradeCode, setTradeCode] = useState("");
+  const [tradeShares, setTradeShares] = useState("100");
+  const [tradePrice, setTradePrice] = useState("");
+  const [tradeNote, setTradeNote] = useState("");
+  const [pasteText, setPasteText] = useState("");
+  const [batchMessage, setBatchMessage] = useState("");
+  const [editingMonitorCode, setEditingMonitorCode] = useState<string | null>(null);
+  const [quotes, setQuotes] = useState<Record<string, { quote: Record<string, unknown> | null; updatedAt: string; failed: boolean }>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
@@ -110,7 +138,7 @@ export function HoldingsView({
     quoteRefreshPending.current = requestId;
     setRefreshing(true);
     const pending = [...items];
-    const results: Array<readonly [string, { quote: any; updatedAt: string } | null]> = [];
+    const results: Array<readonly [string, { quote: Record<string, unknown>; updatedAt: string } | null]> = [];
     const workerCount = Math.min(4, pending.length);
     await Promise.all(Array.from({ length: workerCount }, async () => {
       while (pending.length && requestId === quoteRefreshRequestId.current) {
@@ -143,12 +171,12 @@ export function HoldingsView({
 
   useEffect(() => {
     void refreshQuotes();
-    const timer = live && items.length ? window.setInterval(
-      whenVisible(() => void refreshQuotes()),
+    const stop = live && items.length ? startVisibleInterval(
+      () => void refreshQuotes(),
       Math.max(5, Number(settings.quoteRefreshSeconds) || 5) * 1000
     ) : undefined;
     return () => {
-      window.clearInterval(timer);
+      stop?.();
       quoteRefreshRequestId.current += 1;
       quoteRefreshPending.current = null;
     };
@@ -271,6 +299,118 @@ export function HoldingsView({
       setRemovingCode(null);
     }
   };
+  const pasteParsed = useMemo(() => parseHoldingsPaste(pasteText), [pasteText]);
+  const tradePreview = useMemo(() => {
+    const cleanCode = tradeCode.trim();
+    if (!/^\d{6}$/.test(cleanCode)) return null;
+    const res = applyHoldingTrade({
+      items,
+      code: cleanCode,
+      side: tradeSide,
+      shares: Number(tradeShares),
+      price: Number(tradePrice),
+      note: tradeNote
+    });
+    return res;
+  }, [items, tradeCode, tradeSide, tradeShares, tradePrice, tradeNote]);
+
+  const unmonitoredRows = useMemo(
+    () => (monitors ? rows.filter(row => !monitors.configs[row.item.code]?.enabled) : []),
+    [monitors, rows]
+  );
+
+  const submitTradeLedger = async (event: FormEvent) => {
+    event.preventDefault();
+    const cleanCode = tradeCode.trim();
+    if (!/^\d{6}$/.test(cleanCode)) { setFormError("请输入 6 位证券代码"); return; }
+    if (submitting) return;
+    setSubmitting(true);
+    setFormError("");
+    setBatchMessage("");
+    try {
+      let resolved: Security | undefined;
+      if (!items.some(item => item.code === cleanCode) && typeof window !== "undefined" && window.stockApi?.search) {
+        const choices = await window.stockApi.search(cleanCode);
+        resolved = choices.find(entry => entry.code === cleanCode);
+      }
+      let summaryText = "";
+      const saved = await onSave(current => {
+        const outcome = applyHoldingTrade({
+          items: current,
+          code: cleanCode,
+          name: resolved?.name,
+          secid: resolved?.secid,
+          thscode: resolved?.thscode,
+          marketName: resolved?.marketName,
+          side: tradeSide,
+          shares: Number(tradeShares),
+          price: Number(tradePrice),
+          note: tradeNote
+        });
+        if (!outcome.ok) throw new Error(outcome.error);
+        summaryText = outcome.summary;
+        return outcome.nextItems;
+      });
+      if (saved) {
+        setBatchMessage(summaryText);
+        setTradeCode("");
+        setTradeShares("100");
+        setTradePrice("");
+        setTradeNote("");
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "加减仓记账失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitPasteImport = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!pasteParsed.entries.length) {
+      setFormError("请至少粘贴 1 行有效的持仓记录（例如：600519 贵州茅台 200 1480.5）");
+      return;
+    }
+    if (submitting) return;
+    setSubmitting(true);
+    setFormError("");
+    setBatchMessage("");
+    try {
+      const resolvedNames: Record<string, Security> = {};
+      if (typeof window !== "undefined" && window.stockApi?.search) {
+        const needLookup = pasteParsed.entries.filter(row => row.name === row.code).slice(0, 12);
+        await Promise.allSettled(
+          needLookup.map(async row => {
+            const choices = await window.stockApi.search(row.code);
+            const hit = choices.find(entry => entry.code === row.code);
+            if (hit) resolvedNames[row.code] = hit;
+          })
+        );
+      }
+      const saved = await onSave(current => mergeImportedHoldings(current, pasteParsed.entries, resolvedNames));
+      if (saved) {
+        setBatchMessage(`已导入或更新 ${pasteParsed.entries.length} 只持仓${pasteParsed.errors.length ? `（跳过 ${pasteParsed.errors.length} 行格式异常）` : ""}`);
+        setPasteText("");
+        setEntryMode("single");
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : "批量导入失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const applyBatchStopLoss = () => {
+    if (!monitors?.save || !unmonitoredRows.length) return;
+    let enabledCount = 0;
+    for (const row of unmonitoredRows) {
+      const refPrice = row.quoteAvailable && row.latest > 0 ? row.latest : row.item.costPrice;
+      const cfg = buildStopLossMonitorConfig(refPrice, -5, monitors.configs[row.item.code]);
+      if (cfg && monitors.save(row.item.code, cfg)) enabledCount += 1;
+    }
+    setBatchMessage(`已为 ${enabledCount} 只未设预警持仓统一启用 -5% 止损盯盘`);
+  };
+
   const undoRemoval = async () => {
     if (!removedHolding || restoring || removingCode) return;
     const removed = removedHolding;
@@ -294,49 +434,190 @@ export function HoldingsView({
       <PageHeading
         eyebrow="PERSONAL HOLDINGS BOARD"
         title="持仓股"
-        description="持仓数据仅保存在本机；行情沿用同花顺主源和三线校验，不连接券商、不会发出交易指令。"
+        description="持仓数据仅保存在本机；支持单只录入、买卖加减仓自动摊薄成本、多行粘贴导入及一键止损盯盘。"
         actions={<button className="secondary-btn" onClick={() => void refreshQuotes()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新行情</button>}
       />
       <section className="panel holdings-summary-panel">
         <PanelTitle title="持仓总览" subtitle={`本轮有效报价 ${summary.pricedCount}/${items.length} 条；汇总仅覆盖本轮有效报价的持仓`} icon={WalletCards} badge={`${items.length} 只`} />
         {summary.referenceCount > 0 && <p className="warning-banner" role="status">{summary.referenceCount} 只持仓刷新失败，上次报价仅供参考，不计入汇总。</p>}
         <div className="fact-grid holdings-summary-grid">
-          <Fact label="持仓市值" value={summary.pricedCount ? fmtMoney(summary.marketValue) : "--"} />
-          <Fact label="持仓成本" value={summary.pricedCount ? fmtMoney(summary.costValue) : "--"} />
-          <Fact label="浮动盈亏" value={summary.pricedCount ? `${signedMoney(summary.profit)}（${signedPercent(summary.profitPercent)}）` : "--"} tone={summary.pricedCount && summary.profit !== 0 ? summary.profit > 0 ? 'up' : 'down' : ''} />
-          <Fact label="按昨收估算今日盈亏" value={summary.dayPricedCount ? signedMoney(summary.dayProfit) : "--"} tone={summary.dayPricedCount && summary.dayProfit !== 0 ? summary.dayProfit > 0 ? 'up' : 'down' : ''} />
+          <Fact label="持仓市值" value={summary.pricedCount ? maskSensitiveText(fmtMoney(summary.marketValue), privacyMask) : "--"} />
+          <Fact label="持仓成本" value={summary.pricedCount ? maskSensitiveText(fmtMoney(summary.costValue), privacyMask) : "--"} />
+          <Fact
+            label="浮动盈亏"
+            value={summary.pricedCount ? `${maskSensitiveText(signedMoney(summary.profit), privacyMask)}（${signedPercent(summary.profitPercent)}）` : "--"}
+            tone={summary.pricedCount && summary.profit !== 0 ? summary.profit > 0 ? 'up' : 'down' : ''}
+          />
+          <Fact
+            label="按昨收估算今日盈亏"
+            value={summary.dayPricedCount ? maskSensitiveText(signedMoney(summary.dayProfit), privacyMask) : "--"}
+            tone={summary.dayPricedCount && summary.dayProfit !== 0 ? summary.dayProfit > 0 ? 'up' : 'down' : ''}
+          />
         </div>
       </section>
       <div className="holdings-workspace-grid">
       <section className="panel holdings-entry-panel">
-        <PanelTitle title="录入或更新持仓" subtitle="同一代码再次保存会更新数量、成本价和备注。" icon={BookmarkCheck} />
-        <form className="holdings-entry-form" onSubmit={saveHolding}>
-          <input aria-label="证券代码" value={code} onChange={(event) => { holdingEditRevision.current += 1; setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); }} placeholder="证券代码，如 600519" inputMode="numeric" />
-          <input aria-label="持仓数量" value={shares} onChange={(event) => { holdingEditRevision.current += 1; setShares(event.target.value); }} placeholder="持仓数量（股）" inputMode="numeric" />
-          <input aria-label="成本价" value={costPrice} onChange={(event) => { holdingEditRevision.current += 1; setCostPrice(event.target.value); }} placeholder="成本价" inputMode="decimal" />
-          <input aria-label="持仓备注" value={note} onChange={(event) => { holdingEditRevision.current += 1; setNote(event.target.value); }} placeholder="备注（可选）" maxLength={160} />
-          <button className="primary-btn" type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={16} /> : <BookmarkCheck size={16} />}保存持仓</button>
-        </form>
+        <PanelTitle title="录入或更新持仓" subtitle="支持单笔覆盖保存、按买卖成交自动重算摊薄成本，或直接从券商/表格粘贴批量导入。" icon={BookmarkCheck} />
+        <div className="holdings-mode-tabs" role="tablist" aria-label="持仓录入方式">
+          <button type="button" role="tab" aria-selected={entryMode === "single"} className={entryMode === "single" ? "active" : ""} onClick={() => { setEntryMode("single"); setFormError(""); }}>
+            <BookmarkCheck size={14} />录入/更新
+          </button>
+          <button type="button" role="tab" aria-selected={entryMode === "trade"} className={entryMode === "trade" ? "active" : ""} onClick={() => { setEntryMode("trade"); setFormError(""); }}>
+            <PlusCircle size={14} />加减仓记账
+          </button>
+          <button type="button" role="tab" aria-selected={entryMode === "paste"} className={entryMode === "paste" ? "active" : ""} onClick={() => { setEntryMode("paste"); setFormError(""); }}>
+            <ClipboardPaste size={14} />粘贴批量导入
+          </button>
+        </div>
+
+        {entryMode === "single" && (
+          <form className="holdings-entry-form" onSubmit={saveHolding}>
+            <input aria-label="证券代码" value={code} onChange={(event) => { holdingEditRevision.current += 1; setCode(event.target.value.replace(/\D/g, "").slice(0, 6)); }} placeholder="证券代码，如 600519" inputMode="numeric" />
+            <input aria-label="持仓数量" value={shares} onChange={(event) => { holdingEditRevision.current += 1; setShares(event.target.value); }} placeholder="持仓数量（股）" inputMode="numeric" />
+            <input aria-label="成本价" value={costPrice} onChange={(event) => { holdingEditRevision.current += 1; setCostPrice(event.target.value); }} placeholder="成本价" inputMode="decimal" />
+            <input aria-label="持仓备注" value={note} onChange={(event) => { holdingEditRevision.current += 1; setNote(event.target.value); }} placeholder="备注（可选）" maxLength={160} />
+            <button className="primary-btn" type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={16} /> : <BookmarkCheck size={16} />}保存持仓</button>
+          </form>
+        )}
+
+        {entryMode === "trade" && (
+          <form className="holdings-entry-form holdings-trade-form" onSubmit={e => void submitTradeLedger(e)}>
+            <div className="holdings-trade-side-tabs" role="group" aria-label="交易方向">
+              <button type="button" className={tradeSide === "buy" ? "active buy" : ""} onClick={() => setTradeSide("buy")}>+ 买入/加仓</button>
+              <button type="button" className={tradeSide === "sell" ? "active sell" : ""} onClick={() => setTradeSide("sell")}>- 卖出/减仓</button>
+            </div>
+            {items.length > 0 && (
+              <select
+                aria-label="快捷选择已有持仓"
+                value={items.some(i => i.code === tradeCode) ? tradeCode : ""}
+                onChange={e => {
+                  const selected = items.find(i => i.code === e.target.value);
+                  if (!selected) return;
+                  setTradeCode(selected.code);
+                  const livePrice = Number(quotes[selected.code]?.quote?.latest);
+                  setTradePrice(Number.isFinite(livePrice) && livePrice > 0 ? livePrice.toFixed(2) : String(selected.costPrice));
+                }}
+              >
+                <option value="">选择已有持仓（或直接输代码）</option>
+                {items.map(item => <option key={item.code} value={item.code}>{item.name} ({item.code}) · {item.shares}股 @ {fmt(item.costPrice)}</option>)}
+              </select>
+            )}
+            <input aria-label="交易证券代码" value={tradeCode} onChange={e => setTradeCode(e.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="6 位股票代码" inputMode="numeric" />
+            <input aria-label="交易股数" value={tradeShares} onChange={e => setTradeShares(e.target.value)} placeholder="成交股数，如 100" inputMode="numeric" />
+            <input aria-label="成交均价" value={tradePrice} onChange={e => setTradePrice(e.target.value)} placeholder="成交均价" inputMode="decimal" />
+            <input aria-label="交易备注" value={tradeNote} onChange={e => setTradeNote(e.target.value)} placeholder="交易原因/计划备注（可选）" maxLength={160} />
+            {tradePreview && (
+              <div className={`holdings-trade-preview ${tradePreview.ok ? "ok" : "warn"}`} role="status">
+                {tradePreview.ok ? tradePreview.summary : tradePreview.error}
+              </div>
+            )}
+            <button className="primary-btn" type="submit" disabled={submitting}>
+              {submitting ? <LoaderCircle className="spin" size={16} /> : <PlusCircle size={16} />}
+              {tradeSide === "buy" ? "确认加仓并重算成本" : "确认减仓并结算"}
+            </button>
+          </form>
+        )}
+
+        {entryMode === "paste" && (
+          <form className="holdings-paste-form" onSubmit={e => void submitPasteImport(e)}>
+            <textarea
+              rows={5}
+              aria-label="粘贴持仓明细"
+              value={pasteText}
+              onChange={e => setPasteText(e.target.value)}
+              placeholder={"直接从券商持仓页或表格复制粘贴，每行一只：\n600519 贵州茅台 200 1480.5 底仓\n300059,500,21.8"}
+            />
+            {(pasteParsed.entries.length > 0 || pasteParsed.errors.length > 0) && (
+              <div className="holdings-paste-preview">
+                <small>
+                  识别有效记录 <b>{pasteParsed.entries.length}</b> 条
+                  {pasteParsed.errors.length > 0 ? ` · 待修正 ${pasteParsed.errors.length} 行` : ""}
+                </small>
+                {pasteParsed.errors.slice(0, 3).map((err, i) => <p key={i} className="holdings-form-error">{err}</p>)}
+              </div>
+            )}
+            <button className="primary-btn" type="submit" disabled={submitting || !pasteParsed.entries.length}>
+              {submitting ? <LoaderCircle className="spin" size={16} /> : <ClipboardPaste size={16} />}
+              导入或更新 ({pasteParsed.entries.length} 只)
+            </button>
+          </form>
+        )}
+
         {formError && <div className="holdings-form-error" role="alert">{formError}</div>}
+        {batchMessage && <div className="holdings-batch-notice" role="status">{batchMessage}</div>}
       </section>
       <section className="panel holdings-table-panel">
-        <PanelTitle title="持仓明细" subtitle="报价暂不可用时保留持仓，不使用成本价伪造实时盈亏。" icon={LineChart} />
+        <PanelTitle
+          title="持仓明细"
+          subtitle="报价暂不可用时保留持仓，不使用成本价伪造实时盈亏。"
+          icon={LineChart}
+          badge={rows.length && monitors ? (unmonitoredRows.length ? `${unmonitoredRows.length} 只未设止损` : "已全设盯盘") : undefined}
+        />
+        {rows.length > 0 && monitors && unmonitoredRows.length > 0 && (
+          <div className="holdings-quick-bar">
+            <span>还有 <b>{unmonitoredRows.length}</b> 只持仓未启用条件盯盘，建议至少设定 -5% 止损防守线。</span>
+            <button type="button" className="secondary-btn" onClick={applyBatchStopLoss}>
+              <ShieldAlert size={14} />为未设盯盘持仓一键加 -5% 止损
+            </button>
+          </div>
+        )}
         {removedHolding && <div className="warning-banner" role="status">已移除 {removedHolding.name}（{removedHolding.code}）<button type="button" className="table-action" aria-label="撤销移除" disabled={restoring || Boolean(removingCode)} onClick={() => void undoRemoval()}>{restoring ? "正在恢复" : "撤销"}</button></div>}
         {removalError && <p className="holdings-form-error" role="alert">{removalError}</p>}
         {rows.length ? (
+          <>
           <div className="table holdings-table" role="table" aria-label="持仓明细">
-            <div className="th tr" role="row"><span role="columnheader">股票 / 备注</span><span role="columnheader">持仓 / 成本</span><span role="columnheader">行情 / 更新时间</span><span role="columnheader">市值</span><span role="columnheader">浮动盈亏</span><span role="columnheader">操作</span></div>
-            {rows.map((row) => (
+            <div className="th tr" role="row"><span role="columnheader">股票 / 备注</span><span role="columnheader">持仓 / 成本 / 止损</span><span role="columnheader">行情 / 更新时间</span><span role="columnheader">市值</span><span role="columnheader">浮动盈亏</span><span role="columnheader">操作</span></div>
+            {rows.map((row) => {
+              const cfg = monitors?.configs?.[row.item.code];
+              const stopPrice = computeMonitorStopPrice(cfg);
+              const stopGapPct = stopPrice && row.quoteAvailable && row.latest > 0
+                ? ((row.latest - stopPrice) / row.latest) * 100
+                : null;
+              return (
               <div className="tr" key={row.item.code} role="row">
-                <span role="rowheader" className="stock-cell" title={row.item.note || row.item.name}><b>{row.item.name}</b><small>{row.item.code}</small></span>
-                <span role="cell">{row.item.shares.toLocaleString("zh-CN")} 股 <small>成本 {fmt(row.item.costPrice)} 元</small></span>
+                <span role="rowheader" className="stock-cell" title={row.item.note || row.item.name}>
+                  <b>{row.item.name}</b>
+                  <small>
+                    {row.item.code}
+                    {onTransferToT && (
+                      <> · <button type="button" className="link-btn holdings-inline-link" onClick={() => onTransferToT(row.item)}><ArrowLeftRight size={11} />转做T</button></>
+                    )}
+                  </small>
+                </span>
+                <span role="cell">
+                  {maskSensitiveText(row.item.shares.toLocaleString("zh-CN"), privacyMask)} 股{" "}
+                  <small>成本 {fmt(row.item.costPrice)} 元</small>
+                  <small className={stopPrice ? "tone-ok" : cfg?.enabled ? "tone-ok" : "tone-warn"}>
+                    {stopPrice
+                      ? `止损 ≤ ${stopPrice.toFixed(2)}${stopGapPct !== null ? ` (距 ${stopGapPct.toFixed(1)}%)` : ""}`
+                      : cfg?.enabled
+                        ? "已设条件盯盘"
+                        : "未设止损预警"}
+                  </small>
+                </span>
                 <span role="cell">{row.quoteAvailable ? <><b>{fmt(row.latest)} 元</b><small className={Number.isFinite(row.changePct) ? row.changePct >= 0 ? "holding-pnl up" : "holding-pnl down" : ""}>{Number.isFinite(row.changePct) ? signedPercent(row.changePct) : "--"}</small><small>{row.quoteFailed ? "上次报价" : "报价更新"} {formatShanghaiDateTime(row.quoteUpdatedAt)}{row.quoteFailed ? " · 刷新失败" : ""}</small></> : <small>{row.quoteFailed ? "刷新失败，报价待恢复" : "等待报价"}</small>}</span>
-                <span role="cell">{row.quoteAvailable ? <>{fmtMoney(row.marketValue)}{row.quoteFailed && <small>参考市值</small>}</> : "--"}</span>
-                <span role="cell" className={row.profit >= 0 ? "holding-pnl up" : "holding-pnl down"}>{row.quoteAvailable ? <><b>{signedMoney(row.profit)}</b><small>{signedPercent(row.profitPercent)}{row.quoteFailed ? " · 参考盈亏" : ""}</small></> : "--"}</span>
-                <span role="cell" className="holdings-row-actions"><button className="table-action" onClick={() => onOpen(row.item)}>分析</button><button className="table-action" onClick={() => editHolding(row.item)}>编辑</button><button className="table-action danger" disabled={Boolean(removingCode) || restoring} onClick={() => void removeHolding(row.item)}>{removingCode === row.item.code ? "正在移除" : "移除"}</button></span>
+                <span role="cell">{row.quoteAvailable ? <>{maskSensitiveText(fmtMoney(row.marketValue), privacyMask)}{row.quoteFailed && <small>参考市值</small>}</> : "--"}</span>
+                <span role="cell" className={row.profit >= 0 ? "holding-pnl up" : "holding-pnl down"}>{row.quoteAvailable ? <><b>{maskSensitiveText(signedMoney(row.profit), privacyMask)}</b><small>{signedPercent(row.profitPercent)}{row.quoteFailed ? " · 参考盈亏" : ""}</small></> : "--"}</span>
+                <span role="cell" className="holdings-row-actions">
+                  <button className="table-action" onClick={() => onOpen(row.item)}>分析</button>
+                  <button className="table-action" onClick={() => { setEntryMode("single"); editHolding(row.item); }}>编辑</button>
+                  {monitors && <button className="table-action" onClick={() => setEditingMonitorCode(editingMonitorCode === row.item.code ? null : row.item.code)}>{monitors.configs[row.item.code]?.enabled ? "盯盘中" : "盯盘"}</button>}
+                  <button className="table-action danger" disabled={Boolean(removingCode) || restoring} onClick={() => void removeHolding(row.item)}>{removingCode === row.item.code ? "正在移除" : "移除"}</button>
+                </span>
               </div>
-            ))}
+              );
+            })}
           </div>
+          {monitors && editingMonitorCode && (() => {
+            const target = items.find(entry => entry.code === editingMonitorCode);
+            if (!target) return null;
+            return <StockMonitorEditor key={target.code} stock={target} config={monitors.configs[target.code]} onCancel={() => setEditingMonitorCode(null)} onSave={next => {
+              const ok = monitors.save(target.code, next);
+              if (ok) setEditingMonitorCode(null);
+              return ok;
+            }} />;
+          })()}
+          </>
         ) : (
           <div className="favorites-empty holdings-empty"><WalletCards size={32} /><b>还没有录入持仓</b><span>输入证券代码、数量和成本价后保存；数据只留在本机。</span></div>
         )}
@@ -356,7 +637,7 @@ export function WatchlistView({
   items: WatchItem[];
   activeNode: string;
   onNodeChange: (node: string) => void;
-  onOpen: (item: any) => void;
+  onOpen: (item: WatchItem) => void;
   onRemove: (item: WatchItem) => void;
 }) {
   const [filter, setFilter] = useState("");

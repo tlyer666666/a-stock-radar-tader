@@ -7,7 +7,8 @@ const DEFAULT_ACCOUNT = Object.freeze({ initialCash: 1000000, maxPositions: 6, m
 // below the float error of `value * 100`, so 2.675 used to become 2.67; the
 // 1e-7 guard is the smallest offset that is reliably larger than that error.
 // Kept local (not imported) so this module stays dependency-free for the worker.
-const money = value => Math.round(value * 100 + 1e-7) / 100;
+const money = value => (value < 0 ? -1 : 1) * Math.round(Math.abs(value) * 100 + 1e-7) / 100;
+const isBseCode = code => /^(?:(?:43|83|87|88)\d{4}|920\d{3})$/.test(String(code || ""));
 const finite = value => typeof value === "number" && Number.isFinite(value);
 function normalizeAccount(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("account must be an object");
@@ -50,7 +51,7 @@ function simulateSharedAccount({ samples, calendar, securities, execution, confi
       const stock = stocks.get(sample.code); const state = historicalState(stock, sample.signalDate);
       // Never borrow today's industry for historical allocations: missing sectors share one conservative bucket.
       const industry = state.industry || "UNKNOWN";
-      const star = /^68[89]/.test(sample.code); const beijing = /^(?:[48]|920)/.test(sample.code);
+      const star = /^68[89]/.test(sample.code); const beijing = isBseCode(sample.code);
       const unit = historicalState(stock, date);
       const minimum = unit.minimumBuyQuantity ?? (star ? 200 : 100); const step = unit.quantityStep ?? (star || beijing ? 1 : 100);
       const equity = cash + values();

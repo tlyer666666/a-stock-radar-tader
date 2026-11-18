@@ -8,7 +8,7 @@ VERSION = json.loads((REPO / 'package.json').read_text(encoding='utf-8'))['versi
 PROFILE = {
     'version': VERSION,
     'checks': f'artifacts/six-dimension-audit-{VERSION.replace(".", "")}',
-    'destination': f'~/Desktop/A股/审计交付版{VERSION}',
+    'destination': f'/Users/fengjinwen/Desktop/A股/审计交付版{VERSION}',
     'report': 'A股雷达六维全量审计与整改报告.docx',
     'preservation': {
         'expected_sha': '80ef5c2533fa541af0a02a6d443ec3b7275d21b47147e2cfe55c67dd34263fcb',

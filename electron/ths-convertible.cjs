@@ -353,18 +353,53 @@ function createConvertibleSource({
     return snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery: { discoveredAt }, pending: false, warnings });
   }
 
+  let runController = null;
+  let activeWaiters = new Set();
+
+  function attachCallerSignal(promise, signal) {
+    if (!signal) {
+      const token = {};
+      activeWaiters.add(token);
+      return promise.finally(() => activeWaiters.delete(token));
+    }
+    signal.throwIfAborted();
+    return new Promise((resolve, reject) => {
+      const token = signal;
+      activeWaiters.add(token);
+      const cleanup = () => {
+        activeWaiters.delete(token);
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        if (activeWaiters.size === 0 && runController) {
+          runController.abort(signal.reason);
+        }
+        reject(signal.reason || new DOMException("Aborted", "AbortError"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      promise.then(
+        (value) => { cleanup(); resolve(value); },
+        (error) => { cleanup(); reject(error); }
+      );
+    });
+  }
+
   return {
     async load({ forceRefresh = false, signal, waitForQuotes = true } = {}) {
       signal?.throwIfAborted();
       if (pending) {
         if (forceRefresh) {
-          try { await pending; } catch { /* ignore previous error and continue */ }
-          return this.load({ forceRefresh: false, signal, waitForQuotes });
+          try { await attachCallerSignal(pending, signal); } catch { signal?.throwIfAborted(); }
+          cached = null;
+          return this.load({ forceRefresh: true, signal, waitForQuotes });
         }
-        return waitForQuotes ? pending : (progress || pendingFirst || pending);
+        return attachCallerSignal(waitForQuotes ? pending : (progress || pendingFirst || pending), signal);
       }
       if (!forceRefresh && cached && cached.expiresAt > now()) return cached.value;
-      const bounded = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+      runController = new AbortController();
+      activeWaiters = new Set();
+      const bounded = AbortSignal.any([runController.signal, AbortSignal.timeout(timeoutMs)]);
       progress = null;
       let resolveFirst;
       const first = new Promise((resolve) => { resolveFirst = resolve; });
@@ -376,9 +411,12 @@ function createConvertibleSource({
       pending = request;
       pendingFirst = Promise.race([first, request]);
       pendingFirst.catch(() => {});
-      request.then(() => { if (pending === request) pending = null; }, () => { if (pending === request) pending = null; });
+      request.then(
+        () => { if (pending === request) { pending = null; runController = null; } },
+        () => { if (pending === request) { pending = null; runController = null; } }
+      );
       request.then(resolveFirst, () => {});
-      return waitForQuotes ? request : pendingFirst;
+      return attachCallerSignal(waitForQuotes ? request : pendingFirst, signal);
     }
   };
 }

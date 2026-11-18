@@ -67,14 +67,14 @@ test('uncovered calendar fails before network and raw history is never filtered 
 });
 
 test('selection cache identity changes when the independently completed session changes',async()=>{
- const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services.cjs'),'utf8');
- const body=source.slice(source.indexOf('function scanStrategySignals('),source.indexOf('\nasync function getLimitUpSectorBoard',source.indexOf('function scanStrategySignals(')));
+ const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services/strategy-scan.cjs'),'utf8');
+ const body=source.slice(source.indexOf('function scanStrategySignals('),source.indexOf('\nmodule.exports',source.indexOf('function scanStrategySignals(')));
  let date='2026-10-20',loads=0;
  const scan=vm.runInNewContext(`(${body.trim()})`,{strategySignalOptions:()=>({}),strategySelectionLoader:{context:()=>({asOfDate:date})},strategySignalCache:new Map(),strategySignalLoads:new Map(),Date,loadStrategySignals:async()=>({load:++loads}),serviceRuntime:{run:(_kind,_id,_runtime,fn)=>fn(),checkpoint:()=>{}}});
  assert.equal((await scan()).load,1);date='2026-10-21';assert.equal((await scan()).load,2);
 });
 test('named first-board analysis cannot qualify by scoring other factors when its core factor fails',()=>{
- const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services.cjs'),'utf8');
+ const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services/security-analysis.cjs'),'utf8');
  const start=source.indexOf('  analysis.strategyResults = strategyDefinitions.filter');
  const end=source.indexOf('  analysis.alertQualified =',start);
  const body=source.slice(start,end);
@@ -143,8 +143,8 @@ test('known young listings are stable exclusions while unproven short histories 
  }
 });
 test('a normal scan after the recovery interval recalculates corrected history',async()=>{
- const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services.cjs'),'utf8');
- const start=source.indexOf('function scanStrategySignals('),end=source.indexOf('\nasync function getLimitUpSectorBoard',start);
+ const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services/strategy-scan.cjs'),'utf8');
+ const start=source.indexOf('function scanStrategySignals('),end=source.indexOf('\nmodule.exports',start);
  let clock=Date.parse('2026-10-21T02:00:00Z'),loads=0,repaired=false;
  const {service}=setup({now:()=>new Date(clock),loadUniverse:async()=>oneStockUniverse(),runEngine:realSelectionEngine,
   loadHistory:async security=>{const rows=completeRows();if(security.assetType!=='index'&&!repaired)rows[100].amount=null;return rows;}});
@@ -192,10 +192,13 @@ test('1.6.47: a history read that fails once is retried before the batch is comp
  const report=await service.load({});
  assert.equal(attempts.get('600001'),2);assert.equal(report.failed,0);assert.equal(report.processed,2);
 });
-test('1.6.47: a board filled from the saved roster is disclosed, and a still-incomplete board says how far it got and why',async()=>{
+ test('1.6.47: a board filled from the saved roster is disclosed, and a still-incomplete board says how far it got and why',async()=>{
  const cached=setup({loadUniverse:async()=>({rows:[{code:'600001',name:'样本',secid:'1.600001'}],boards:[{label:'沪市主板',expected:1,loaded:1,complete:true,fromCache:'2026-11-03'}]})});
  const report=await cached.service.load({});
- assert.equal(report.universeCoverage.complete,true);assert.match(report.warning,/沪市主板的股票名单今天没读全.*本机 2026-11-03/);
+ assert.equal(report.universeCoverage.complete,true);assert.equal(report.universeCoverage.requestsComplete,false);assert.match(report.warning,/沪市主板的股票名单今天没读全.*本机 2026-11-03/);
+ const live=setup({loadUniverse:async()=>({rows:[{code:'600001',name:'样本',secid:'1.600001'}],boards:[{label:'沪市主板',expected:1,loaded:1,complete:true}]})});
+ const liveReport=await live.service.load({});
+ assert.equal(liveReport.universeCoverage.complete,true);assert.equal(liveReport.universeCoverage.requestsComplete,true);
  const partial=setup({loadUniverse:async()=>({rows:[{code:'600001',name:'样本',secid:'1.600001'}],boards:[{label:'深市主板',expected:1490,loaded:900,complete:false,error:'第 10 页总数从 1490 变为 1488'}]})});
  assert.match((await partial.service.load({})).warning,/深市主板 900\/1490：第 10 页总数从 1490 变为 1488/);
 });

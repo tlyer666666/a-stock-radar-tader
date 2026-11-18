@@ -88,7 +88,10 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       if (!allowedThsUrl(typeof url === "string" ? url : event.url)) event.preventDefault();
     });
     contents.on("did-fail-load", (_, code, description, url, isMainFrame) => {
-      if (view === createdView && (url === contents.getURL() || (pendingUrl && url === pendingUrl)) && isMainFrame !== false && code !== -3) lastError = `${description || "加载失败"}（${code}）`;
+      if (view === createdView && (url === contents.getURL() || (pendingUrl && url === pendingUrl)) && isMainFrame !== false && code !== -3) {
+        lastError = `${description || "加载失败"}（${code}）`;
+        loadedPage = "";
+      }
     });
     contents.on("did-finish-load", () => { if (view === createdView) lastError = ""; });
     contents.on("render-process-gone", () => {
@@ -139,7 +142,10 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
     lastError = "";
     pendingUrl = String(target || "");
     return owner.webContents.loadURL(target).catch(error => {
-      if (owner === view && generation === loadGeneration && Number(error?.errno) !== -3) lastError = String(error?.message || error);
+      if (owner === view && generation === loadGeneration && Number(error?.errno) !== -3) {
+        lastError = String(error?.message || error);
+        loadedPage = "";
+      }
     });
   }
 

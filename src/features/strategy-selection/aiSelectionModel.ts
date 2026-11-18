@@ -53,5 +53,7 @@ export function buildAiBoardRows<T extends { code: string; name: string }>(sourc
   return [...ranked, ...sources.filter(row => !scored.has(row.code)).map(row => ({ code: row.code, name: row.name, source: row, ai: undefined }))];
 }
 
-/** 证券代码 → 行情 secid（沪市 1.，深市和北交所 0.）。 */
-export const secidFor = (code: string) => `${code.startsWith("6") ? "1" : "0"}.${code}`;
+import { inferSecid } from "../../domain/securityIdentifiers";
+
+/** 证券代码 → 规范行情 secid。 */
+export const secidFor = inferSecid;

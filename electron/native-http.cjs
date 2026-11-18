@@ -65,9 +65,11 @@ async function fetchNative(input, options = {}, limit = 32 * 1024 * 1024, depth 
     const abort = () => fail(aborted(signal));
     const request = (url.protocol === 'https:' ? https : http).request(url, { method, headers: Object.fromEntries(headers), signal }, incoming => {
       response = incoming;
+      const onIncomingError = error => fail(error);
+      const onIncomingAborted = () => fail(Object.assign(new Error('行情响应提前断开'), { code: 'ECONNRESET' }));
       try {
-      incoming.on('error', fail);
-      incoming.on('aborted', () => fail(Object.assign(new Error('行情响应提前断开'), { code: 'ECONNRESET' })));
+      incoming.on('error', onIncomingError);
+      incoming.on('aborted', onIncomingAborted);
       const responseHeaders = new Headers();
       for (let i = 0; i < incoming.rawHeaders.length; i += 2) responseHeaders.append(incoming.rawHeaders[i], incoming.rawHeaders[i + 1]);
       const status = incoming.statusCode || 500;
@@ -96,6 +98,91 @@ async function fetchNative(input, options = {}, limit = 32 * 1024 * 1024, depth 
       if (codings.length > 5 || codings.some(coding => !unzip[coding])) { fail(Object.assign(new Error('行情响应压缩编码不受支持'), { code: 'INVALID_CONTENT_ENCODING' })); return; }
       const declared = Number(responseHeaders.get('content-length'));
       if (!noBody && declared > limit) { fail(sizeError()); return; }
+      const contentType = String(responseHeaders.get('content-type') || '').toLowerCase();
+      const wantStream = !noBody && (options.streamResponse === true || contentType.includes('text/event-stream'));
+      if (wantStream) {
+        incoming.pause();
+        incoming.removeListener('error', onIncomingError);
+        incoming.removeListener('aborted', onIncomingAborted);
+        cleanup();
+        const decoders = [...codings].reverse().map(coding => unzip[coding]());
+        const allStreams = [incoming, ...decoders];
+        const output = decoders.length ? decoders[decoders.length - 1] : incoming;
+        let wireBytes = 0, decodedBytes = 0, incomingEnded = false, streamFinished = false, cancelled = false, closePromise = null;
+        let streamController = null;
+        const closeTransport = () => {
+          if (closePromise) return closePromise;
+          const pending = allStreams.filter(stream => !stream.closed && !stream.destroyed).map(stream => new Promise(done => stream.once('close', done)));
+          try { request.destroy(); } catch { /* ignore */ }
+          for (const stream of allStreams) { try { if (!stream.destroyed) stream.destroy(); } catch { /* ignore */ } }
+          closePromise = Promise.all(pending).then(() => undefined);
+          return closePromise;
+        };
+        const stopStream = error => {
+          if (streamFinished) return;
+          streamFinished = true;
+          signal?.removeEventListener('abort', onStreamAbort);
+          try { streamController?.error(error); } catch { /* already closed/errored */ }
+          void closeTransport();
+        };
+        const onStreamAbort = () => stopStream(aborted(signal));
+        const bodyStream = new ReadableStream({
+          start(controller) {
+            streamController = controller;
+            signal?.addEventListener('abort', onStreamAbort, { once: true });
+            let chain = incoming;
+            for (const dec of decoders) {
+              dec.on('error', stopStream);
+              chain = chain.pipe(dec);
+            }
+            if (decoders.length > 0) {
+              incoming.on('data', chunk => {
+                wireBytes += chunk.length;
+                if (wireBytes > limit) stopStream(sizeError());
+              });
+            }
+            incoming.on('error', stopStream);
+            incoming.on('aborted', () => stopStream(Object.assign(new Error('行情响应提前断开'), { code: 'ECONNRESET' })));
+            incoming.once('end', () => {
+              incomingEnded = true;
+              if (!incoming.complete) stopStream(Object.assign(new Error('行情响应提前断开'), { code: 'ECONNRESET' }));
+            });
+            incoming.once('close', () => {
+              if (!incomingEnded && !streamFinished && !cancelled) stopStream(Object.assign(new Error('行情响应提前断开'), { code: 'ECONNRESET' }));
+            });
+            output.on('data', chunk => {
+              if (streamFinished || cancelled) return;
+              decodedBytes += chunk.length;
+              if (decodedBytes > limit) { stopStream(sizeError()); return; }
+              try {
+                controller.enqueue(new Uint8Array(chunk));
+                if (controller.desiredSize != null && controller.desiredSize <= 0) output.pause();
+              } catch (err) { stopStream(err); }
+            });
+            output.once('end', () => {
+              if (streamFinished || cancelled) return;
+              streamFinished = true;
+              signal?.removeEventListener('abort', onStreamAbort);
+              try { controller.close(); } catch { /* already closed */ }
+            });
+            if (signal?.aborted) onStreamAbort();
+          },
+          pull() {
+            if (!streamFinished && !cancelled) output.resume();
+          },
+          cancel() {
+            cancelled = true;
+            streamFinished = true;
+            signal?.removeEventListener('abort', onStreamAbort);
+            return closeTransport();
+          }
+        });
+        settled = true;
+        const result = new Response(bodyStream, { status, statusText: incoming.statusMessage || '', headers: responseHeaders });
+        Object.defineProperties(result, { url: { value: url.href }, redirected: { value: depth > 0 } });
+        resolve(result);
+        return;
+      }
       const chunks = []; let received = 0;
       incoming.on('data', chunk => { if (settled) return; received += chunk.length; if (received > limit) fail(sizeError()); else chunks.push(chunk); });
       incoming.once('end', async () => {

@@ -1,16 +1,81 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Activity, CircleAlert, ExternalLink, FileText, Filter, Gauge, Newspaper, RefreshCw, Search, ShieldAlert, ShieldCheck, Wifi, Zap } from "lucide-react";
+import { Activity, CircleAlert, ExternalLink, FileText, Filter, Gauge, Newspaper, Pin, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, Wifi, Zap } from "lucide-react";
 import { PageHeading, PanelTitle, LoadingState } from "../../components/terminal/TerminalPrimitives";
 import { whenVisible } from "../../visiblePolling";
 import { formatShanghaiTime, formatShanghaiDateTime, newsTimeText } from "../../dateUtils";
+import { readTrendPlans } from "../../trendWorkspace";
 import { informationTabs, type InformationTab } from "./informationModel";
 import type { AnalysisPayload } from "../market/analysisTypes";
+
+const EMPTY_FAVORITES: Array<string | { code?: string; name?: string; industry?: string }> = [];
+type NewsQuoteMap = Record<string, { code?: string; name?: string | undefined; changePct?: number; price?: number | undefined }>;
+const EMPTY_LIVE_QUOTES: NewsQuoteMap = {};
+
+type NewsSourceStatus = {
+  id: string;
+  name?: string;
+  level?: string;
+  ok?: boolean | null;
+  disabled?: boolean;
+  stale?: boolean;
+  fetchedAt?: string;
+  message?: string;
+  pollSeconds?: number;
+};
+
+type NewsFeedItem = {
+  id: string;
+  type?: string;
+  title?: string;
+  summary?: string;
+  source?: string;
+  sourceLevel?: string;
+  eventType?: string;
+  direction?: string;
+  importanceScore?: number;
+  credibilityScore?: number;
+  freshnessScore?: number;
+  impactHorizon?: string;
+  riskSeverity?: number;
+  status?: string;
+  ageMinutes?: number;
+  publishedAt?: string;
+  firstSeenAt?: string;
+  duplicateCount?: number;
+  portfolioImpact?: string;
+  marketConfirmed?: boolean;
+  marketConfirmation?: string;
+  sourceUrl?: string;
+  reasons?: string[];
+  codes?: unknown[];
+  relatedSectors?: string[];
+  relatedStocks?: Security[];
+};
+
+type NewsFeedState = {
+  items?: NewsFeedItem[];
+  sourceStatus?: NewsSourceStatus[];
+  mode?: string;
+  updatedAt?: string;
+  collectionPolicy?: string;
+  refreshAfterSeconds?: number;
+  [key: string]: unknown;
+};
+
+const rememberedNewsFilters = {
+  scope: "all",
+  query: "",
+  direction: "all",
+  onlyFavorites: false
+};
 
 export function NewsView({
   payload,
   watchlist,
   holdings,
+  favorites = EMPTY_FAVORITES,
   limitUps,
+  liveQuotes = EMPTY_LIVE_QUOTES,
   settings,
   contentType = "all",
   onContentTypeChange,
@@ -19,7 +84,9 @@ export function NewsView({
   payload: AnalysisPayload | null;
   watchlist: WatchItem[];
   holdings: HoldingItem[];
-  limitUps: any[];
+  favorites?: Array<string | { code?: string; name?: string; industry?: string }>;
+  limitUps: Array<Record<string, unknown>>;
+  liveQuotes?: NewsQuoteMap;
   settings: Settings;
   contentType?: InformationTab;
   onContentTypeChange: (type: InformationTab) => void;
@@ -34,14 +101,58 @@ export function NewsView({
     { id: "stock", label: "当前个股", disabled: !payload },
     { id: "sector", label: "当前板块", disabled: !payload?.sector }
   ];
-  const [scope, setScope] = useState("all");
-  const [query, setQuery] = useState("");
-  const [direction, setDirection] = useState("all");
+  const [scope, setScopeState] = useState(() => {
+    const remembered = rememberedNewsFilters.scope;
+    if (remembered === "stock" && !payload) return "all";
+    if (remembered === "sector" && !payload?.sector) return "all";
+    return remembered;
+  });
+  const [onlyFavorites, setOnlyFavoritesState] = useState(() => rememberedNewsFilters.onlyFavorites);
+  const [query, setQueryState] = useState(() => rememberedNewsFilters.query);
+  const [direction, setDirectionState] = useState(() => rememberedNewsFilters.direction);
   const [importance, setImportance] = useState("all");
   const [eventType, setEventType] = useState("all");
-  const [feed, setFeed] = useState<any>({ items: [], sourceStatus: [] });
+  const setScope = (value: string) => { rememberedNewsFilters.scope = value; rememberedNewsFilters.onlyFavorites = false; setOnlyFavoritesState(false); setScopeState(value); };
+  useEffect(() => {
+    if ((scope === "stock" && !payload) || (scope === "sector" && !payload?.sector)) {
+      rememberedNewsFilters.scope = "all";
+      setScopeState("all");
+    }
+  }, [scope, payload]);
+  const setOnlyFavorites = (next: boolean) => { rememberedNewsFilters.onlyFavorites = next; setOnlyFavoritesState(next); };
+  const setQuery = (value: string) => { rememberedNewsFilters.query = value; setQueryState(value); };
+  const setDirection = (value: string) => { rememberedNewsFilters.direction = value; setDirectionState(value); };
+  const [feed, setFeed] = useState<NewsFeedState>({ items: [], sourceStatus: [] });
   const [loading, setLoading] = useState(true);
   const [hasLoadedFeed, setHasLoadedFeed] = useState(false);
+  const [impactById, setImpactById] = useState<Record<string, { loading?: boolean; error?: string; data?: NewsAiImpact }>>({});
+  const analyzeImpact = useCallback(async (item: NewsFeedItem) => {
+    const id = String(item?.id || "");
+    if (!id) return;
+    if (impactById[id]?.data) {
+      setImpactById(prev => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      return;
+    }
+    const runner = window.stockApi?.analyzeNewsImpact;
+    if (!runner) {
+      setImpactById(prev => ({ ...prev, [id]: { error: "需在桌面版配置 AI 模型后使用公告/供应链影响拆解。" } }));
+      return;
+    }
+    setImpactById(prev => ({ ...prev, [id]: { loading: true } }));
+    try {
+      const data = await runner({ item, holdings, watchlist, favorites });
+      setImpactById(prev => ({ ...prev, [id]: { data } }));
+    } catch (reason) {
+      setImpactById(prev => ({
+        ...prev,
+        [id]: { error: reason instanceof Error ? reason.message : String(reason || "AI 影响拆解失败") }
+      }));
+    }
+  }, [favorites, holdings, impactById, watchlist]);
   const [error, setError] = useState("");
   const [autoRefresh, setAutoRefresh] = useState(true);
   const feedRequestId = useRef(0);
@@ -51,28 +162,43 @@ export function NewsView({
     feedRequestId.current += 1;
   }, []);
 
+  const activeScope = onlyFavorites ? "favorites" : scope;
+  const liveQuotesRef = useRef(liveQuotes);
+  liveQuotesRef.current = liveQuotes;
+  const currentChangeRef = useRef(payload?.quote?.changePct);
+  currentChangeRef.current = payload?.quote?.changePct;
+
   const feedInput = useMemo(() => ({
-    scope,
+    scope: activeScope,
     limit: 160,
     limitUps,
     watchlist,
     holdings,
+    favorites,
     contentType,
     currentStock: payload?.security || null,
     currentSector: payload?.sector?.name || payload?.quote?.industry || ""
-  }), [scope, limitUps, watchlist, holdings, contentType, payload?.security?.code, payload?.sector?.name, payload?.quote?.industry]);
+  }), [activeScope, limitUps, watchlist, holdings, favorites, contentType, payload?.security, payload?.sector?.name, payload?.quote?.industry]);
 
   const loadFeed = useCallback(async (force = false) => {
     const requestId = ++feedRequestId.current;
     let failed = false;
     setLoading(true);
     setError("");
+    const currentChangePct = Number(currentChangeRef.current);
+    const requestInput = {
+      ...feedInput,
+      liveQuotes: liveQuotesRef.current,
+      currentStock: feedInput.currentStock
+        ? { ...feedInput.currentStock, ...(Number.isFinite(currentChangePct) ? { changePct: currentChangePct } : {}) }
+        : null
+    };
     try {
       const next = force
-        ? await window.stockApi.refreshNewsFeed(feedInput)
-        : await window.stockApi.getNewsFeed(feedInput);
+        ? await window.stockApi.refreshNewsFeed(requestInput)
+        : await window.stockApi.getNewsFeed(requestInput);
       if (requestId === feedRequestId.current) {
-        setFeed(next);
+        setFeed(next as NewsFeedState);
         setHasLoadedFeed(true);
       }
     } catch (reason) {
@@ -89,8 +215,7 @@ export function NewsView({
   }, [feedInput]);
 
   useEffect(() => {
-    setFeed({ items: [], sourceStatus: [] });
-    setHasLoadedFeed(false);
+    setError("");
     loadFeed(false);
     return () => { feedRequestId.current += 1; };
   }, [loadFeed]);
@@ -129,14 +254,14 @@ export function NewsView({
     };
   }, [autoRefresh, loading, refreshCycle, settings.newsRefreshSeconds, feed.refreshAfterSeconds, feed.updatedAt, loadFeed]);
 
-  const visibleItems = (feed.items || []).filter((item: any) => {
+  const visibleItems = (feed.items || []).filter((item) => {
     const text = [
       item.title,
       item.summary,
       item.source,
       item.eventType,
       ...(item.relatedSectors || []),
-      ...(item.relatedStocks || []).flatMap((stock: any) => [stock.code, stock.name])
+      ...(item.relatedStocks || []).flatMap((stock) => [stock.code, stock.name])
     ].join(" ").toLowerCase();
     const matchesImportance = importance === "all" ||
       (importance === "major" && Number(item.importanceScore || 0) >= 75) ||
@@ -149,23 +274,68 @@ export function NewsView({
       (!announcementOnly || matchesImportance);
   });
   const sourceStatus = announcementOnly
-    ? (feed.sourceStatus || []).filter((source: any) => ["announcement", "ths"].includes(source.id))
+    ? (feed.sourceStatus || []).filter((source) => ["announcement", "ths"].includes(source.id))
     : contentType === "flash"
-      ? (feed.sourceStatus || []).filter((source: any) => !["announcement", "ths"].includes(source.id))
+      ? (feed.sourceStatus || []).filter((source) => !["announcement", "ths"].includes(source.id))
       : (feed.sourceStatus || []);
-  const staleSources = sourceStatus.filter((source: any) => source.stale);
-  const enabledSources = sourceStatus.filter((source: any) => !source.disabled && (source.ok === true || source.ok === false));
-  const failedSources = enabledSources.filter((source: any) => source.ok === false);
-  const sourceFailureNames = failedSources.map((source: any) => source.name).join("；");
-  const hasRelevantItems = (feed.items || []).some((item: any) => contentType === "all" || item.type === contentType);
+  const staleSources = sourceStatus.filter((source) => source.stale);
+  const enabledSources = sourceStatus.filter((source) => !source.disabled && (source.ok === true || source.ok === false));
+  const failedSources = enabledSources.filter((source) => source.ok === false);
+  const sourceFailureNames = failedSources.map((source) => source.name).join("；");
+  const hasRelevantItems = (feed.items || []).some((item) => contentType === "all" || item.type === contentType);
   const sourceLoadError = !hasRelevantItems && enabledSources.length > 0 && failedSources.length === enabledSources.length
     ? `当前${announcementOnly ? "公告" : "资讯"}来源加载失败：${sourceFailureNames}，请重试。`
     : "";
   const feedError = error || sourceLoadError;
   const countsAvailable = hasLoadedFeed && !sourceLoadError;
-  const levelACount = visibleItems.filter((item: any) => item.sourceLevel === "A").length;
-  const freshCount = visibleItems.filter((item: any) => item.ageMinutes <= 30).length;
-  const riskCount = visibleItems.filter((item: any) => item.riskSeverity >= 2).length;
+  const levelACount = visibleItems.filter((item) => item.sourceLevel === "A").length;
+  const freshCount = visibleItems.filter((item) => (item.ageMinutes ?? Number.POSITIVE_INFINITY) <= 30).length;
+  const riskCount = visibleItems.filter((item) => (item.riskSeverity ?? 0) >= 2).length;
+  const personalMatches = useMemo(() => {
+    const holdingMap = new Map<string, string>();
+    for (const h of holdings || []) {
+      if (h?.code) holdingMap.set(h.code, h.name || h.code);
+    }
+    const watchSet = new Set<string>([
+      ...(watchlist || []).map(w => w.code),
+      ...(favorites || []).map(f => (typeof f === "string" ? f : f?.code || "")).filter(Boolean)
+    ]);
+    const planSet = new Set<string>();
+    try {
+      if (typeof window !== "undefined") {
+        for (const plan of readTrendPlans(window.localStorage).plans) {
+          if (!plan.archivedAt && plan.candidate?.security?.code) planSet.add(plan.candidate.security.code);
+        }
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    const hits: Array<{ item: NewsFeedItem; badges: string[]; stocks: Security[]; priority: number }> = [];
+    for (const item of visibleItems) {
+      const stocks: Security[] = Array.isArray(item.relatedStocks) ? item.relatedStocks : [];
+      const codes = new Set<string>([
+        ...(Array.isArray(item.codes) ? item.codes.map((c: unknown) => String(c)) : []),
+        ...stocks.map(s => String(s?.code || "")).filter(Boolean)
+      ]);
+      const badges: string[] = [];
+      let priority = 0;
+
+      const hitHolding = item.portfolioImpact === "holding" || [...codes].some(c => holdingMap.has(c));
+      if (hitHolding) { badges.push("持仓"); priority += 30; }
+      const hitPlan = [...codes].some(c => planSet.has(c));
+      if (hitPlan) { badges.push("观察计划"); priority += 20; }
+      const hitWatch = item.portfolioImpact === "watchlist" || item.portfolioImpact === "favorite" || [...codes].some(c => watchSet.has(c));
+      if (hitWatch) { badges.push("自选/观察"); priority += 10; }
+
+      if (badges.length > 0) {
+        if (Number(item.riskSeverity || 0) >= 2) priority += 8;
+        if (Number(item.importanceScore || 0) >= 75) priority += 4;
+        hits.push({ item, badges, stocks, priority });
+      }
+    }
+    return hits.sort((a, b) => b.priority - a.priority).slice(0, 6);
+  }, [visibleItems, holdings, watchlist, favorites]);
   const directionName: Record<string, string> = {
     positive: "正向",
     negative: "风险",
@@ -222,8 +392,8 @@ export function NewsView({
             <button
               key={item.id}
               disabled={item.disabled}
-              className={scope === item.id ? "active" : ""}
-              aria-pressed={scope === item.id}
+              className={!onlyFavorites && scope === item.id ? "active" : ""}
+              aria-pressed={!onlyFavorites && scope === item.id}
               onClick={() => setScope(item.id)}
             >
               <span className="news-scope-label">{item.label}</span>{item.count !== undefined && <b className="news-scope-count">{item.count}</b>}
@@ -232,6 +402,9 @@ export function NewsView({
         </div>
         <div className="news-filters">
           <label><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={announcementOnly ? "搜索股票、公告标题、事件关键词" : "搜索股票、板块、事件关键词"} /></label>
+          {favorites.length > 0 && <div>
+            <button type="button" className={onlyFavorites ? "active" : ""} aria-pressed={onlyFavorites} onClick={() => setOnlyFavorites(!onlyFavorites)}>仅看自选板块 ({favorites.length})</button>
+          </div>}
           <div><Filter size={15} />
             {[
               { id: "all", label: "全部方向" },
@@ -272,7 +445,7 @@ export function NewsView({
       </div>
 
       <div className="news-source-strip">
-        {sourceStatus.map((source: any) => (
+        {sourceStatus.map((source) => (
           <div className={source.ok === false ? "failed" : source.ok === null ? "idle" : "online"} key={source.id}>
             <span /><b>{source.name}</b><em>{source.level}级</em><small>{source.message}{source.pollSeconds ? ` · ${source.pollSeconds}秒轮询` : ""}</small>
           </div>
@@ -303,20 +476,71 @@ export function NewsView({
         <div className={`panel ${riskCount ? "risk" : ""}`}><ShieldAlert size={19} /><span>重要风险</span><b>{countsAvailable ? riskCount : "--"}</b><small>风险等级高</small></div>
       </div>
 
-      {error && feed.items?.length > 0 && <div className="warning-banner" role="alert"><CircleAlert size={17} />刷新失败，已保留上次成功加载的资讯{feed.updatedAt ? `（${formatShanghaiDateTime(feed.updatedAt)}）` : ""}：{error}</div>}
-      {!error && staleSources.length > 0 && <div className="warning-banner" role="alert"><CircleAlert size={17} />部分来源更新失败，暂用缓存：{staleSources.map((source: any) => `${source.name}${source.fetchedAt ? `（${formatShanghaiDateTime(source.fetchedAt)}）` : ""}`).join("；")}。可立即刷新重试。</div>}
+      {error && (feed.items?.length ?? 0) > 0 && <div className="warning-banner" role="alert"><CircleAlert size={17} />刷新失败，已保留上次成功加载的资讯{feed.updatedAt ? `（${formatShanghaiDateTime(feed.updatedAt)}）` : ""}：{error}</div>}
+      {!error && staleSources.length > 0 && <div className="warning-banner" role="alert"><CircleAlert size={17} />部分来源更新失败，暂用缓存：{staleSources.map((source) => `${source.name}${source.fetchedAt ? `（${formatShanghaiDateTime(source.fetchedAt)}）` : ""}`).join("；")}。可立即刷新重试。</div>}
       {!feedError && failedSources.length > 0 && <div className="warning-banner" role="alert"><CircleAlert size={17} />资讯来源加载失败：{sourceFailureNames}。当前仅展示可用内容，可立即刷新重试。</div>}
 
 
+        {personalMatches.length > 0 && (
+          <section className="panel news-personal-pinned" aria-label="与我相关置顶">
+            <header className="news-pinned-head">
+              <div>
+                <Pin size={15} />
+                <b>与我相关 · 持仓 / 观察计划 / 自选命中</b>
+              </div>
+              <span className="news-pinned-count">优先置顶 {personalMatches.length} 条</span>
+            </header>
+            <div className="news-pinned-list">
+              {personalMatches.map(({ item, badges, stocks }) => {
+                const directionKey = item.direction || "neutral";
+                return (
+                <article
+                  key={`pinned-${item.id}`}
+                  className={`news-pinned-card ${directionKey} ${(item.riskSeverity ?? 0) >= 2 ? "major-risk" : ""}`}
+                >
+                  <div className="news-pinned-meta">
+                    {badges.map(badge => (
+                      <em key={badge} className={badge === "持仓" ? "direction negative" : "direction positive"}>{badge}</em>
+                    ))}
+                    <em className={`direction ${directionKey}`}>{directionName[directionKey] || directionKey}</em>
+                    <time>{newsTimeText(item.publishedAt)} · {ageText(item.ageMinutes || 0)}</time>
+                    <span>{item.source}</span>
+                  </div>
+                  <h4>{item.title}</h4>
+                  {stocks.length > 0 && (
+                    <div className="news-pinned-stocks">
+                      {stocks.slice(0, 4).map(stock => (
+                        <button
+                          key={stock.code}
+                          type="button"
+                          className="table-action"
+                          onClick={() => onOpenStock(stock)}
+                        >
+                          {stock.name} {stock.code}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </article>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
         <div className="panel realtime-news-list">
           <PanelTitle
-            title={`${informationTabs.find(tab => tab.id === contentType)?.label} · ${scopes.find((item) => item.id === scope)?.label || "全市场"}`}
+            title={`${informationTabs.find(tab => tab.id === contentType)?.label} · ${onlyFavorites ? "自选板块" : scopes.find((item) => item.id === scope)?.label || "全市场"}`}
             subtitle={announcementOnly ? "按披露时间倒序；同一公告的聚合转载自动合并" : "按原始发布时间倒序；重复转载自动合并"}
             icon={announcementOnly ? FileText : Activity}
             badge={`${countsAvailable ? visibleItems.length : "--"} 条`}
           />
-          {loading && !visibleItems.length ? <LoadingState /> : visibleItems.map((item: any) => (
-            <article className={`realtime-news-card ${item.direction} ${item.riskSeverity >= 2 ? "major-risk" : ""}`} key={item.id}>
+          {loading && !visibleItems.length ? <LoadingState /> : visibleItems.map((item) => {
+            const severity = item.riskSeverity ?? 0;
+            const duplicates = item.duplicateCount ?? 0;
+            const directionKey = item.direction || "neutral";
+            return (
+            <article className={`realtime-news-card ${directionKey} ${severity >= 2 ? "major-risk" : ""}`} key={item.id}>
               <div className="news-card-rail">
                 <span className={`source-level level-${item.sourceLevel}`}>{item.sourceLevel}</span>
                 <i />
@@ -325,9 +549,13 @@ export function NewsView({
                 <div className="news-card-meta">
                   <time>{newsTimeText(item.publishedAt)} · {ageText(item.ageMinutes || 0)}</time>
                   <span>{item.source}</span>
-                  <em className={`direction ${item.direction}`}>{directionName[item.direction] || item.direction}</em>
+                  <em className={`direction ${directionKey}`}>{directionName[directionKey] || directionKey}</em>
                   <em>{item.eventType}</em>
-                  {item.duplicateCount > 1 && <em>合并 {item.duplicateCount} 条</em>}
+                  {duplicates > 1 && <em>合并 {duplicates} 条</em>}
+                  {item.portfolioImpact === "holding" && <em className="direction negative">持仓关联</em>}
+                  {item.portfolioImpact === "watchlist" && <em className="direction positive">自选关注</em>}
+                  {item.portfolioImpact === "favorite" && <em className="direction positive">自选板块</em>}
+                  {item.portfolioImpact === "limitUp" && <em className="direction positive">涨停标的</em>}
                 </div>
                 <h3>{item.title}</h3>
                 {item.summary && <p>{item.summary}</p>}
@@ -336,11 +564,11 @@ export function NewsView({
                   <span>重要性 <b>{item.importanceScore}</b></span>
                   <span>新鲜度 <b>{item.freshnessScore}</b></span>
                   <span>影响周期 <b>{item.impactHorizon}</b></span>
-                  <span className="pending">行情确认 <b>{item.marketConfirmation}</b></span>
+                  <span className={item.marketConfirmed ? "confirmed" : "pending"}>行情确认 <b>{item.marketConfirmation}</b></span>
                 </div>
                 <div className="news-relations">
                   {(item.relatedSectors || []).map((sector: string) => <span key={sector}>板块 · {sector}</span>)}
-                  {(item.relatedStocks || []).slice(0, 8).map((stock: any) => (
+                  {(item.relatedStocks || []).slice(0, 8).map((stock) => (
                     <button key={`${item.id}-${stock.code}`} onClick={() => onOpenStock(stock)}>
                       {stock.name || stock.code}<small>{stock.code}</small>
                     </button>
@@ -350,11 +578,50 @@ export function NewsView({
                 <div className="news-card-footer">
                   <span>首次发现 {formatShanghaiTime(item.firstSeenAt)}</span>
                   <span>{item.reasons?.[0]}</span>
-                  <button onClick={() => window.stockApi.openExternal(item.sourceUrl)}>查看原文 <ExternalLink size={14} /></button>
+                  <div className="news-card-actions">
+                    <button type="button" className="news-ai-btn" disabled={Boolean(impactById[item.id]?.loading)} onClick={() => void analyzeImpact(item)}>
+                      <Sparkles size={13} />
+                      {impactById[item.id]?.loading ? "拆解中…" : impactById[item.id]?.data ? "收起拆解" : "AI 拆解供应链与持仓"}
+                    </button>
+                    <button onClick={() => window.stockApi.openExternal(item.sourceUrl || "")}>查看原文 <ExternalLink size={14} /></button>
+                  </div>
                 </div>
+                {(() => {
+                  const impact = impactById[item.id];
+                  if (!impact) return null;
+                  const d = impact.data;
+                  return (
+                    <div className="news-ai-impact-box" role="region" aria-label="AI 影响拆解">
+                      {impact.loading && <p className="news-ai-muted">正在结合持仓、自选与当前板块强度拆解传导链…</p>}
+                      {impact.error && <p className="news-ai-error">{impact.error}</p>}
+                      {d && (
+                        <>
+                          <div className="news-ai-head">
+                            <strong>{d.headline}</strong>
+                            <span>影响 {d.impactLevel} · {d.direction}{d.model ? ` · ${d.model}` : ""}</span>
+                          </div>
+                          {(d.supplyChain.upstream.length > 0 || d.supplyChain.peers.length > 0 || d.supplyChain.downstream.length > 0) && (
+                            <div className="news-ai-chains">
+                              {d.supplyChain.upstream.length > 0 && <span><b>上游</b>：{d.supplyChain.upstream.join("、")}</span>}
+                              {d.supplyChain.peers.length > 0 && <span><b>同业</b>：{d.supplyChain.peers.join("、")}</span>}
+                              {d.supplyChain.downstream.length > 0 && <span><b>下游</b>：{d.supplyChain.downstream.join("、")}</span>}
+                            </div>
+                          )}
+                          {d.portfolioExposure.length > 0 && (
+                            <p className="news-ai-row"><b>持仓/自选传导</b>：{d.portfolioExposure.join("；")}</p>
+                          )}
+                          {d.actionWatch.length > 0 && (
+                            <p className="news-ai-row"><b>盘面验证锚点</b>：{d.actionWatch.join("；")}</p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </article>
-          ))}
+            );
+          })}
           {!loading && !visibleItems.length && (feedError && (!feed.items?.length || sourceLoadError) ? (
             <div className="empty-state error" role="alert"><CircleAlert size={32} /><h3>{announcementOnly ? "公告" : "资讯"}加载失败</h3><p>{feedError}</p><button type="button" className="secondary-btn" onClick={() => void loadFeed(true)}>重新加载{announcementOnly ? "公告" : "资讯"}</button></div>
           ) : (

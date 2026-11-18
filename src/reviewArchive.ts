@@ -82,7 +82,7 @@ const marketSchema = fields({
 
 export type ReviewRecord = {
   id: string; type: "market" | "stock"; title: string; date: string;
-  score: number; verdict: string; note: string; createdAt: string; snapshot: any;
+  score: number; verdict: string; note: string; createdAt: string; snapshot: Record<string, unknown> & { security?: { code?: string | undefined; name?: string | undefined } | undefined };
   /** 保存时的 AI 复盘结论（可选，1.6.39 起）。 */
   ai?: { headline: string; cycle?: string; posture?: string; focus?: string[]; model?: string; generatedAt?: string } | undefined;
 };

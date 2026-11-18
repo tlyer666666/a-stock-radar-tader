@@ -41,7 +41,7 @@
 :root .terminal-shell .holdings-table .tr > span { padding: var(--space-2xs) 0; flex-wrap: wrap; white-space: normal; align-content: center; }
 :root .terminal-shell .holdings-table .tr > span:first-child { position: sticky; left: -8px; z-index: 1; padding-left: var(--space-sm); background: var(--surface-1); box-shadow: 1px 0 var(--line-2); }
 :root .terminal-shell .holdings-table .th > span:first-child { background: var(--surface-2); z-index: 2; }
-:root .terminal-shell .holdings-table .holdings-row-actions { gap: 5px; }
+:root .terminal-shell .holdings-table .tr > span.holdings-row-actions { flex-wrap: nowrap; white-space: nowrap; gap: 5px; }
 
 /* The narrow news rail budgets for both the label and an unbroken count. */
 :root .terminal-shell .information-filter-rail .news-scope-tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); }

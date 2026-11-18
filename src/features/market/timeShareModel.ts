@@ -35,9 +35,21 @@ export function timeShareSlot(time: string): number | null {
 
 const finitePositive = (value: unknown) => typeof value === "number" ? Number.isFinite(value) && value > 0 : Number.isFinite(Number(value)) && Number(value) > 0;
 
+type RawTimeShareRow = {
+  date?: unknown;
+  open?: unknown;
+  close?: unknown;
+  amount?: unknown;
+  volume?: unknown;
+  volumeUnit?: unknown;
+  average?: unknown;
+};
+
 /** options.preClose：源端给出的昨收（同花顺实时分时自带），优先于从前一日 1 分钟线推算。 */
-export function buildTimeShare(rows: any[], options: TimeShareOptions = {}): TimeShare | null {
-  const valid = (Array.isArray(rows) ? rows : []).filter(row => typeof row?.date === "string" && row.date.length >= 16 && finitePositive(row.close));
+export function buildTimeShare(rows: ReadonlyArray<RawTimeShareRow>, options: TimeShareOptions = {}): TimeShare | null {
+  const valid = (Array.isArray(rows) ? rows : []).filter((row): row is RawTimeShareRow & { date: string } =>
+    typeof row?.date === "string" && row.date.length >= 16 && finitePositive(row.close)
+  );
   if (!valid.length) return null;
   const sorted = [...valid].sort((a, b) => String(a.date).localeCompare(String(b.date)));
   const date = sorted.at(-1)!.date.slice(0, 10);

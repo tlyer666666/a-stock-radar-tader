@@ -7,7 +7,9 @@ const os = require('node:os');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 
-function fixture(t, failLaunch = false) {
+function fixture(t, options = false) {
+  const opts = typeof options === 'boolean' ? { failLaunch: options } : (options || {});
+  const failLaunch = Boolean(opts.failLaunch);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'radar-single-deploy-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const repo = path.join(root, 'repo'), target = path.join(root, 'target');
@@ -27,8 +29,14 @@ function fixture(t, failLaunch = false) {
   const filename = path.join(__dirname, 'deploy-single-app.cjs'), realRequire = createRequire(filename);
   const receipt = { version: '1.6.29', consistent: true, artifactConsistent: true,
     outputs: {}, productionFiles: 1, unpackedFiles: 1, recordedInputs: 1, currentInputs: 1, changed: [], missingInReceipt: [] };
+  const psCalls = [];
   const customRequire = id => {
     if (id === 'node:child_process') return { spawnSync(command, args) {
+      if (command === 'ps') {
+        psCalls.push(args);
+        const stdout = typeof opts.psOutput === 'function' ? opts.psOutput(args) : '';
+        return { status: 0, stdout };
+      }
       if (command === '/usr/bin/ditto') fs.cpSync(args[0], args[1], { recursive: true });
       if (command === '/usr/libexec/PlistBuddy') return { status: 0, stdout: '1.6.29\n' };
       if (command === '/usr/bin/open' && failLaunch) return { status: 1 };
@@ -47,12 +55,13 @@ function fixture(t, failLaunch = false) {
   };
   const module = { exports: {} };
   const processStub = { ...process, argv: ['node', filename, '--from-build'],
-    env: { ...process.env, ASTOCK_APP_DIR: target }, stdout: { write() {} } };
+    env: { ...process.env, ASTOCK_APP_DIR: target }, stdout: { write() {} },
+    ...(opts.kill ? { kill: opts.kill } : {}) };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
     module, exports: module.exports, require: customRequire, __dirname: path.join(repo, 'electron'),
     process: processStub, console, setTimeout, clearTimeout
   }, { filename });
-  return { main: module.exports.main, root, repo, target, installed };
+  return { main: module.exports.main, pidsUsingExecutable: module.exports.pidsUsingExecutable, psCalls, root, repo, target, installed };
 }
 
 test('successful single-app installation removes only its temporary rollback copy and preserves existing backups', async t => {
@@ -73,4 +82,36 @@ test('failed launch restores the original app and metadata before removing the r
   assert.equal(fs.readFileSync(path.join(f.target, '当前版本.json'), 'utf8'), '{"version":"old"}');
   assert.deepEqual(fs.readdirSync(path.join(f.target, '升级备份')), ['existing']);
   assert.equal(fs.readdirSync(f.target).some(name => /\.(?:previous|rejected)$|\.staging\.app$/.test(name)), false);
+});
+
+test('pidsUsingExecutable matches only the target executable path and excludes self/ppid and argument-only processes', async t => {
+  const killed = [];
+  let appRunning = true;
+  let exePath;
+  const f = fixture(t, {
+    psOutput: () => [
+      `${process.pid} ${exePath}`,
+      `${process.ppid} ${exePath}`,
+      `91001 /bin/zsh -c "${exePath}"`,
+      `91002 /usr/bin/open ${exePath}`,
+      `91003 ${exePath} Helper`,
+      `91004 /other/place/A股雷达趋势版.app/Contents/MacOS/A股雷达趋势版`,
+      ...(appRunning ? [`91005 ${exePath}`] : [])
+    ].join('\n'),
+    kill: (pid, signal) => {
+      killed.push({ pid, signal });
+      if (pid === 91005) appRunning = false;
+    }
+  });
+  exePath = path.join(f.installed, 'Contents/MacOS/A股雷达趋势版');
+  assert.deepEqual([...f.pidsUsingExecutable(exePath)], [91005]);
+  assert.deepEqual([...f.psCalls[0]], ['-axo', 'pid=,comm=']);
+
+  // Also verify via symlink / non-normalized path
+  const linkApp = path.join(f.root, 'link.app');
+  fs.symlinkSync(f.installed, linkApp);
+  assert.deepEqual([...f.pidsUsingExecutable(path.join(linkApp, 'Contents', 'MacOS', '.', 'A股雷达趋势版'))], [91005]);
+
+  await f.main();
+  assert.deepEqual(killed, [{ pid: 91005, signal: 'SIGTERM' }]);
 });

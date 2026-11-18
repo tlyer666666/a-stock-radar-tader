@@ -1491,6 +1491,7 @@ body { font-size: var(--fs-base); }
 }
 .news-score-row b { color: var(--ink-1); }
 .news-score-row .pending { color: var(--yellow); }
+.news-score-row .confirmed { color: var(--up); border-color: var(--up-soft); }
 .news-relations { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .news-relations > span {
   padding: 4px 7px;
@@ -4994,3 +4995,272 @@ select:focus-visible {
 .sector-extra-analysis > summary { cursor: pointer; color: var(--muted); padding: 14px 0; }
 .sector-extra-analysis .sector-analysis-grid { margin-top: 12px; }
 .sector-search-detail { margin-bottom: 16px; }
+
+/* 智能副驾驶简报与预警收件箱 */
+.copilot-inbox-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.copilot-bell-btn.open {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink-1);
+}
+
+.copilot-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--up);
+  color: var(--on-up);
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-bold);
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.copilot-popover {
+  position: fixed;
+  top: calc(var(--topbar-h) + 8px);
+  right: var(--space-lg);
+  width: min(390px, calc(100vw - 24px));
+  max-height: min(76vh, 520px);
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  color: var(--ink-1);
+  box-shadow: var(--shadow-3);
+  z-index: 120;
+}
+
+.copilot-popover-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.copilot-popover-head strong {
+  display: block;
+  font-size: var(--fs-base);
+  color: var(--ink-1);
+}
+
+.copilot-popover-head small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+}
+
+.copilot-close-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--hover-bg);
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.copilot-stats-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+
+.copilot-stats-row > span {
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--line-1);
+}
+
+.copilot-alert-list {
+  display: grid;
+  gap: var(--space-xs);
+  overflow-y: auto;
+  max-height: 280px;
+}
+
+.copilot-empty {
+  margin: 0;
+  padding: var(--space-md);
+  text-align: center;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+
+.copilot-alert-item {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--ink-1);
+  text-align: left;
+  cursor: pointer;
+}
+
+.copilot-alert-item:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.copilot-alert-item em {
+  flex: 0 0 auto;
+  font-style: normal;
+  font-size: var(--fs-2xs);
+  font-weight: var(--fw-semibold);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--info-soft);
+  color: var(--info);
+}
+
+.copilot-alert-item.risk em,
+.copilot-alert-item.source em {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.copilot-alert-item.t-signal em {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.copilot-alert-item > span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.copilot-alert-item b {
+  font-size: var(--fs-xs);
+  color: var(--ink-1);
+}
+
+.copilot-alert-item small {
+  font-size: var(--fs-xs);
+  color: var(--ink-3);
+  overflow-wrap: anywhere;
+}
+
+.copilot-popover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  padding-top: var(--space-xs);
+  border-top: 1px solid var(--line-1);
+}
+
+.copilot-popover-actions .secondary-btn {
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--fs-xs);
+}
+
+/* 个股分析：AI 与量化协同速览条 */
+.executive-synthesis {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  padding: 10px 14px;
+  margin-bottom: var(--space-md);
+}
+
+.executive-synthesis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.synthesis-badge {
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  background: var(--surface-2);
+  color: var(--ink-1);
+  border: 1px solid var(--line-2);
+}
+
+.synthesis-badge.good {
+  background: var(--up-soft);
+  color: var(--up);
+  border-color: var(--up-border);
+}
+
+.synthesis-badge.warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: var(--warn-border);
+}
+
+.synthesis-badge.risk {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.synthesis-pill {
+  padding: 2px 7px;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-2xs);
+  background: var(--info-soft);
+  color: var(--info);
+  border: 1px solid var(--info-border);
+}
+
+.synthesis-pill.buy {
+  background: var(--up-soft);
+  color: var(--up);
+  border-color: var(--up-border);
+}
+
+.executive-synthesis-copy {
+  flex: 1 1 280px;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+
+.executive-synthesis-copy b {
+  margin-right: 6px;
+  color: var(--ink-3);
+  font-weight: var(--fw-medium);
+}
+
+@media (max-width: 900px) {
+  .copilot-popover {
+    left: var(--space-md);
+    right: var(--space-md);
+    width: auto;
+  }
+}

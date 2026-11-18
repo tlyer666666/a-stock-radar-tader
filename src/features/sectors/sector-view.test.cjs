@@ -12,7 +12,7 @@ const { createHookHarness, find, button, text, walk } = require("../../../qa/res
 const previousCssLoader = require.extensions[".css"];
 require.extensions[".css"] = () => {};
 const restoreTypeScript = registerTypeScript();
-const { MEMBER_PAGE_SIZE, SectorGainersTable, SectorMemberTable, SectorView, orderSectorMembers, formatSectorFlow, conceptBoardRows } = require("./SectorView.tsx");
+const { MEMBER_PAGE_SIZE, ConceptChainPanel, SectorGainersTable, SectorMemberTable, SectorView, orderSectorMembers, formatSectorFlow, conceptBoardRows } = require("./SectorView.tsx");
 
 test("sector feature preserves the search shell, refresh state, and last-good-data warning", () => {
   const markup = renderToStaticMarkup(React.createElement(SectorView, {
@@ -408,4 +408,23 @@ test("incomplete counts show a lower bound and unavailable counts never render z
   }));
   assert.match(markup, /≥2 家/);
   assert.match(markup, /class="muted">--/);
+
+  const loadingChain = renderToStaticMarkup(React.createElement(ConceptChainPanel, { data: null, loading: true, onOpen() {} }));
+  assert.match(loadingChain, /加载细分概念/);
+  const loadedChain = renderToStaticMarkup(React.createElement(ConceptChainPanel, {
+    loading: false,
+    onOpen() {},
+    data: {
+      name: "算力", source: "同花顺", thsStatus: "已连接", message: "链条说明", stockCount: 20, query: "算力",
+      groups: [{ name: "上游", segments: [{ name: "光模块", role: "核心", description: "高速光模块", stockCount: 5, overlapRatio: 0.25 }] }]
+    }
+  }));
+  assert.match(loadedChain, /光模块/);
+  assert.match(loadedChain, /25\.0%/);
+  const emptyChain = renderToStaticMarkup(React.createElement(ConceptChainPanel, {
+    loading: false,
+    onOpen() {},
+    data: { name: "冷门", query: "冷门", groups: [] }
+  }));
+  assert.match(emptyChain, /暂未取得可用细分概念/);
 });

@@ -57,7 +57,7 @@ test("防倒退：候选行数明显少于缓存时不应覆盖", () => {
 test("services.cjs 确实使用了超时与防倒退策略", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8");
   assert.match(src, /preferRicherBoard\(/, "必须存在防倒退判断");
   assert.match(src, /sectorBoardCache/, "榜单必须有缓存");
   assert.match(src, /"上次有效榜单接力"|"保留上次完整榜单"/, "降级时必须明确标注来源");
@@ -68,7 +68,7 @@ test("services.cjs 确实使用了超时与防倒退策略", () => {
 test("sectorStrength 必须支持按 6 位板块代码查询，不能只认名称", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8");
   // 按代码匹配的分支必须存在（881270 曾是 null，界面误报「字段不足」）
   assert.match(src, /codeNeedle/, "必须有代码入参识别");
   assert.match(src, /table\.find\(\(r\) => r\.code === codeNeedle\)/, "必须按 code 精确匹配");
@@ -77,7 +77,7 @@ test("sectorStrength 必须支持按 6 位板块代码查询，不能只认名�
 test("覆盖率只统计数据源声明提供的字段，不能把缺失字段算作缺覆盖", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8");
   // 同花顺免费页不提供资金流，若无条件把 mainInflow 计入分母，
   // 覆盖率最高只能 67%，界面会误报「字段不足、评分暂停」。
   assert.match(src, /sourceProvidesInflow/, "必须检测数据源是否提供资金流");
@@ -89,7 +89,7 @@ test("覆盖率只统计数据源声明提供的字段，不能把缺失字段�
 test("★ 板块详情必须提供 leaders（领涨股），不能只给 constituents", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8");
   // buildSectorStrengthFromData 的返回对象里必须有 leaders 字段，
   // 否则前端「当前板块」下方领涨股标签永远为空（constituents 有数据也没用）。
   const buildStart = src.indexOf("function buildSectorStrengthFromData");
@@ -105,9 +105,9 @@ test("★ 板块详情必须提供 leaders（领涨股），不能只给 constit
 test("★ analyzeSector 必须支持概念板块（东财搜索不到时不能直接报错）", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8");
+  const src = fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8");
   const fnAt = src.indexOf("async function analyzeSector");
-  const fnEnd = src.indexOf("function scoreAnnouncement", fnAt);
+  const fnEnd = src.indexOf("\nasync function getLimitUpSectorBoard", fnAt);
   const body = src.slice(fnAt, fnEnd);
   // 之前：搜索不到就 throw，导致「白酒概念」这类概念板块直接报「未找到板块」
   assert.doesNotMatch(

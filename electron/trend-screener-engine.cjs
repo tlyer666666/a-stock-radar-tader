@@ -1,7 +1,7 @@
 "use strict";
 
 const PRICE_KEYS = ["open", "high", "low", "close"];
-const { isBseAshareCode, roundPrice } = require("./price-limit-rules.cjs");
+const { isBseAshareCode, roundPrice, mainBoardStRateEffective, CHINEXT_RATE_EFFECTIVE } = require("./price-limit-rules.cjs");
 // C2-03：与选股报告、策略信号共用一个 ST/退市名称判定（原先三处口径不一致）。
 const { isRiskSecurityName } = require("./strategy-intelligence.cjs");
 const DAY_MS = 86_400_000;
@@ -182,7 +182,15 @@ function limitAt(rows, i, board) {
   if (reported !== null && Math.abs(reported - rawChange) > 0.75) {
     return { invalid: true, limited: false, evidence: "calculated" };
   }
-  const rate = board === "main" ? 0.1 : board === "beijing" ? 0.3 : 0.2;
+  const rowDate = String(row.date || "");
+  const isStBar = row.isST === true;
+  const rate = board === "main"
+    ? (isStBar && (!rowDate || rowDate < mainBoardStRateEffective()) ? 0.05 : 0.1)
+    : board === "beijing"
+      ? 0.3
+      : board === "growth" && rowDate && rowDate < CHINEXT_RATE_EFFECTIVE
+        ? (isStBar ? 0.05 : 0.1)
+        : 0.2;
   const target = cents(previous.close * (1 + rate));
   if (row.close > target + 0.005) return { invalid: true, limited: false, evidence: "calculated" };
   return { limited: Math.abs(row.close - target) < 0.005, evidence: "calculated" };
@@ -402,14 +410,23 @@ function rankTrendCandidates(candidates) {
   });
 }
 
-/** 最近 61 根原始日线里是否有除权等价格基准变化（报告涨跌幅与原始收盘不符，或昨收接不上）。 */
+/** 最近 61 根原始日线里是否有除权等价格基准变化（报告涨跌幅与原始收盘不符，或昨收接不上；任意一根缺乏涨跌幅与昨收字段，无法排除除权，保守视为可能变化）。 */
 function rawBasisChanged(raw, sessions = 61) {
+  if (raw.length < 2) return true;
   for (let i = Math.max(1, raw.length - sessions); i < raw.length; i += 1) {
     const row = raw[i], previous = raw[i - 1];
+    let rowEvidence = false;
     const reported = changePercent(row);
-    if (reported !== null && Math.abs(reported - (row.close / previous.close - 1) * 100) > 0.75) return true;
+    if (reported !== null) {
+      rowEvidence = true;
+      if (Math.abs(reported - (row.close / previous.close - 1) * 100) > 0.75) return true;
+    }
     const preClose = finiteNumber(row.preClose) ? row.preClose : finiteNumber(row.previousClose) ? row.previousClose : null;
-    if (preClose !== null && Math.abs(preClose / previous.close - 1) > 0.002) return true;
+    if (preClose !== null) {
+      rowEvidence = true;
+      if (Math.abs(preClose / previous.close - 1) > 0.002) return true;
+    }
+    if (!rowEvidence) return true;
   }
   return false;
 }
@@ -504,4 +521,4 @@ function evaluateTrendBase({ security, rawRows, adjustedRows, benchmarkRows, asO
 }
 
 module.exports = { evaluateTrendStock, evaluateTrendBase, rankTrendCandidates, prefilterTrendStock, gateTrendSeries, cents,
-  trendMath: Object.freeze({ prepareRows, prepareBenchmarkRows, prepareAlignedTrendSeries, maAt, atr14, mean, ceilCents, floorCents, cents }) };
+  trendMath: Object.freeze({ prepareRows, prepareBenchmarkRows, prepareAlignedTrendSeries, limitAt, maAt, atr14, mean, ceilCents, floorCents, cents }) };

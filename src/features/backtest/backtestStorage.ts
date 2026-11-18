@@ -2,15 +2,16 @@ import { loadSafeLocalJson } from "../../safeStorage";
 import { normalizeSettings } from "../../domain/settings";
 import { isBacktestHistoryCollection, isBacktestHistoryRow } from "../../researchStorage";
 import { normalizeBacktestDraft, normalizeBacktestStrategyIds, normalizeBacktestStrategyProfile } from "./backtestModel";
-import type { BacktestDraft, BacktestHistoryRecord, BacktestStrategyProfile } from "./backtestTypes";
+import type { BacktestDraft, BacktestHistoryRecord, BacktestRawResult, BacktestStrategyProfile } from "./backtestTypes";
 
 export const BACKTEST_HISTORY_KEY = "a-stock-radar-v054-backtest-history-v1";
 export const BACKTEST_HISTORY_LIMIT = 30;
 
-const normalizeBacktestHistoryEntry = (input: any, fallbackSettings: Settings): BacktestHistoryRecord | null => {
-  if (!isBacktestHistoryRow(input)) return null;
+const normalizeBacktestHistoryEntry = (rawInput: unknown, fallbackSettings: Settings): BacktestHistoryRecord | null => {
+  if (!isBacktestHistoryRow(rawInput)) return null;
+  const input = rawInput as Record<string, unknown> & { draft?: Partial<BacktestDraft>; input?: Partial<BacktestDraft>; strategyProfile?: Record<string, unknown>; rawResult?: BacktestRawResult; result?: BacktestRawResult };
   const rawDraft = normalizeBacktestDraft(input.draft || input.input);
-  const rawResult = input.rawResult || input.result || input;
+  const rawResult = (input.rawResult || input.result || input) as BacktestRawResult;
   const rawMetrics =
     rawResult && typeof rawResult.metrics === "object" && rawResult.metrics ? rawResult.metrics : null;
   const securityCode = String(
@@ -63,7 +64,7 @@ export const loadBacktestHistory = (fallbackSettings: Settings) => {
 
 export const buildBacktestHistoryRecord = (
   draft: BacktestDraft,
-  result: any,
+  result: BacktestRawResult | null | undefined,
   settings: Settings
 ): BacktestHistoryRecord => {
   const normalizedDraft = normalizeBacktestDraft(draft);
@@ -89,7 +90,7 @@ export const buildBacktestHistoryRecord = (
         ? result.benchmarkReturns
         : null,
     strategyProfile,
-    rawResult: result
+    rawResult: result ?? null
   };
 };
 

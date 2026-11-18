@@ -53,4 +53,28 @@ test('无任何历史数据时仍为 0 且不通过', () => {
   assert.equal(r.historicalEdgePassed, false);
 });
 
+test('historicalStats.currentCombination 有至少 10 条已结算样本时融合实盘胜率校准 tpBaseRate', () => {
+  const buySettings = normalizeSettings({ strictGate: false, alertScore: 70 });
+  const baseAnalysis = { mrs: 88, strategyMatchRate: 85, alertQualified: true, historicalEdge: edgeObject({ passed: true, average5: 3.4 }) };
+  const withoutEmpirical = computeExecutionProjection(baseAnalysis, quote, buySettings);
+  assert.equal(withoutEmpirical.tradePlan.signal, 'BUY');
+  const withHighEmpirical = computeExecutionProjection({
+    ...baseAnalysis,
+    historicalStats: { currentCombination: { id: 'currentCombination', sampleCount: 25, n5: 25, winRate5: 80 } }
+  }, quote, buySettings);
+  assert.ok(
+    withHighEmpirical.tradeProjection.probabilityTakeProfit > withoutEmpirical.tradeProjection.probabilityTakeProfit,
+    'high empirical winRate5 should raise tradeProjection.probabilityTakeProfit'
+  );
+  const smallSample = computeExecutionProjection({
+    ...baseAnalysis,
+    historicalStats: { currentCombination: { id: 'currentCombination', sampleCount: 6, n5: 6, winRate5: 90 } }
+  }, quote, buySettings);
+  assert.equal(
+    smallSample.tradeProjection.probabilityTakeProfit,
+    withoutEmpirical.tradeProjection.probabilityTakeProfit,
+    'samples < 10 must not alter projection'
+  );
+});
+
 test.after(() => restore?.());

@@ -25,6 +25,7 @@ overrides:
 patchedDependencies:
   glob@7.2.3: 306a03fe0882c72334dbd2950064eb7ca86c8d7e9a0bb463efc1650892f429c5
   minimatch@11.0.3: 7dd6c58800e4aef4b3d66553526b7de9277328d8b4bbfa879dd4c35717fdbd3f
+  picomatch@4.0.7: 956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c
 
 importers:
 
@@ -2707,9 +2708,9 @@ snapshots:
 
   fast-uri@3.1.9: {}
 
-  fdir@6.5.0(picomatch@4.0.7):
+  fdir@6.5.0(picomatch@4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)):
     optionalDependencies:
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)
 
   file-entry-cache@11.1.5:
     dependencies:
@@ -3181,7 +3182,7 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  picomatch@4.0.7: {}
+  picomatch@4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c): {}
 
   pkijs@3.4.0:
     dependencies:
@@ -3435,8 +3436,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.7)
-      picomatch: 4.0.7
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c))
+      picomatch: 4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)
 
   tmp-promise@3.0.3:
     dependencies:
@@ -3508,7 +3509,7 @@ snapshots:
   vite@8.3.3(@types/node@26.1.1)(jiti@2.7.0):
     dependencies:
       lightningcss: 1.33.0
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)
       postcss: 8.5.29
       rolldown: 1.2.12
       tinyglobby: 0.2.17

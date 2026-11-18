@@ -27,6 +27,51 @@ test("诊断信息结构完整", () => {
   assert.ok("lastError" in diag);
 });
 
+// ── 2026-11-15 审核 P0-1：执行边界回归 ─────────────────────────────────
+
+test("vm 沙箱执行不污染主进程 global（window/document 不留痕）", () => {
+  getHexinToken(true);
+  assert.equal(global.window, undefined, "不得在 global 上挂 window");
+  assert.equal(global.document, undefined, "不得在 global 上挂 document");
+});
+
+test("沙箱内脚本拿不到 process/require 等主进程能力", () => {
+  // 直接复现模块的沙箱构建方式：上下文里没有注入的能力必须不可见。
+  const vm = require("node:vm");
+  const sandbox = {};
+  sandbox.window = sandbox;
+  const context = vm.createContext(sandbox);
+  const probe = new vm.Script("({ proc: typeof process, req: typeof require, mod: typeof module })")
+    .runInContext(context);
+  assert.equal(probe.proc, "undefined");
+  assert.equal(probe.req, "undefined");
+  assert.equal(probe.mod, "undefined");
+});
+
+test("源码被篡改时完整性指纹拒绝执行并给出可诊断错误", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const os = require("node:os");
+  const { execFileSync } = require("node:child_process");
+  const source = fs.readFileSync(path.join(__dirname, "ths-hexin-v.cjs"), "utf8");
+  // 改一个算法字节但不改指纹常量 → 必须触发 source-integrity-mismatch
+  const tampered = source.replace("var TOKEN_SERVER_TIME = 1572845499.629;", "var TOKEN_SERVER_TIME = 1572845499.630;");
+  assert.notEqual(tampered, source, "夹具必须真的改动了源码");
+  const tempFile = path.join(os.tmpdir(), `ths-hexin-v-tampered-${process.pid}.cjs`);
+  fs.writeFileSync(tempFile, tampered);
+  try {
+    const out = execFileSync(process.execPath, [
+      "-e",
+      `const m = require(${JSON.stringify(tempFile)});const t = m.getHexinToken(true);const d = m.getHexinDiagnostics();console.log(JSON.stringify({ t, e: d.lastError }));`
+    ], { encoding: "utf8" });
+    const result = JSON.parse(out.trim());
+    assert.equal(result.t, "", "被篡改的源码不得产出 token");
+    assert.match(result.e, /source-integrity-mismatch/);
+  } finally {
+    fs.rmSync(tempFile, { force: true });
+  }
+});
+
 test("资金流表解析：取净额/流入/流出/领涨股", () => {
   const html = `<table><tr>
     <th>序号</th><th>行业</th><th>行业指数</th><th>涨跌幅</th>
@@ -90,7 +135,7 @@ function stripComments(source) {
 test("★ 榜单覆盖率不得写死为 33：必须按实际字段计算", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = stripComments(fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8"));
+  const src = stripComments(fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8"));
   // 曾经这里写 `dataCoveragePercent: 33`，导致界面永远显示「只覆盖三分之一」
   assert.doesNotMatch(src, /dataCoveragePercent:\s*33\b/, "不得再有写死的 33%");
   assert.match(src, /boardRowCoverage\(/, "必须用真实字段覆盖函数");
@@ -99,7 +144,7 @@ test("★ 榜单覆盖率不得写死为 33：必须按实际字段计算", () =
 test("★ 榜单评分不得写死为 null：必须用真实公式算", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const src = stripComments(fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8"));
+  const src = stripComments(fs.readFileSync(path.join(__dirname, "services/sectors.cjs"), "utf8"));
   assert.match(src, /scoreBoardRow\(/, "必须有榜单评分函数");
   // 只看「主榜单路径」那一段：从 publicTable?.length 到兜底路径之前。
   // 兜底行（多源均不可用）保留 score: null 是正确的 —— 那时确实没有数据可评分。

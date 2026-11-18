@@ -14,6 +14,7 @@ const {
   thsRows,
   dedupeItems,
   filterItems,
+  confirmWithMarket,
   classifyEvent,
   isBroadcastWorthy
 } = require("./news-service.cjs");
@@ -509,4 +510,171 @@ test('agent cancellation does not poison a background news consumer', async () =
   } finally { for (const request of requests) request.resolve({ data: { fastNewsList: [{ code: "fixture", title: "离线资讯样本", showTime: new Date().toISOString() }], roll_data: [], list: [] } }); }
   const feed = await background; assert.equal(feed.sourceStatus.filter(item => item.id !== 'ths').every(item => item.ok), true);
   await Promise.all([runtime.shutdown(), news.shutdownNewsService()]);
+});
+
+test("news confirmWithMarket computes stock/limit-up confirmation and portfolioImpact, and filterItems supports favorites scope", () => {
+  const baseItem = {
+    id: "n-1",
+    title: "宁德时代发布新一代电池重大合同",
+    summary: "动力电池产能进一步扩张",
+    source: "财联社",
+    eventType: "重大合同",
+    direction: "positive",
+    marketConfirmed: false,
+    marketConfirmation: "待行情确认",
+    relatedStocks: [{ code: "300750", name: "宁德时代" }],
+    relatedSectors: ["电池"]
+  };
+  const confirmedStock = confirmWithMarket(baseItem, {
+    currentStock: { code: "300750", name: "宁德时代", changePct: 4.6 },
+    holdings: [{ code: "300750", name: "宁德时代" }]
+  });
+  assert.equal(confirmedStock.marketConfirmed, true);
+  assert.match(confirmedStock.marketConfirmation, /个股走强/);
+  assert.equal(confirmedStock.portfolioImpact, "holding");
+
+  const divergent = confirmWithMarket(baseItem, {
+    currentStock: { code: "300750", name: "宁德时代", changePct: -3.2 },
+    watchlist: [{ code: "300750", name: "宁德时代" }]
+  });
+  assert.equal(divergent.marketConfirmed, false);
+  assert.match(divergent.marketConfirmation, /利好但股价偏弱/);
+  assert.equal(divergent.portfolioImpact, "watchlist");
+
+  const limitConfirmed = confirmWithMarket(baseItem, {
+    limitUps: [{ code: "300750", name: "宁德时代" }]
+  });
+  assert.equal(limitConfirmed.marketConfirmed, true);
+  assert.equal(limitConfirmed.portfolioImpact, "limitUp");
+
+  const favoriteFiltered = filterItems([baseItem], { scope: "favorites", favorites: ["电池"] });
+  assert.equal(favoriteFiltered.length, 1);
+  assert.equal(filterItems([baseItem], { scope: "favorites", favorites: ["白酒"] }).length, 0);
+});
+
+test("Phase 3C: external factor daily snapshots archive up to 180 days, replay external conditions, and adapt regime weights", () => {
+  const {
+    compactExternalSnapshot,
+    normalizeExternalFactorStore,
+    mergeExternalFactorSnapshot,
+    computeRegimeWeightProfile,
+    buildHistoricalStrategyStats
+  } = require("./strategy-intelligence.cjs");
+
+  const snap = compactExternalSnapshot({
+    review: {
+      date: "2026-10-12",
+      emotion: { score: 74, state: "主升发酵", limitUpCount: 78, limitDownCount: 3 },
+      ladder: { promotionRate: 0.32, breakRate: 0.18, maxHeight: 5 },
+      breadth: { up: 3600, total: 5000 }
+    },
+    sectorBoard: [{ name: "半导体" }, { name: "算力" }]
+  });
+  assert.equal(snap.date, "2026-10-12");
+  assert.deepEqual(snap.topSectors, ["半导体", "算力"]);
+
+  let store = normalizeExternalFactorStore(null);
+  for (let i = 0; i < 190; i += 1) {
+    const d = new Date(Date.UTC(2026, 0, i + 1)).toISOString().slice(0, 10);
+    store = mergeExternalFactorSnapshot(store, { date: d, emotionScore: 60 + (i % 20), promotionRate: 0.25, breakRate: 0.22, maxHeight: 4 });
+  }
+  assert.equal(Object.keys(store.snapshots).length, 180);
+
+  const ferment = computeRegimeWeightProfile(snap);
+  assert.equal(ferment.regimeId, "ferment");
+  assert.ok(ferment.factorWeights.trend >= 25);
+  assert.equal(ferment.backtestPreset.lookbackBars, 160);
+
+  const ice = computeRegimeWeightProfile({ emotionScore: 30, breakRate: 0.45 });
+  assert.equal(ice.regimeId, "ice");
+  assert.ok(ice.factorWeights.defensive >= 25);
+  assert.equal(ice.backtestPreset.lookbackBars, 240);
+
+  const history = [];
+  for (let index = 0; index < 75; index += 1) {
+    const isEvent = index === 55;
+    const prev = index > 0 ? history[index - 1].close : 10;
+    const close = isEvent ? Number((prev * 1.1).toFixed(2)) : index < 55 ? 10 : 11;
+    history.push({
+      date: new Date(Date.UTC(2026, 2, index + 1)).toISOString().slice(0, 10),
+      open: isEvent ? 10.2 : close,
+      high: isEvent ? close : close * 1.01,
+      low: close * 0.99,
+      close,
+      volume: isEvent ? 220000 : 100000,
+      amount: close * 100000 * 100,
+      turnover: 3
+    });
+  }
+  const eventEvalDates = [55 + 3, 55 + 5, 55 + 7, 55 + 9].map(idx => history[idx].date);
+  const externalSnapshots = Object.fromEntries(eventEvalDates.map(d => [d, { date: d, emotionScore: 68, breakRate: 0.2, promotionRate: 0.28, maxHeight: 4 }]));
+  const replay = buildHistoricalStrategyStats(history, "600001", "测试股", ["support", "marketEmotion", "sectorLadder"], [], { externalSnapshots });
+  assert.equal(replay.externalArchiveDays, 4);
+  const emotionStat = replay.stats.find(item => item.id === "marketEmotion");
+  assert.ok(emotionStat.sampleCount >= 1);
+});
+
+test("Phase 3D: news confirmWithMarket uses liveQuotes & sectorStrength and analyzeNewsImpact structures supply chain safely", async () => {
+  const { buildNewsImpactPromptInput } = require("./news-service.cjs");
+  const { createAiService } = require("./ai-service.cjs");
+
+  const baseItem = {
+    id: "n-3d",
+    title: "宁德时代发布新一代超充电池量产公告",
+    summary: "锂电龙头发布超充方案，带动上游材料及高压快充链条关注。",
+    type: "announcement",
+    eventType: "产品突破",
+    direction: "positive",
+    relatedStocks: [{ code: "300750", name: "宁德时代" }],
+    relatedSectors: ["锂电池"]
+  };
+
+  const liveConfirmed = confirmWithMarket(baseItem, {
+    liveQuotes: { "300750": { code: "300750", name: "宁德时代", changePct: 4.5 } },
+    sectorStrength: [{ name: "锂电池", changePct: 2.8, strengthScore: 76 }]
+  });
+  assert.equal(liveConfirmed.marketConfirmed, true);
+  assert.match(liveConfirmed.marketConfirmation, /4\.5%/);
+  assert.equal(liveConfirmed.matchedSectorStrength.name, "锂电池");
+
+  const sectorConfirmed = confirmWithMarket(baseItem, {
+    sectorStrength: [{ name: "锂电池", changePct: 2.1, strengthScore: 72 }]
+  });
+  assert.equal(sectorConfirmed.marketConfirmed, true);
+  assert.match(sectorConfirmed.marketConfirmation, /板块共振/);
+
+  const promptInput = buildNewsImpactPromptInput(liveConfirmed, {
+    holdings: [{ code: "300750", name: "宁德时代", industry: "锂电池", shares: 99999 }],
+    watchlist: [{ code: "002460", name: "赣锋锂业", industry: "锂电池" }],
+    favorites: ["锂电池"],
+    sectorStrength: [{ name: "锂电池", changePct: 2.8, strengthScore: 76 }]
+  });
+  assert.equal(promptInput.holdingsMatched.length, 1);
+  assert.equal(Object.hasOwn(promptInput.holdingsMatched[0], "shares"), false);
+
+  const service = createAiService({
+    getConfig: () => ({ id: "p1", name: "主模型", baseUrl: "https://example.com/v1", model: "news-ai", apiKey: "k" }),
+    fetchImpl: async () => {
+      const payload = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              headline: "龙头超充放量验证锂电景气回升",
+              impactLevel: "高",
+              direction: "利好",
+              supplyChain: { upstream: ["高压快充材料", "电解液添加剂"], peers: ["动力电池二线"], downstream: ["高压平台整车"] },
+              portfolioExposure: ["已命中持仓宁德时代，与锂电池板块强度共振"],
+              actionWatch: ["次日板块封板持续性与龙头成交额承接"]
+            })
+          }
+        }]
+      };
+      return { ok: true, status: 200, json: async () => payload, text: async () => JSON.stringify(payload) };
+    }
+  });
+  const impact = await service.analyzeNewsImpact(promptInput);
+  assert.equal(impact.impactLevel, "高");
+  assert.equal(impact.direction, "利好");
+  assert.deepEqual(impact.supplyChain.upstream, ["高压快充材料", "电解液添加剂"]);
+  assert.equal(impact.portfolioExposure.length, 1);
 });

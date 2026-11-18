@@ -1,5 +1,6 @@
 import type { TrendCandidate, TrendScanStatus, TrendScanRequest } from "./trendScreenerTypes";
 import { validStrategySnapshot, libraryDefinition, strategyName, sameTrendStrategy } from "./trendStrategyConfig";
+import { inferSecid } from "./domain/securityIdentifiers";
 
 export const TREND_PLAN_STORAGE_KEY = "a-stock-radar:trend-plans:v1";
 export type TrendReviewDraft = { fields: Record<string, string>; checks: Record<string, boolean> };
@@ -223,4 +224,105 @@ export function trendScanJournalCsv(entries: TrendScanJournalEntry[]): string {
   return "\uFEFF" + [["请求时间", "原因", "研究起始", "研究截止", "数据截止", "数据性质", "参数指纹", "冻结参数", "策略版本快照"], ...entries.map(entry =>
     [entry.requestedAt, entry.reason, entry.range.start, entry.range.end, entry.asOf, entry.isPreview ? "DEMO 虚构演示" : "市场扫描 / 未经收益验证", entry.parameterHash, JSON.stringify(entry.request), JSON.stringify(entry.strategies || [])])]
     .map(row => row.map(csvCell).join(",")).join("\r\n");
+}
+
+function boardForCode(code: string): TrendCandidate["board"] {
+  if (/^68[89]/.test(code)) return "star";
+  if (/^(?:300|301|302)/.test(code)) return "growth";
+  if (/^(?:(?:43|83|87|88)\d{4}|920\d{3})$/.test(code)) return "beijing";
+  return "main";
+}
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+/**
+ * 从 AI 选股 / 个股快速生成合规的趋势观察计划并写入 `TREND_PLAN_STORAGE_KEY`，
+ * 以便「今日驾驶舱」与「专业复盘」直接承接买点区间与止损对照。
+ */
+export function saveQuickObservationPlan(
+  storage: PlanStorage,
+  input: {
+    code: string;
+    name: string;
+    secid?: string | undefined;
+    referencePrice?: number | null | undefined;
+    asOf?: string | undefined;
+    reason?: string | undefined;
+    stopPercent?: number | undefined;
+  }
+): { ok: true; plan: SavedTrendPlan; created: boolean } | { ok: false; error: string } {
+  const code = String(input.code || "").trim();
+  if (!/^\d{6}$/.test(code)) return { ok: false, error: "仅支持 6 位 A 股代码建立观察计划" };
+  const read = readTrendPlans(storage);
+  if (read.error) return { ok: false, error: read.error };
+
+  const existing = read.plans.find(item => !item.archivedAt && item.candidate.security.code === code);
+  if (existing) {
+    return { ok: true, plan: existing, created: false };
+  }
+
+  const ref = Number(input.referencePrice);
+  if (!Number.isFinite(ref) || ref <= 0) {
+    return { ok: false, error: "当前标的缺少有效参考价格，请先刷新行情后重试" };
+  }
+  const basePrice = ref;
+  const stopPct = Number.isFinite(input.stopPercent) && Number(input.stopPercent) > 1 && Number(input.stopPercent) <= 20
+    ? Math.min(7.5, Number(input.stopPercent))
+    : 6;
+  const stop = round2(Math.max(0.01, basePrice * (1 - stopPct / 100)));
+  const maxAllowedByStop = Math.floor((stop / 0.92 + 1e-9) * 100) / 100;
+  const minEntry = round2(Math.min(maxAllowedByStop, Math.max(stop + 0.01, basePrice * 0.99)));
+  const maxEntry = round2(Math.max(minEntry, Math.min(maxAllowedByStop, basePrice * 1.02)));
+  const maxRiskPercent = Math.max(0.5, round2(((maxEntry - stop) / maxEntry) * 100));
+  const secid = typeof input.secid === "string" && /^[01]\.\d{6}$/.test(input.secid)
+    ? input.secid
+    : inferSecid(code);
+  const asOf = input.asOf && /^\d{4}-\d{2}-\d{2}$/.test(input.asOf)
+    ? input.asOf
+    : new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+
+  const candidate: TrendCandidate = {
+    security: {
+      code,
+      name: String(input.name || code).slice(0, 24) || code,
+      secid,
+      assetType: "stock"
+    },
+    board: boardForCode(code),
+    asOf,
+    limitDate: null,
+    daysSinceLimit: null,
+    patterns: [],
+    stage: "watch",
+    evidence: [
+      {
+        label: "快速观察入池",
+        passed: true,
+        value: input.reason ? String(input.reason).slice(0, 60) : `参考价 ${basePrice.toFixed(2)}`,
+        rule: "AI 选股/看盘一键转入趋势观察"
+      }
+    ],
+    metrics: {
+      close: round2(basePrice),
+      ma20: round2(basePrice),
+      ma60: round2(basePrice),
+      avgAmount20: 0,
+      deviationPercent: 0,
+      relativeStrength20: null,
+      atr14: round2(Math.max(0.01, basePrice * 0.03))
+    },
+    plan: {
+      entryType: "close-confirmation",
+      stop,
+      minEntry,
+      maxEntry,
+      maxRiskPercent,
+      holdingDays: "3~10 个交易日"
+    },
+    warnings: ["由快捷入口转入观察计划，请结合开盘承接与预设止损人工复核"]
+  };
+
+  const plan = createSavedTrendPlan(candidate, { isPreview: false, coverageComplete: true, marketGate: "open" });
+  const ok = writeTrendPlans(storage, [plan, ...read.plans]);
+  return ok ? { ok: true, plan, created: true } : { ok: false, error: "观察计划写入本机存储失败" };
 }

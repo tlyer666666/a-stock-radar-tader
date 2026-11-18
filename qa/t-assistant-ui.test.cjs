@@ -138,6 +138,41 @@ describe('做T助手 page in the actual renderer', () => {
       await page.getByRole('button', { name: /语音提醒关/ }).waitFor();
     });
   });
+  test('分时跨到下一交易日时，已打开的成交草稿仍按原日期保存', async () => {
+    await pageTest(async page => {
+      await page.evaluate(() => {
+        window.setTLive(false);
+        window.quoteDay = '2026-11-06';
+        const getChart = window.stockApi.getChart;
+        window.stockApi.getChart = async (security, frame, options) => frame === 'time'
+          ? { preClose: 10, rows: ['09:30', '09:31'].map(time => ({
+            date: `${window.quoteDay} ${time}`, open: 10, high: 10, low: 10, close: 10, volume: 100
+          })) }
+          : getChart(security, frame, options);
+        window.tApi.addStock({ code: '600000', name: '浦发银行' });
+      });
+      await page.getByRole('heading', { name: '2026-11-06 成交登记' }).waitFor();
+      await page.getByRole('button', { name: '登记成交' }).click();
+      const form = page.locator('.t-assistant-form');
+      await form.getByLabel('价格').fill('10.25');
+      await form.getByLabel('股数').fill('100');
+      await form.getByLabel('时间').fill('09:31');
+
+      await page.evaluate(async () => {
+        window.quoteDay = '2026-11-09';
+        await window.tApi.refresh();
+      });
+      await page.getByRole('heading', { name: '2026-11-09 成交登记' }).waitFor();
+      const draftText = await form.innerText();
+      await form.getByRole('button', { name: '保存' }).click();
+      await form.waitFor({ state: 'hidden' });
+
+      const trades = await page.evaluate(() => JSON.parse(localStorage.getItem('a-stock-radar:t-assistant:v1')).trades);
+      assert.equal(trades['2026-11-09'], undefined, '草稿不能记入新的交易日');
+      assert.equal(trades['2026-11-06']['600000'][0].price, 10.25);
+      assert.match(draftText, /2026-11-06/, '表单显示本笔成交所属日期');
+    });
+  });
   test('旧日分时保留历史信号，禁止当日提醒；更新为新鲜行情后只提醒一次', async () => {
     await pageTest(async page => {
       await page.clock.setFixedTime(new Date('2026-11-09T10:22:00+08:00'));

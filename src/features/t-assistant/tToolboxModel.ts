@@ -1,4 +1,5 @@
 import { calculateBollingerBands, calculatePriceMovingAverages } from '../../priceChartSeries';
+import { isTradingDay } from '../notes/notesModel';
 
 export type TCandle = { date: string; open: number; high: number; low: number; close: number; volume: number | null; volumeUnit: string };
 export type TChartData = { rows: TCandle[]; source: string; adjustment: string; updatedAt: string; note: string };
@@ -156,9 +157,10 @@ export function toolboxHistoryNote(data: Pick<TChartData, 'rows'> | null, frame:
   const lastMinute = Number(last.slice(11, 13)) * 60 + Number(last.slice(14, 16));
   const tolerance = Number(frame) + 3;
   if (lastMinute - minute > tolerance) return '分钟K线时间超前异常，请核对行情';
-  const weekday = cn.getUTCDay() >= 1 && cn.getUTCDay() <= 5;
+  const toSessionMinutes = (m: number) => m <= 570 ? 570 : m <= 690 ? m : m < 780 ? 690 : m - 90;
+  const weekday = isTradingDay(today);
   const session = (minute >= 570 && minute <= 690) || (minute >= 780 && minute <= 900);
-  return weekday && session && minute - lastMinute > tolerance ? `分钟K线滞后（截至 ${last}），当前动能仅供旧行情参考` : '';
+  return weekday && session && toSessionMinutes(minute) - toSessionMinutes(lastMinute) > tolerance ? `分钟K线滞后（截至 ${last}），当前动能仅供旧行情参考` : '';
 }
 
 export type TDrawingReference = { date: string; close: number };

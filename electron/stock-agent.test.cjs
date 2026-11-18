@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createStockAgentTools, toolCatalogText } = require("./stock-agent-tools.cjs");
-const { createStockAgentService, runAgentTurn, validateFinal, fitJson, systemPrompt, MAX_TOOL_ROUNDS, PREFETCH_TOOLS } = require("./stock-agent.cjs");
+const { createStockAgentService, runAgentTurn, validateFinal, fitJson, systemPrompt, sanitizeUserContext, MAX_TOOL_ROUNDS, PREFETCH_TOOLS } = require("./stock-agent.cjs");
 
 const clock = { text: "2026-11-06 10:49 星期五", session: "盘中（上午）" };
 const profile = { code: "600519", name: "贵州茅台", industry: "白酒", asOfDate: "2026-11-05", bars: 120, latest: 1500, changePct: 1.2, return5: 2, return20: -3, return60: 5,
@@ -813,4 +813,235 @@ test("sector AI preserves missing counts and reflects confirmed member limit-ups
     assert.equal(result.data.limitUps, expected);
     if (!members.length) assert.deepEqual([result.data.rising, result.data.falling], [null, null]);
   }
+});
+
+test("my_portfolio strips raw share counts while computing weightPct and sanitizeUserContext filters sensitive keys", async () => {
+  const { sources } = fakeSources({
+    myPortfolio: () => ({
+      holdings: [
+        { code: "600519", name: "贵州茅台", shares: 500, costPrice: 1450, latest: 1500, note: "底仓持有" },
+        { code: "000001", name: "平安银行", shares: 2500, costPrice: 10, latest: 10 }
+      ],
+      watchlist: [{ code: "300750", name: "宁德时代", favorite: true }],
+      aiCustomStocks: [{ code: "600519", name: "贵州茅台" }]
+    })
+  });
+  const tools = createStockAgentTools(sources);
+  const resAll = await tools.runTool("my_portfolio", {});
+  assert.equal(resAll.ok, true);
+  assert.equal(resAll.data.holdings.length, 2);
+  const res = await tools.runTool("my_portfolio", { code: "600519" });
+  assert.equal(res.ok, true);
+  assert.equal(res.data.isHolding, true);
+  assert.equal(res.data.inAiCustomStocks, true);
+  assert.equal("shares" in res.data.holding, false, "must not expose raw share count");
+  assert.equal(res.data.holding.weightPct, 96.7);
+  assert.equal(res.data.holding.code, "600519");
+
+  const sanitized = sanitizeUserContext({
+    origin: "individual_t_assistant",
+    costPrice: 1450,
+    shares: 9999,
+    apiKey: "sk-secret",
+    token: "tok-1",
+    suitability: "适宜正T"
+  });
+  assert.ok(sanitized);
+  assert.equal("shares" in sanitized, false);
+  assert.equal("apiKey" in sanitized, false);
+  assert.equal("token" in sanitized, false);
+  assert.equal(sanitized.origin, "individual_t_assistant");
+  assert.equal(sanitizeUserContext({ apiKey: "only-secret" }), null);
+});
+
+test("Phase 1 personal context tools (get_my_t_context, get_my_plans_and_notes, get_my_recent_reviews) expose safe workspace context", async () => {
+  const { sources } = fakeSources({
+    myTContext: () => ({
+      updatedAt: "2026-11-14T09:35:00Z",
+      items: [
+        { code: "600519", name: "贵州茅台", style: "均衡", costPrice: 1480, sellableRatioPct: 67, shares: 9999, minSpreadPct: 1.2, roundsToday: 1, realizedToday: 420, openT: { kind: "reverse", time: "10:15", price: 1510 }, suitability: "适宜做T" },
+        { code: "000001", name: "平安银行", style: "稳健", costPrice: 10.5, sellableRatioPct: 100, minSpreadPct: 1.0, roundsToday: 0, realizedToday: 0 }
+      ]
+    }),
+    myPlansAndNotes: () => ({
+      plans: [{ code: "600519", name: "贵州茅台", strategyName: "回踩均线", entryType: "close-confirmation", stopPrice: 1440, targetPrice: 1560, savedAt: "2026-11-13", status: "pending" }],
+      paperPositions: [{ code: "600519", name: "贵州茅台", entryPrice: 1495, stopPrice: 1445, takePrice: 1580, holdingBars: 2 }],
+      notes: [{ code: "600519", text: "破 1480 关注止损", when: "2026-11-14", condition: "现价 <= 1480", status: "pending" }]
+    }),
+    myRecentReviews: count => ({
+      reviews: Array.from({ length: count }, (_, idx) => ({
+        asOfDate: `2026-11-1${3 - idx}`,
+        headline: "主线分化注意节奏",
+        cyclePhase: "震荡",
+        softwareRegime: "caution",
+        posture: "控制仓位低吸",
+        focus: ["算力"],
+        avoid: ["高位跟风"],
+        lookbackHitRatePct: 66.7,
+        lookbackLessons: ["避免追高后排杂毛"]
+      }))
+    })
+  });
+  const tools = createStockAgentTools(sources);
+
+  const tRes = await tools.runTool("get_my_t_context", { code: "600519" });
+  assert.equal(tRes.ok, true);
+  assert.equal(tRes.data.items.length, 1);
+  assert.equal(tRes.data.items[0].sellableRatioPct, 67);
+  assert.equal("shares" in tRes.data.items[0], false, "T context tool must not leak raw shares");
+
+  const pRes = await tools.runTool("get_my_plans_and_notes", { code: "600519" });
+  assert.equal(pRes.ok, true);
+  assert.equal(pRes.data.plans.length, 1);
+  assert.equal(pRes.data.paperPositions.length, 1);
+  assert.equal(pRes.data.notes.length, 1);
+  assert.equal(pRes.data.plans[0].stopPrice, 1440);
+
+  const rRes = await tools.runTool("get_my_recent_reviews", { count: 2 });
+  assert.equal(rRes.ok, true);
+  assert.equal(rRes.data.reviews.length, 2);
+  assert.equal(rRes.data.reviews[0].lookbackHitRatePct, 66.7);
+});
+
+test("Phase 2: stock agent emits real-time step and token stream events and exposes streamText on poll()", async () => {
+  const { sources } = fakeSources({});
+  const tools = createStockAgentTools(sources);
+  const events = [];
+  let saved = null;
+  let seq = 0;
+  const service = createStockAgentService({
+    clientFor: () => ({
+      model: () => "stream-agent",
+      chat: async ({ onToken }) => {
+        onToken?.("{\"answer\":\"先", "{\"answer\":\"正在分析茅台量价结构", {});
+        return { thought: "分析茅台量价与支撑", final: { answer: "茅台短期缩量回踩支撑位。", stance: "中性", confidence: "中", followUps: ["何时放量确认？"] } };
+      }
+    }),
+    resolveProfile: () => ({ id: "p1", name: "流式模型", baseUrl: "https://example.com/v1", model: "stream-agent", apiKey: "k" }),
+    listProfiles: () => ({ activeId: "p1", profiles: [{ id: "p1", name: "流式模型", model: "stream-agent" }] }),
+    tools,
+    onEvent: evt => events.push(evt),
+    store: { read: () => saved, write: v => { saved = v; } },
+    id: () => `s${++seq}`,
+    now: () => 1_700_000_000_000 + seq * 500
+  });
+  const started = service.start({ message: "看下茅台走势" });
+  let finalRun = service.poll(started.runId);
+  for (let i = 0; i < 40 && finalRun?.status === "running"; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    finalRun = service.poll(started.runId);
+  }
+  assert.equal(finalRun.status, "done");
+  assert.ok(finalRun.streamText);
+  assert.ok(events.some(evt => evt.channel === "agent" && evt.runId === started.runId && evt.phase === "token" && evt.text.includes("茅台")));
+  assert.ok(events.some(evt => evt.channel === "agent" && evt.runId === started.runId && evt.phase === "step"));
+});
+
+test("Phase 3B: stock agent extracts bounded memoryCandidates and persists them on the assistant message", async () => {
+  const { sources } = fakeSources({});
+  const tools = createStockAgentTools(sources);
+  let saved = null;
+  let seq = 0;
+  const service = createStockAgentService({
+    clientFor: () => ({
+      model: () => "mem-agent",
+      chat: async () => ({
+        thought: "结合用户止损规则给结论",
+        final: {
+          answer: "建议设定单笔 5% 硬止损并避免盘中追高。",
+          stance: "中性",
+          confidence: "高",
+          followUps: ["下一档支撑位在哪？"],
+          memoryCandidates: [
+            "单笔止损线控制在 5% 以内，绝不摊平下跌",
+            "盘中冲高超 5% 不追涨",
+            "超出两条上限的第三条应被截断"
+          ]
+        }
+      })
+    }),
+    resolveProfile: () => ({ id: "p1", name: "记忆模型", baseUrl: "https://example.com/v1", model: "mem-agent", apiKey: "k" }),
+    listProfiles: () => ({ activeId: "p1", profiles: [{ id: "p1", name: "记忆模型", model: "mem-agent" }] }),
+    tools,
+    store: { read: () => saved, write: v => { saved = v; } },
+    id: () => `m${++seq}`,
+    now: () => 1_700_000_000_000 + seq * 400
+  });
+  const started = service.start({ message: "记住我单笔只亏 5%，盘中不追高" });
+  let run = service.poll(started.runId);
+  for (let i = 0; i < 40 && run?.status === "running"; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    run = service.poll(started.runId);
+  }
+  assert.equal(run.status, "done");
+  assert.deepEqual(run.message.memoryCandidates, [
+    "单笔止损线控制在 5% 以内，绝不摊平下跌",
+    "盘中冲高超 5% 不追涨"
+  ]);
+  const conv = service.conversation(started.conversationId);
+  const assistantMsg = conv.messages.find(item => item.role === "assistant");
+  assert.equal(assistantMsg.memoryCandidates.length, 2);
+});
+
+test("Phase 3B/C: allowPersonalContext=false blocks personal tools & userContext and conversation summary exposes search preview", async () => {
+  let myPortfolioCalled = false;
+  const { sources } = fakeSources({
+    myPortfolio: () => {
+      myPortfolioCalled = true;
+      return { holdings: [{ code: "600519", name: "贵州茅台", costPrice: 1500 }], watchlist: [], aiCustomStocks: [] };
+    }
+  });
+  const tools = createStockAgentTools(sources);
+  let seq = 0;
+  let saved = { version: 1, memory: "", profileId: "", conversations: [] };
+  let turn = 0;
+  const capturedSystems = [];
+  const capturedMessages = [];
+  const service = createStockAgentService({
+    clientFor: () => ({
+      model: () => "privacy-agent",
+      chat: async req => {
+        capturedSystems.push(req.system);
+        capturedMessages.push(req.messages);
+        turn += 1;
+        if (turn === 1) {
+          return {
+            thought: "尝试调用个人持仓工具",
+            calls: [{ tool: "my_portfolio", args: { code: "600519" } }]
+          };
+        }
+        return {
+          thought: "输出仅公开行情结论",
+          final: {
+            answer: "基于公开行情，当前仅分析量价结构。",
+            stance: "中性",
+            confidence: "中",
+            followUps: ["看量价支撑位在哪？"]
+          }
+        };
+      }
+    }),
+    resolveProfile: () => ({ id: "p1", name: "隐私模型", baseUrl: "https://example.com/v1", model: "privacy-agent", apiKey: "k" }),
+    listProfiles: () => ({ activeId: "p1", profiles: [{ id: "p1", name: "隐私模型", model: "privacy-agent" }] }),
+    tools,
+    store: { read: () => saved, write: v => { saved = v; } },
+    id: () => `priv${++seq}`,
+    now: () => 1_700_000_000_000 + seq * 400
+  });
+  const started = service.start({
+    message: "帮我看看这只股走势",
+    userContext: { origin: "holdings", costPrice: 1450 },
+    allowPersonalContext: false
+  });
+  let run = service.poll(started.runId);
+  for (let i = 0; i < 40 && run?.status === "running"; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    run = service.poll(started.runId);
+  }
+  assert.equal(run.status, "done");
+  assert.equal(myPortfolioCalled, false, "must not invoke myPortfolio source when allowPersonalContext is false");
+  assert.equal(capturedSystems[0].includes("my_portfolio"), false, "must omit personal tools from prompt");
+  assert.equal(JSON.stringify(capturedMessages[0]).includes("userContext"), false, "must omit userContext when disabled");
+  const summary = service.state().conversations.find(item => item.id === started.conversationId);
+  assert.match(summary.preview || "", /量价结构/);
 });

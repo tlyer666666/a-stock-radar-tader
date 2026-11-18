@@ -88,7 +88,7 @@
 /* 涨停池下面还有涨停生态等内容：涨停池固定占满一屏（表格内部滚动），不再被下方内容挤成一条线。 */
 :root .terminal-shell .limit-pool-workspace > .compact-limit-pool { flex: 0 0 auto; height: clamp(360px, calc(100vh - 210px), 860px); }
 
-:root .terminal-shell .holdings-table .tr { grid-template-columns: 150px 175px 135px 95px 165px 138px; min-width: 914px; height: var(--terminal-row-h); min-height: var(--terminal-row-h); gap: 8px; padding: 2px 8px; font-size: var(--fs-xs); }
+:root .terminal-shell .holdings-table .tr { grid-template-columns: 150px 175px 135px 95px 165px minmax(200px, max-content); min-width: 960px; height: var(--terminal-row-h); min-height: var(--terminal-row-h); gap: 8px; padding: 2px 8px; font-size: var(--fs-xs); }
 :root .terminal-shell .holdings-table .tr > span { display: flex; flex-direction: row; align-items: center; gap: 5px; min-width: 0; white-space: nowrap; }
 :root .terminal-shell .holdings-table .tr > span:nth-child(n+2):nth-child(-n+5) { justify-content: flex-end; text-align: right; font-variant-numeric: tabular-nums; }
 :root .terminal-shell .holdings-table .stock-cell small { white-space: nowrap; }

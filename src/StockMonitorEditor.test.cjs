@@ -10,7 +10,7 @@ before(async () => {
   const html = `<!doctype html><html><head><meta charset="utf-8"></head><body><div id="root"></div><script type="module">
     import React from 'react';
     import {createRoot} from 'react-dom/client';
-    import Editor from '/src/StockMonitorEditor.tsx';
+    import Editor from '/src/components/StockMonitorEditor.tsx';
     import useStockMonitors from '/src/useStockMonitors.ts';
     import '/src/styles/index.css';
     window.nextQuote={latest:10,changePct:1,turnover:2,amount:50000,source:'eastmoney'};

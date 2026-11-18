@@ -1,13 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, CircleAlert, Cloud, FolderOpen, KeyRound, LoaderCircle, RotateCcw, Save } from "lucide-react";
 import { PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
-import { backupApi, collectLocalData, restoreLocalData, type BackupFile, type BackupStatus } from "./backupClient";
+import { backupApi, collectLocalData, restoreBackup, type BackupFile, type BackupStatus } from "./backupClient";
 
 const cleanError = (error: unknown) => (error instanceof Error ? error.message : String(error))
   .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "").replace(/^\[[A-Z_]+\]\s*/, "");
 const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
-const timeText = (iso: string) => iso ? new Date(Date.parse(iso) + 8 * 3600_000).toISOString().slice(0, 16).replace("T", " ") : "";
+const timeText = (iso: string) => {
+  if (!iso) return "";
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? new Date(ms + 8 * 3600_000).toISOString().slice(0, 16).replace("T", " ") : "--";
+};
 /** A股雷达备份-20261112-160509.json → 2026-11-12 16:05:09 */
 const fileTime = (name: string) => { const m = name.match(/(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/); return m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6]}` : name; };
 
@@ -24,45 +28,91 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
   const [editingPassword, setEditingPassword] = useState(false);
   const [restore, setRestore] = useState<{ file: BackupFile; password: string; needPassword: boolean } | null>(null);
   const [confirm, setConfirm] = useState<ConfirmDialogRequest | null>(null);
+  const mountedRef = useRef(true);
+  const restoreSeqRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      restoreSeqRef.current += 1;
+    };
+  }, []);
 
   const load = useCallback(async () => {
     if (!api) return;
-    try { setStatus(await api.status()); } catch (error) { setMessage({ tone: "error", text: cleanError(error) }); }
+    try {
+      const next = await api.status();
+      if (mountedRef.current) setStatus(next);
+    } catch (error) {
+      if (mountedRef.current) setMessage({ tone: "error", text: cleanError(error) });
+    }
   }, [api]);
   useEffect(() => { if (!hidden) void load(); }, [hidden, load]);
 
   const act = async (label: string, run: () => Promise<BackupStatus | void>, done?: string) => {
     if (busy) return;
     setBusy(label); setMessage(null);
-    try { const next = await run(); if (next) setStatus(next); if (done) setMessage({ tone: "ok", text: done }); }
-    catch (error) { setMessage({ tone: "error", text: cleanError(error) }); }
-    finally { setBusy(""); }
+    try {
+      const next = await run();
+      if (!mountedRef.current) return;
+      if (next) setStatus(next);
+      if (done) setMessage({ tone: "ok", text: done });
+    } catch (error) {
+      if (mountedRef.current) setMessage({ tone: "error", text: cleanError(error) });
+    } finally {
+      if (mountedRef.current) setBusy("");
+    }
   };
 
   if (!api) return <div className="panel settings-card" id="settings-backup" hidden={hidden}>
     <PanelTitle title="数据备份" subtitle="桌面版可用" icon={Archive} /><p className="source-health-note">浏览器预览不能写本机文件夹，请在桌面版设置。</p></div>;
 
+  const confirmRequest = (file: BackupFile): ConfirmDialogRequest => ({
+    title: `用 ${fileTime(file.name)} 的备份覆盖现在的数据？`,
+    message: "自选、持仓、随心记、做T记录、自定义策略、AI 对话、回测和复盘记录会换成备份里的内容；同一服务地址的 API Key 继续使用本机现有配置。恢复后软件自动重启。",
+    details: ["建议先点「立即备份」留一份现在的数据。"], confirmLabel: "恢复并重启", tone: "danger"
+  });
   const startRestore = async (file: BackupFile) => {
-    setMessage(null);
-    try { await api.inspect(file.name); setRestore({ file, password: "", needPassword: false }); setConfirm(confirmRequest(file)); }
-    catch (error) {
+    if (busy) return;
+    const seq = ++restoreSeqRef.current;
+    setBusy("inspect"); setMessage(null);
+    try {
+      await api.inspect(file.name);
+      if (!mountedRef.current || restoreSeqRef.current !== seq) return;
+      setRestore({ file, password: "", needPassword: false });
+      setConfirm(confirmRequest(file));
+    } catch (error) {
+      if (!mountedRef.current || restoreSeqRef.current !== seq) return;
       const text = cleanError(error);
       if (/密码/.test(text)) setRestore({ file, password: "", needPassword: true });
       else setMessage({ tone: "error", text });
+    } finally {
+      if (mountedRef.current && restoreSeqRef.current === seq) setBusy("");
     }
   };
-  const confirmRequest = (file: BackupFile): ConfirmDialogRequest => ({
-    title: `用 ${fileTime(file.name)} 的备份覆盖现在的数据？`,
-    message: "自选、持仓、随心记、做T记录、自定义策略、AI 对话、回测和复盘记录会换成备份里的内容；令牌和 API Key 保留本机现有的。恢复后软件自动重启。",
-    details: ["建议先点「立即备份」留一份现在的数据。"], confirmLabel: "恢复并重启", tone: "danger"
-  });
+  const verifyRestorePassword = async () => {
+    if (!restore || !restore.password || busy) return;
+    const target = restore;
+    const seq = ++restoreSeqRef.current;
+    setBusy("verify"); setMessage(null);
+    try {
+      await api.inspect(target.file.name, target.password);
+      if (!mountedRef.current || restoreSeqRef.current !== seq) return;
+      setConfirm(confirmRequest(target.file));
+    } catch (error) {
+      if (!mountedRef.current || restoreSeqRef.current !== seq) return;
+      setMessage({ tone: "error", text: cleanError(error) });
+    } finally {
+      if (mountedRef.current && restoreSeqRef.current === seq) setBusy("");
+    }
+  };
   const runRestore = async () => {
-    if (!restore) return;
+    if (!restore || busy) return;
+    const target = restore;
     await act("restore", async () => {
-      const result = await api.restore(restore.file.name, restore.password);
-      restoreLocalData(result.local);
-      setMessage({ tone: "ok", text: "已恢复，软件马上重启…" });
-      await api.relaunch();
+      await restoreBackup(api, target.file.name, target.password);
+      if (mountedRef.current) setMessage({ tone: "ok", text: "已恢复，软件马上重启…" });
     });
   };
 
@@ -123,12 +173,9 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
         </tr>)}</tbody>
       </table> : <p className="source-health-note">{status?.folder ? "这个文件夹里还没有备份。" : "先选择备份文件夹。换了新电脑：装好软件后选同一个网盘文件夹，这里会列出以前的备份，点「从这份恢复」。"}</p>}
       {restore?.needPassword && <div className="backup-actions">
-        <input type="password" className="backup-password" value={restore.password} placeholder="这份备份有密码" aria-label="备份密码（恢复）" onChange={event => setRestore({ ...restore, password: event.target.value })} />
-        <button type="button" className="primary-btn" disabled={!restore.password || Boolean(busy)} onClick={() => void (async () => {
-          try { await api.inspect(restore.file.name, restore.password); setConfirm(confirmRequest(restore.file)); }
-          catch (error) { setMessage({ tone: "error", text: cleanError(error) }); }
-        })()}>下一步</button>
-        <button type="button" className="secondary-btn" onClick={() => setRestore(null)}>取消</button>
+        <input type="password" className="backup-password" value={restore.password} placeholder="这份备份有密码" aria-label="备份密码（恢复）" disabled={Boolean(busy)} onChange={event => setRestore({ ...restore, password: event.target.value })} />
+        <button type="button" className="primary-btn" disabled={!restore.password || Boolean(busy)} onClick={() => void verifyRestorePassword()}>下一步</button>
+        <button type="button" className="secondary-btn" disabled={Boolean(busy)} onClick={() => { restoreSeqRef.current += 1; setRestore(null); }}>取消</button>
       </div>}
     </section>
 

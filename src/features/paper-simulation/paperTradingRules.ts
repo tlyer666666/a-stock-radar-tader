@@ -28,15 +28,46 @@ export const isPostShanghai1500 = (isoString: string): boolean => {
   return shanghaiHour >= 15;
 };
 
-export const paperQuoteEvidence = (payload: AnalysisPayload): Partial<PaperPosition> => ({
-  quoteDate: payload.updatedAt && Number.isFinite(Date.parse(payload.updatedAt)) ? paperDate(payload.updatedAt) : "",
-  quoteName: String(payload.quote?.name || payload.security?.name || ""),
-  ...(nullableNumber(payload.quote?.volume) !== null ? { quoteVolume: Math.max(0, Number(payload.quote?.volume)) } : {}),
-  ...(positive(payload.quote?.preClose) !== null ? { quotePreClose: Number(payload.quote?.preClose) } : {}),
-  ...(positive(payload.quote?.latest) !== null && payload.updatedAt &&
-    isPostShanghai1500(payload.updatedAt) && paperDate(payload.updatedAt) === shanghaiDateTag()
-      ? { lastObservedClose: Number(payload.quote.latest), lastObservedCloseDate: paperDate(payload.updatedAt) } : {})
-});
+export const paperEffectiveQuoteIso = (payload: AnalysisPayload): string => {
+  const quoteAt = typeof payload.quote?.quoteAt === "string" ? payload.quote.quoteAt.trim() : "";
+  if (quoteAt && Number.isFinite(Date.parse(quoteAt))) return quoteAt;
+  return payload.updatedAt && Number.isFinite(Date.parse(payload.updatedAt)) ? payload.updatedAt : "";
+};
+
+export const paperQuoteEvidence = (payload: AnalysisPayload): Partial<PaperPosition> => {
+  const quoteIso = paperEffectiveQuoteIso(payload);
+  const effectiveDate = quoteIso ? paperDate(quoteIso) : "";
+  return {
+    quoteDate: effectiveDate,
+    quoteName: String(payload.quote?.name || payload.security?.name || ""),
+    ...(nullableNumber(payload.quote?.volume) !== null ? { quoteVolume: Math.max(0, Number(payload.quote?.volume)) } : {}),
+    ...(positive(payload.quote?.preClose) !== null ? { quotePreClose: Number(payload.quote?.preClose) } : {}),
+    ...(positive(payload.quote?.latest) !== null && quoteIso &&
+      isPostShanghai1500(quoteIso) && effectiveDate === shanghaiDateTag()
+        ? { lastObservedClose: Number(payload.quote.latest), lastObservedCloseDate: effectiveDate } : {})
+  };
+};
+
+const isHistoryBridgingGap = (
+  position: PaperPosition,
+  payload: AnalysisPayload,
+  today: string,
+  preClose: number | null
+): boolean => {
+  if (!position.lastObservedClose || !position.lastObservedCloseDate || !today || preClose === null) return false;
+  if (!Array.isArray(payload.history) || payload.history.length < 2) return false;
+  const span = payload.history
+    .filter(bar => bar && typeof bar.date === "string" && bar.date >= position.lastObservedCloseDate! && bar.date < today && positive(bar.close) !== null)
+    .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  if (!span.length || span[0]!.date !== position.lastObservedCloseDate) return false;
+  if (Math.abs(Number(span[0]!.close) - position.lastObservedClose) > .011) return false;
+  for (let i = 1; i < span.length; i += 1) {
+    const prevBarClose = Number(span[i - 1]!.close);
+    const ownPreClose = positive((span[i] as Record<string, unknown>)?.preClose);
+    if (ownPreClose !== null && Math.abs(ownPreClose - prevBarClose) > .011) return false;
+  }
+  return Math.abs(Number(span.at(-1)!.close) - preClose) <= .011;
+};
 
 /**
  * F-01 修复：除权阻塞必须能在「事实澄清后」自动解除，否则持仓永久无法平仓。
@@ -54,8 +85,8 @@ export const paperQuoteEvidence = (payload: AnalysisPayload): Partial<PaperPosit
 export const paperCorporateActionBlock = (position: PaperPosition, payload: AnalysisPayload): string => {
   const name = String(payload.quote?.name || payload.security?.name || "");
   const preClose = positive(payload.quote?.preClose);
-  const today = paperDate(payload.updatedAt || "");
-  const mismatched = Boolean(
+  const today = paperDate(paperEffectiveQuoteIso(payload));
+  const rawMismatch = Boolean(
     position.lastObservedClose && position.lastObservedCloseDate && today &&
     position.lastObservedCloseDate < today && preClose !== null &&
     Math.abs(position.lastObservedClose - preClose) > .011
@@ -63,6 +94,7 @@ export const paperCorporateActionBlock = (position: PaperPosition, payload: Anal
 
   // 事实一：除权标记仍在（名称前缀 / 行情声明）。这是最强的阻塞依据，优先保留。
   const corporateActionPending = /^(?:XR|XD|DR)/i.test(name) || Boolean(payload.quote?.corporateAction);
+  const mismatched = rawMismatch && (corporateActionPending || !isHistoryBridgingGap(position, payload, today, preClose));
 
   // 事实二：前收与已记录收盘仍不一致 —— 说明除权尚未被行情吸收。
   // 若已有阻塞标记但两项事实都不再成立，说明除权已被后续行情消化，可以解除。

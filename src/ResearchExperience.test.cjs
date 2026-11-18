@@ -7,8 +7,8 @@ const { registerTypeScript } = require('../qa/register-typescript.cjs');
 let restore, Signals, Trend, filterSignalGroups, previousWindow, previousDocument;
 before(() => {
   restore = registerTypeScript();
-  ({ default: Signals, filterSignalGroups } = require('./StrategySignalsView.tsx'));
-  Trend = require('./TrendScreenerView.tsx').default;
+  ({ default: Signals, filterSignalGroups } = require('./features/strategy-selection/StrategySignalsView.tsx'));
+  Trend = require('./features/trend/TrendScreenerView.tsx').default;
   previousWindow = global.window; previousDocument = global.document;
 });
 after(() => { restore?.(); global.window = previousWindow; global.document = previousDocument; });
@@ -173,7 +173,7 @@ test('featured strategies are listed first and open by default; the rest sit und
 });
 
 test('the by-stock summary covers featured strategies by default, can switch to all, and offers copying codes', () => {
-  const { StrategyStockSummaryPanel } = require('./StrategySignalsView.tsx');
+  const { StrategyStockSummaryPanel } = require('./features/strategy-selection/StrategySignalsView.tsx');
   const stock = code => ({ code, name: `证券${code}` });
   const groups = [
     { id: 'plain', name: '普通策略', family: 'repair', stocks: [stock('600010'), stock('600011')] },

@@ -41,9 +41,58 @@ function thsFreeError(message, code, extra = {}) {
   return Object.assign(new Error(message), { code, provider: "ths_free", ...extra });
 }
 
-/** 免费网关只覆盖沪深京 A 股个股；ETF、可转债交给东方财富/腾讯。 */
+const THS_SH_INDEX_CODES = Object.freeze({
+  "000001": "1A0001",
+  "000300": "1B0300",
+  "000905": "1B0905",
+  "000852": "1B0852",
+  "000016": "1B0016",
+  "000688": "1B0688"
+});
+
+function isImplicitIndexSecurity(security) {
+  if (String(security?.assetType || "") === "index") return true;
+  const secid = String(security?.secid || "");
+  if (/^1\.000\d{3}$/.test(secid) || /^0\.399\d{3}$/.test(secid)) return true;
+  const thscode = String(security?.thscode || "").toUpperCase();
+  return /^(?:000\d{3}\.SH|399\d{3}\.SZ|\d{6}\.TI)$/.test(thscode);
+}
+
+/**
+ * 解析同花顺免费网关目标市场与代码：
+ * - 沪市 000xxx / 深市 399xxx / 显式 index 严禁按深市个股 hs_000xxx 请求（避免 000985.SH 撞号 000985.SZ 大庆华科等）；
+ * - 已知同花顺指数映射为对应网关代码（000001 -> hs_1A0001、000300 -> hs_1B0300），中证全指 000985 等返回 null 交由东财/腾讯等源处理。
+ */
+function resolveThsFreeSymbol(security) {
+  const code = String(security?.code || "");
+  if (isImplicitIndexSecurity(security)) {
+    const market = String(security?.thsMarket || "");
+    if (/^(?:48|hs)$/.test(market) && /^[0-9A-Z]{6}$/.test(code)) {
+      return { market, code };
+    }
+    const secid = String(security?.secid || "");
+    const thscode = String(security?.thscode || "").toUpperCase();
+    const isShIndex = (!secid && !thscode)
+      ? Boolean(THS_SH_INDEX_CODES[code])
+      : (secid.startsWith("1.") || thscode.endsWith(".SH"));
+    if (isShIndex && THS_SH_INDEX_CODES[code]) {
+      return { market: "hs", code: THS_SH_INDEX_CODES[code] };
+    }
+    return null;
+  }
+  const assetType = String(security?.assetType || "stock");
+  if (!/^\d{6}$/.test(code)) return null;
+  if (assetType === "stock") return { market: "hs", code };
+  if (assetType === "convertibleBond") {
+    if (/^11[0138]\d{3}$/.test(code)) return { market: "19", code };
+    if (/^12[378]\d{3}$/.test(code)) return { market: "35", code };
+  }
+  return null;
+}
+
+/** 免费网关覆盖沪深京 A 股个股、可转债及已映射指数；中证全指 000985、ETF 等交给东方财富/腾讯。 */
 function thsFreeSupports(security) {
-  return thsMarketPrefix(security) !== null;
+  return resolveThsFreeSymbol(security) !== null;
 }
 
 /**
@@ -51,20 +100,7 @@ function thsFreeSupports(security) {
  * （19 = 上交所 110/111/113/118，35 = 深交所 123/127/128）。其他品种（ETF 等）暂不支持。
  */
 function thsMarketPrefix(security) {
-  const code = String(security?.code || "");
-  const assetType = String(security?.assetType || "stock");
-  // 指数需显式给出同花顺市场号：48_883957 同花顺全A、hs_1B0300 沪深300、hs_1A0001 上证指数。
-  if (assetType === "index") {
-    const market = String(security?.thsMarket || "");
-    return /^(?:48|hs)$/.test(market) && /^[0-9A-Z]{6}$/.test(code) ? market : null;
-  }
-  if (!/^\d{6}$/.test(code)) return null;
-  if (assetType === "stock") return "hs";
-  if (assetType === "convertibleBond") {
-    if (/^11[0138]\d{3}$/.test(code)) return "19";
-    if (/^12[378]\d{3}$/.test(code)) return "35";
-  }
-  return null;
+  return resolveThsFreeSymbol(security)?.market ?? null;
 }
 
 /** 成交量换算为「手」：股票 1 手 = 100 股；可转债 1 手 = 10 张。 */
@@ -123,7 +159,10 @@ function missingQuoteFields(values) {
 function normalizeThsFreeQuote(security, items) {
   if (!items || typeof items !== "object") throw thsFreeError("同花顺免费行情未返回数据", "THS_FREE_EMPTY");
   const code = String(items["5"] || "");
-  if (code !== security.code) throw thsFreeError(`同花顺免费行情代码不匹配（${code || "空"}）`, "THS_FREE_MISMATCH");
+  const expectedTarget = resolveThsFreeSymbol(security);
+  if (code !== security.code && code !== expectedTarget?.code) {
+    throw thsFreeError(`同花顺免费行情代码不匹配（${code || "空"}）`, "THS_FREE_MISMATCH");
+  }
   const latest = num(items["10"]);
   if (!(latest > 0)) throw thsFreeError("同花顺免费行情未返回有效现价", "THS_FREE_NO_PRICE");
   const updatedMs = parseBeijingTime(items.updateTime);
@@ -144,7 +183,7 @@ function normalizeThsFreeQuote(security, items) {
     amount: num(items["19"])
   };
   return {
-    code,
+    code: String(security.code || code),
     name: String(items.name || security.name || code),
     secid: security.secid,
     thscode: security.thscode,
@@ -162,8 +201,8 @@ function normalizeThsFreeQuote(security, items) {
     limitUp: num(items["69"]),
     limitDown: num(items["70"]),
     preClose,
-    totalMarketCap: num(items["3475914"]) || 0,
-    floatMarketCap: num(items["3541450"]) || 0,
+    totalMarketCap: num(items["3475914"]),
+    floatMarketCap: num(items["3541450"]),
     // 免费网关不给行业；留空让调用方用缓存或保留原值，避免把真实行业覆盖成「未分类」。
     industry: String(security.industry || ""),
     turnover: values.turnover,
@@ -179,8 +218,9 @@ function normalizeThsFreeQuote(security, items) {
 }
 
 async function thsFreeQuote(security, { signal } = {}) {
-  if (!thsFreeSupports(security)) throw thsFreeError("同花顺免费行情只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
-  const payload = await readJsonp(`${THS_FREE_HOST}/v6/realhead/${thsMarketPrefix(security)}_${security.code}/last.js`, QUOTE_POLICY, signal);
+  const target = resolveThsFreeSymbol(security);
+  if (!target) throw thsFreeError("同花顺免费行情只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
+  const payload = await readJsonp(`${THS_FREE_HOST}/v6/realhead/${target.market}_${target.code}/last.js`, QUOTE_POLICY, signal);
   const items = payload?.items;
   // 个别品种把代码/时间放在 items 外层；合并后再按同一口径校验。
   if (items && typeof items === "object" && items["5"] === undefined && payload["5"] !== undefined) {
@@ -228,7 +268,7 @@ function mergeQuoteIntoDailyRows(rows, quote) {
     high: Math.max(quote.high, quote.latest),
     low: Math.min(quote.low, quote.latest),
     close: quote.latest,
-    volume: Number.isFinite(quote.volume) ? quote.volume : 0,
+    volume: Number.isFinite(quote.volume) ? quote.volume : null,
     volumeUnit: "lots",
     amount: Number.isFinite(quote.amount) ? quote.amount : null,
     turnover: Number.isFinite(quote.turnover) ? quote.turnover : null
@@ -243,12 +283,23 @@ function mergeQuoteIntoDailyRows(rows, quote) {
   return last && last.date === date ? [...rows.slice(0, -1), bar] : [...rows, bar];
 }
 
-/** 补齐与东方财富日线同口径的派生字段：昨收、涨跌额、涨跌幅、振幅。 */
-function withDerivedFields(rows) {
+/** 补齐与东方财富日线同口径的派生字段：昨收、涨跌额、涨跌幅、振幅。
+ * 不复权日线（preserveMissingBasis=true）仅在源端已提供昨收时计算，不把前一日原始收盘伪装成交易所除权参考价。 */
+function withDerivedFields(rows, { preserveMissingBasis = false } = {}) {
   return rows.map((row, index) => {
-    const previous = Number.isFinite(row.preClose) && row.preClose > 0 ? row.preClose : rows[index - 1]?.close;
-    if (!(previous > 0)) return { ...row, ...Object.fromEntries(["change", "changePct", "amplitude"]
-      .map(key => [key, Number.isFinite(row[key]) ? row[key] : null])) };
+    const hasOwnPreClose = Number.isFinite(row.preClose) && row.preClose > 0;
+    const previous = hasOwnPreClose ? row.preClose : preserveMissingBasis ? null : rows[index - 1]?.close;
+    if (!(previous > 0)) {
+      if (preserveMissingBasis) {
+        const clean = { ...row };
+        for (const key of ["preClose", "change", "changePct", "amplitude"]) {
+          if (!Number.isFinite(clean[key])) delete clean[key];
+        }
+        return clean;
+      }
+      return { ...row, ...Object.fromEntries(["change", "changePct", "amplitude"]
+        .map(key => [key, Number.isFinite(row[key]) ? row[key] : null])) };
+    }
     return {
       ...row,
       preClose: previous,
@@ -264,11 +315,12 @@ function withDerivedFields(rows) {
  * 当年文件取不到时用 last.js 兜底；fqt 为 0/1 时用实时快照补当天K线。
  */
 async function thsFreeDailyHistory(security, { limit = 160, fqt = 1, signal, now = Date.now(), quote } = {}) {
-  if (!thsFreeSupports(security)) throw thsFreeError("同花顺免费日线只覆盖A股个股", "THS_FREE_UNSUPPORTED");
+  const target = resolveThsFreeSymbol(security);
+  if (!target) throw thsFreeError("同花顺免费日线只覆盖A股个股", "THS_FREE_UNSUPPORTED");
   const adjustment = ADJUSTMENT_PATH[Number(fqt)] ? Number(fqt) : 1;
   const path = ADJUSTMENT_PATH[adjustment];
   const wanted = Math.max(1, Math.min(3000, Math.round(Number(limit) || 160)));
-  const base = `${THS_FREE_HOST}/v6/line/${thsMarketPrefix(security)}_${security.code}/${path}`;
+  const base = `${THS_FREE_HOST}/v6/line/${target.market}_${target.code}/${path}`;
   const unitsPerLot = lotSize(security);
   const byDate = new Map();
   const add = (rows) => { for (const row of rows) if (!byDate.has(row.date)) byDate.set(row.date, row); };
@@ -310,7 +362,7 @@ async function thsFreeDailyHistory(security, { limit = 160, fqt = 1, signal, now
     }
     rows = mergeQuoteIntoDailyRows(rows, latestQuote);
   }
-  const result = withDerivedFields(rows).slice(-wanted);
+  const result = withDerivedFields(rows, { preserveMissingBasis: adjustment === 0 }).slice(-wanted);
   Object.defineProperty(result, "dataSource", { value: adjustment === 1 ? "ths_free_qfq" : adjustment === 2 ? "ths_free_hfq" : "ths_free_unadjusted", enumerable: false });
   Object.defineProperty(result, "actualAdjustment", { value: adjustment, enumerable: false });
   return result;
@@ -392,11 +444,12 @@ function groupMinuteRows(rows, size, sourceMinutes = 5, now = Date.now()) {
  * 返回行结构与 eastmoneyKlineRow 相同，dataSource 标为 ths_free_*。
  */
 async function thsFreeKline(security, { interval = "101", limit = 160, fqt = 1, signal, now = Date.now() } = {}) {
-  if (!thsFreeSupports(security)) throw thsFreeError("同花顺免费K线只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
+  const target = resolveThsFreeSymbol(security);
+  if (!target) throw thsFreeError("同花顺免费K线只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
   const klt = String(interval);
   const wanted = Math.max(1, Math.min(3000, Math.round(Number(limit) || 160)));
   const adjustment = ADJUSTMENT_PATH[Number(fqt)] ? Number(fqt) : 1;
-  const base = `${THS_FREE_HOST}/v6/line/${thsMarketPrefix(security)}_${security.code}`;
+  const base = `${THS_FREE_HOST}/v6/line/${target.market}_${target.code}`;
   const unitsPerLot = lotSize(security);
   const tag = (rows, source, actualAdjustment) => {
     Object.defineProperty(rows, "dataSource", { value: source, enumerable: false });
@@ -475,8 +528,9 @@ function rebaseStaleTimeShare(share, clock, previousDate) {
 }
 
 async function thsFreeTimeShare(security, { signal } = {}) {
-  if (!thsFreeSupports(security)) throw thsFreeError("同花顺分时只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
-  const url = `${THS_FREE_HOST}/v6/time/${thsMarketPrefix(security)}_${security.code}/last.js`;
+  const target = resolveThsFreeSymbol(security);
+  if (!target) throw thsFreeError("同花顺分时只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
+  const url = `${THS_FREE_HOST}/v6/time/${target.market}_${target.code}/last.js`;
   const parsed = parseThsTimeShare(await readJsonp(url, LINE_POLICY, signal), lotSize(security));
   if (!parsed) throw thsFreeError("同花顺分时为空", "THS_FREE_EMPTY_HISTORY");
   return parsed;
@@ -497,6 +551,7 @@ module.exports = {
   groupMinuteRows,
   THS_FREE_HOST,
   MAX_TRADING_LAG_SECONDS,
+  resolveThsFreeSymbol,
   thsFreeSupports,
   thsMarketPrefix,
   parseBeijingTime,

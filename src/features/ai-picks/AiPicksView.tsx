@@ -1,14 +1,16 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ChevronRight, CircleAlert, History, ListChecks, LoaderCircle, RefreshCw, Sparkles, Target, Wand2 } from "lucide-react";
+import { Award, Bookmark, BookmarkCheck, Bot, ChevronRight, CircleAlert, History, ListChecks, LoaderCircle, MessagesSquare, RefreshCw, Sparkles, Target, Wand2 } from "lucide-react";
 import { AiCustomBoard } from "./AiCustomBoard";
 import { PageHeading } from "../../components/terminal/TerminalPrimitives";
 import { AiDimChips, AiFrameworkPicker, AiScoreCell, useAiFrameworks } from "./AiFrameworkParts";
 import { AiScoringCoverage, AiSelectAllHeader, AiSelectCell, AiSelectionBar, scoreAction, scoringCoverage, useRowSelection } from "./AiRowSelection";
 import { AiCommentRow } from "./AiCommentRow";
-import { normalizeSignalReport, summarizeStocksAcrossStrategies, type StockSummaryRow, type StrategySignalReport } from "../../StrategySignalsView";
+import { normalizeSignalReport, summarizeStocksAcrossStrategies, type StockSummaryRow, type StrategySignalReport } from "../../domain/strategySelectionReport";
 import { createServiceJobScope } from "../../serviceJobClient";
-import { selectionSummaryDataState } from "../../strategySelectionDataState";
-import { whenVisible } from "../../visiblePolling";
+import { selectionSummaryDataState } from "../../domain/strategySelectionDataState";
+import { startVisibleInterval } from "../../visiblePolling";
+import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
+import { readTrendPlans, saveQuickObservationPlan } from "../../trendWorkspace";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -17,6 +19,7 @@ import { getSelectionReport, setPendingStrategyText, setSelectionReport, subscri
 
 const RATING_FILTERS = ["全部", "重点关注", "关注", "观望", "回避"] as const;
 const PAGE_SIZE = 20;
+const formatOutcomeStat = (stat: AiOutcomeBucket) => stat ? `${stat.winRatePct}% / ${stat.avgPct >= 0 ? "+" : ""}${stat.avgPct}% (${stat.count})` : "—";
 type HistoryDay = { asOfDate: string; rankModels: string[]; customModels?: string[] | undefined; hasSummary: boolean; savedAt: string };
 type Tab = "strategy" | "custom";
 let rememberedTab: Tab = "strategy";
@@ -45,10 +48,32 @@ const stamp = (value: { model: string; generatedAt: string; cached?: boolean | u
  * 4. 历史记录（按数据日回看之前的打分和总结）；5. 用大白话建策略（交给「我的策略」编辑器确认保存）。
  * 打开页面只读本机已保存的结果，不会自动调用模型。
  */
-export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quoteRefreshSeconds = 15 }: {
-  onOpen?: ((security: Security) => void) | undefined; onOpenStrategies?: (() => void) | undefined; live?: boolean; quoteRefreshSeconds?: number;
+export default function AiPicksView({
+  onOpen,
+  onOpenStrategies,
+  favoriteCodes,
+  onToggleFavorite,
+  onShowToast,
+  live = true,
+  quoteRefreshSeconds = 15
+}: {
+  onOpen?: ((security: Security) => void) | undefined;
+  onOpenStrategies?: (() => void) | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  onShowToast?: ((message: string) => void) | undefined;
+  live?: boolean;
+  quoteRefreshSeconds?: number;
 }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai;
+  const [plannedCodes, setPlannedCodes] = useState<Set<string>>(() => {
+    try {
+      if (typeof window === "undefined") return new Set();
+      return new Set(readTrendPlans(window.localStorage).plans.filter(p => !p.archivedAt).map(p => p.candidate.security.code));
+    } catch {
+      return new Set();
+    }
+  });
   const [report, setReport] = useState<StrategySignalReport | null>(() => getSelectionReport<StrategySignalReport>());
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -66,6 +91,8 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   const [filter, setFilter] = useState<(typeof RATING_FILTERS)[number]>("全部");
   const [page, setPage] = useState(1);
   const [history, setHistory] = useState<HistoryDay[]>([]);
+  const [leaderboard, setLeaderboard] = useState<AiOutcomesLeaderboard | null>(null);
+  const [leaderTab, setLeaderTab] = useState<"model" | "framework" | "cycle" | "misses">("model");
   const [viewing, setViewing] = useState<Viewing>({ kind: "current" });
   const [historyDay, setHistoryDay] = useState<{ asOfDate: string; rank: AiRanking | null; custom?: AiRanking | null | undefined; summary: AiSummary | null } | null>(null);
   const [tab, setTab] = useState<Tab>(rememberedTab);
@@ -98,8 +125,7 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   useEffect(() => {
     if (!scanning) return;
     const started = Date.now();
-    const timer = window.setInterval(whenVisible(() => setElapsed(Math.floor((Date.now() - started) / 1000))), 1000);
-    return () => window.clearInterval(timer);
+    return startVisibleInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
   }, [scanning]);
 
   const rows = useMemo<StockSummaryRow[]>(() => report ? summarizeStocksAcrossStrategies(report.strategies.filter(group => !group.error)) : [], [report]);
@@ -119,8 +145,9 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
   const input = useMemo<AiSelectionInput>(() => ({ asOfDate, picks, strategyCounts }), [asOfDate, picks, strategyCounts]);
 
   const loadHistory = useCallback(() => {
-    if (!api?.history) return;
-    void api.history().then(setHistory).catch(() => {});
+    // Optional AI metadata caches: ignore transient IPC/config absence so manual scoring remains available.
+    if (api?.history) void api.history().then(setHistory).catch(() => undefined);
+    if (api?.outcomesLeaderboard) void api.outcomesLeaderboard({ days: 30 }).then(setLeaderboard).catch(() => undefined);
   }, [api]);
   useEffect(() => { loadHistory(); }, [loadHistory]);
 
@@ -130,14 +157,14 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
     const stop = () => { generation.current += 1; };
     setRanking(null); setSummary(null); setBusy(""); setError("");
     if (!api) return stop;
-    void api.status().then(value => { if (generation.current === current) setStatus(value); }).catch(() => {});
-    if (api.profiles) void api.profiles().then(value => { if (generation.current === current) setProfiles(value); }).catch(() => {});
+    void api.status().then(value => { if (generation.current === current) setStatus(value); }).catch(() => undefined);
+    if (api.profiles) void api.profiles().then(value => { if (generation.current === current) setProfiles(value); }).catch(() => undefined);
     if (!picks.length) return stop;
     void api.cached(input).then(value => {
       if (generation.current !== current) return;
       if (cacheRevision.current.rank === cachedAt.rank) setRanking(value.rank);
       if (cacheRevision.current.summary === cachedAt.summary) setSummary(value.summary);
-    }).catch(() => {});
+    }).catch(() => undefined);
     return stop;
   }, [api, input, picks.length, reload]);
 
@@ -262,6 +289,80 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
       {error && <div className="test-result fail" role="alert"><span />{error}</div>}
     </section>}
 
+    {leaderboard && (leaderboard.evaluatedSamples > 0 || leaderboard.lookbackStats.count > 0 || leaderboard.recentMisses.length > 0) && (
+      <details className="panel ai-leaderboard-panel">
+        <summary className="ai-leaderboard-summary">
+          <Award size={16} />
+          <span>
+            <b>AI 后验成绩单与错题回注</b>
+            <small>
+              近 {leaderboard.daysCovered} 个数据日 · 已核对看好样本 {leaderboard.evaluatedSamples} 次
+              {leaderboard.byModel[0]?.t3 ? ` · 榜首 ${leaderboard.byModel[0].label} T+3 胜率 ${leaderboard.byModel[0].t3.winRatePct}%` : ""}
+              {leaderboard.lookbackStats.avgHitRatePct !== null ? ` · 复盘回看均准 ${leaderboard.lookbackStats.avgHitRatePct}%` : ""}
+            </small>
+          </span>
+        </summary>
+        <div className="ai-leaderboard-body">
+          <div className="ai-leaderboard-tabs" role="tablist" aria-label="后验榜单维度">
+            <button type="button" role="tab" aria-selected={leaderTab === "model"} className={leaderTab === "model" ? "active" : ""} onClick={() => setLeaderTab("model")}>按模型 ({leaderboard.byModel.length})</button>
+            <button type="button" role="tab" aria-selected={leaderTab === "framework"} className={leaderTab === "framework" ? "active" : ""} onClick={() => setLeaderTab("framework")}>按战法框架 ({leaderboard.byFramework.length})</button>
+            <button type="button" role="tab" aria-selected={leaderTab === "cycle"} className={leaderTab === "cycle" ? "active" : ""} onClick={() => setLeaderTab("cycle")}>按情绪周期 ({leaderboard.byCycle.length})</button>
+            <button type="button" role="tab" aria-selected={leaderTab === "misses"} className={leaderTab === "misses" ? "active" : ""} onClick={() => setLeaderTab("misses")}>高分错题教训 ({leaderboard.recentMisses.length})</button>
+          </div>
+          {leaderTab !== "misses" ? (
+            <div className="ai-leaderboard-table-wrap">
+              <table className="ai-leaderboard-table">
+                <thead>
+                  <tr>
+                    <th>{leaderTab === "model" ? "模型" : leaderTab === "framework" ? "分析框架" : "市场情绪周期"}</th>
+                    <th>看好已验/总评</th>
+                    <th>T+1 胜率/均益</th>
+                    <th>T+3 胜率/均益</th>
+                    <th>T+5 胜率/均益</th>
+                    <th>5日均回撤/止损</th>
+                    <th>高分(&ge;75)失误</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(leaderTab === "model" ? leaderboard.byModel : leaderTab === "framework" ? leaderboard.byFramework : leaderboard.byCycle).map(row => (
+                    <tr key={row.key}>
+                      <td><b>{row.label}</b>{row.sublabel ? <small> {row.sublabel}</small> : null}</td>
+                      <td>{row.sampleCount} / {row.totalScored}</td>
+                      <td>{formatOutcomeStat(row.t1)}</td>
+                      <td>{formatOutcomeStat(row.t3)}</td>
+                      <td>{formatOutcomeStat(row.t5)}</td>
+                      <td>{row.avgDrawdownPct !== null && row.avgDrawdownPct !== undefined ? `${row.avgDrawdownPct}% / 止损${row.stopHitRatePct ?? 0}%` : "—"}</td>
+                      <td>{row.highScoreMisses > 0 ? `${row.highScoreMisses} (${row.missRatePct ?? 0}%)` : "0"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="ai-leaderboard-misses">
+              {leaderboard.recentMisses.length === 0 ? (
+                <p className="ai-leaderboard-muted">近 {leaderboard.daysCovered} 日暂未发现 75 分以上明显回撤错题。</p>
+              ) : (
+                <ul>
+                  {leaderboard.recentMisses.map(item => (
+                    <li key={`${item.asOfDate}-${item.code}`}>
+                      <button type="button" className="link-btn" onClick={() => open({ code: item.code, name: item.name })}>
+                        <b>{item.name}</b> ({item.code})
+                      </button>
+                      <span> · {item.asOfDate} · {item.model} · {item.score}分[{item.cycle}]</span>
+                      <span className="tone-down"> T+1 {item.t1 ?? "--"}% / T+3 {item.t3 ?? "--"}%{item.maxDrawdownPct !== null && item.maxDrawdownPct !== undefined ? ` · 最大回撤 ${item.maxDrawdownPct}%${item.stopHit ? " (触止损)" : ""}` : ""}</span>
+                      <small>{item.lesson}</small>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          <p className="ai-leaderboard-note">说明：以本机已缓存日线统计评分≥70或「关注/重点关注」标的；近期高分错题与回看教训会自动回注至下次 AI 打分与市场复盘约束中。</p>
+        </div>
+      </details>
+    )}
+
     {custom && <AiCustomBoard configured={configured} reload={reload} expectedModels={expectedModels} historyRanking={historyDay?.custom} historyDate={isHistory ? viewing.asOfDate : undefined}
       onOpen={onOpen} onChanged={loadHistory} live={live} quoteRefreshSeconds={quoteRefreshSeconds} />}
 
@@ -274,7 +375,15 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
     </article>}
 
     {!custom && (report || isHistory) && <section className="panel ai-ranking ai-picks-board" aria-label="AI 打分榜">
-      <div className="ai-ranking-head"><span><b>AI 打分榜</b>{shownRanking ? ` · ${multi ? "多模型评分" : "单模型评分"} · AI 已返回 ${shownRanking.evaluated} 只 · ${stamp(shownRanking)}` : isHistory ? " · 这一天没有保存打分" : " · 还没打分，下表是候选股"}</span>
+      <div className="ai-ranking-head"><span><b>AI 打分榜</b>{shownRanking ? ` · ${multi ? "多模型评分" : "单模型评分"} · AI 已返回 ${shownRanking.evaluated} 只 · ${stamp(shownRanking)}` : isHistory ? " · 这一天没有保存打分" : " · 还没打分，下表是候选股"}
+        {shownRanking?.outcomeSummary && <em className="ai-disagreement" title={`基于本机已缓存日线核对 ${shownRanking.outcomeSummary.evaluatedCount} 只`}>
+          {[
+            `后验(${shownRanking.outcomeSummary.evaluatedCount}只)`,
+            shownRanking.outcomeSummary.t1 ? `T+1胜率${shownRanking.outcomeSummary.t1.winRatePct}%` : "",
+            shownRanking.outcomeSummary.t5 ? `T+5胜率${shownRanking.outcomeSummary.t5.winRatePct}%` : "",
+            shownRanking.outcomeSummary.avgDrawdownPct !== null && shownRanking.outcomeSummary.avgDrawdownPct !== undefined ? `均回撤${shownRanking.outcomeSummary.avgDrawdownPct}%` : ""
+          ].filter(Boolean).join(" · ")}
+        </em>}</span>
         {shownRanking && <div role="group" aria-label="按评级筛选">{RATING_FILTERS.map(item => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}{item !== "全部" ? ` ${shownRanking.items.filter(row => !row.fallback && row.rating === item).length}` : ""}</button>)}</div>}</div>
       {!!shownRanking?.failed?.length && <div className="test-result fail" role="status"><span />{shownRanking.failed.join("、")} 的日线没读到，这次没有参与打分，可稍后再点「AI 打分」补上。</div>}
       {partialModels.length > 0 && <div className="test-result fail" role="status"><span />{partialModels.map(item => `${item.name} 有 ${item.missed} 只这一批没有返回`).join("；")}，这些股票按基础分显示或暂缺 AI 点评，可点「重新打分」再试。</div>}
@@ -287,19 +396,85 @@ export default function AiPicksView({ onOpen, onOpenStrategies, live = true, quo
       <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="AI 打分榜表格，可横向滚动">
         <table className="ai-ranking-table ai-picks-table"><thead><tr>
           {selectable && <AiSelectAllHeader selection={selection} pageCodes={pageRows.map(row => row.code)} />}
-          <th scope="col">{multi ? "综合分" : "AI 分"}</th>{multi && <th scope="col">各模型</th>}<th scope="col">股票</th><th scope="col">日K</th>{!isHistory && <th scope="col">现价</th>}{hasDims && <th scope="col">各维度</th>}</tr></thead>
-          <tbody>{pageRows.map(row => <Fragment key={row.code}><tr className={`${onOpen ? "clickable" : ""}${selection.selected.has(row.code) ? " selected" : ""}${row.ai ? " has-comment" : ""}`} onClick={() => open({ code: row.code, name: row.name, secid: row.source?.secid })}>
+          <th scope="col">{multi ? "综合分" : "AI 分"}</th>{multi && <th scope="col">各模型</th>}<th scope="col">股票</th><th scope="col">日K</th>{!isHistory && <th scope="col">现价</th>}{hasDims && <th scope="col">各维度</th>}<th scope="col">快捷流转</th></tr></thead>
+          <tbody>{pageRows.map(row => {
+            const sec = toSecurity({ code: row.code, name: row.name, secid: row.source?.secid });
+            const isFav = favoriteCodes?.has(row.code) || false;
+            const isPlanned = plannedCodes.has(row.code);
+            const livePrice = Number(quotes.entries[row.code]?.quote?.latest);
+            const refPrice = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : row.source?.latest;
+            const addPlan = () => {
+              if (typeof window === "undefined") return;
+              const result = saveQuickObservationPlan(window.localStorage, {
+                code: row.code,
+                name: row.name,
+                secid: sec.secid,
+                referencePrice: refPrice,
+                asOf: asOfDate || row.source?.signalDate,
+                reason: row.ai?.highlights || (row.ai ? `AI评分 ${row.ai.score} (${row.ai.rating})` : "AI 候选关注")
+              });
+              if (!result.ok) {
+                onShowToast?.(result.error);
+                return;
+              }
+              setPlannedCodes(prev => {
+                const next = new Set(prev);
+                next.add(row.code);
+                return next;
+              });
+              onShowToast?.(result.created ? `${row.name} 已加入趋势观察计划（可在驾驶舱跟踪买点）` : `${row.name} 已在活跃观察计划中`);
+            };
+            return <Fragment key={row.code}><tr className={`${onOpen ? "clickable" : ""}${selection.selected.has(row.code) ? " selected" : ""}${row.ai ? " has-comment" : ""}`} onClick={() => open({ code: row.code, name: row.name, secid: row.source?.secid })}>
             {selectable && <AiSelectCell selection={selection} code={row.code} name={row.name} removeLabel="从候选移除" removeDisabled={Boolean(busy)} onRemove={() => { if (!busy) updateExcluded([...excluded, row.code]); }} />}
-            <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? 1 : expectedModels} /> : <small>未打分</small>}</td>
+            <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? (shownRanking?.models?.length || 1) : expectedModels} /> : <small>未打分</small>}</td>
             {multi && <td className="ai-model-scores">{(row.ai?.scores || []).map(score => <span key={score.id} className={ratingTone(score.rating)}>{score.name} <b>{score.score}</b></span>)}
               {row.ai?.disagreement && <em className="ai-disagreement" title={`各模型分差 ${row.ai.spread} 分`}>模型分歧</em>}</td>}
             <th scope="row" className="strategy-stock-name"><b>{row.name}</b><small>{row.code}</small>{row.source && <small className="strategy-stock-reasons">{row.source.strategies.map(item => item.name).slice(0, 3).join(" · ")}{row.source.strategies.length > 3 ? ` 等 ${row.source.strategies.length} 个策略` : ""}</small>}</th>
-            <td><SelectionKline security={toSecurity({ code: row.code, name: row.name, secid: row.source?.secid })} signalDate={row.source?.signalDate} /></td>
+            <td><SelectionKline security={sec} signalDate={row.source?.signalDate} /></td>
             {!isHistory && <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[row.code]} selectionClose={row.source?.latest} /></td>}
             {hasDims && <td className="ai-dims-cell"><AiDimChips dims={row.ai?.dims} /></td>}
+            <td className="ai-picks-quick-cell" onClick={event => event.stopPropagation()}>
+              <div className="ai-picks-quick-actions">
+                {onToggleFavorite && (
+                  <button
+                    type="button"
+                    className={`table-action${isFav ? " active" : ""}`}
+                    onClick={() => onToggleFavorite(sec)}
+                    title={isFav ? "移出自选" : "加入自选"}
+                  >
+                    {isFav ? <BookmarkCheck size={12} /> : <Bookmark size={12} />}
+                    {isFav ? "已自选" : "+自选"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className={`table-action${isPlanned ? " active" : ""}`}
+                  onClick={addPlan}
+                  title={isPlanned ? "已在趋势观察计划中" : "一键转入今日驾驶舱观察计划"}
+                >
+                  <Target size={12} />
+                  {isPlanned ? "已在计划" : "观察计划"}
+                </button>
+                {canOpenAgent() && (
+                  <button
+                    type="button"
+                    className="table-action"
+                    onClick={() => openAgentFor({ code: row.code, name: row.name }, "full", {
+                      origin: "ai_picks",
+                      ...(row.ai ? { aiScore: row.ai.score, aiRating: row.ai.rating, highlights: row.ai.highlights, risks: row.ai.risks } : {})
+                    })}
+                    title="带此股评分和看点问 AI"
+                  >
+                    <MessagesSquare size={12} />
+                    问AI
+                  </button>
+                )}
+              </div>
+            </td>
           </tr>
-          <AiCommentRow ai={row.ai} colSpan={(selectable ? 1 : 0) + (multi ? 1 : 0) + (isHistory ? 0 : 1) + (hasDims ? 1 : 0) + 3} selected={selection.selected.has(row.code)}
-            onOpen={onOpen ? () => open({ code: row.code, name: row.name, secid: row.source?.secid }) : undefined} /></Fragment>)}</tbody></table>
+          <AiCommentRow ai={row.ai} colSpan={(selectable ? 1 : 0) + (multi ? 1 : 0) + (isHistory ? 0 : 1) + (hasDims ? 1 : 0) + 4} selected={selection.selected.has(row.code)}
+            onOpen={onOpen ? () => open({ code: row.code, name: row.name, secid: row.source?.secid }) : undefined} /></Fragment>;
+          })}</tbody></table>
         {!pageRows.length && <p className="ai-selection-note">{shownRanking && filter !== "全部" ? `没有评级为「${filter}」的股票。` : isHistory ? "这一天没有保存打分结果。" : removedCount ? "候选股都已移除，点上方「恢复」放回来。" : dataState.state === "unavailable" ? "候选数据暂不可用，可刷新候选重试。" : "本轮没有选出股票，暂无可供 AI 评估的内容。"}</p>}
       </div>
       {boardRows.length > PAGE_SIZE && <div className="strategy-stock-pagination" aria-label="AI 打分榜分页"><span role="status" aria-live="polite">共 {boardRows.length} 只 · 第 {currentPage} / {totalPages} 页</span>

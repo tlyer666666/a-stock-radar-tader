@@ -12,7 +12,7 @@ const {
   assertWindowChrome,
   expectedWindowControls
 } = require("./packaged-layout.cjs");
-const { cleanupPackagedScreenshots } = require("./packaged-app.cjs");
+const { createScreenshotDirectory } = require("./packaged-app.cjs");
 
 const projectRoot = path.resolve(__dirname, "..");
 const validChrome = {
@@ -23,25 +23,17 @@ const validChrome = {
   controls: { width: 141, height: 32, top: 0 }
 };
 
-test("packaged E2E removes screenshots left by older package runs", () => {
+test("packaged E2E isolates each run without removing historical screenshots", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "a-stock-e2e-screenshots-"));
   try {
-    for (const name of [
-      "v068-professional-review-dark.png",
-      "packaged-0.9.16-professional-review-light.png",
-      "packaged-0.9.17-professional-review-dark.png",
-      "packaged-0.9.18-backtest-layout.png",
-      "keep-notes.txt"
-    ]) {
-      fs.writeFileSync(path.join(root, name), name);
-    }
-    assert.deepEqual(cleanupPackagedScreenshots(root), [
-      "packaged-0.9.16-professional-review-light.png",
-      "packaged-0.9.17-professional-review-dark.png",
-      "packaged-0.9.18-backtest-layout.png",
-      "v068-professional-review-dark.png"
-    ]);
-    assert.deepEqual(fs.readdirSync(root), ["keep-notes.txt"]);
+    const prior = path.join(root, "packaged-1.5.4-professional-review-dark.png");
+    fs.writeFileSync(prior, "keep");
+    const first = createScreenshotDirectory(root);
+    const second = createScreenshotDirectory(root);
+    assert.notEqual(first, second);
+    assert.equal(path.dirname(first), root);
+    assert.equal(fs.readFileSync(prior, "utf8"), "keep");
+    assert.equal(fs.statSync(second).isDirectory(), true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

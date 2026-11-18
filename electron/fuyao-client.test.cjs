@@ -78,6 +78,31 @@ test('snapshots are batched by thscode and normalised', async () => {
   assert.equal(first.changePct, 5);
   assert.equal(first.volume, 10000);
   assert.equal(first.quoteAt, new Date(NOW).toISOString());
+  assert.equal(first.quoteAtIsBatchTime, true);
+  assert.equal(first.quoteAtIsTradeTime, false);
+});
+
+test('per-stock snapshot trade time takes precedence over batch timestamp', async () => {
+  const itemTradeAt = Date.parse('2026-10-22T06:55:00.000Z');
+  const c = client({
+    '/api/a-share/prices/snapshot': {
+      code: 0,
+      data: {
+        timestamp: NOW,
+        item: [
+          { thscode: '600000.SH', ticker: '600000', last_price: 10.5, trade_time: itemTradeAt },
+          { thscode: '600001.SH', ticker: '600001', last_price: 11.0 }
+        ]
+      }
+    }
+  });
+  const quotes = await c.snapshot([{ code: '600000', secid: '1.600000' }, { code: '600001', secid: '1.600001' }]);
+  assert.equal(quotes.get('600000.SH').quoteAt, new Date(itemTradeAt).toISOString());
+  assert.equal(quotes.get('600000.SH').quoteAtIsTradeTime, true);
+  assert.equal(quotes.get('600000.SH').quoteAtIsBatchTime, false);
+  assert.equal(quotes.get('600001.SH').quoteAt, new Date(NOW).toISOString());
+  assert.equal(quotes.get('600001.SH').quoteAtIsTradeTime, false);
+  assert.equal(quotes.get('600001.SH').quoteAtIsBatchTime, true);
 });
 
 test('constituents and trading days', async () => {

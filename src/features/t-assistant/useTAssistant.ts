@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 import { buildTimeShare, type TimeShare } from "../market/timeShareModel";
-import { analyzeT, isActionable, normalizeTConfig, replayT, type TAnalysis, type TConfig, type TReplay, type TTrade } from "./tEngine";
+import { analyzeT, isActionable, normalizeTConfig, settleTrades, type TAnalysis, type TConfig, type TReplay, type TTrade } from "./tEngine";
 import {
-  EMPTY_T_STORE, MAX_T_ITEMS, T_STORE_KEY, inTradingSession, normalizeTStore, secidForCode, shanghaiClock, shanghaiDay, isFreshTQuote, previousOpenT, shouldAlert, withTrades,
+  EMPTY_T_STORE, MAX_T_ITEMS, T_STORE_KEY, collectRolledTradeIdsThrough, inTradingSession, normalizeTStore, rolloverTStoreForDay, secidForCode, shanghaiClock, shanghaiDay, isFreshTQuote, previousOpenT, shouldAlert, withTrades,
   type AlertMemory, type TItem, type TStore
 } from "./tStore";
 
 export type TRuntime = {
   share: TimeShare | null;
   analysis: TAnalysis | null;
-  replay: TReplay | null;
+  replay?: TReplay | null;
   loading: boolean;
   error: string;
   updatedAt: number | null;
@@ -28,21 +28,61 @@ const isStore = (value: unknown) => Boolean(value) && typeof value === "object" 
  * 做T助手的数据层（挂在 App 上，切到别的页面也继续跟踪和提醒）：
  * 交易时段每 10 秒（窗口可见时）刷新一次跟踪股票的分时，算出当前信号；出现新的操作信号时弹提示、可选语音播报。
  */
-export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (message: string) => void }) {
+export function useTAssistant({ live, holdings, onAlert }: { live: boolean; holdings?: Array<{ code: string; shares?: number; costPrice?: number }> | undefined; onAlert: (message: string) => void }) {
   const [store, setStore] = useState<TStore>(() => normalizeTStore(loadSafeLocalJson<unknown>(T_STORE_KEY, EMPTY_T_STORE, isStore)));
   const [shares, setShares] = useState<Record<string, { share: TimeShare | null; loading: boolean; error: string; updatedAt: number | null; source: string }>>({});
+  const [volatilities, setVolatilities] = useState<Record<string, number | null>>({});
+  const volatilitiesRef = useRef(volatilities);
+  volatilitiesRef.current = volatilities;
   const [saveError, setSaveError] = useState(false);
   const [clockTick, setClockTick] = useState(Date.now);
   const storeRef = useRef(store);
   const alerted = useRef<AlertMemory>({});
   const onAlertRef = useRef(onAlert);
   onAlertRef.current = onAlert;
+  const mountedRef = useRef(true);
+  const inSessionRef = useRef(inTradingSession());
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const commit = useCallback((update: (current: TStore) => TStore) => {
     const next = normalizeTStore(update(storeRef.current));
     storeRef.current = next;
     setStore(next);
     setSaveError(!saveSafeLocalJson(T_STORE_KEY, next, isStore));
+  }, []);
+
+  const holdingsRef = useRef(holdings);
+  holdingsRef.current = holdings;
+  const clockTickRef = useRef(clockTick);
+  clockTickRef.current = clockTick;
+  const todayKey = shanghaiDay(new Date(clockTick));
+  const prevTodayKeyRef = useRef(todayKey);
+  useEffect(() => {
+    if (prevTodayKeyRef.current !== todayKey) {
+      prevTodayKeyRef.current = todayKey;
+      volatilitiesRef.current = {};
+      setVolatilities({});
+    }
+    const result = rolloverTStoreForDay(storeRef.current, todayKey, holdingsRef.current);
+    if (!result.changed) return;
+    storeRef.current = result.store;
+    setStore(result.store);
+    setSaveError(!saveSafeLocalJson(T_STORE_KEY, result.store, isStore));
+    if (result.rolled.length) {
+      onAlertRef.current(`做T助手新交易日已自动滚动 T+1 可卖底仓：${result.rolled.map(r => `${r.name} ${r.sellableShares}股`).join("、")}`);
+    }
+  }, [todayKey, holdings]);
+
+  useEffect(() => {
+    return startVisibleInterval(() => {
+      if (shanghaiDay() !== shanghaiDay(new Date(clockTickRef.current))) {
+        setClockTick(Date.now());
+      }
+    }, 30_000, { resumeOnVisible: true });
   }, []);
 
   const busy = useRef(new Set<string>());
@@ -52,15 +92,36 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
     if (!silent) setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: true, error: "" } }));
     try {
       const security: Security = { code: item.code, name: item.name, secid: item.secid, assetType: "stock" };
-      const response: any = await window.stockApi.getChart(security, "time", { forceRefresh: true });
+      const response = await window.stockApi.getChart(security, "time", { forceRefresh: true });
       const rows = Array.isArray(response) ? response : response?.rows || [];
       const preClose = Number(response?.preClose);
-      const share = buildTimeShare(rows, { preClose: Number.isFinite(preClose) && preClose > 0 ? preClose : null, assetType: "stock", unitsPerLot: response?.unitsPerLot, volumeUnit: response?.volumeUnit });
+      const volumeUnit = response?.volumeUnit === "lots" || response?.volumeUnit === "shares" ? response.volumeUnit : undefined;
+      const share = buildTimeShare(rows, { preClose: Number.isFinite(preClose) && preClose > 0 ? preClose : null, assetType: "stock", unitsPerLot: response?.unitsPerLot, volumeUnit });
       if (!share) throw new Error("暂无分时数据");
-      setShares(current => ({ ...current, [item.code]: { share, loading: false, error: "", updatedAt: Date.now(), source: String(response?.source || "") } }));
+      if (mountedRef.current) {
+        setShares(current => ({ ...current, [item.code]: { share, loading: false, error: "", updatedAt: Date.now(), source: String(response?.source || "") } }));
+      }
+      if (volatilitiesRef.current[item.code] === undefined && window.stockApi?.getChart) {
+        void window.stockApi.getChart(security, "101", { limit: 15 }).then((dailyRes) => {
+          const bars = Array.isArray(dailyRes) ? dailyRes : dailyRes?.rows || [];
+          const amplitudes: number[] = [];
+          for (let i = Math.max(1, bars.length - 10); i < bars.length; i += 1) {
+            const prevClose = Number(bars[i - 1]?.close);
+            const high = Number(bars[i]?.high);
+            const low = Number(bars[i]?.low);
+            if (prevClose > 0 && high >= low && high > 0) amplitudes.push(((high - low) / prevClose) * 100);
+          }
+          const avgVol = amplitudes.length ? Number((amplitudes.reduce((s, v) => s + v, 0) / amplitudes.length).toFixed(2)) : null;
+          if (mountedRef.current) setVolatilities(curr => ({ ...curr, [item.code]: avgVol }));
+        }).catch(() => {
+          // Leave transient fetch failures unset (undefined) instead of caching permanent null so subsequent refreshes retry.
+        });
+      }
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
-      setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: false, error: message || "分时读取失败" } }));
+      if (mountedRef.current) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: false, error: message || "分时读取失败" } }));
+      }
     } finally {
       busy.current.delete(item.code);
     }
@@ -85,9 +146,17 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
 
   useEffect(() => {
     if (!live || !codes) return;
-    const tick = whenVisible(() => { setClockTick(Date.now()); if (inTradingSession()) void loadAll(true); });
-    const timer = window.setInterval(tick, REFRESH_MS);
-    return () => window.clearInterval(timer);
+    return startVisibleInterval(() => {
+      const inSession = inTradingSession();
+      if (inSession) {
+        inSessionRef.current = true;
+        setClockTick(Date.now());
+        void loadAll(true);
+      } else if (inSessionRef.current) {
+        inSessionRef.current = false;
+        setClockTick(Date.now());
+      }
+    }, REFRESH_MS);
   }, [live, codes, loadAll]);
 
   const runtimes = useMemo(() => {
@@ -97,12 +166,25 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
       const entry = shares[item.code];
       const share = entry?.share || null;
       const trades = share ? store.trades[share.date]?.[item.code] || [] : [];
+      let priorRounds = 0;
+      let priorWins = 0;
+      for (const [dayKey, dayMap] of Object.entries(store.trades || {})) {
+        if (share && dayKey === share.date) continue;
+        const list = dayMap?.[item.code];
+        if (!Array.isArray(list) || !list.length) continue;
+        const settled = settleTrades(list, item.config).stats;
+        priorRounds += settled.rounds;
+        priorWins += settled.wins ?? 0;
+      }
       const context = { code: item.code, name: item.name };
       const prior = share ? previousOpenT(store, item.code, share.date) : null;
       result[item.code] = {
         share,
-        analysis: analyzeT(share, context, item.config, trades),
-        replay: share ? replayT(share, context, item.config) : null,
+        analysis: analyzeT(share, context, item.config, trades, {
+          priorRounds,
+          priorWins,
+          dailyVolatilityPct: volatilities[item.code] ?? null
+        }),
         loading: entry?.loading ?? true,
         error: entry?.error || "",
         updatedAt: entry?.updatedAt ?? null,
@@ -117,7 +199,7 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
       };
     }
     return result;
-  }, [store, shares, clockTick, live]);
+  }, [store, shares, volatilities, clockTick, live]);
 
   // 新信号提醒：只在交易时段、只提醒最新一分钟的信号。
   useEffect(() => {
@@ -153,7 +235,17 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
       const others = current.items.filter(item => item.code !== code);
       const base = exists ? exists.config : null;
       const merged = normalizeTConfig({ ...(base || {}), ...(config || {}) }, code);
-      const next: TItem = { code, name: security.name || exists?.name || code, secid: security.secid || exists?.secid || secidForCode(code), config: merged, addedAt: exists?.addedAt || new Date().toISOString() };
+      const rolledTradeIds = config?.baseShares !== undefined
+        ? collectRolledTradeIdsThrough(current, code, shanghaiDay())
+        : exists?.rolledTradeIds;
+      const next: TItem = {
+        code,
+        name: security.name || exists?.name || code,
+        secid: security.secid || exists?.secid || secidForCode(code),
+        config: merged,
+        addedAt: exists?.addedAt || new Date().toISOString(),
+        ...(rolledTradeIds ? { rolledTradeIds } : {})
+      };
       return { ...current, items: exists ? current.items.map(item => item.code === code ? next : item) : [...others, next] };
     });
     return "";
@@ -162,11 +254,26 @@ export function useTAssistant({ live, onAlert }: { live: boolean; onAlert: (mess
   const removeStock = useCallback((code: string) => {
     commit(current => ({ ...current, items: current.items.filter(item => item.code !== code) }));
     delete alerted.current[code];
+    delete volatilitiesRef.current[code];
+    setVolatilities(current => { const next = { ...current }; delete next[code]; return next; });
     setShares(current => { const next = { ...current }; delete next[code]; return next; });
   }, [commit]);
 
   const updateConfig = useCallback((code: string, patch: Partial<TConfig>) => {
-    commit(current => ({ ...current, items: current.items.map(item => item.code === code ? { ...item, config: normalizeTConfig({ ...item.config, ...patch }, code) } : item) }));
+    commit(current => ({
+      ...current,
+      items: current.items.map(item => {
+        if (item.code !== code) return item;
+        const rolledTradeIds = patch.baseShares !== undefined
+          ? collectRolledTradeIdsThrough(current, code, shanghaiDay())
+          : item.rolledTradeIds;
+        return {
+          ...item,
+          config: normalizeTConfig({ ...item.config, ...patch }, code),
+          ...(rolledTradeIds ? { rolledTradeIds } : {})
+        };
+      })
+    }));
   }, [commit]);
 
   const addTrade = useCallback((day: string, code: string, trade: Omit<TTrade, "id">) => {

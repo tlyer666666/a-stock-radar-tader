@@ -11,7 +11,7 @@ async function invoke(channel, ...args) {
 // The independent review window receives only its required read APIs.
 contextBridge.exposeInMainWorld('stockApi', {
   search: query => invoke('review-window:search', query),
-  analyze: security => invoke('review-window:analyze', security),
+  analyze: (security, options) => options === undefined ? invoke('review-window:analyze', security) : invoke('review-window:analyze', security, options),
   getProfessionalReview: (options = {}) => invoke('review-window:market', options),
   getReviewTheme: () => invoke('review-window:theme'),
   onThemeChange: handler => {

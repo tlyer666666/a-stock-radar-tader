@@ -25,16 +25,26 @@ function shutdownDataFederation() {
   return Promise.allSettled([stopping, ...federationRequests]).then(() => undefined);
 }
 
+function inferExchangeSuffix(security) {
+  const thscode = String(security?.thscode || "").toUpperCase();
+  if (thscode.endsWith(".SH")) return "SH";
+  if (thscode.endsWith(".BJ")) return "BJ";
+  if (thscode.endsWith(".SZ")) return "SZ";
+  const secid = String(security?.secid || "");
+  const code = String(security?.code || "");
+  if (/^(?:(?:43|83|87|88)\d{4}|920\d{3})$/.test(code)) return "BJ";
+  if (secid.startsWith("1.")) return "SH";
+  if (secid.startsWith("0.")) return "SZ";
+  if (/^(?:6\d{5}|900\d{3}|5\d{5}|11[0138]\d{3})$/.test(code)) return "SH";
+  return "SZ";
+}
+
 function marketPrefix(security) {
-  if (String(security.thscode || "").endsWith(".SH")) return "sh";
-  if (String(security.thscode || "").endsWith(".BJ")) return "bj";
-  return "sz";
+  return inferExchangeSuffix(security).toLowerCase();
 }
 
 function tushareCode(security) {
-  const suffix = String(security.thscode || "").split(".")[1];
-  if (suffix) return `${security.code}.${suffix}`;
-  return `${security.code}.${/^(6|68)/.test(security.code) ? "SH" : /^(8|4|9)/.test(security.code) ? "BJ" : "SZ"}`;
+  return `${security.code}.${inferExchangeSuffix(security)}`;
 }
 
 function formatTencentTime(value) {
@@ -158,13 +168,27 @@ async function tushareDailyQuote(security, token) {
     () => fetchTushareDailyQuote(security, token));
 }
 
+const finitePositive = value => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) && num > 0 ? num : null;
+};
+
+const finiteOptional = value => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+};
+
+const shanghaiCompactDate = ms => {
+  const shanghai = new Date(ms + 8 * 3600_000);
+  return `${shanghai.getUTCFullYear()}${String(shanghai.getUTCMonth() + 1).padStart(2, "0")}${String(shanghai.getUTCDate()).padStart(2, "0")}`;
+};
+
 async function fetchTushareDailyQuote(security, token) {
   federationRuntime.checkpoint();
   const startedAt = Date.now();
-  const end = new Date();
-  const start = new Date(end.getTime() - 14 * 86400000);
-  const compact = (date) =>
-    `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`;
+  const nowMs = Date.now();
   const options = {
     signal: federationRuntime.signal(),
     method: "POST",
@@ -174,8 +198,8 @@ async function fetchTushareDailyQuote(security, token) {
       token,
       params: {
         ts_code: tushareCode(security),
-        start_date: compact(start),
-        end_date: compact(end)
+        start_date: shanghaiCompactDate(nowMs - 14 * 86400000),
+        end_date: shanghaiCompactDate(nowMs)
       },
       fields: "ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount"
     })
@@ -185,7 +209,9 @@ async function fetchTushareDailyQuote(security, token) {
   const rows = tableRows(payload);
   const row = rows[0];
   if (!row) throw new Error("暂无最近日线");
-  const date = String(row.trade_date || "");
+  const latest = finitePositive(row.close);
+  if (latest === null) throw new Error("Tushare 日线缺少有效收盘价");
+  const date = String(row.trade_date || "").trim();
   return {
     id: "tushare",
     name: "Tushare Pro",
@@ -194,14 +220,14 @@ async function fetchTushareDailyQuote(security, token) {
     enabled: true,
     ok: true,
     realtime: false,
-    latest: Number(row.close),
-    preClose: Number(row.pre_close),
-    open: Number(row.open),
-    high: Number(row.high),
-    low: Number(row.low),
-    change: Number(row.change),
-    changePct: Number(row.pct_chg),
-    updatedAt: date.length === 8
+    latest,
+    preClose: finitePositive(row.pre_close),
+    open: finitePositive(row.open),
+    high: finitePositive(row.high),
+    low: finitePositive(row.low),
+    change: finiteOptional(row.change),
+    changePct: finiteOptional(row.pct_chg),
+    updatedAt: /^\d{8}$/.test(date)
       ? `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}T15:00:00+08:00`
       : "",
     latencyMs: Date.now() - startedAt,

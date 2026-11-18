@@ -92,12 +92,15 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
   assertActive();
   const {ctx,benchmark:prefetchedBenchmark}=await resolveContext(options);
   const universe=await universeFor(options,runtime);
-  const {candidates,boards}=universe;
+  const {boards}=universe;
+  const candidateLimit=Number.isInteger(options.candidateLimit)&&options.candidateLimit>0?options.candidateLimit:0;
+  const candidates=candidateLimit?universe.candidates.slice(0,candidateLimit):universe.candidates;
+  const candidateSnapshots=candidateLimit?universe.snapshots.slice(0,candidateLimit):universe.snapshots;
   const boardsFailed=boards.filter(board=>!board.complete).length;
   if(!candidates.length)throw Error(`全市场股票名单为空${boardsFailed?`（${boardsFailed}个板块读取失败）`:''}，无法选股`);
   // 本地日线库：先批量取当天收盘快照，已有日线的股票只补一根，不再逐只完整下载。
   if(typeof prepareHistories==='function'){
-   try{await prepareHistories(universe.snapshots);}catch{/* 预取失败只会退回逐只下载 */}
+   try{await prepareHistories(candidateSnapshots);}catch{/* 预取失败只会退回逐只下载 */}
    assertActive();
   }
   const bars=SELECTION_HISTORY_BARS;
@@ -207,7 +210,7 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
    scope:'full_market',source:`全市场A股名单（剔除ST，含北交所） + 不复权日线（${sources.join('、')||'公开行情'}）`,
    universeSize:candidates.length,availableUniverseSize:candidates.length,processed:Number(quality.processed)||0,failed,
    historyBarsRequested:bars,
-   universeCoverage:{boards,listed:universe.listed,eligible:candidates.length,excludedRisk:universe.excludedRisk,failed:boardsFailed,requestsComplete:boardsFailed===0,complete:boardsFailed===0},
+   universeCoverage:{boards,listed:universe.listed,eligible:candidates.length,excludedRisk:universe.excludedRisk,failed:boardsFailed,requestsComplete:boardsFailed===0&&!boards.some(b=>b.fromCache),complete:boardsFailed===0},
    cacheValidUntil:degraded?null:ctx.cacheValidUntil,watchlistCoverage,selectionDiagnostics,
    warning:[report.warning,...warnings].filter(Boolean).join(' '),notes};
  }

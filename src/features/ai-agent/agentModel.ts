@@ -1,6 +1,7 @@
 /** AI 问股页面的纯逻辑：快捷问题、立场配色、步骤摘要、跨页面带股票过来。 */
 
-export type QuickTask = { id: string; label: string; hint: string; needsStock: boolean; send: boolean; prompt: (focus: AgentFocus | null) => string };
+export type QuickTaskContext = { costPrice?: number | null | undefined };
+export type QuickTask = { id: string; label: string; hint: string; needsStock: boolean; send: boolean; prompt: (focus: AgentFocus | null, context?: QuickTaskContext) => string };
 
 const nameOf = (focus: AgentFocus | null) => focus ? focus.name || focus.code : "这只股票";
 
@@ -21,7 +22,9 @@ export const QUICK_TASKS: QuickTask[] = [
   { id: "signals", label: "策略信号", hint: "软件策略库与打分框架怎么看", needsStock: true, send: true,
     prompt: focus => `软件的选股策略和打分框架对${nameOf(focus)}怎么看？命中了哪些策略，理由和失效价是多少，基础分多少？` },
   { id: "holding", label: "持仓诊断", hint: "填上成本价再发送", needsStock: true, send: false,
-    prompt: focus => `我持有${nameOf(focus)}，成本价 元，帮我诊断一下现在该怎么办：继续持有、减仓还是止损，依据是什么？` },
+    prompt: (focus, ctx) => ctx?.costPrice && ctx.costPrice > 0
+      ? `我持有${nameOf(focus)}，成本价 ${ctx.costPrice} 元，帮我诊断一下现在该怎么办：继续持有、减仓还是止损，依据是什么？`
+      : `我持有${nameOf(focus)}，成本价 元，帮我诊断一下现在该怎么办：继续持有、减仓还是止损，依据是什么？` },
   { id: "intraday", label: "做T思路", hint: "结合分时给出高抛低吸价位", needsStock: true, send: true,
     prompt: focus => `我持有${nameOf(focus)}的底仓，想今天做T。结合今天的分时走势、均价线、量能和关键价位，告诉我今天更适合倒T（先卖后买）还是正T（先买后卖），高抛和低吸的参考价位，以及什么情况下今天不要做T。` },
   { id: "market", label: "今日市场", hint: "情绪、主线、强弱板块", needsStock: false, send: true,
@@ -77,17 +80,17 @@ export function questionBefore(messages: AgentMessage[], answerId: string): Agen
 }
 
 // 从个股页「AI 问股深入分析」带股票过来：App 注册打开方法，个股页只在有打开方法时显示按钮。
-type Handoff = { focus: AgentFocus; task: string };
+type Handoff = { focus: AgentFocus; task: string; userContext?: Record<string, unknown> | undefined };
 let pending: Handoff | null = null;
 let opener: (() => void) | null = null;
 export function registerAgentOpener(open: (() => void) | null) { opener = open; }
 export function canOpenAgent() { return Boolean(opener); }
 /** 只切到 AI 问股页（要打开哪段对话由调用方事先记好）。 */
 export function openAgentPage() { if (!opener) return false; opener(); return true; }
-export function openAgentFor(security: { code: string; name: string }, task = "full") {
+export function openAgentFor(security: { code: string; name: string }, task = "full", userContext?: Record<string, unknown>) {
   const focus = focusFromSecurity({ ...security, assetType: "stock" });
   if (!focus || !opener) return false;
-  pending = { focus, task };
+  pending = { focus, task, ...(userContext && Object.keys(userContext).length ? { userContext } : {}) };
   opener();
   return true;
 }

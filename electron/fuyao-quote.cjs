@@ -133,7 +133,12 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
       turnover, change: finiteOrNull(snap.change) ?? (preClose ? latest - preClose : null), changePct,
       amplitude: preClose && Number(snap.high) > 0 && Number(snap.low) > 0 ? (Number(snap.high) - Number(snap.low)) / preClose * 100 : null,
       quoteAt: Number.isFinite(quoteMs) ? new Date(quoteMs).toISOString() : new Date(now()).toISOString(),
-      marketStatus: "", lagSeconds: Number.isFinite(quoteMs) && inTradingSession(now()) ? Math.max(0, Math.round((now() - quoteMs) / 1000)) : null,
+      ...(snap.quoteAtIsTradeTime === true ? { quoteAtIsTradeTime: true, quoteAtIsBatchTime: false } : {}),
+      ...(snap.quoteAtIsBatchTime === true ? { quoteAtIsTradeTime: false, quoteAtIsBatchTime: true } : {}),
+      marketStatus: "",
+      lagSeconds: snap.quoteAtIsBatchTime === true
+        ? null
+        : (Number.isFinite(quoteMs) && inTradingSession(now()) ? Math.max(0, Math.round((now() - quoteMs) / 1000)) : null),
       source: "fuyao", missingFields
     };
   }

@@ -1,18 +1,34 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import {
   Bot, Check, ChevronDown, CircleAlert, CircleStop, Copy, ExternalLink, LoaderCircle, MessagesSquare, PenLine, Plus, RotateCcw, Search, SendHorizontal, Settings, Trash2, Wrench, X
 } from "lucide-react";
 import { SkillBar, SkillTags, SkillVerdicts } from "./AgentSkills";
 import { PageHeading } from "../../components/terminal/TerminalPrimitives";
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import { useAgentConversation } from "./useAgentConversation";
 import { AgentMarkdown } from "./AnswerMarkdown";
 import { markdownToPlainText } from "./agentMarkdown";
 import { QUICK_TASKS, focusFromSecurity, formatDuration, questionBefore, shortTime, stanceTone, stepsSummary, type QuickTask } from "./agentModel";
+import { NOTES_KEY, type Note } from "../notes/notesModel";
+
+const PERSONAL_CTX_KEY = "a-stock-radar:agent-personal-ctx:v1";
+const readPersonalCtxPref = () => {
+  try { return window.localStorage.getItem(PERSONAL_CTX_KEY) !== "false"; } catch { return true; }
+};
+const readLocalNotes = (): Note[] => {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(NOTES_KEY) || "null") as { notes?: unknown } | null;
+    return Array.isArray(parsed?.notes)
+      ? parsed.notes.filter((n): n is Note => Boolean(n && typeof n === "object" && typeof (n as Note).text === "string"))
+      : [];
+  } catch { return []; }
+};
+
+import { inferSecid } from "../../domain/securityIdentifiers";
 
 const errorText = (reason: unknown) => aiErrorMessage(reason).replace(/^\[[A-Z_]+\]\s*/, "").replace(/（可重试）$/, "");
-const secidFor = (code: string) => `${code.startsWith("6") ? "1" : "0"}.${code}`;
+const secidFor = inferSecid;
 const toSecurity = (focus: AgentFocus): Security => ({ code: focus.code, name: focus.name, secid: secidFor(focus.code), assetType: "stock" });
 
 /**
@@ -20,14 +36,86 @@ const toSecurity = (focus: AgentFocus): Security => ({ code: focus.code, name: f
  * 框架打分、软件研判、涨停与龙虎榜、板块、公告、资讯、市场情绪），查完再写分析；可以连续追问。
  * 对话保存在本机；打开页面不会调用模型，发问题才调用。
  */
-export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus }: {
-  onOpenStock?: ((security: Security) => void) | undefined; onOpenSettings?: (() => void) | undefined; embeddedFocus?: AgentFocus;
+export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus, embeddedMode = "t-analysis", userContext, holdings }: {
+  onOpenStock?: ((security: Security) => void) | undefined;
+  onOpenSettings?: (() => void) | undefined;
+  embeddedFocus?: AgentFocus;
+  embeddedMode?: "t-analysis" | "stock-drawer";
+  userContext?: Record<string, unknown> | undefined;
+  holdings?: HoldingItem[] | undefined;
 }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai?.agent;
+  const [allowPersonalContext, setAllowPersonalContext] = useState<boolean>(readPersonalCtxPref);
+  const togglePersonalContext = (next: boolean) => {
+    setAllowPersonalContext(next);
+    try { window.localStorage.setItem(PERSONAL_CTX_KEY, next ? "true" : "false"); } catch { /* ignore storage failure */ }
+  };
   const { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, hasDraft, run, error, setError, sending, saving,
-    persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api, embeddedFocus);
+    persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api, embeddedFocus, userContext, allowPersonalContext, embeddedMode);
+  const buildContextForFocus = useCallback((targetFocus: { code: string; name: string } | null | undefined) => {
+    const holding = targetFocus && holdings?.length ? holdings.find(item => item.code === targetFocus.code) : undefined;
+    const merged: Record<string, unknown> = {
+      ...(userContext || {}),
+      ...(holding ? {
+        isHolding: true,
+        ...(holding.costPrice > 0 ? { costPrice: holding.costPrice } : {}),
+        ...(holding.note ? { holdingNote: holding.note } : {})
+      } : {})
+    };
+    const entries = Object.entries(merged).filter(([, value]) => value !== undefined && value !== null && value !== "");
+    return entries.length ? Object.fromEntries(entries) : undefined;
+  }, [holdings, userContext]);
+  const matchedHolding = focus && holdings?.length ? holdings.find(item => item.code === focus.code) : undefined;
+  const effectiveContext = useMemo(() => buildContextForFocus(focus), [buildContextForFocus, focus]);
+  const contextLabel = useMemo(() => {
+    if (!effectiveContext) return "";
+    const parts: string[] = [];
+    if (typeof effectiveContext.suitability === "string") parts.push(effectiveContext.suitability);
+    if (typeof effectiveContext.costPrice === "number" && effectiveContext.costPrice > 0) parts.push(`持仓成本 ${effectiveContext.costPrice}`);
+    if (typeof effectiveContext.origin === "string" && effectiveContext.origin === "market_workspace") parts.push("来自个股研判");
+    return parts.join(" · ");
+  }, [effectiveContext]);
   const streamRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [threadQuery, setThreadQuery] = useState("");
+  const localNotes = useMemo(() => readLocalNotes(), [state?.conversations.length]);
+  const filteredConversations = useMemo(() => {
+    const q = threadQuery.trim().toLowerCase();
+    const list = state?.conversations || [];
+    if (!q) return list;
+    return list.filter(item =>
+      item.title.toLowerCase().includes(q)
+      || String(item.focus?.name || "").toLowerCase().includes(q)
+      || String(item.focus?.code || "").toLowerCase().includes(q)
+      || String(item.stance || "").toLowerCase().includes(q)
+      || String(item.preview || "").toLowerCase().includes(q)
+    );
+  }, [state?.conversations, threadQuery]);
+  const matchedNotes = useMemo(() => {
+    const q = threadQuery.trim().toLowerCase();
+    if (!q) return [];
+    return localNotes
+      .filter(note =>
+        note.text.toLowerCase().includes(q)
+        || String(note.stock?.name || "").toLowerCase().includes(q)
+        || String(note.stock?.code || "").toLowerCase().includes(q)
+      )
+      .slice(0, 5);
+  }, [localNotes, threadQuery]);
+  const saveMemoryCandidate = async (candidate: string) => {
+    const clean = candidate.trim();
+    if (!clean || !state || !api) return false;
+    const existingLines = state.memory.split(/\n+/).map(line => line.trim()).filter(Boolean);
+    if (existingLines.some(line => line === clean || line.includes(clean))) return true;
+    const nextMemory = [...existingLines, clean].join("\n").slice(0, 800);
+    try {
+      setState(await api.settings({ memory: nextMemory }));
+      return true;
+    } catch (reason) {
+      setError(errorText(reason));
+      return false;
+    }
+  };
 
   // 分析进行中跟着进度滚到底部；新回答出来时滚到这次提问的位置，从回答开头读。
   const stepCount = run?.steps.reduce((sum, step) => sum + step.calls.length + 1, 0) || 0;
@@ -53,8 +141,9 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
     try { setState(await api.settings({ profileId })); } catch (reason) { setError(errorText(reason)); }
   };
   const useTask = (task: QuickTask) => {
-    const text = task.prompt(focus);
-    if (task.send) { void send(text, { title: task.label }); return; }
+    const costPrice = matchedHolding?.costPrice ?? (typeof effectiveContext?.costPrice === "number" ? effectiveContext.costPrice : null);
+    const text = task.prompt(focus, { costPrice });
+    if (task.send) { void send(text, { title: task.label, ...(effectiveContext ? { userContext: effectiveContext } : {}) }); return; }
     setDraft(text);
     window.requestAnimationFrame(() => {
       const node = composerRef.current;
@@ -72,7 +161,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
   const lastAnswer = [...messages].reverse().find(item => item.role === "assistant");
 
   return <div className={`ai-agent-view${embeddedFocus ? " ai-agent-embedded" : ""}`}>
-    {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · AI做T分析</b>{state && <ModelPicker state={state} onChoose={chooseProfile} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查数据（实时行情、日线体检、K线、分时、策略信号、框架打分、软件研判、涨停与龙虎榜、所属板块、公告、资讯、市场情绪），再给出结论、关键价位和操作思路，可以连续追问。发给模型的只有公开行情数据和你写的问题，不含持仓和密钥；对话只保存在本机。"
+    {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · {embeddedMode === "stock-drawer" ? "AI问股" : "AI做T分析"}</b>{allowPersonalContext && contextLabel && <span className="ai-agent-ctx-badge">{contextLabel}</span>}<label className="ai-agent-ctx-toggle" title="关闭后仅传公开行情与你的提问，不读取持仓、做T、计划与随心记工具"><input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />读取持仓/计划/随心记</label>{state && <ModelPicker state={state} onChoose={chooseProfile} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查公开行情、日线体检、K线、分时、策略、公告、板块等数据，支持开启个人工作区上下文（持仓成本/做T/计划/随心记，随时可一键关闭）；对话只保存在本机。"
       actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={onOpenSettings} />} />}
     {loadError && <div className="warning-banner" role="alert"><CircleAlert size={17} />{loadError}<button type="button" className="secondary-btn" onClick={() => void refreshState()}>重试</button></div>}
     {persistenceError && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>{persistenceError}。回答仍在本次运行中，关闭软件前请重试保存。</span>
@@ -83,9 +172,23 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
     <div className="ai-agent-layout">
       {!embeddedFocus && <aside className="panel ai-agent-sidebar" aria-label="对话列表">
         <button type="button" className="primary-btn ai-agent-new" onClick={() => void openConversation(null)}><Plus size={16} />新对话</button>
+        {((state?.conversations.length || 0) > 0 || localNotes.length > 0) && (
+          <div className="ai-agent-thread-search">
+            <Search size={13} />
+            <input
+              type="search"
+              value={threadQuery}
+              placeholder="检索历史对话 / 随心记…"
+              aria-label="检索历史对话与随心记"
+              onChange={event => setThreadQuery(event.target.value)}
+            />
+            {threadQuery && <button type="button" aria-label="清空搜索" onClick={() => setThreadQuery("")}><X size={12} /></button>}
+          </div>
+        )}
         <div className="ai-agent-threads" role="list">
-          {!state?.conversations.length && <p className="ai-agent-muted">还没有对话。选一只股票，点下面的快捷问题或直接提问。</p>}
-          {state?.conversations.map(item => <div role="listitem" key={item.id} className={`ai-agent-thread ${item.id === activeId ? "active" : ""}`}>
+          {!state?.conversations.length && matchedNotes.length === 0 && <p className="ai-agent-muted">还没有对话。选一只股票，点下面的快捷问题或直接提问。</p>}
+          {Boolean(threadQuery.trim()) && filteredConversations.length === 0 && matchedNotes.length === 0 && <p className="ai-agent-muted">没有匹配“{threadQuery}”的历史对话或随心记。</p>}
+          {filteredConversations.map(item => <div role="listitem" key={item.id} className={`ai-agent-thread ${item.id === activeId ? "active" : ""}`}>
             <button type="button" className="ai-agent-thread-open" aria-current={item.id === activeId ? "true" : undefined} onClick={() => void openConversation(item.id)} title={item.title}>
               <span className="ai-agent-thread-title">{item.running && <LoaderCircle size={13} className="spin" aria-label="分析中" />}{item.title}</span>
               <small>{item.focus ? `${item.focus.code} · ` : ""}{item.turns} 问 · {shortTime(item.updatedAt)}{hasDraft(item.id) && " · 有草稿"}{item.stance && item.stance !== "不适用" && <em className={`agent-stance-dot ${stanceTone(item.stance)}`}>{item.stance}</em>}</small>
@@ -93,6 +196,26 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
             <button type="button" className={`ai-agent-thread-delete ${confirmDelete === item.id ? "confirm" : ""}`} aria-label={confirmDelete === item.id ? `确认删除「${item.title}」` : `删除「${item.title}」`}
               title={confirmDelete === item.id ? "再点一次确认删除" : "删除对话"} onClick={() => void remove(item.id)}>{confirmDelete === item.id ? "确认" : <Trash2 size={14} />}</button>
           </div>)}
+          {matchedNotes.length > 0 && (
+            <div className="ai-agent-note-matches" aria-label="匹配的随心记">
+              <b>匹配的随心记 ({matchedNotes.length})</b>
+              {matchedNotes.map(note => (
+                <button
+                  type="button"
+                  key={note.id}
+                  className="ai-agent-note-match"
+                  onClick={() => {
+                    if (note.stock) setFocus({ code: note.stock.code, name: note.stock.name });
+                    setDraft(note.stock ? `结合我的随心记分析 ${note.stock.name}(${note.stock.code})：${note.text}` : `结合我的随心记帮我分析：${note.text}`);
+                    composerRef.current?.focus();
+                  }}
+                >
+                  <span>{note.stock ? `${note.stock.name}(${note.stock.code})` : "随心记"}</span>
+                  <small>{note.text.slice(0, 48)}</small>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {state && <MemoryEditor value={state.memory} onSave={async memory => { try { setState(await api.settings({ memory })); return true; } catch (reason) { setError(errorText(reason)); return false; } }} />}
       </aside>}
@@ -100,6 +223,11 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
       <section className="panel ai-agent-chat" aria-label="AI 问股对话">
         {!embeddedFocus && <div className="ai-agent-chat-head">
           <StockPicker focus={focus} onChange={setFocus} disabled={running || sending} />
+          {allowPersonalContext && contextLabel && <span className="ai-agent-ctx-badge">{contextLabel}</span>}
+          <label className="ai-agent-ctx-toggle" title="开启后允许 AI 按需读取持仓、做T、交易计划与随心记；关闭后只查公开市场数据">
+            <input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />
+            读取持仓/计划/随心记
+          </label>
           {focus && onOpenStock && <button type="button" className="link-btn ai-agent-open-stock" onClick={() => onOpenStock(toSecurity(focus))}><ExternalLink size={14} />看个股详情</button>}
         </div>}
 
@@ -114,7 +242,15 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
             ? <div className="ai-agent-msg user" key={message.id}><div className="ai-agent-bubble">{message.content}</div>
               <small>{[message.focus ? `${message.focus.name} ${message.focus.code}` : "", message.skills?.length ? `打法：${message.skills.map(skill => skill.name).join("、")}` : ""].filter(Boolean).join(" · ")}</small></div>
             : <AnswerCard key={message.id} message={message} latest={message.id === lastAnswer?.id && !running} disabled={running || sending || !state?.configured}
-              onFollowUp={text => void send(text)} onRetry={() => { const question = questionBefore(messages, message.id); if (question) void send(question.content, { focus: question.focus || focus }); }} />)}
+              savedMemory={state?.memory || ""} onSaveMemory={saveMemoryCandidate}
+              onFollowUp={text => void send(text, effectiveContext ? { userContext: effectiveContext } : undefined)}
+              onRetry={() => {
+                const question = questionBefore(messages, message.id);
+                if (!question) return;
+                const retryFocus = question.focus || focus;
+                const retryCtx = buildContextForFocus(retryFocus);
+                void send(question.content, { focus: retryFocus, ...(retryCtx ? { userContext: retryCtx } : {}) });
+              }} />)}
           {running && run && <RunCard run={run} onStop={() => void stop()} />}
         </div>
 
@@ -124,7 +260,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
             disabled={(task.needsStock && !focus) || !state?.configured || sending} title={task.hint} onClick={() => useTask(task)}>{task.label}</button>)}
         </div>}
         <Composer refEl={composerRef} value={draft} onChange={setDraft} focus={focus} running={running} sending={sending} disabled={!state?.configured}
-          onSend={() => void send(draft, { fromDraft: true })} onStop={() => void stop()} />
+          onSend={() => void send(draft, { fromDraft: true, ...(effectiveContext ? { userContext: effectiveContext } : {}) })} onStop={() => void stop()} />
       </section>
     </div>
   </div>;
@@ -164,16 +300,33 @@ function StepList({ steps, live }: { steps: AgentStep[]; live: boolean }) {
 
 function RunCard({ run, onStop }: { run: AgentRun; onStop: () => void }) {
   const calls = run.steps.flatMap(step => step.calls);
-  const phase = !run.steps.length ? "正在准备数据…" : calls.some(call => call.status === "running") ? "正在查数据…" : "AI 正在看数据，决定再查什么或直接写回答…";
+  const phase = run.streamText
+    ? "正在实时生成回答…"
+    : !run.steps.length
+      ? "正在准备数据…"
+      : calls.some(call => call.status === "running")
+        ? "正在查数据…"
+        : "AI 正在看数据，决定再查什么或直接写回答…";
   return <article className="ai-agent-msg assistant running" aria-busy="true">
     <header><span className="ai-agent-running"><LoaderCircle size={15} className="spin" />{phase}</span><small>{[run.model, formatDuration(run.elapsedMs)].filter(Boolean).join(" · ")}</small>
       <button type="button" className="secondary-btn" onClick={onStop}><CircleStop size={14} />停止</button></header>
     {run.steps.length > 0 && <StepList steps={run.steps} live />}
+    {run.streamText && <div className="ai-agent-stream-preview"><AgentMarkdown text={run.streamText} /></div>}
   </article>;
 }
 
-function AnswerCard({ message, latest, disabled, onFollowUp, onRetry }: { message: AgentMessage; latest: boolean; disabled: boolean; onFollowUp: (text: string) => void; onRetry: () => void }) {
+function AnswerCard({ message, latest, disabled, savedMemory, onSaveMemory, onFollowUp, onRetry }: {
+  message: AgentMessage;
+  latest: boolean;
+  disabled: boolean;
+  savedMemory: string;
+  onSaveMemory: (candidate: string) => Promise<boolean>;
+  onFollowUp: (text: string) => void;
+  onRetry: () => void;
+}) {
   const [copied, setCopied] = useState(false);
+  const [savingCandidate, setSavingCandidate] = useState<string | null>(null);
+  const [locallySaved, setLocallySaved] = useState<Record<string, boolean>>({});
   const steps = message.steps || [];
   const summary = stepsSummary(steps);
   const copy = async () => {
@@ -197,6 +350,32 @@ function AnswerCard({ message, latest, disabled, onFollowUp, onRetry }: { messag
     {message.skillVerdicts?.length ? <SkillVerdicts verdicts={message.skillVerdicts} /> : message.skills?.length ? <SkillTags skills={message.skills} /> : null}
     <AgentMarkdown text={message.content} />
     {message.fallback && <p className="ai-agent-muted">模型没有按约定格式回答，这段是用已查到的数据直接写的。</p>}
+    {(message.memoryCandidates?.length || 0) > 0 && (
+      <div className="ai-agent-memory-candidates" aria-label="可沉淀的长期偏好">
+        <span>提炼长期偏好</span>
+        {message.memoryCandidates!.map(candidate => {
+          const exists = Boolean(locallySaved[candidate] || savedMemory.includes(candidate.trim()));
+          return (
+            <button
+              key={candidate}
+              type="button"
+              className={`ai-agent-memory-pill ${exists ? "saved" : ""}`}
+              disabled={exists || savingCandidate === candidate}
+              onClick={() => {
+                setSavingCandidate(candidate);
+                void onSaveMemory(candidate).then(ok => {
+                  if (ok) setLocallySaved(prev => ({ ...prev, [candidate]: true }));
+                }).finally(() => setSavingCandidate(null));
+              }}
+            >
+              {exists ? <Check size={12} /> : <Plus size={12} />}
+              <span>{candidate}</span>
+              <small>{exists ? "已存入偏好" : savingCandidate === candidate ? "保存中…" : "存入长期记忆"}</small>
+            </button>
+          );
+        })}
+      </div>
+    )}
     {latest && (message.followUps?.length || 0) > 0 && <div className="ai-agent-followups" aria-label="接着问">
       {message.followUps!.map(text => <button type="button" key={text} className="ai-agent-chip" disabled={disabled} onClick={() => onFollowUp(text)}>{text}</button>)}
     </div>}
@@ -239,18 +418,36 @@ function MemoryEditor({ value, onSave }: { value: string; onSave: (text: string)
 function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; onChange: (focus: AgentFocus | null) => void; disabled: boolean }) {
   const [query, setQuery] = useState("");
   const [options, setOptions] = useState<Security[]>([]);
+  const [suggestionQuery, setSuggestionQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
   const [quote, setQuote] = useState<{ latest: number | null; changePct: number | null } | null>(null);
+  const searchSeq = useRef(0);
+  const queryRef = useRef(query);
+  queryRef.current = query;
+  const composingRef = useRef(false);
   const search = typeof window === "undefined" ? undefined : window.stockApi?.search;
   const quoteApi = typeof window === "undefined" ? undefined : window.stockApi?.getQuoteSnapshot;
 
   useEffect(() => {
     const text = query.trim();
-    if (!text || !search) { setOptions([]); return; }
+    const current = ++searchSeq.current;
+    setOptions([]);
+    setSuggestionQuery("");
+    if (!text || !search) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void search(text).then(rows => { if (!cancelled) { setOptions((rows || []).filter(row => !row.assetType || row.assetType === "stock").slice(0, 8)); setActive(0); } }).catch(() => { if (!cancelled) setOptions([]); });
+      void search(text).then(rows => {
+        if (cancelled || searchSeq.current !== current || queryRef.current.trim() !== text) return;
+        setOptions((rows || []).filter(row => !row.assetType || row.assetType === "stock").slice(0, 8));
+        setSuggestionQuery(text);
+        setActive(0);
+      }).catch(() => {
+        if (!cancelled && searchSeq.current === current) {
+          setOptions([]);
+          setSuggestionQuery("");
+        }
+      });
     }, 220);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [query, search]);
@@ -260,24 +457,29 @@ function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; 
     setQuote(null);
     if (!focus || !quoteApi) return;
     let cancelled = false;
-    const load = whenVisible(() => quoteApi(toSecurity(focus)).then(value => {
-      const latest = Number(value?.quote?.latest), changePct = Number(value?.quote?.changePct);
-      if (!cancelled) setQuote({ latest: Number.isFinite(latest) && latest > 0 ? latest : null, changePct: Number.isFinite(changePct) ? changePct : null });
-    }).catch(() => {}));
-    void load();
-    const timer = window.setInterval(() => { void load(); }, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
+    const stop = startVisibleInterval(() => {
+      void quoteApi(toSecurity(focus)).then(value => {
+        const latest = Number(value?.quote?.latest), changePct = Number(value?.quote?.changePct);
+        if (!cancelled) setQuote({ latest: Number.isFinite(latest) && latest > 0 ? latest : null, changePct: Number.isFinite(changePct) ? changePct : null });
+      }).catch(() => { /* Optional preview quote; panel stays functional without quote header. */ });
+    }, 30_000, { immediate: true });
+    return () => { cancelled = true; stop(); };
   }, [focus, quoteApi]);
 
+  const visibleOptions = suggestionQuery === query.trim() ? options : [];
   const choose = (security: Security | undefined) => {
     const next = focusFromSecurity(security);
     if (!next) return;
-    onChange(next); setQuery(""); setOptions([]); setOpen(false);
+    onChange(next); setQuery(""); setOptions([]); setSuggestionQuery(""); setOpen(false);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown") { event.preventDefault(); setActive(index => Math.min(options.length - 1, index + 1)); }
+    if (event.key === "ArrowDown") { event.preventDefault(); setActive(index => Math.min(Math.max(0, visibleOptions.length - 1), index + 1)); }
     else if (event.key === "ArrowUp") { event.preventDefault(); setActive(index => Math.max(0, index - 1)); }
-    else if (event.key === "Enter") { event.preventDefault(); choose(options[active] || options[0]); }
+    else if (event.key === "Enter") {
+      if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      if (suggestionQuery === query.trim()) choose(visibleOptions[active] || visibleOptions[0]);
+    }
     else if (event.key === "Escape") { setOpen(false); }
   };
   const tone = quote?.changePct === null || quote?.changePct === undefined || quote.changePct === 0 ? "" : quote.changePct > 0 ? "up" : "down";
@@ -287,11 +489,14 @@ function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; 
       {quote?.latest != null && <em className={tone}>{quote.latest.toFixed(2)}{quote.changePct != null ? ` ${quote.changePct > 0 ? "+" : ""}${quote.changePct.toFixed(2)}%` : ""}</em>}
       <button type="button" aria-label="不针对某只股票" disabled={disabled} onClick={() => onChange(null)}><X size={13} /></button>
     </span>}
-    <div className="ai-agent-search" role="combobox" aria-expanded={open && options.length > 0} aria-haspopup="listbox">
+    <div className="ai-agent-search" role="combobox" aria-expanded={open && visibleOptions.length > 0} aria-haspopup="listbox">
       <Search size={15} />
       <input value={query} disabled={disabled} aria-label="选择要分析的股票" placeholder={focus ? "换一只：代码 / 名称 / 拼音" : "选择股票：代码 / 名称 / 拼音"}
-        onChange={event => { setQuery(event.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onBlur={() => window.setTimeout(() => setOpen(false), 150)} onKeyDown={onKeyDown} />
-      {open && options.length > 0 && <ul role="listbox" className="ai-agent-options">{options.map((option, index) => <li key={option.code} role="option" aria-selected={index === active}>
+        onChange={event => { searchSeq.current += 1; setQuery(event.target.value); setOptions([]); setSuggestionQuery(""); setOpen(true); }}
+        onCompositionStart={() => { composingRef.current = true; }}
+        onCompositionEnd={() => { composingRef.current = false; }}
+        onFocus={() => setOpen(true)} onBlur={() => window.setTimeout(() => setOpen(false), 150)} onKeyDown={onKeyDown} />
+      {open && visibleOptions.length > 0 && <ul role="listbox" className="ai-agent-options">{visibleOptions.map((option, index) => <li key={option.code} role="option" aria-selected={index === active}>
         <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => choose(option)}><b>{option.name}</b><small>{option.code}{option.marketName ? ` · ${option.marketName}` : ""}</small></button>
       </li>)}</ul>}
     </div>

@@ -83,3 +83,13 @@ test("1.6.52: date-only announcement dates are kept (they used to parse as NaN a
   ], "2026-10-30");
   assert.deepEqual(rows.map(row => [row.date, row.risk]), [["2026-10-20", 3], ["2026-10-25", 0]]);
 });
+
+test("N/C new listings skip limit-up and broken-board counts in stock profiles", () => {
+  const rows = bars();
+  for (const name of ["N新股", "C次新"]) {
+    const profile = buildStockProfile({ code: "600001", name, rows });
+    assert.equal(profile.limitUps20, 0);
+    assert.equal(profile.broken20, 0);
+    assert.equal(profile.consecutiveBoards, 0);
+  }
+});

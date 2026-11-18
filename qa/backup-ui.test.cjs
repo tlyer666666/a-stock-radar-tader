@@ -38,8 +38,14 @@ describe('数据备份 card in the actual renderer', () => {
         },
         run: async local => { window.calls.runs.push(local); state.files.unshift({ name: 'A股雷达备份-20261112-160509.json', size: 20480 }); state.lastBackupAt = '2026-11-12T08:05:09.000Z'; return { name: state.files[0].name, size: 20480, status: snapshot() }; },
         inspect: async (name, password) => { if (state.hasPassword && password !== 'abc123') throw new Error('[BACKUP_WRONG_PASSWORD] 备份密码不对'); return { createdAt: '', appVersion: '1.6.64', stores: ['holdings'], localKeys: 1 }; },
-        restore: async (name, password) => { window.calls.restored.push([name, password]); return { createdAt: '', stores: ['holdings'], local: { 'a-stock-radar:notes:v1': '{"notes":["备份里的"]}' } }; },
-        relaunch: async () => { window.calls.relaunch += 1; return { ok: true }; }
+        prepareRestore: async (name, password) => { window.prepared = [name, password]; return { token: 'staged', local: { 'a-stock-radar:notes:v1': '{"notes":["备份里的"]}' } }; },
+        restore: async token => {
+          if (token !== 'staged' || localStorage.getItem('a-stock-radar:notes:v1') !== '{"notes":["备份里的"]}') throw new Error('local restore must precede main commit');
+          window.calls.restored.push(window.prepared);
+          window.calls.relaunch += 1;
+          return { ok: true };
+        },
+        cancelRestore: async () => {}
       };
       window.stockApi = { ...createPreviewApi(), backup };
       function Host() { return React.createElement(BackupSettingsCard, { hidden: false }); }

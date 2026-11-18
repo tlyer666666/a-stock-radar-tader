@@ -1,14 +1,34 @@
 import { marketCapitalization } from "../../domain/marketCapitalization";
+import type { BoardStock } from "../../domain/consecutiveBoardGroups";
 import LimitUpPool from "../dashboard/LimitUpPool";
+import type { LimitUpStock } from "../dashboard/limitUpPoolModel";
+import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
 import { AiStockReviewPanel } from "../ai-picks/AiStockReviewPanel";
 import LimitEcologyPanel from "../dashboard/LimitEcologyPanel";
-import ConsecutiveBoardLadder from "../../ConsecutiveBoardLadder";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
+import ConsecutiveBoardLadder from "./ConsecutiveBoardLadder";
+import { WorkspaceErrorBoundary } from "../../components/AppErrorBoundary";
+import { buildStopLossMonitorConfig, computeMonitorStopPrice, maskSensitiveText } from "../collections/holdingsLedger";
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type FormEvent, type MouseEvent, type ReactNode } from "react";
+import type { ChartCandleRow } from "../../shared/ipc-contract";
+import type { PaperExecutionReadiness } from "../../domain/executionReadiness";
+import type { BacktestHistoryRecord } from "../backtest/backtestTypes";
+import type { NotesApi } from "../notes/useNotes";
+import type { ExecutionDecisionLog } from "../paper-simulation/paperSimulationTypes";
+import type { usePaperTrading } from "../paper-simulation/usePaperTrading";
+import type useStockMonitors from "../../useStockMonitors";
+import type {
+  AnalysisDataFederation,
+  AnalysisFederationSource,
+  AnalysisFirstBoardQuality,
+  AnalysisHistoricalStats,
+  AnalysisPayload
+} from "./analysisTypes";
+import type { LimitPoolMeta, LimitPoolRowRecord } from "./useMarketWorkspaceFeed";
 import {
-  Activity, BarChart3, Bookmark, BookmarkCheck, CheckCircle2, ChevronLeft,
+  Activity, ArrowLeftRight, BarChart3, Bell, Bookmark, BookmarkCheck, CheckCircle2, ChevronLeft,
   CircleAlert, CircleDot, Database, ExternalLink, Gauge, Layers3,
-  LineChart, LoaderCircle, Newspaper, RefreshCw, ShieldAlert, ShieldCheck,
-  SlidersHorizontal, Target, TrendingDown, TrendingUp, Zap
+  LineChart, LoaderCircle, MessagesSquare, Newspaper, PlusCircle, RefreshCw, ShieldAlert, ShieldCheck,
+  SlidersHorizontal, Target, TrendingDown, TrendingUp, X, Zap
 } from "lucide-react";
 import {
   EmptyInline, ErrorState, Fact, LoadingState, Metric, PageHeading, PanelTitle, ReturnBar
@@ -18,7 +38,7 @@ import { clampNumber, normalizeRiskProfile, riskProfileLabel } from "../../domai
 import { paperCloseReasonLabel, type PaperClosedPosition, type PaperPosition } from "../../domain/paperSimulationTypes";
 import { tradeSignalLabel } from "../../domain/executionLabels";
 import { limitPoolProviderLabel } from "./marketLabels";
-import { whenVisible } from "../../visiblePolling";
+import { startVisibleInterval } from "../../visiblePolling";
 import { formatShanghaiDateTime } from "../../dateUtils";
 import { averageAt, calculateBollingerBands, calculatePriceMovingAverages } from "../../priceChartSeries";
 import TimeShareChart from "./TimeShareChart";
@@ -53,6 +73,70 @@ export const resolvePaperCloseAllHandler = (
   closeCurrent: ((reason?: PaperClosedPosition["closeReason"]) => void) | undefined
 ) => (typeof closeAll === "function" ? closeAll : closeCurrent);
 
+const EmbeddedAiAgentView = lazy(() => import("../ai-agent/AiAgentView"));
+
+type DashboardPaperSummary = ReturnType<typeof usePaperTrading>["paperSummary"];
+type DashboardMonitorsApi = ReturnType<typeof useStockMonitors>;
+type ChartFrameValue = "time" | "1" | "5" | "15" | "30" | "60" | "120" | "101" | "102" | "103";
+type ChartFrameOption = {
+  value: ChartFrameValue;
+  label: string;
+  defaultRange: string;
+  ranges: Array<[string, string]>;
+};
+type ChartMetaState = {
+  source?: string | undefined;
+  adjustment?: string | undefined;
+  visibleLimit?: number | undefined;
+  preClose?: number | null | undefined;
+  unitsPerLot?: number | null | undefined;
+  volumeUnit?: string | undefined;
+  note?: string | undefined;
+  [key: string]: unknown;
+};
+
+export type DashboardProps = {
+  live: boolean;
+  payload: AnalysisPayload | null;
+  loading: boolean;
+  error: string;
+  isWatched: boolean;
+  onToggleWatch: () => void;
+  onDiscover: () => void;
+  discovering: boolean;
+  limitUps: LimitPoolRowRecord[];
+  limitPoolMeta: LimitPoolMeta | null;
+  onOpen: (security: Security) => void;
+  onAdd: (stock: Security) => void;
+  isFavorite: (code: string) => boolean;
+  holdings: HoldingItem[];
+  settings: Settings;
+  analysisTarget: Security | string | null;
+  mode: "pool" | "analysis";
+  backLabel?: string | undefined;
+  onBack?: (() => void) | undefined;
+  onOpenBacktest?: ((security?: Security | null, historyItem?: BacktestHistoryRecord | null, overrides?: Record<string, unknown>) => void) | undefined;
+  executionDecisionLog: ExecutionDecisionLog[];
+  onClearExecutionDecisionLog: () => void;
+  paperSummary: DashboardPaperSummary;
+  paperExecutionReadiness: PaperExecutionReadiness;
+  paperCurrentPositions: PaperPosition[];
+  canPaperTrade: boolean;
+  latestExecutionDecision: ExecutionDecisionLog | null;
+  executePaperTrade: () => void;
+  closePaperTradeForCurrent: (reason?: PaperClosedPosition["closeReason"]) => void;
+  closePaperTradeForCode?: ((code: string, reason?: PaperClosedPosition["closeReason"]) => void) | undefined;
+  closeAllPaperTrades?: ((reason?: PaperClosedPosition["closeReason"]) => void) | undefined;
+  confirmPaperSettlementForCode?: ((code: string) => void) | undefined;
+  onRetry: () => void;
+  notes?: NotesApi | undefined;
+  monitors?: DashboardMonitorsApi | undefined;
+  privacyMask?: boolean | undefined;
+  onQuickHoldingTrade?: ((trade: { code: string; name: string; secid: string; side: "buy" | "sell"; shares: number; price: number }) => Promise<boolean> | boolean) | undefined;
+  onTransferToT?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
+  onShowToast?: ((message: string) => void) | undefined;
+};
+
 export function Dashboard({
   live,
   payload,
@@ -67,6 +151,7 @@ export function Dashboard({
   onOpen,
   onAdd,
   isFavorite,
+  holdings,
   settings,
   analysisTarget,
   mode,
@@ -84,10 +169,47 @@ export function Dashboard({
   closePaperTradeForCurrent,
   closePaperTradeForCode,
   closeAllPaperTrades,
+  confirmPaperSettlementForCode,
   onRetry,
-  notes
-}: any) {
+  notes,
+  monitors,
+  privacyMask = false,
+  onQuickHoldingTrade,
+  onTransferToT,
+  onShowToast
+}: DashboardProps) {
   const [showFullExecutionDecisionLog, setShowFullExecutionDecisionLog] = useState(false);
+  const [externalArchive, setExternalArchive] = useState<ExternalFactorArchiveSummary | null>(null);
+  const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  const [quickTradeOpen, setQuickTradeOpen] = useState(false);
+  const [quickTradeSide, setQuickTradeSide] = useState<"buy" | "sell">("buy");
+  const [quickTradeShares, setQuickTradeShares] = useState("100");
+  const [quickTradePrice, setQuickTradePrice] = useState("");
+  const [quickTradeSubmitting, setQuickTradeSubmitting] = useState(false);
+  useEffect(() => {
+    setQuickTradeOpen(false);
+    setQuickTradePrice("");
+    setAgentDrawerOpen(false);
+    let active = true;
+    const fetcher = typeof window !== "undefined" ? window.stockApi?.getExternalFactorArchive : undefined;
+    if (!fetcher) return undefined;
+    void fetcher().then(res => {
+      if (active && res) setExternalArchive(res);
+    }).catch(() => undefined /* optional external archive summary */);
+    return () => { active = false; };
+  }, [analysisTarget]);
+  useEffect(() => {
+    if (!agentDrawerOpen || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAgentDrawerOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("keydown", onKeyDown);
+      }
+    };
+  }, [agentDrawerOpen]);
   if (mode === "analysis" && !payload) {
     const targetName = typeof analysisTarget === "string"
       ? analysisTarget
@@ -129,10 +251,19 @@ export function Dashboard({
         <LimitEcologyPanel onOpen={onOpen} live={live} />
         {/* 连板梯队与涨停池同源（同一份涨停池快照），放在涨停监控右侧随池子一起刷新。 */}
         {/* 开盘前（或当日涨停池还没取到）只显示一行说明，不把空的连板梯队撑满整行。 */}
-        {limitUps.length ? <div className="limit-pool-columns">
-          <LimitUpPool items={limitUps} meta={limitPoolMeta} onOpen={onOpen} onAdd={onAdd} isFavorite={isFavorite} />
-          <aside className="limit-ladder-sidebar"><ConsecutiveBoardLadder rows={limitUps} onOpen={onOpen} /></aside>
-        </div> : <p className="limit-pool-empty" role="status">当日涨停池还没有数据：交易日开盘后自动刷新，也可以点右上角「刷新涨停池」。涨停池和连板梯队有数据后显示在这里。</p>}
+        {limitUps.length ? (() => {
+          const normalizedLimitUps: Array<LimitUpStock & BoardStock> = limitUps.map((row) => ({
+            ...row,
+            code: String(row.code || ""),
+            name: String(row.name || row.code || ""),
+            secid: String(row.secid || ""),
+            consecutiveBoards: Number(row.consecutiveBoards || 0)
+          }));
+          return <div className="limit-pool-columns">
+            <LimitUpPool items={normalizedLimitUps} meta={limitPoolMeta} onOpen={onOpen} onAdd={onAdd} isFavorite={isFavorite} />
+            <aside className="limit-ladder-sidebar"><ConsecutiveBoardLadder rows={normalizedLimitUps} onOpen={(stock) => onOpen({ code: String(stock.code || ""), name: String(stock.name || stock.code || ""), secid: String(stock.secid || "") })} /></aside>
+          </div>;
+        })() : <p className="limit-pool-empty" role="status">当日涨停池还没有数据：交易日开盘后自动刷新，也可以点右上角「刷新涨停池」。涨停池和连板梯队有数据后显示在这里。</p>}
         {loading ? <LoadingState /> : error ? <ErrorState message={error} /> : limitUps.length ? <EmptyInline text="请选择涨停池股票查看详细分析。" /> : null}
       </div>
     );
@@ -147,7 +278,8 @@ export function Dashboard({
   const changePercent = nullableNumber(quote.changePct);
   const priceAvailable = latestPrice !== null && latestPrice > 0;
   const up = priceAvailable && changePercent !== null && changePercent >= 0;
-  const scoreTone = a.mrs >= 75 ? "good" : a.mrs >= 60 ? "warn" : "risk";
+  const mrsScore = a.mrs ?? 0;
+  const scoreTone = mrsScore >= 75 ? "good" : mrsScore >= 60 ? "warn" : "risk";
   const signal =
     a.grade === "S" ? "主线核心" : a.grade === "A" ? "主线回踩" : a.grade === "B" ? "等待确认" : "风险观察";
   const tradePlan = a.tradePlan || {};
@@ -237,12 +369,12 @@ export function Dashboard({
     },
     {
       name: "最小预期净收益",
-      ok: Number.isFinite(tradeProjection.projectedNetEdge) && tradeProjection.projectedNetEdge >= minProjectedNetEdge,
+      ok: Number.isFinite(tradeProjection.projectedNetEdge) && (tradeProjection.projectedNetEdge ?? Number.NEGATIVE_INFINITY) >= minProjectedNetEdge,
       value: `${minProjectedNetEdge}%`
     },
     {
       name: "最小期望值",
-      ok: Number.isFinite(tradeProjection.expectancyPoints) && tradeProjection.expectancyPoints >= minExpectancy,
+      ok: Number.isFinite(tradeProjection.expectancyPoints) && (tradeProjection.expectancyPoints ?? Number.NEGATIVE_INFINITY) >= minExpectancy,
       value: `${minExpectancy}`
     },
     {
@@ -313,10 +445,10 @@ export function Dashboard({
             </button>
             {notes && !assetLabel && /^\d{6}$/.test(String(security?.code || "")) && <QuickNote api={notes}
               stock={{ code: security.code, name: String(quote.name || security.name || security.code).slice(0, 16), secid: String(security.secid || `${/^[69]/.test(security.code) ? "1" : "0"}.${security.code}`) }} />}
-            <button className="secondary-btn" onClick={() => onOpenBacktest(security)}>
+            {onOpenBacktest && <button className="secondary-btn" onClick={() => onOpenBacktest(security)}>
               <LineChart size={17} />
               运行回测
-            </button>
+            </button>}
             <button className="primary-btn" onClick={onRetry} disabled={loading}>
               {loading ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}
               刷新个股
@@ -361,8 +493,8 @@ export function Dashboard({
         </div>
 
         <div className={`score-card panel ${scoreTone}`}>
-          <div className="score-ring" style={{ "--score": `${a.mrs * 3.6}deg` } as any}>
-            <div><strong>{a.mrs}</strong><span>MRS</span></div>
+          <div className="score-ring" style={{ "--score": `${(a.mrs ?? 0) * 3.6}deg` } as CSSProperties}>
+            <div><strong>{a.mrs ?? 0}</strong><span>MRS</span></div>
           </div>
           <div className="score-copy">
             <span className="grade">等级 {a.grade}</span>
@@ -374,14 +506,312 @@ export function Dashboard({
                 : "近60个交易日暂无涨停事件 · 通用行情分析"}</p>
           </div>
           <div className="score-components">
-            <MiniBar label="个股结构" value={a.structureScore} />
-            <MiniBar label="板块强度" value={a.sectorScore} />
-            <MiniBar label="资讯驱动" value={a.infoScore} />
+            <MiniBar label="个股结构" value={a.structureScore ?? 0} />
+            <MiniBar label="板块强度" value={a.sectorScore ?? 0} />
+            <MiniBar label="资讯驱动" value={a.infoScore ?? 0} />
           </div>
         </div>
       </section>
 
-      {!assetLabel && <AiStockReviewPanel security={{ code: quote.code || security.code, name: quote.name || security.name }} />}
+      {!assetLabel && (() => {
+        const activeCode = quote.code || security.code;
+        const activeName = quote.name || security.name;
+        const matchedHoldingItem: HoldingItem | null = Array.isArray(holdings)
+          ? (holdings.find((item) => item?.code === activeCode) || null)
+          : null;
+        const matchedHolding = Boolean(matchedHoldingItem);
+        const liveLatestNum = Number(quote.latest);
+        const hasLivePrice = Number.isFinite(liveLatestNum) && liveLatestNum > 0;
+        const holdingCost = matchedHoldingItem ? Number(matchedHoldingItem.costPrice) : 0;
+        const holdingShares = matchedHoldingItem ? Number(matchedHoldingItem.shares) : 0;
+        const holdingFloatingPnl = matchedHoldingItem && hasLivePrice ? (liveLatestNum - holdingCost) * holdingShares : null;
+        const holdingFloatingPct = matchedHoldingItem && hasLivePrice && holdingCost > 0
+          ? ((liveLatestNum - holdingCost) / holdingCost) * 100
+          : null;
+        const activeMonitorConfig = monitors?.configs?.[activeCode] || null;
+        const monitorStopPrice = computeMonitorStopPrice(activeMonitorConfig);
+        const effectiveStop = monitorStopPrice ?? (tradePlan.stopLossPrice ? Number(tradePlan.stopLossPrice) : null);
+        const stopDistancePct = effectiveStop && hasLivePrice
+          ? ((liveLatestNum - effectiveStop) / liveLatestNum) * 100
+          : null;
+
+        const applyQuickStop = (stopPct: number) => {
+          if (!monitors?.save) return;
+          const refPrice = hasLivePrice ? liveLatestNum : (holdingCost > 0 ? holdingCost : null);
+          const nextCfg = buildStopLossMonitorConfig(refPrice, stopPct, activeMonitorConfig);
+          if (!nextCfg) return;
+          const ok = monitors.save(activeCode, nextCfg);
+          if (ok) {
+            const targetStop = computeMonitorStopPrice(nextCfg);
+            onShowToast?.(
+              targetStop
+                ? `${activeName} 已启用盯盘止损 ≤ ${targetStop.toFixed(2)} (${stopPct}%)`
+                : `${activeName} 已启用盘中跌幅 ≤ ${stopPct}% 预警`
+            );
+          }
+        };
+
+        const submitQuickTrade = async (event: FormEvent) => {
+          event.preventDefault();
+          if (!onQuickHoldingTrade || quickTradeSubmitting) return;
+          setQuickTradeSubmitting(true);
+          try {
+            const ok = await onQuickHoldingTrade({
+              code: activeCode,
+              name: activeName,
+              secid: security.secid,
+              side: quickTradeSide,
+              shares: Number(quickTradeShares),
+              price: Number(quickTradePrice)
+            });
+            if (ok) {
+              setQuickTradeOpen(false);
+            }
+          } finally {
+            setQuickTradeSubmitting(false);
+          }
+        };
+
+        const topHighlight = Array.isArray(a.highlights) && a.highlights.length
+          ? String(a.highlights[0])
+          : String(a.trendLabel || "结构观察中");
+        const topRisk = Array.isArray(a.risks) && a.risks.length
+          ? String(a.risks[0])
+          : (!hasTradePlan && killReasonsText ? killReasonsText : "暂未发现显著风控风险");
+        const stopText = tradePlan.stopLossPrice ? fmt(tradePlan.stopLossPrice) : "按关键支撑";
+        const targetText = tradePlan.takeProfitPrice ? fmt(tradePlan.takeProfitPrice) : "动态跟踪";
+        const humanVerdict = hasTradePlan
+          ? `可按计划执行（${signal}），建议仓位 ${tradePlan.positionSizePercent ?? "--"}%，止损 ${stopText} / 止盈 ${targetText}；最大约束：${topRisk}`
+          : `当前以观望等待为主（${killReasonsText || "尚未同时满足全部入场门槛"}）；核心关注：${topHighlight}`;
+        const agentContext = {
+          origin: "market_workspace",
+          grade: a.grade,
+          mrs: a.mrs,
+          signal,
+          watched: Boolean(isWatched),
+          holding: matchedHolding,
+          ...(hasLivePrice ? { latestPrice: liveLatestNum } : {}),
+          ...(matchedHoldingItem ? { costPrice: matchedHoldingItem.costPrice, holdingShares: matchedHoldingItem.shares } : {}),
+          topHighlight,
+          topRisk
+        };
+        return (
+          <>
+            <section className="panel mw-action-bar" aria-label="交易联动工具栏">
+              <div className="mw-holding-live-info">
+                {matchedHoldingItem ? (
+                  <>
+                    <span className="mw-holding-chip">
+                      <b>持仓</b>
+                      {maskSensitiveText(`${fmt(holdingShares, 0)} 股`, privacyMask)}
+                    </span>
+                    <span className="mw-holding-stat">
+                      成本 <b>{fmt(holdingCost)}</b>
+                    </span>
+                    {holdingFloatingPct !== null && (
+                      <span className={`mw-holding-stat ${holdingFloatingPct >= 0 ? "tone-up" : "tone-down"}`}>
+                        浮盈 <b>{holdingFloatingPct >= 0 ? "+" : ""}{holdingFloatingPct.toFixed(2)}%</b>
+                        {holdingFloatingPnl !== null && (
+                          <small> ({maskSensitiveText(`${holdingFloatingPnl >= 0 ? "+" : ""}${fmtMoney(holdingFloatingPnl)}`, privacyMask)})</small>
+                        )}
+                      </span>
+                    )}
+                    <span className="mw-holding-stat">
+                      {effectiveStop ? (
+                        <>
+                          {monitorStopPrice ? "盯盘损 " : "参考损 "}
+                          <b>{effectiveStop.toFixed(2)}</b>
+                          {stopDistancePct !== null && <small> (距现价 {stopDistancePct.toFixed(1)}%)</small>}
+                        </>
+                      ) : (
+                        <small className="tone-warn">尚未设止损盯盘</small>
+                      )}
+                    </span>
+                  </>
+                ) : (
+                  <span className="mw-holding-empty">
+                    当前未持有 {activeName} · 支持在此直接建仓记账、设自动止损或侧边问 AI
+                  </span>
+                )}
+              </div>
+
+              <div className="mw-action-buttons">
+                {onQuickHoldingTrade && (
+                  <button
+                    type="button"
+                    className={`secondary-btn mw-action-btn${quickTradeOpen ? " active" : ""}`}
+                    onClick={() => {
+                      setQuickTradeSide("buy");
+                      if (hasLivePrice) setQuickTradePrice(liveLatestNum.toFixed(2));
+                      setQuickTradeOpen(v => !v);
+                    }}
+                  >
+                    <PlusCircle size={14} />
+                    {matchedHolding ? "加减仓记账" : "+ 建仓记持仓"}
+                  </button>
+                )}
+                {monitors?.save && (
+                  <button
+                    type="button"
+                    className={`secondary-btn mw-action-btn${activeMonitorConfig?.enabled ? " active" : ""}`}
+                    onClick={() => applyQuickStop(-5)}
+                    title={monitorStopPrice ? `当前盯盘止损 ≤ ${monitorStopPrice.toFixed(2)}，点击按最新价重算 -5%` : "按现价或成本 -5% 一键开启价格预警"}
+                  >
+                    <Bell size={14} />
+                    {monitorStopPrice ? `盯盘损 ${monitorStopPrice.toFixed(2)}` : "设 -5% 止损"}
+                  </button>
+                )}
+                {monitors?.save && !monitorStopPrice && (
+                  <button
+                    type="button"
+                    className="secondary-btn mw-action-btn"
+                    onClick={() => applyQuickStop(-7)}
+                    title="按现价或成本 -7% 一键开启价格预警"
+                  >
+                    -7%
+                  </button>
+                )}
+                {onTransferToT && (
+                  <button
+                    type="button"
+                    className="secondary-btn mw-action-btn"
+                    onClick={() => onTransferToT({ code: activeCode, name: activeName, secid: security.secid })}
+                  >
+                    <ArrowLeftRight size={14} />
+                    转做T
+                  </button>
+                )}
+                {canOpenAgent() && (
+                  <button
+                    type="button"
+                    className={`secondary-btn mw-action-btn${agentDrawerOpen ? " active" : ""}`}
+                    onClick={() => setAgentDrawerOpen(v => !v)}
+                  >
+                    <MessagesSquare size={14} />
+                    {agentDrawerOpen ? "收起侧边 AI" : "侧边问 AI"}
+                  </button>
+                )}
+              </div>
+            </section>
+
+            {quickTradeOpen && onQuickHoldingTrade && (
+              <form className="panel mw-quick-trade-panel" onSubmit={e => void submitQuickTrade(e)} aria-label="快捷加减仓记账">
+                <div className="mw-quick-trade-sides" role="group" aria-label="买卖方向">
+                  <button
+                    type="button"
+                    className={quickTradeSide === "buy" ? "active buy" : ""}
+                    onClick={() => setQuickTradeSide("buy")}
+                  >
+                    + 买入/加仓
+                  </button>
+                  <button
+                    type="button"
+                    className={quickTradeSide === "sell" ? "active sell" : ""}
+                    disabled={!matchedHolding}
+                    onClick={() => setQuickTradeSide("sell")}
+                  >
+                    - 卖出/减仓
+                  </button>
+                </div>
+                <label className="mw-quick-trade-field">
+                  <span>股数</span>
+                  <input
+                    type="number"
+                    min="1"
+                    step="100"
+                    value={quickTradeShares}
+                    onChange={e => setQuickTradeShares(e.target.value)}
+                    aria-label="快捷成交股数"
+                  />
+                </label>
+                <label className="mw-quick-trade-field">
+                  <span>成交均价</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    value={quickTradePrice}
+                    onChange={e => setQuickTradePrice(e.target.value)}
+                    placeholder={hasLivePrice ? liveLatestNum.toFixed(2) : "输入价格"}
+                    aria-label="快捷成交均价"
+                  />
+                </label>
+                <button type="submit" className="primary-btn" disabled={quickTradeSubmitting}>
+                  {quickTradeSubmitting ? "记账中…" : "确认记账"}
+                </button>
+                <button type="button" className="secondary-btn" onClick={() => setQuickTradeOpen(false)}>取消</button>
+              </form>
+            )}
+
+            <section className="panel executive-synthesis" data-executive-synthesis="true" aria-label="AI 与量化协同速览">
+              <div className="executive-synthesis-meta">
+                <span className={`synthesis-badge ${scoreTone}`}>{`等级 ${a.grade || "--"} · MRS ${a.mrs ?? "--"} · ${signal}`}</span>
+                {matchedHolding && <span className="synthesis-pill holding">已持仓</span>}
+                {isWatched && <span className="synthesis-pill watch">已自选</span>}
+                {hasTradePlan && <span className="synthesis-pill buy">计划可交易</span>}
+              </div>
+              <div className="executive-synthesis-copy">
+                <span className="executive-synthesis-verdict"><b>人话结论</b>{humanVerdict}</span>
+                <span><b>主看点</b>{topHighlight}</span>
+                <span><b>主风险</b>{topRisk}</span>
+              </div>
+              {canOpenAgent() && (
+                <button
+                  type="button"
+                  className="secondary-btn executive-synthesis-btn"
+                  onClick={() => openAgentFor({ code: activeCode, name: activeName }, "full", agentContext)}
+                >
+                  <MessagesSquare size={15} />
+                  AI 问股深挖
+                </button>
+              )}
+            </section>
+            <AiStockReviewPanel security={{ code: activeCode, name: activeName }} agentContext={agentContext} />
+
+            {agentDrawerOpen && canOpenAgent() && (
+              <aside className="panel mw-agent-drawer" aria-label="个股侧边 AI 问股">
+                <header className="mw-agent-drawer-head">
+                  <div>
+                    <MessagesSquare size={15} />
+                    <b>{activeName} ({activeCode}) · 侧边问答</b>
+                  </div>
+                  <div className="mw-agent-drawer-actions">
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      onClick={() => openAgentFor({ code: activeCode, name: activeName }, "full", agentContext)}
+                    >
+                      全屏对话
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-button"
+                      aria-label="关闭侧边问股"
+                      onClick={() => setAgentDrawerOpen(false)}
+                    >
+                      <X size={15} />
+                    </button>
+                  </div>
+                </header>
+                <div className="mw-agent-drawer-body">
+                  <WorkspaceErrorBoundary label="侧边 AI 问股" compact>
+                    <Suspense fallback={<LoadingState />}>
+                      <EmbeddedAiAgentView
+                        key={activeCode}
+                        holdings={holdings}
+                        embeddedFocus={{ code: activeCode, name: activeName }}
+                        embeddedMode="stock-drawer"
+                        userContext={agentContext}
+                        onOpenStock={onOpen}
+                      />
+                    </Suspense>
+                  </WorkspaceErrorBoundary>
+                </div>
+              </aside>
+            )}
+          </>
+        );
+      })()}
 
       <section className="content-grid">
         <TrendChartPanel
@@ -415,11 +845,11 @@ export function Dashboard({
             </div>
           ) : (
             <>
-              <Timeline daysSince={a.daysSince} />
+              <Timeline daysSince={a.daysSince ?? null} />
               <div className="event-facts">
                 <Fact label="涨停日期" value={a.limitEvent?.date || "未识别"} />
                 <Fact label="关键支撑" value={a.limitEvent ? `¥ ${fmt(a.limitEvent.low)}` : "--"} />
-                <Fact label="距支撑位" value={`${a.supportDistance >= 0 ? "+" : ""}${fmt(a.supportDistance)}%`} tone={a.heldSupport ? "good" : "risk"} />
+                <Fact label="距支撑位" value={`${(a.supportDistance ?? 0) >= 0 ? "+" : ""}${fmt(a.supportDistance)}%`} tone={a.heldSupport ? "good" : "risk"} />
                 <Fact label="锚定均价" value={a.avwap ? `¥ ${fmt(a.avwap)}` : "--"} />
               </div>
             </>
@@ -433,18 +863,25 @@ export function Dashboard({
         ) : isGeneralStock ? (
           <SignalCard icon={ShieldCheck} label="涨停事件" value="近60日未识别" detail="仅跳过涨停事件因子，不影响通用行情分析" good />
         ) : (
-          <SignalCard icon={ShieldCheck} label="关键位防守" value={a.heldSupport ? "支撑有效" : "支撑失效"} detail={`观察期最低价 ${a.limitEvent ? fmt(Math.min(...history.filter((x: any) => x.date >= a.limitEvent.date).map((x: any) => x.low))) : "--"}`} good={a.heldSupport} />
+          <SignalCard icon={ShieldCheck} label="关键位防守" value={a.heldSupport ? "支撑有效" : "支撑失效"} detail={`观察期最低价 ${a.limitEvent ? fmt(Math.min(...history.filter((x) => String(x.date || "") >= String(a.limitEvent?.date || "")).map((x) => Number(x.low ?? Infinity)))) : "--"}`} good={Boolean(a.heldSupport)} />
         )}
-        <SignalCard icon={Activity} label="量价状态" value={a.volumeRatio < 0.8 ? "缩量整理" : a.volumeRatio < 1.5 ? "量能温和" : "量能放大"} detail={`量能倍数 ${fmt(a.volumeRatio)} · 相对换手 ${fmt(a.relativeTurnover)}`} good={a.volumeRatio < 1.5} />
-        <SignalCard icon={TrendingUp} label="均线趋势" value={a.trendLabel} detail={`MA5-MA20 发散 ${fmt(a.divergence)}%`} good={a.maBull && a.slopesUp} />
+        <SignalCard icon={Activity} label="量价状态" value={(a.volumeRatio ?? 0) < 0.8 ? "缩量整理" : (a.volumeRatio ?? 0) < 1.5 ? "量能温和" : "量能放大"} detail={`量能倍数 ${fmt(a.volumeRatio)} · 相对换手 ${fmt(a.relativeTurnover)}`} good={(a.volumeRatio ?? 0) < 1.5} />
+        <SignalCard icon={TrendingUp} label="均线趋势" value={a.trendLabel || "--"} detail={`MA5-MA20 发散 ${fmt(a.divergence)}%`} good={Boolean(a.maBull && a.slopesUp)} />
         {assetLabel ? (
           <SignalCard icon={Gauge} label="市场参照" value="中性比较" detail="不纳入涨停板块强度排名" good />
         ) : (
-          <SignalCard icon={Gauge} label="相对板块" value={`${a.rsSector >= 0 ? "+" : ""}${fmt(a.rsSector)}%`} detail={`个股3日 ${fmt(a.stockReturn3)}%`} good={a.rsSector >= 0} />
+          <SignalCard icon={Gauge} label="相对板块" value={`${(a.rsSector ?? 0) >= 0 ? "+" : ""}${fmt(a.rsSector)}%`} detail={`个股3日 ${fmt(a.stockReturn3)}%`} good={(a.rsSector ?? 0) >= 0} />
         )}
       </section>
 
-      {a.limitEvent ? <FirstBoardQualityPanel quality={a.firstBoardQuality} /> : null}
+      {a.limitEvent ? (
+        <details className="mw-secondary-details">
+          <summary>
+            首板品质与封板明细（{a.firstBoardQuality?.score ?? "--"} 分 · 点击展开次级证据）
+          </summary>
+          <FirstBoardQualityPanel quality={a.firstBoardQuality} />
+        </details>
+      ) : null}
 
       <section className="panel strategy-status-panel">
         <PanelTitle
@@ -464,14 +901,19 @@ export function Dashboard({
             </small>
           </div>
         </div>
-        <div className="strategy-result-grid">
-          {(a.strategyResults || []).map((item: any) => (
-            <div className={`strategy-result ${item.matched ? "matched" : "missed"}`} key={item.id}>
-              <span>{item.matched ? "✓" : "×"}</span>
-              <div><b>{item.label}</b><small>{item.detail}</small></div>
-            </div>
-          ))}
-        </div>
+        <details className="mw-secondary-details">
+          <summary>
+            展开逐项策略检查明细（匹配 {a.strategyMatched || 0} / {(a.strategyResults || []).length} 项）
+          </summary>
+          <div className="strategy-result-grid">
+            {(a.strategyResults || []).map((item) => (
+              <div className={`strategy-result ${item.matched ? "matched" : "missed"}`} key={item.id}>
+                <span>{item.matched ? "✓" : "×"}</span>
+                <div><b>{item.label}</b><small>{item.detail}</small></div>
+              </div>
+            ))}
+          </div>
+        </details>
       </section>
 
       <section className="panel execution-plan-panel">
@@ -508,7 +950,7 @@ export function Dashboard({
               <Fact label="止盈位" value={tradePlan.takeProfitPrice ? fmtMoney(tradePlan.takeProfitPrice) : "--"} />
               <Fact label="止损距离" value={tradePlan.stopLossDistancePercent ? `${fmt(tradePlan.stopLossDistancePercent)}%` : "--"} />
               <Fact label="止盈距离" value={tradePlan.takeProfitDistancePercent ? `${fmt(tradePlan.takeProfitDistancePercent)}%` : "--"} />
-              <Fact label="风险收益比" value={tradePlan.riskReward ?? "--"} />
+              <Fact label="风险收益比" value={tradePlan.riskReward == null ? "--" : String(tradePlan.riskReward)} />
               <Fact label="Kelly系数" value={tradePlan.halfKellyFraction !== undefined ? fmt(tradePlan.halfKellyFraction) : "--"} />
               <Fact label="Kelly仓位建议" value={tradePlan.kellyPositionPercent !== undefined ? `${fmt(tradePlan.kellyPositionPercent)}%` : "--"} />
               <Fact label="Kill 开关" value={tradePlan.killSwitchTriggered ? "触发" : "未触发"} />
@@ -602,7 +1044,7 @@ export function Dashboard({
                   <div className="execution-decision-empty">暂无决策记录</div>
                 ) : (
                   <div className="execution-decision-list">
-                    {executionDecisionRows.map((decision: any) => (
+                    {executionDecisionRows.map((decision) => (
                       <div className={`execution-decision-item execution-decision-item--${decision.level}`} key={decision.id}>
                         <b>
                           {decision.securityCode || "--"} · {decision.summary}
@@ -749,7 +1191,10 @@ export function Dashboard({
                     {`未实 ${fmt(position.latestPrice * position.shares - position.entryPrice * position.shares)}元`}
                   </span>
                   <span>
-                    <button className="table-action" onClick={() => closePaperTradeForCode(position.code, "MANUAL")}>平仓</button>
+                    <button className="table-action" onClick={() => closePaperTradeForCode?.(position.code, "MANUAL")}>平仓</button>
+                    {position.settlementBlockedReason && confirmPaperSettlementForCode && (
+                      <button className="table-action" style={{ marginLeft: 6 }} onClick={() => confirmPaperSettlementForCode(position.code)}>确认解除</button>
+                    )}
                   </span>
                 </div>
               ))}
@@ -775,7 +1220,23 @@ export function Dashboard({
         </div>
       </section>
 
-      <HistoricalStatsPanel data={a.historicalStats} />
+      <HistoricalStatsPanel
+        data={a.historicalStats}
+        archive={externalArchive}
+        regimeProfile={a.regimeProfile || externalArchive?.regimeAdvice}
+        archiveDays={a.externalArchiveDays ?? externalArchive?.days ?? 0}
+        onApplyRegimeBacktest={() => {
+          const preset = (a.regimeProfile || externalArchive?.regimeAdvice)?.backtestPreset;
+          if (preset && typeof onOpenBacktest === "function") {
+            onOpenBacktest(security, null, {
+              lookbackBars: preset.lookbackBars,
+              minProjectedNetEdgePercent: preset.minProjectedNetEdgePercent,
+              minExpectancyPoints: preset.minExpectancyPoints,
+              minTurnoverPercent: preset.minTurnoverPercent
+            });
+          }
+        }}
+      />
 
       <section className="content-grid lower">
         <div className="panel sector-panel">
@@ -792,13 +1253,13 @@ export function Dashboard({
                 <div className="sector-rank">{sector.state}</div>
               </div>
               <div className="return-bars">
-                <ReturnBar label="1日超额" value={subtractNullable(sector.returns.r1, sector.benchmarkReturns.r1)} />
-                <ReturnBar label="3日超额" value={subtractNullable(sector.returns.r3, sector.benchmarkReturns.r3)} />
-                <ReturnBar label="5日超额" value={subtractNullable(sector.returns.r5, sector.benchmarkReturns.r5)} />
+                <ReturnBar label="1日超额" value={subtractNullable(sector.returns?.r1 ?? null, sector.benchmarkReturns?.r1 ?? null)} />
+                <ReturnBar label="3日超额" value={subtractNullable(sector.returns?.r3 ?? null, sector.benchmarkReturns?.r3 ?? null)} />
+                <ReturnBar label="5日超额" value={subtractNullable(sector.returns?.r5 ?? null, sector.benchmarkReturns?.r5 ?? null)} />
               </div>
               <div className="sector-stats">
                 <Metric label="上涨广度" value={sector.breadth == null ? "--" : `${fmt(sector.breadth * 100, 0)}%`} />
-                <Metric label="涨停家数" value={String(sector.limitUps)} tone="red" />
+                <Metric label="涨停家数" value={String(sector.limitUps ?? "--")} tone="red" />
                 <Metric label="成交热度" value={sector.amountHeat == null ? "--" : `${fmt(sector.amountHeat)}x`} />
                 <Metric label="5日持续" value={sector.persistence == null ? "--" : `${fmt(sector.persistence * 100, 0)}%`} />
               </div>
@@ -808,10 +1269,10 @@ export function Dashboard({
 
         <div className="panel news-panel">
           <PanelTitle title="最新公告" subtitle="信息驱动 · 原始披露" icon={Newspaper} badge={`${announcements.length} 条`} />
-          {announcements.slice(0, 4).map((item: any) => (
+          {announcements.slice(0, 4).map((item) => (
             <button
               className="news-item"
-              key={item.art_code}
+              key={String(item.art_code || item.title || "")}
               onClick={() => window.stockApi.openExternal(`https://data.eastmoney.com/notices/detail/${quote.code}/${item.art_code}.html`)}
             >
               <span className={`news-score ${item.direction}`}>{item.score}</span>
@@ -823,7 +1284,7 @@ export function Dashboard({
         </div>
       </section>
 
-      {a.risks.length > 0 && (
+      {!!a.risks?.length && (
         <div className="risk-strip">
           <CircleAlert size={18} />
           <b>风险提示</b>
@@ -835,7 +1296,7 @@ export function Dashboard({
   );
 }
 
-function sourceDisplayName(source: any) {
+function sourceDisplayName(source: { id?: string | undefined; name?: string | undefined } | null | undefined) {
   const id = String(source?.id || "").toLowerCase();
   if (id === "ths") return "同花顺";
   if (id === "eastmoney") return "东方财富";
@@ -847,12 +1308,18 @@ function sourceDisplayName(source: any) {
   return String(source?.name || "行情源");
 }
 
-// F-02 说明：这个面板只读后端返回的数据字段、不解引用任何可空对象，
-// 精确类型需要与后端契约一一对应，待契约固定后再补（保留 any 属已知债）。
-function MarketDataStatusPanel({ federation, actualProvider, updatedAt }: any) {
-  const sourceRows = Array.isArray(federation?.sources) ? federation.sources : [];
-  const byId = new Map(sourceRows.map((source: any) => [String(source?.id || ""), source]));
-  const lines = ["ths", "eastmoney", "tencent"].map((id) => byId.get(id) || { id, enabled: false, ok: null });
+function MarketDataStatusPanel({
+  federation,
+  actualProvider,
+  updatedAt
+}: {
+  federation?: AnalysisDataFederation | undefined;
+  actualProvider: string;
+  updatedAt: string;
+}) {
+  const sourceRows: AnalysisFederationSource[] = Array.isArray(federation?.sources) ? federation.sources : [];
+  const byId = new Map<string, AnalysisFederationSource>(sourceRows.map((source) => [String(source?.id || ""), source]));
+  const lines: AnalysisFederationSource[] = ["ths", "eastmoney", "tencent"].map((id) => byId.get(id) || { id, enabled: false, ok: null });
   const spreadPct = Number(federation?.spreadPct);
   const realtimeCount = Number(federation?.realtimeCount);
   const status = String(federation?.status || "等待校验");
@@ -876,10 +1343,10 @@ function MarketDataStatusPanel({ federation, actualProvider, updatedAt }: any) {
         <div><span>当前报价</span><b>{activeProvider}</b><small>{updateTime} 更新</small></div>
         <div><span>实时可用</span><b>{Number.isFinite(realtimeCount) ? `${realtimeCount} 路` : "--"}</b><small>三线并行校验</small></div>
         <div><span>多源价差</span><b>{Number.isFinite(spreadPct) ? `${spreadPct.toFixed(3)}%` : "--"}</b><small>{needsReview ? "超过阈值，已禁止纸面执行" : "不以均价替换主报价"}</small></div>
-        <div><span>一致性价格</span><b>{Number(federation?.consensusPrice) > 0 ? fmt(federation.consensusPrice) : "--"}</b><small>仅用于交叉核验</small></div>
+        <div><span>一致性价格</span><b>{Number(federation?.consensusPrice) > 0 ? fmt(federation?.consensusPrice) : "--"}</b><small>仅用于交叉核验</small></div>
       </div>
       <div className="market-data-sources">
-        {lines.map((source: any) => {
+        {lines.map((source) => {
           const ok = source?.ok === true;
           const disabled = source?.enabled === false;
           const label = ok ? "已校验" : disabled ? "未配置" : "不可用";
@@ -897,7 +1364,7 @@ function MarketDataStatusPanel({ federation, actualProvider, updatedAt }: any) {
   );
 }
 
-function FirstBoardQualityPanel({ quality }: any) {
+function FirstBoardQualityPanel({ quality }: { quality?: AnalysisFirstBoardQuality | null | undefined }) {
   if (!quality) return null;
   return (
     <section className="panel first-board-panel">
@@ -932,10 +1399,10 @@ function FirstBoardQualityPanel({ quality }: any) {
             </div>
           </div>
           <div className="quality-factor-grid">
-            {(quality.factors || []).map((factor: any) => (
+            {(quality.factors || []).map((factor) => (
               <div className={factor.passed ? "passed" : "missed"} key={factor.id}>
                 <span>{factor.label}<b>{factor.value}</b></span>
-                <i><em style={{ width: `${factor.maxPoints ? factor.points / factor.maxPoints * 100 : 0}%` }} /></i>
+                <i><em style={{ width: `${factor.maxPoints ? ((factor.points ?? 0) / factor.maxPoints) * 100 : 0}%` }} /></i>
                 <small>{factor.points}/{factor.maxPoints}分 · 标准 {factor.threshold}</small>
               </div>
             ))}
@@ -949,10 +1416,24 @@ function FirstBoardQualityPanel({ quality }: any) {
   );
 }
 
-function HistoricalStatsPanel({ data }: any) {
+function HistoricalStatsPanel({
+  data,
+  archive,
+  regimeProfile,
+  archiveDays = 0,
+  onApplyRegimeBacktest
+}: {
+  data?: AnalysisHistoricalStats | null | undefined;
+  archive?: ExternalFactorArchiveSummary | null | undefined;
+  regimeProfile?: RegimeWeightProfile | null | undefined;
+  archiveDays?: number | undefined;
+  onApplyRegimeBacktest?: (() => void) | undefined;
+}) {
   if (!data) return null;
-  const value = (number: number | null, suffix = "%") =>
-    Number.isFinite(number) ? `${number! >= 0 ? "+" : ""}${fmt(number!)}${suffix}` : "--";
+  const value = (number: number | null | undefined, suffix = "%") =>
+    Number.isFinite(number) ? `${Number(number) >= 0 ? "+" : ""}${fmt(Number(number))}${suffix}` : "--";
+  const resolvedRegime = regimeProfile || archive?.regimeAdvice || null;
+  const weights = resolvedRegime?.factorWeights;
   return (
     <section className="panel historical-stats-panel">
       <PanelTitle
@@ -961,6 +1442,24 @@ function HistoricalStatsPanel({ data }: any) {
         icon={BarChart3}
         badge={`${data.totalEvents || 0} 轮涨停事件`}
       />
+      {resolvedRegime && (
+        <div className="stats-regime-strip">
+          <div className="stats-regime-meta">
+            <strong>{resolvedRegime.regimeLabel}</strong>
+            <span>外生因子已归档 {archiveDays} 个交易日{archive?.latestDate ? `（最近 ${archive.latestDate}）` : ""}</span>
+            {weights && (
+              <small>
+                自适应权重建议：趋势 {weights.trend}% · 量能 {weights.volume}% · 板块 {weights.sector}% · 情绪 {weights.emotion}% · 防守 {weights.defensive}%
+              </small>
+            )}
+          </div>
+          {onApplyRegimeBacktest && (
+            <button type="button" className="secondary-btn" onClick={onApplyRegimeBacktest}>
+              按当前市场周期带入回测参数
+            </button>
+          )}
+        </div>
+      )}
       <div className="stats-warning">
         <CircleAlert size={16} />
         <span>
@@ -976,7 +1475,7 @@ function HistoricalStatsPanel({ data }: any) {
         <div className="strategy-stat-row stat-head">
           <span>策略</span><span>结算样本</span><span>次日胜率</span><span>3日胜率</span><span>5日胜率</span><span>5日均值/超额</span><span>最差回撤</span><span>置信度</span>
         </div>
-        {(data.stats || []).map((item: any) => (
+        {(data.stats || []).map((item) => (
           <div className={`strategy-stat-row ${item.available ? "" : "unavailable"}`} key={item.id}>
             <span><b>{item.label}</b><small>{item.unavailableReason || item.confidenceNote}</small></span>
             <span className="sample-breakdown">
@@ -991,7 +1490,7 @@ function HistoricalStatsPanel({ data }: any) {
                 <small>95%区间 {fmt(item.winRate5Interval[0], 0)}–{fmt(item.winRate5Interval[1], 0)}%</small>
               )}
             </span>
-            <span className={`return-breakdown ${item.average5 >= 0 ? "red" : "green"}`}>
+            <span className={`return-breakdown ${(item.average5 ?? 0) >= 0 ? "red" : "green"}`}>
               {value(item.average5)}
               {Number.isFinite(item.averageExcess5) && (
                 <small>全A超额 {value(item.averageExcess5)}</small>
@@ -1003,7 +1502,7 @@ function HistoricalStatsPanel({ data }: any) {
         ))}
       </div>
       <div className="node-stat-grid">
-        {(data.nodeStats || []).map((item: any) => (
+        {(data.nodeStats || []).map((item) => (
           <div key={item.node}>
             <span>{item.node}</span><b>{item.sampleCount} 触发 / {item.n5 ?? 0} 结算</b>
             <small>
@@ -1020,11 +1519,25 @@ function HistoricalStatsPanel({ data }: any) {
 }
 
 // 个股图表默认打开分时（与同花顺一致）；用户切到别的周期后，换股时沿用上次选择。
-let rememberedChartFrame = "time";
-const chartFrameDefaults: Record<string, string> = { time: "1d", "1": "1d", "5": "3d", "15": "10d", "30": "20d", "60": "20d", "120": "1m", "101": "3m", "102": "3y", "103": "10y" };
+let rememberedChartFrame: ChartFrameValue = "time";
+const chartFrameDefaults: Record<ChartFrameValue, string> = { time: "1d", "1": "1d", "5": "3d", "15": "10d", "30": "20d", "60": "20d", "120": "1m", "101": "3m", "102": "3y", "103": "10y" };
 
-function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabel, live = true }: any) {
-  const frames: any[] = [
+function TrendChartPanel({
+  security,
+  dailyHistory,
+  eventDate,
+  support,
+  trendLabel,
+  live = true
+}: {
+  security: Security;
+  dailyHistory: ChartCandleRow[];
+  eventDate?: string | undefined;
+  support?: number | undefined;
+  trendLabel?: string | undefined;
+  live?: boolean | undefined;
+}) {
+  const frames: ChartFrameOption[] = [
     { value: "time", label: "分时", defaultRange: "1d", ranges: [] },
     { value: "1", label: "1分钟", defaultRange: "1d", ranges: [["1d", "1日"], ["3d", "3日"], ["5d", "5日"], ["10d", "10日"]] },
     { value: "5", label: "5分钟", defaultRange: "3d", ranges: [["1d", "1日"], ["3d", "3日"], ["5d", "5日"], ["10d", "10日"]] },
@@ -1036,7 +1549,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
     { value: "102", label: "周线", defaultRange: "3y", ranges: [["1y", "1年"], ["3y", "3年"], ["5y", "5年"], ["10y", "10年"]] },
     { value: "103", label: "月线", defaultRange: "10y", ranges: [["3y", "3年"], ["5y", "5年"], ["10y", "10年"], ["all", "全部"]] }
   ];
-  const [frame, setFrame] = useState(rememberedChartFrame);
+  const [frame, setFrame] = useState<ChartFrameValue>(rememberedChartFrame);
   const [range, setRange] = useState(chartFrameDefaults[rememberedChartFrame] || "3m");
   const isTimeShare = frame === "time";
   const [density, setDensity] = useState("120");
@@ -1044,7 +1557,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   const [windowOffset, setWindowOffset] = useState(0);
   const chartContext = `${security.secid || security.code}|${frame}|${range}|${adjustment}`;
   // 预置的分析日线只属于“日线·3个月·前复权”这一组合；默认的分时等其他周期首帧显示加载中。
-  const [chartSnapshot, setChartSnapshot] = useState<{ context: string; rows: any[]; meta: any; readAt: string }>(() => ({
+  const [chartSnapshot, setChartSnapshot] = useState<{ context: string; rows: ChartCandleRow[]; meta: ChartMetaState; readAt: string }>(() => ({
     context: `${security.secid || security.code}|101|3m|front`,
     rows: Array.isArray(dailyHistory) ? dailyHistory : [],
     meta: { source: "分析日线", adjustment: "前复权", visibleLimit: 90 },
@@ -1053,7 +1566,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   // A snapshot belongs to one exact security/interval/range/adjustment context.
   // A render after a context switch can never show another context's old data.
   const chartData = chartSnapshot.context === chartContext ? chartSnapshot.rows : [];
-  const chartMeta = chartSnapshot.context === chartContext ? chartSnapshot.meta : {};
+  const chartMeta: ChartMetaState = chartSnapshot.context === chartContext ? chartSnapshot.meta : {};
   const chartReadAt = chartSnapshot.context === chartContext ? chartSnapshot.readAt : "";
   const [chartLoading, setChartLoading] = useState(false);
   const [chartFailure, setChartFailure] = useState<{ context: string; message: string } | null>(null);
@@ -1091,9 +1604,9 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
     });
   }, [security.code]);
 
-  const selectedFrame = frames.find((item) => item.value === frame) as any;
+  const selectedFrame = frames.find((item) => item.value === frame);
   const selectedRange =
-    selectedFrame?.ranges?.find((item: string[]) => item[0] === range) ||
+    selectedFrame?.ranges?.find((item: [string, string]) => item[0] === range) ||
     selectedFrame?.ranges?.[0];
   const visibleCount =
     density === "all"
@@ -1104,7 +1617,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   const visibleEndIndex = Math.max(0, chartData.length - safeWindowOffset);
   const visibleStartIndex = Math.max(0, visibleEndIndex - visibleCount);
 
-  const chooseFrame = (nextFrame: any) => {
+  const chooseFrame = (nextFrame: ChartFrameOption) => {
     rememberedChartFrame = nextFrame.value;
     setFrame(nextFrame.value);
     setRange(nextFrame.defaultRange);
@@ -1113,7 +1626,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   };
 
   const loadChart = useCallback(async (silent = false) => {
-    if (chartPending.current !== null) return;
+    if (chartPending.current !== null && silent) return;
     const requestId = ++chartRequest.current;
     chartPending.current = requestId;
     if (!silent) setChartLoading(true);
@@ -1141,7 +1654,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
       if (chartPending.current === requestId) chartPending.current = null;
       if (requestId === chartRequest.current) setChartLoading(false);
     }
-  }, [security.code, frame, range, adjustment, chartContext, isTimeShare]);
+  }, [security, frame, range, adjustment, chartContext, isTimeShare]);
 
   useEffect(() => {
     if (pendingReset.current && pendingReset.current !== `${frame}|${range}`) return;
@@ -1156,8 +1669,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
   useEffect(() => {
     if (!live) return;
     const seconds = isTimeShare || Number(frame) < 100 ? 10 : frame === "101" ? 30 : 180;
-    const timer = window.setInterval(whenVisible(() => loadChart(true)), seconds * 1000);
-    return () => window.clearInterval(timer);
+    return startVisibleInterval(() => { void loadChart(true); }, seconds * 1000);
   }, [live, frame, isTimeShare, loadChart]);
 
   useEffect(() => {
@@ -1262,7 +1774,7 @@ function TrendChartPanel({ security, dailyHistory, eventDate, support, trendLabe
             <div className="chart-error"><CircleAlert size={18} />{chartError}<button onClick={() => loadChart(false)}>重试</button></div>
           ) : isTimeShare ? (
             <TimeShareChart rows={chartData} preClose={Number.isFinite(Number(chartMeta.preClose)) ? Number(chartMeta.preClose) : null}
-              assetType={security.assetType} unitsPerLot={chartMeta.unitsPerLot} volumeUnit={chartMeta.volumeUnit} />
+              assetType={security.assetType} unitsPerLot={chartMeta.unitsPerLot} volumeUnit={chartMeta.volumeUnit === "lots" || chartMeta.volumeUnit === "shares" ? chartMeta.volumeUnit : undefined} />
           ) : (
             <>
               <MemoizedPriceChart
@@ -1322,7 +1834,15 @@ function PriceChart({
   visibleCount = 120,
   interval = "101",
   windowOffset = 0
-}: any) {
+}: {
+  history: ChartCandleRow[];
+  eventDate?: string | undefined;
+  support?: number | undefined;
+  indicators?: string[] | undefined;
+  visibleCount?: number | undefined;
+  interval?: string | undefined;
+  windowOffset?: number | undefined;
+}) {
   const fullData = Array.isArray(history) ? history : [];
   const windowSize = Math.max(20, Number(visibleCount) || 120);
   const safeOffset = Math.min(
@@ -1359,7 +1879,7 @@ function PriceChart({
     rawMin = Math.min(rawMin, value);
     rawMax = Math.max(rawMax, value);
   };
-  data.forEach((item: any) => { includeScaleValue(item.high); includeScaleValue(item.low); });
+  data.forEach((item) => { includeScaleValue(Number(item.high)); includeScaleValue(Number(item.low)); });
   if (showBoll) {
     bollUpper.forEach(includeScaleValue);
     bollLower.forEach(includeScaleValue);
@@ -1374,7 +1894,7 @@ function PriceChart({
   const x = (i: number) => pad + slot * i + slot / 2;
   const y = (value: number) => pad + ((max - value) / Math.max(0.01, max - min)) * (height - pad * 2);
   const exactEventIndexes = data
-    .map((item: any, index: number) =>
+    .map((item, index: number) =>
       String(item.date || "").slice(0, 10) === String(eventDate || "").slice(0, 10)
         ? index
         : -1
@@ -1384,17 +1904,17 @@ function PriceChart({
   if (!eventIndexes.length && ["102", "103"].includes(String(interval)) && eventDate) {
     const targetTime = new Date(String(eventDate).slice(0, 10)).getTime();
     const fallbackIndex = data.findIndex(
-      (item: any) => new Date(String(item.date || "").slice(0, 10)).getTime() >= targetTime
+      (item) => new Date(String(item.date || "").slice(0, 10)).getTime() >= targetTime
     );
     if (fallbackIndex >= 0) {
-      const currentEnd = new Date(String(data[fallbackIndex].date || "").slice(0, 10)).getTime();
+      const currentEnd = new Date(String(data[fallbackIndex]?.date || "").slice(0, 10)).getTime();
       const priorEnd = fallbackIndex > 0
-        ? new Date(String(data[fallbackIndex - 1].date || "").slice(0, 10)).getTime()
+        ? new Date(String(data[fallbackIndex - 1]?.date || "").slice(0, 10)).getTime()
         : currentEnd - (String(interval) === "102" ? 8 : 32) * 86400000;
       if (targetTime > priorEnd && targetTime <= currentEnd) eventIndexes = [fallbackIndex];
     }
   }
-  const shortDate = (value: string) => value?.length > 10 ? value.slice(5, 16) : value;
+  const shortDate = (value: string | undefined) => value && value.length > 10 ? value.slice(5, 16) : (value || "--");
   const selectedIndex = hoverIndex ?? data.length - 1;
   const selected = data[selectedIndex];
   const axisValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => max - (max - min) * ratio);
@@ -1403,7 +1923,7 @@ function PriceChart({
       Math.min(data.length - 1, Math.round((data.length - 1) * ratio))
     )
   )];
-  const handleMove = (event: any) => {
+  const handleMove = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
     const ratio = Math.max(0, Math.min(0.9999, (event.clientX - rect.left) / rect.width));
     setHoverIndex(Math.min(data.length - 1, Math.floor(ratio * data.length)));
@@ -1457,13 +1977,17 @@ function PriceChart({
             className="event-zone"
           />
         )}
-        {data.map((item: any, index: number) => {
-          const rising = item.close >= item.open;
-          const bodyTop = y(Math.max(item.open, item.close));
-          const bodyBottom = y(Math.min(item.open, item.close));
+        {data.map((item, index: number) => {
+          const openPrice = Number(item.open ?? item.close ?? 0);
+          const closePrice = Number(item.close ?? openPrice);
+          const highPrice = Number(item.high ?? Math.max(openPrice, closePrice));
+          const lowPrice = Number(item.low ?? Math.min(openPrice, closePrice));
+          const rising = closePrice >= openPrice;
+          const bodyTop = y(Math.max(openPrice, closePrice));
+          const bodyBottom = y(Math.min(openPrice, closePrice));
           return (
             <g key={`${item.date}-${index}`} className={rising ? "k-rise" : "k-fall"}>
-              <line x1={x(index)} x2={x(index)} y1={y(item.high)} y2={y(item.low)} className="wick" />
+              <line x1={x(index)} x2={x(index)} y1={y(highPrice)} y2={y(lowPrice)} className="wick" />
               <rect
                 x={x(index) - candleWidth / 2}
                 y={bodyTop}
@@ -1519,14 +2043,14 @@ function ema(values: number[], period: number) {
 }
 
 /** RSI：与原实现同口径（最近 period 个涨跌的简单平均），用前缀和做到 O(n)。 */
-function rsiValues(data: any[], period: number) {
+function rsiValues(data: ChartCandleRow[], period: number) {
   const gains = [0], losses = [0];
   for (let i = 1; i < data.length; i += 1) {
-    const change = data[i].close - data[i - 1].close;
+    const change = Number(data[i]?.close || 0) - Number(data[i - 1]?.close || 0);
     gains.push(gains[i - 1]! + (change >= 0 ? change : 0));
     losses.push(losses[i - 1]! + (change < 0 ? -change : 0));
   }
-  return data.map((_: any, index: number) => {
+  return data.map((_, index: number) => {
     const start = Math.max(1, index - period + 1);
     if (start > index) return 100;
     const count = index - start + 1;
@@ -1537,18 +2061,21 @@ function rsiValues(data: any[], period: number) {
 }
 
 /** KDJ(9,3,3)：九日高低点直接循环取，不再每根 K 线 slice + map 分配临时数组。 */
-function kdjValues(data: any[]) {
+function kdjValues(data: ChartCandleRow[]) {
   let k = 50;
   let d = 50;
   const result = { k: [] as number[], d: [] as number[], j: [] as number[] };
-  data.forEach((item: any, index: number) => {
+  data.forEach((item, index: number) => {
     let low = Infinity, high = -Infinity;
     for (let i = Math.max(0, index - 8); i <= index; i += 1) {
       const row = data[i];
-      if (row.low < low) low = row.low;
-      if (row.high > high) high = row.high;
+      const rowLow = Number(row?.low ?? Infinity);
+      const rowHigh = Number(row?.high ?? -Infinity);
+      if (rowLow < low) low = rowLow;
+      if (rowHigh > high) high = rowHigh;
     }
-    const rsv = high === low ? 50 : ((item.close - low) / (high - low)) * 100;
+    const close = Number(item.close || 0);
+    const rsv = high === low ? 50 : ((close - low) / (high - low)) * 100;
     k = (2 * k + rsv) / 3;
     d = (2 * d + k) / 3;
     result.k.push(k);
@@ -1561,15 +2088,15 @@ function kdjValues(data: any[]) {
 type IndicatorSeries = { bars: number[]; series: Array<{ name: string; values: number[]; className: string }>; fixedRange: [number, number] | null };
 
 /** 整段历史的指标序列，只依赖（历史, 指标类型）；拖动窗口时只做切片。 */
-function fullIndicatorSeries(fullData: any[], type: string): IndicatorSeries {
+function fullIndicatorSeries(fullData: ChartCandleRow[], type: string): IndicatorSeries {
   if (type === "VOL") {
-    return { bars: fullData.map((item: any) => Number(item.volume || 0)), fixedRange: null, series: [
-      { name: "VOL MA5", values: fullData.map((_: any, i: number) => averageAt(fullData, 5, i, "volume")), className: "indicator-yellow" },
-      { name: "VOL MA10", values: fullData.map((_: any, i: number) => averageAt(fullData, 10, i, "volume")), className: "indicator-blue" }
+    return { bars: fullData.map((item) => Number(item.volume || 0)), fixedRange: null, series: [
+      { name: "VOL MA5", values: fullData.map((_, i: number) => averageAt(fullData, 5, i, "volume")), className: "indicator-yellow" },
+      { name: "VOL MA10", values: fullData.map((_, i: number) => averageAt(fullData, 10, i, "volume")), className: "indicator-blue" }
     ] };
   }
   if (type === "MACD") {
-    const closes = fullData.map((item: any) => item.close);
+    const closes = fullData.map((item) => Number(item.close || 0));
     const fast = ema(closes, 12);
     const slow = ema(closes, 26);
     const dif = fast.map((value, index) => value - (slow[index] ?? value));
@@ -1601,7 +2128,7 @@ const IndicatorChart = memo(function IndicatorChart({
   windowOffset = 0
 }: {
   type: string;
-  history: any[];
+  history: ChartCandleRow[];
   visibleCount?: number;
   windowOffset?: number;
 }) {
@@ -1621,7 +2148,7 @@ const IndicatorChart = memo(function IndicatorChart({
   const pad = 22;
   const slot = (width - pad * 2) / data.length;
   const x = (index: number) => pad + slot * index + slot / 2;
-  const bars = type === "VOL" ? data.map((item: any) => Number(item.volume || 0)) : computed.bars.slice(startIndex, endIndex);
+  const bars = type === "VOL" ? data.map((item) => Number(item.volume || 0)) : computed.bars.slice(startIndex, endIndex);
   const series = computed.series.map((item) => ({ ...item, values: item.values.slice(startIndex, endIndex) }));
   let fixedRange = computed.fixedRange;
   if (type === "KDJ") {
@@ -1667,7 +2194,7 @@ const IndicatorChart = memo(function IndicatorChart({
               width={Math.max(1.2, slot * 0.56)}
               height={Math.max(1, Math.abs(y(value) - zeroY))}
               className={type === "VOL"
-                ? data[index].close >= data[index].open ? "indicator-bar up" : "indicator-bar down"
+                ? Number(data[index]?.close ?? 0) >= Number(data[index]?.open ?? 0) ? "indicator-bar up" : "indicator-bar down"
                 : value >= 0 ? "indicator-bar up" : "indicator-bar down"}
             />
           );

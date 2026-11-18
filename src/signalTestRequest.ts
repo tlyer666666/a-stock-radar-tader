@@ -1,4 +1,4 @@
-import type { StrategyBacktestRequest } from './StrategySignalsView';
+import type { StrategyBacktestRequest } from './domain/strategySelectionReport';
 
 export type SignalTestStrategy = { id: string; name: string; version?: string };
 

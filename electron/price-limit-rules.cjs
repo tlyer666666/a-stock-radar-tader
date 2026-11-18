@@ -110,7 +110,10 @@ function upperLimitPrice(previousClose, current, code, name = "") {
   if (!current || current.noPriceLimit === true || /^[NC]/i.test(String(current.name ?? name).trim())) return null;
   const previous = resolvePreviousClose(previousClose, current);
   if (previous === null) return null;
-  if (Object.hasOwn(current, "upperLimit")) return numericPrice(current.upperLimit);
+  if (Object.hasOwn(current, "upperLimit")) {
+    const own = numericPrice(current.upperLimit);
+    if (own !== null) return own;
+  }
   return roundPrice(previous * (1 + priceLimitRate(code, name, current.date, current.isST)));
 }
 
@@ -147,7 +150,10 @@ function lowerLimitPrice(previousClose, current, code, name = "") {
   if (!current || current.noPriceLimit === true || /^[NC]/i.test(String(current.name ?? name).trim())) return null;
   const previous = resolvePreviousClose(previousClose, current);
   if (previous === null) return null;
-  if (Object.hasOwn(current, "lowerLimit")) return numericPrice(current.lowerLimit);
+  if (Object.hasOwn(current, "lowerLimit")) {
+    const own = numericPrice(current.lowerLimit);
+    if (own !== null) return own;
+  }
   return roundPrice(previous * (1 - priceLimitRate(code, name, current.date, current.isST)));
 }
 

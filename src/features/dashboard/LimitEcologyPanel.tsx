@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RefreshCw } from "lucide-react";
-import FuyaoReviewSection from "../review/FuyaoReviewSection";
-import { whenVisible } from "../../visiblePolling";
+import FuyaoReviewSection, { type FuyaoReview } from "../review/FuyaoReviewSection";
+import { startVisibleInterval } from "../../visiblePolling";
 import { AiInterpretPanel } from "../ai-review/AiInterpretPanel";
 
+type LimitEcologyState = FuyaoReview & {
+  hotLists?: { day?: { hot?: unknown[] | null } | null; hour?: unknown } | null;
+  skyrocket?: unknown[] | null;
+};
+
 /** 交给 AI 解读的涨停生态：结构、题材、连板龙头、热股、龙虎榜和异动（去掉逐股原始明细）。 */
-function ecologyForAi(data: any) {
+function ecologyForAi(data: LimitEcologyState | null) {
   if (!data?.available) return null;
   return {
     sealRate: data.sealRate, limitUp: { count: data.limitUp?.count, maxBoards: data.limitUp?.maxBoards, boardCounts: data.limitUp?.boardCounts,
@@ -24,7 +29,7 @@ const shanghaiDate = (value: unknown) => { const time = Date.parse(String(value 
  * 热股榜、龙虎榜和异动解读。每分钟刷新一次（页面隐藏时不请求）。
  */
 export default function LimitEcologyPanel({ onOpen, live = true }: { onOpen: (security: Security) => void; live?: boolean }) {
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<LimitEcologyState | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const busy = useRef(false);
@@ -36,7 +41,7 @@ export default function LimitEcologyPanel({ onOpen, live = true }: { onOpen: (se
     busy.current = true;
     setLoading(true);
     try {
-      const value = await api.getLimitEcology({ forceRefresh });
+      const value = (await api.getLimitEcology({ forceRefresh })) as unknown as LimitEcologyState;
       if (alive.current) { setData(value); setError(""); }
     } catch (reason) {
       if (alive.current) setError(reason instanceof Error ? reason.message : String(reason));
@@ -50,8 +55,8 @@ export default function LimitEcologyPanel({ onOpen, live = true }: { onOpen: (se
     alive.current = true;
     void load();
     // 关闭「实时刷新」后只保留进入时的这一次读取，不再定时刷新。
-    const timer = live ? window.setInterval(whenVisible(() => load(false)), 60000) : 0;
-    return () => { alive.current = false; if (timer) window.clearInterval(timer); };
+    const stop = live ? startVisibleInterval(() => { void load(false); }, 60_000) : undefined;
+    return () => { alive.current = false; stop?.(); };
   }, [load, live]);
 
   if (typeof api?.getLimitEcology !== "function") return null;

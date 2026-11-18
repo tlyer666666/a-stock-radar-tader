@@ -99,3 +99,40 @@ test('切换交易日仍能看到上一登记日未完成T，不把旧成交自�
   const closed = store.withTrades(value, '2026-11-06', '600000', list => [...list, {id:'b',side:'buy',price:9.9,shares:100,time:'14:55'}]);
   assert.equal(store.previousOpenT(closed, '600000', '2026-11-09'), null);
 });
+
+test('新交易日 T+1 自动滚动可卖底仓、同步持仓成本，且对同日调用幂等', () => {
+  const initial = store.normalizeTStore({
+    lastRolloverDay: '2026-11-08',
+    items: [
+      { code: '600000', name: '浦发银行', config: { baseShares: 3000, sellableShares: 2000, costPrice: 0, tShares: 1000 } },
+      { code: '000001', name: '平安银行', config: { baseShares: 2000, sellableShares: 2000, costPrice: 10.5, tShares: 500 } }
+    ],
+    trades: {
+      '2026-11-08': {
+        '600000': [{ id: 'b1', side: 'buy', price: 10.2, shares: 500, time: '10:30' }],
+        '000001': [{ id: 's1', side: 'sell', price: 10.8, shares: 500, time: '14:10' }]
+      }
+    }
+  });
+  const holdings = [{ code: '600000', shares: 3500, costPrice: 10.1 }, { code: '000001', shares: 1500, costPrice: 11.0 }];
+  const rolled = store.rolloverTStoreForDay(initial, '2026-11-09', holdings);
+  assert.equal(rolled.changed, true);
+  assert.equal(rolled.store.lastRolloverDay, '2026-11-09');
+  const pf = rolled.store.items.find(i => i.code === '600000');
+  const pa = rolled.store.items.find(i => i.code === '000001');
+  assert.equal(pf.config.baseShares, 3500);
+  assert.equal(pf.config.sellableShares, 3500, '昨日买入+未解锁股数在次日全部变为 T+1 可卖');
+  assert.equal(pf.config.costPrice, 10.1, '成本价为 0 时自动从持仓补齐');
+  assert.equal(pa.config.baseShares, 1500, '昨日净卖出 500 股扣减底仓');
+  assert.equal(pa.config.sellableShares, 1500);
+  assert.equal(pa.config.costPrice, 10.5, '已填成本价不被覆盖');
+
+  const again = store.rolloverTStoreForDay(rolled.store, '2026-11-09', holdings);
+  assert.equal(again.changed, false);
+
+  const summary = store.summarizeTStoreForAgent(rolled.store);
+  assert.equal(summary.length, 2);
+  assert.equal(summary[0].sellableRatioPct, 100);
+  assert.equal('shares' in summary[0], false);
+  assert.equal('sellableShares' in summary[0], false);
+});

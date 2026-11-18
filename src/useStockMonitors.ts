@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
-import { whenVisible } from "./visiblePolling";
+import { startVisibleInterval, whenVisible } from "./visiblePolling";
 import {
   evaluateStockMonitor,
   normalizeStockMonitorConfig,
@@ -165,8 +165,11 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
   }, [items, live, saved.configs]);
 
   useEffect(() => {
-    const timer = live ? window.setInterval(whenVisible(() => void pollerRef.current?.poll()), Math.max(5, Number(refreshSeconds) || 5) * 1000) : undefined;
-    return () => window.clearInterval(timer);
+    if (!live) return undefined;
+    return startVisibleInterval(
+      () => void pollerRef.current?.poll(),
+      Math.max(5, Number(refreshSeconds) || 5) * 1000
+    );
   }, [live, refreshSeconds]);
 
   useEffect(() => () => { pollerRef.current?.stop(); }, []);

@@ -13,15 +13,16 @@ const timestamp = (value: unknown) => {
 };
 const labels: Record<string, string> = { ths_free: '同花顺免费行情', ths: '同花顺', fuyao: '同花顺扶摇', eastmoney: '东方财富', tencent: '腾讯行情' };
 const invalid = (message: string) => Object.assign(new Error(message), { name: 'SelectionQuoteError' });
-export function normalizeSelectionQuote(security: Security, response: any): SelectionQuote {
-  const quote = response?.quote;
+export function normalizeSelectionQuote(security: Security, rawResponse: unknown): SelectionQuote {
+  const response = (rawResponse && typeof rawResponse === 'object' ? rawResponse : {}) as Record<string, unknown>;
+  const quote = (response.quote && typeof response.quote === 'object' ? response.quote : null) as Record<string, unknown> | null;
   if (quote?.code && String(quote.code) !== security.code) throw invalid('行情代码不匹配，请重试');
   const missing = Array.isArray(quote?.missingFields) ? quote.missingFields : [];
   const field = (key: string) => missing.includes(key) ? null : number(quote?.[key]);
   const latest = field('latest');
   const preClose = field('preClose');
   const positive = (key: string) => { const value = field(key); return value !== null && value >= 0 ? value : null; };
-  const provider = String(response?.actualProvider || quote?.source || '');
+  const provider = String(response.actualProvider || quote?.source || '');
   const marketStatus = typeof quote?.marketStatus === 'string' ? quote.marketStatus : '';
   // Fuyao timestamps the provider response, not the individual security's trade.
   // Keep it out of both the display quote time and cross-source rollback checks.
@@ -32,18 +33,18 @@ export function normalizeSelectionQuote(security: Security, response: any): Sele
     if (isSuspendedOrPending) {
       return { latest: preClose, changePct: 0, turnover: null, amount: null,
         source: labels[provider] || '来源未提供', quoteAt,
-        fetchedAt: timestamp(response?.updatedAt), marketStatus: marketStatus || '停牌/未开盘' };
+        fetchedAt: timestamp(response.updatedAt), marketStatus: marketStatus || '停牌/未开盘' };
     }
   }
   if (latest === null || latest <= 0) throw invalid('行情未提供有效最新价，请重试');
   return { latest, changePct: field('changePct'), turnover: positive('turnover'), amount: positive('amount'),
     source: labels[provider] || '来源未提供', quoteAt,
-    fetchedAt: timestamp(response?.updatedAt), marketStatus };
+    fetchedAt: timestamp(response.updatedAt), marketStatus };
 }
 
 /** Shared concurrency stays bounded even when views detach while IPC is still running. */
 export function createSelectionQuoteFeed({ fetchQuote, now = Date.now, isVisible = () => typeof document === 'undefined' || !document.hidden }: {
-  fetchQuote: (security: Security) => Promise<any>; now?: () => number; isVisible?: () => boolean;
+  fetchQuote: (security: Security) => Promise<unknown>; now?: () => number; isVisible?: () => boolean;
 }) {
   const cache = new Map<string, { quote: SelectionQuote; at: number; lastTradeAt: string }>();
   const jobs = new Map<string, { security: Security; listeners: Set<Listener>; running: boolean; outcome?: { quote: SelectionQuote | null; error: string } }>();

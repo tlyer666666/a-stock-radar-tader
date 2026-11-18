@@ -43,7 +43,7 @@ type PortfolioBacktestResult = {
   signalEvents?: PortfolioBacktestSignalEvent[];
   signalTimeline?: Array<PortfolioBacktestSignalEvent | PortfolioBacktestSignalDateGroup>;
   signals?: PortfolioBacktestSignalEvent[];
-  [key: string]: any;
+  [key: string]: unknown;
 };
 
 type WatchItem = Security & {
@@ -228,14 +228,114 @@ type SectorConceptRow = { kind: "concept"; id: string; code: string; conceptCid:
   memberCount: number | null; leaderName: string; limitUps: number | null; limitUpStocks: SectorLimitStock[] };
 type SectorTheme = { reason: string; count: number; stocks: SectorLimitStock[]; concept?: { name: string; code: string; conceptCid: string } | undefined };
 type SectorLimitCount = { limitUps: number | null; limitUpStocks: { code: string; name: string }[]; memberCount: number | null; countComplete: boolean; asOfDate: string | null; fetchedAt: string; source: string; warning: string };
-type SectorStrengthBoard = { fetchedAt: string; industries: any[]; concepts: SectorConceptRow[]; themes: SectorTheme[]; limitUpTotal: number | null; conceptLimitUpSource: string; warnings: string[] };
+type SectorStrengthBoard = { fetchedAt: string; industries: Array<Record<string, unknown>>; concepts: SectorConceptRow[]; themes: SectorTheme[]; limitUpTotal: number | null; conceptLimitUpSource: string; warnings: string[] };
 type AiSelectionInput = { asOfDate: string; picks: AiPick[]; strategyCounts?: { name: string; count: number }[]; force?: boolean; only?: string[] | undefined };
+type AiDisagreementDetail = {
+  spread: number;
+  highest: { model: string; score: number; rating?: string | undefined; thesis?: string | undefined; highlights: string };
+  lowest: { model: string; score: number; rating?: string | undefined; thesis?: string | undefined; risks: string };
+  verificationPoint?: string | undefined;
+  summary: string;
+};
+type AiStockOutcome = {
+  t1: number | null;
+  t3: number | null;
+  t5: number | null;
+  maxDrawdownPct?: number | null | undefined;
+  stopHit?: boolean | undefined;
+  baseClose?: number;
+  asOfDate?: string;
+  latestDate?: string;
+};
+type AiOutcomeBucket = { count: number; wins: number; winRatePct: number; avgPct: number } | null;
+type AiOutcomeSummary = {
+  evaluatedCount: number;
+  t1: AiOutcomeBucket;
+  t3: AiOutcomeBucket;
+  t5: AiOutcomeBucket;
+  avgDrawdownPct?: number | null | undefined;
+  stopHits?: number | undefined;
+  stopHitRatePct?: number | null | undefined;
+};
+type AiLeaderboardRow = {
+  key: string;
+  label: string;
+  sublabel?: string;
+  totalScored: number;
+  sampleCount: number;
+  highScoreMisses: number;
+  missRatePct: number | null;
+  avgDrawdownPct?: number | null | undefined;
+  stopHits?: number | undefined;
+  stopHitRatePct?: number | null | undefined;
+  t1: AiOutcomeBucket;
+  t3: AiOutcomeBucket;
+  t5: AiOutcomeBucket;
+};
+type NewsAiImpact = {
+  headline: string;
+  impactLevel: "高" | "中" | "低";
+  direction: "利好" | "利空" | "多空交织" | "中性";
+  supplyChain: { upstream: string[]; downstream: string[]; peers: string[] };
+  portfolioExposure: string[];
+  actionWatch: string[];
+  model: string;
+};
+type RegimeWeightProfile = {
+  regimeId: "ice" | "climax" | "ferment" | "rotation";
+  regimeLabel: string;
+  summary: string;
+  factorWeights: { trend: number; volume: number; emotion: number; sector: number; defensive: number };
+  backtestPreset: {
+    label: string;
+    lookbackBars: number;
+    minProjectedNetEdgePercent: number;
+    minExpectancyPoints: number;
+    minTurnoverPercent: number;
+    note: string;
+  };
+};
+type ExternalFactorArchiveSummary = {
+  days: number;
+  latestDate: string;
+  latestSnapshot: Record<string, unknown> | null;
+  regimeAdvice: RegimeWeightProfile;
+};
+type AiMissLesson = {
+  asOfDate: string;
+  code: string;
+  name: string;
+  score: number;
+  rating: string;
+  model: string;
+  framework: string;
+  cycle: string;
+  t1: number | null;
+  t3: number | null;
+  t5: number | null;
+  maxDrawdownPct?: number | null | undefined;
+  stopHit?: boolean | undefined;
+  lesson: string;
+};
+type AiOutcomesLeaderboard = {
+  daysCovered: number;
+  evaluatedSamples: number;
+  byModel: AiLeaderboardRow[];
+  byFramework: AiLeaderboardRow[];
+  byCycle: AiLeaderboardRow[];
+  recentMisses: AiMissLesson[];
+  recentLessons: string[];
+  lookbackStats: { count: number; avgHitRatePct: number | null; recentLessons: string[] };
+};
 type AiRankItem = { fallback?: boolean | undefined; code: string; name: string; score: number; rating: "重点关注" | "关注" | "观望" | "回避"; highlights: string; risks: string; nextDay: string;
   trend?: string | undefined; volume?: string | undefined; keyLevels?: string | undefined;
   base?: number | undefined; adjust?: number | undefined; reason?: string | undefined; framework?: string | undefined; dims?: AiDimScore[] | undefined; caps?: string[] | undefined;
   plays?: AiPlayPick[] | undefined; situation?: string[] | undefined; orchestration?: string | undefined;
-  scores?: { id: string; name: string; score: number; rating: string }[]; spread?: number; disagreement?: boolean };
+  scores?: { id: string; name: string; score: number; rating: string }[]; spread?: number; disagreement?: boolean;
+  disagreementDetail?: AiDisagreementDetail | undefined; outcome?: AiStockOutcome | undefined };
 type AiCustomStock = { code: string; name: string };
+type AiCustomListMutation = { kind: "add"; items: Array<{ code: string; name?: string | undefined }> } | { kind: "remove"; codes: string[] };
+type AiCustomListMutationResult = { list: AiCustomStock[]; added: number; duplicate: number; overflow: number; removed: AiCustomStock[] };
 type AiDimScore = { id: string; label: string; weight: number; score: number; note: string };
 /** AI 自动编排时为一只股票选用的策略（权重合计 100）。 */
 type AiPlayPick = { id: string; name: string; weight: number; base: number; fit: number };
@@ -274,9 +374,10 @@ type AgentMessage = {
   id: string; role: "user" | "assistant"; content: string; at: string; focus?: AgentFocus | undefined;
   stance?: AgentStance | undefined; confidence?: "高" | "中" | "低" | undefined; followUps?: string[] | undefined; steps?: AgentStep[] | undefined;
   model?: string | undefined; durationMs?: number | undefined; error?: boolean | undefined; cancelled?: boolean | undefined; fallback?: boolean | undefined;
+  memoryCandidates?: string[] | undefined;
   skills?: AgentSkillTag[] | undefined; skillVerdicts?: AgentSkillVerdict[] | undefined; persistenceError?: string | undefined;
 };
-type AgentConversationSummary = { id: string; title: string; focus: AgentFocus | null; createdAt: string; updatedAt: string; turns: number; stance?: AgentStance | undefined; running?: boolean | undefined };
+type AgentConversationSummary = { id: string; title: string; focus: AgentFocus | null; createdAt: string; updatedAt: string; turns: number; stance?: AgentStance | undefined; preview?: string | undefined; running?: boolean | undefined };
 type AgentConversation = { id: string; title: string; focus: AgentFocus | null; createdAt: string; updatedAt: string; messages: AgentMessage[]; runningRunId?: string | undefined; persistenceError?: string | undefined };
 type AgentState = {
   configured: boolean; model: string; profileName: string; profileId: string; activeProfileId: string;
@@ -284,215 +385,20 @@ type AgentState = {
   skills?: AgentSkillCatalog | undefined; skillIds?: string[] | undefined; savedSkillId?: string | undefined; persistenceError?: string | undefined;
 };
 type AgentRun = { runId: string; conversationId: string; status: "running" | "done" | "error" | "cancelled"; steps: AgentStep[]; startedAt: string; elapsedMs: number; model: string;
-  message?: AgentMessage | undefined; error?: string | undefined; persistenceError?: string | undefined };
+  streamText?: string | undefined; message?: AgentMessage | undefined; error?: string | undefined; persistenceError?: string | undefined };
+type AiStreamEvent =
+  | { channel: "agent"; runId: string; conversationId: string; phase: "token" | "step" | "status"; text?: string; steps?: AgentStep[]; elapsedMs?: number }
+  | { channel: "market-review"; phase: "token" | "step"; round?: number; thought?: string; text?: string; steps?: AiSkillStep[]; pendingStep?: AiSkillStep }
+  | { channel: "interpret"; kind: AiInterpretKind; asOfDate?: string; phase: "token"; text?: string };
 type AiInterpretation = AiStamp & { kind: AiInterpretKind; title: string; headline: string; points: string[]; risks: string[]; watch: string[] };
 type AiNotice = { date: string; title: string; direction: "利好" | "利空" | "多空交织" | "中性"; risk: number };
 type AiRankModel = { id: string; name: string; model: string; ok: boolean; cached?: boolean; generatedAt?: string; evaluated?: number; error?: string; missed?: number };
 type AiRanking = { asOfDate: string; model: string; generatedAt: string; items: AiRankItem[]; evaluated: number; cached?: boolean; models?: AiRankModel[]; failed?: string[] | undefined;
-  profiles?: AiStockProfile[] | undefined; profile?: AiStockProfile | undefined; framework?: string | undefined };
+  profiles?: AiStockProfile[] | undefined; profile?: AiStockProfile | undefined; framework?: string | undefined; outcomeSummary?: AiOutcomeSummary | undefined };
 type AiSummary = { asOfDate: string; model: string; generatedAt: string; headline: string; market: string; themes: { name: string; stocks: string[] }[];
   focus: { code: string; name: string; reason: string }[]; risks: string[]; cached?: boolean };
-type ThsWebState = { open: boolean; url: string; title: string; loading: boolean; canGoBack: boolean; error: string };
+type ThsWebState = import("./shared/ipc-contract").ThsWebBridgeState;
 
 interface Window {
-  stockApi: import("./sectorExplorerTypes").SectorExplorerApi & {
-    search(query: string): Promise<Security[]>;
-    analyze(security: Security | string, options?: { forceRefresh?: boolean }): Promise<any>;
-    getQuoteSnapshot(security: Security | string): Promise<any>;
-    getDataFederation(security: Security | string): Promise<any>;
-    getMarketSourceHealth?(): Promise<MarketSourceHealth>;
-    getConvertibleBonds?(options?: { forceRefresh?: boolean; waitForQuotes?: boolean }): Promise<import("./features/bonds/bondTypes").ConvertibleBondSnapshot>;
-    getLimitEcology?(options?: { forceRefresh?: boolean }): Promise<any>;
-    ai?: {
-      status(): Promise<{ configured: boolean; model: string; profile?: string; rankModels?: string[]; framework?: string }>;
-      rank(input: AiSelectionInput): Promise<AiRanking>;
-      summary(input: AiSelectionInput): Promise<AiSummary>;
-      cached(input: AiSelectionInput): Promise<{ rank: AiRanking | null; summary: AiSummary | null }>;
-      draftStrategy(input: { text: string; patterns: { id: string; name: string; detail?: string | undefined }[] }): Promise<{ strategy: any; notes: string; model: string }>;
-      /** 随心记「AI 整理」（1.6.66）。 */
-      parseNote?(input: { text: string; now: string; tradingDays: string[] }): Promise<{ text: string; when: string | null; repeat: "none" | "tradingDays" | "daily" | "weekly";
-        code: string | null; condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } | null; note: string; model: string }>;
-      test(input: { id?: string | null; baseUrl: string; model: string; apiKey?: string }): Promise<{ ok: boolean; latency: number; model: string }>;
-      profiles(): Promise<AiProfileList>;
-      saveProfile(input: { id?: string | null; name: string; baseUrl: string; model: string; apiKey?: string; activate?: boolean }): Promise<AiProfileList & { saved: AiProfile }>;
-      deleteProfile(id: string): Promise<AiProfileList>;
-      activateProfile(id: string): Promise<AiProfileList>;
-      setRankModels(ids: string[]): Promise<AiProfileList>;
-      history(): Promise<{ asOfDate: string; rankModels: string[]; customModels?: string[] | undefined; hasSummary: boolean; savedAt: string }[]>;
-      historyDay(asOfDate: string): Promise<{ asOfDate: string; rank: AiRanking | null; custom?: AiRanking | null | undefined; summary: AiSummary | null }>;
-      review?(input: { security: { code: string; name: string }; force?: boolean; context?: string[] }): Promise<AiRanking>;
-      cachedReview?(code: string): Promise<AiRanking | null>;
-      customList?(): Promise<AiCustomStock[]>;
-      saveCustomList?(items: AiCustomStock[]): Promise<AiCustomStock[]>;
-      rankCustom?(input?: { force?: boolean; codes?: string[] | undefined }): Promise<AiRanking & { failed?: string[] | undefined }>;
-      cachedCustom?(): Promise<AiRanking | null>;
-      frameworks?(): Promise<AiFrameworkCatalog>;
-      saveFramework?(input: { active?: AiFrameworkInfo["id"]; custom?: AiCustomFramework }): Promise<AiFrameworkCatalog>;
-      marketReview?(input?: { force?: boolean }): Promise<AiMarketReview>;
-      lookback?(input?: { force?: boolean }): Promise<AiLookback>;
-      cachedMarketReview?(asOfDate: string): Promise<{ review: AiMarketReview | null; lookback: AiLookback | null; previousDate: string }>;
-      interpret?(input: { kind: AiInterpretKind; data: unknown; asOfDate?: string; force?: boolean }): Promise<AiInterpretation>;
-      cachedInterpret?(input: { kind: AiInterpretKind; asOfDate?: string }): Promise<AiInterpretation | null>;
-      agent?: {
-        state(): Promise<AgentState>;
-        conversation(id: string): Promise<AgentConversation | null>;
-        start(input: { message: string; conversationId?: string | undefined; focus?: AgentFocus | null | undefined; title?: string | undefined; skillIds?: string[] | undefined }): Promise<{ runId: string; conversationId: string }>;
-        poll(runId: string): Promise<AgentRun>;
-        cancel(runId: string): Promise<AgentRun | null>;
-        remove(id: string): Promise<AgentState>;
-        settings(input: { memory?: string; profileId?: string; skillIds?: string[] }): Promise<AgentState>;
-        saveSkill?(input: { id?: string | undefined; name: string; method: string; tools: string[] }): Promise<AgentState>;
-        removeSkill?(id: string): Promise<AgentState>;
-      };
-    };
-    thsWeb?: {
-      show(options: { bounds: { x: number; y: number; width: number; height: number }; page?: "hsgt" | "login" }): Promise<ThsWebState>;
-      setBounds(options: { bounds: { x: number; y: number; width: number; height: number } }): Promise<ThsWebState>;
-      hide(): Promise<ThsWebState>;
-      command(options: { action: "home" | "login" | "reload" | "back" | "external" | "logout" }): Promise<ThsWebState>;
-      state(): Promise<ThsWebState>;
-    };
-    getChart(
-      security: Security | string,
-      interval: string,
-      options?: { range?: string; limit?: number; adjustment?: string; forceRefresh?: boolean; requestId?: string; timeoutMs?: number }
-    ): Promise<{
-      rows: any[];
-      interval: string;
-      range: string;
-      visibleLimit: number;
-      source: string;
-      sourceClass: string;
-      dataSource: string;
-      adjustment: string;
-      updatedAt: string;
-      availableFrom: string;
-      availableTo: string;
-      isPartial: boolean;
-      note: string;
-    }>;
-    discoverLimitUps(options?: { forceRefresh?: boolean }): Promise<{
-      rows: any[];
-      meta: { dataDate: string; fetchedAt: string; providers: string[] };
-    }>;
-    getLimitUpPoolSnapshot(options?: { forceRefresh?: boolean }): Promise<{
-      rows: any[];
-      meta: { dataDate: string; fetchedAt: string; providers: string[] };
-    }>;
-    getPreviousLimitUpFailedBoardSnapshot(options?: { forceRefresh?: boolean; refreshDate?: string }): Promise<PreviousLimitUpFailedBoardSnapshot>;
-    discoverRecentLimitUps(days?: number, options?: { forceRefresh?: boolean }): Promise<any[]>;
-    getLimitUpSectorBoard(options?: { forceRefresh?: boolean }): Promise<any[]>;
-    getSectorStrengthBoard?(options?: { forceRefresh?: boolean }): Promise<SectorStrengthBoard>;
-    getSectorLimitUpCount?(input: { boardType: "industry" | "concept"; name: string; code?: string; indexCode?: string; conceptCid?: string; memberCount?: number | null }, options?: { forceRefresh?: boolean }): Promise<SectorLimitCount>;
-    searchSectors(query: string): Promise<any[]>;
-    getConceptChain(query: string | Record<string, any>): Promise<any>;
-    analyzeSector(sector: any): Promise<any>;
-    getProfessionalReview(options?: { refresh?: boolean }): Promise<any>;
-    openProfessionalReviewWindow?(): Promise<{ ok: boolean }>;
-    getReviewTheme?(): Promise<{ theme: string }>;
-    onThemeChange?(handler: (theme: string) => void): () => void;
-    getNewsFeed(input: Record<string, any>): Promise<any>;
-    refreshNewsFeed(input: Record<string, any>): Promise<any>;
-    getStrategyDefinitions(): Promise<any[] | { strategies?: any[]; definitions?: any[] }>;
-    listCustomStrategies?(): Promise<import("./features/strategy-selection/customStrategyModel").CustomStrategy[]>;
-    saveCustomStrategy?(strategy: import("./features/strategy-selection/customStrategyModel").CustomStrategy): Promise<{ strategy: import("./features/strategy-selection/customStrategyModel").CustomStrategy; strategies: import("./features/strategy-selection/customStrategyModel").CustomStrategy[] }>;
-    deleteCustomStrategy?(id: string): Promise<{ strategies: import("./features/strategy-selection/customStrategyModel").CustomStrategy[] }>;
-    importSettingsStrategy?(): Promise<{ strategy: import("./features/strategy-selection/customStrategyModel").CustomStrategy; strategies: import("./features/strategy-selection/customStrategyModel").CustomStrategy[] }>;
-    cancelServiceJob(requestId: string): Promise<boolean>;
-    runPortfolioBacktest(options: {
-      requestId?: string;
-      securities: Security[];
-      universe: string[];
-      strategyIds: string[];
-      minimumVotes: number;
-      strategyContext: {
-        source: string;
-        strategyEngine: string;
-        strategyId: string;
-        strategyName: string;
-        strategyVersion?: string;
-        strategyIds: string[];
-        minimumVotes: number;
-      };
-      universeSource?: "strategy_current_matches" | "manual";
-      startingCapital: number;
-      maxPositions: number;
-      lookbackBars: number;
-      commissionBps: number;
-      slippageBps: number;
-      benchmark: string;
-      accountMode: "shared_cash";
-      lotSize: number;
-    }): Promise<PortfolioBacktestResult>;
-    runBacktest(
-      security: Security | string,
-      options?: {
-        requestId?: string;
-        startDate?: string;
-        customEntryPrice?: number | null;
-        lookbackBars?: number;
-        benchmarks?: number;
-        benchmark?: "all" | "szzs" | "hs300";
-        minSamples?: number;
-        minProjectedNetEdgePercent?: number;
-        minExpectancyPoints?: number;
-        commissionBps?: number;
-        slippageBps?: number;
-        signalStrategyIds?: string[];
-        strategyContext?: {
-          source?: "single_strategy" | "optimized_portfolio";
-          strategyEngine?: "verified-signal-v2";
-          strategyId: string;
-          strategyName: string;
-          strategyVersion?: string;
-          strategyIds: string[];
-          minimumVotes: number;
-        };
-        settings?: Partial<Settings>;
-      }
-    ): Promise<any>;
-    scanStrategySignals(options?: {
-      requestId?: string;
-      strategyIds?: string[];
-      lookbackDays?: number;
-      historyBars?: number;
-      maxUniverse?: number;
-      maxStocksPerStrategy?: number;
-      minSamples?: number;
-      minOutOfSampleSamples?: number;
-      minIndependentSignalDays?: number;
-      minWalkForwardFoldSamples?: number;
-      walkForwardFolds?: number;
-      refresh?: boolean;
-    }): Promise<any>;
-    startTrendScan(options?: import("./trendScreenerTypes").TrendScanRequest): Promise<import("./trendScreenerTypes").TrendScanStatus>;
-    evaluateTrendResearch(options: { requestId?: string; dataset: unknown; from: string; to: string; splitDate: string; advancedStrategyId?: string; advancedConfig?: unknown }): Promise<any>;
-    checkTrendExecution(options: { security: Security; signalDate: string }): Promise<import("./trendScreenerTypes").TrendExecutionCheck>;
-    getTrendScan(): Promise<import("./trendScreenerTypes").TrendScanStatus>;
-    getTrendScan(cursor: import("./trendScreenerTypes").TrendScanCursor): Promise<import("./trendScreenerTypes").TrendScanSnapshot>;
-    cancelTrendScan(): Promise<import("./trendScreenerTypes").TrendScanStatus>;
-    getWatchlist(): Promise<WatchItem[]>;
-    saveWatchlist(items: WatchItem[]): Promise<WatchItem[]>;
-    getHoldings(): Promise<HoldingItem[]>;
-    saveHoldings(items: HoldingItem[]): Promise<HoldingItem[]>;
-    getSettings(): Promise<Settings>;
-    saveSettings(settings: Settings): Promise<Settings>;
-    testProvider(settings: Settings): Promise<any>;
-    setTheme(theme: Settings["theme"]): Promise<void>;
-    controlWindow(
-      action: "minimize" | "toggle-maximize" | "close"
-    ): Promise<{ ok: boolean; maximized: boolean }>;
-    /** 系统通知（随心记提醒）；旧版本没有这个接口。 */
-    notify?(message: { title: string; body?: string }): Promise<{ shown: boolean }>;
-    syncNoteIntervals?(input: { items: Array<{ id: string; text: string; at: number; intervalMinutes: number }>; systemNotify: boolean }):
-      Promise<Array<{ id: string; at: number; lastFiredAt: number; nextAt: number }>>;
-    /** 随心记价格条件（1.6.66）：交来要盯的条件，取走已触发的记录。 */
-    notesWatch?(input: { items: Array<{ id: string; code: string; name: string; secid: string; text: string; condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } }>; systemNotify: boolean }):
-      Promise<{ hits: Array<{ id: string; at: string; detail: string }>; watching: number; session: boolean; error?: string }>;
-    /** 数据备份（1.6.64）；类型见 src/features/backup/backupClient.ts。 */
-    backup?: import("./features/backup/backupClient").BackupApi;
-    openExternal(url: string): Promise<void>;
-    getPlatform(): "win32" | "darwin" | "linux" | string;
-    getVersion(): Promise<string>;
-  };
+  stockApi: import("./shared/ipc-contract").StockApi;
 }

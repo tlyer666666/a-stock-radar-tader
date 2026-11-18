@@ -9,7 +9,7 @@ VERSION = json.loads((REPO / 'package.json').read_text(encoding='utf-8'))['versi
 PROFILE = {
     'version': VERSION,
     'checks': f'artifacts/five-round-audit-{VERSION.replace(".", "")}',
-    'destination': f'~/Desktop/a股/五轮审计版{VERSION}',
+    'destination': f'/Users/fengjinwen/Desktop/a股/五轮审计版{VERSION}',
     'report': '三方五轮全链路审计报告.docx',
     'preservation': {
         'expected_sha': '80ef5c2533fa541af0a02a6d443ec3b7275d21b47147e2cfe55c67dd34263fcb',

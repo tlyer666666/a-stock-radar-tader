@@ -1,13 +1,24 @@
-import { normalizeTConfig, settleTrades, type TAction, type TConfig, type TSide, type TTrade } from "./tEngine";
+import { inferSecid } from "../../domain/securityIdentifiers";
+import { isTradingDay } from "../notes/notesModel";
+import { normalizeTConfig, settleTrades, type TAction, type TAnalysis, type TConfig, type TSide, type TTrade } from "./tEngine";
 
 /** 做T助手的本地数据：跟踪的股票和各自参数、按交易日登记的成交、提醒开关。只存在本机。 */
-export type TItem = { code: string; name: string; secid: string; config: TConfig; addedAt: string };
+export type TItem = {
+  code: string;
+  name: string;
+  secid: string;
+  config: TConfig;
+  addedAt: string;
+  rolledTradeIds?: string[] | undefined;
+};
 export type TStore = {
   items: TItem[];
   /** 交易日 → 股票代码 → 当天登记的成交。只保留最近几个交易日。 */
   trades: Record<string, Record<string, TTrade[]>>;
   voice: boolean;
   showReplay: boolean;
+  /** 最近一次完成跨日 T+1 底仓滚动的交易日（YYYY-MM-DD）。 */
+  lastRolloverDay?: string | undefined;
 };
 export const T_STORE_KEY = "a-stock-radar:t-assistant:v1";
 export const MAX_T_ITEMS = 12;
@@ -15,7 +26,7 @@ const KEEP_DAYS = 10;
 export const MAX_T_TRADES = 1000;
 
 export const EMPTY_T_STORE: TStore = { items: [], trades: {}, voice: true, showReplay: true };
-export const secidForCode = (code: string) => `${code.startsWith("6") || code.startsWith("9") ? "1" : "0"}.${code}`;
+export const secidForCode = inferSecid;
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -38,12 +49,16 @@ export function normalizeTStore(value: unknown): TStore {
     const code = String(raw.code || "");
     if (!/^\d{6}$/.test(code) || seen.has(code)) continue;
     seen.add(code);
+    const rolledTradeIds = Array.isArray(raw.rolledTradeIds)
+      ? [...new Set(raw.rolledTradeIds.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(-2000)
+      : undefined;
     items.push({
       code,
       name: String(raw.name || code).slice(0, 16),
       secid: typeof raw.secid === "string" && /^[01]\.\d{6}$/.test(raw.secid) ? raw.secid : secidForCode(code),
       config: normalizeTConfig(isRecord(raw.config) ? raw.config : null, code),
-      addedAt: String(raw.addedAt || "")
+      addedAt: String(raw.addedAt || ""),
+      ...(rolledTradeIds ? { rolledTradeIds } : {})
     });
     if (items.length >= MAX_T_ITEMS) break;
   }
@@ -58,7 +73,11 @@ export function normalizeTStore(value: unknown): TStore {
       .filter(([, list]) => list.length > 0);
     if (entries.length) trades[day] = Object.fromEntries(entries);
   }
-  return { items, trades, voice: value.voice !== false, showReplay: value.showReplay !== false };
+  const lastRolloverDay = typeof value.lastRolloverDay === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value.lastRolloverDay) ? value.lastRolloverDay : undefined;
+  return {
+    items, trades, voice: value.voice !== false, showReplay: value.showReplay !== false,
+    ...(lastRolloverDay ? { lastRolloverDay } : {})
+  };
 }
 
 export function withTrades(store: TStore, day: string, code: string, update: (trades: TTrade[]) => TTrade[]): TStore {
@@ -72,11 +91,12 @@ export function withTrades(store: TStore, day: string, code: string, update: (tr
   return normalizeTStore({ ...store, trades });
 }
 
-/** 北京时间是否在连续竞价时段（工作日 9:25–11:30、13:00–15:00）；节假日由行情本身不更新来体现。 */
+/** 北京时间是否在连续竞价时段（交易日 9:25–11:30、13:00–15:00，跳过法定节假日与周末）。 */
 export function inTradingSession(now = new Date()): boolean {
   const cn = new Date(now.getTime() + 8 * 3600_000);
-  const day = cn.getUTCDay(), minute = cn.getUTCHours() * 60 + cn.getUTCMinutes();
-  return day >= 1 && day <= 5 && ((minute >= 9 * 60 + 25 && minute <= 11 * 60 + 30) || (minute >= 13 * 60 && minute <= 15 * 60));
+  const date = cn.toISOString().slice(0, 10);
+  const minute = cn.getUTCHours() * 60 + cn.getUTCMinutes();
+  return isTradingDay(date) && ((minute >= 9 * 60 + 25 && minute <= 11 * 60 + 30) || (minute >= 13 * 60 && minute <= 15 * 60));
 }
 
 /** 北京时间 HH:MM。 */
@@ -88,11 +108,16 @@ export function shanghaiDay(now = new Date()): string {
   return new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
 }
 
-/** 以行情所属日和行情分钟为准，不把请求成功的时间误当作行情时间。 */
+/** 以行情所属日和交易时段有效分钟为准，兼容 09:25–09:30 集合竞价归一及 11:30–13:00 午间休市跨度。 */
 export function isFreshTQuote(date: string | undefined, time: string | undefined, now = new Date()): boolean {
   if (date !== shanghaiDay(now) || !time || !TIME.test(time)) return false;
   const minutes = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
-  const lag = minutes(shanghaiClock(now)) - minutes(time);
+  const nowMin = minutes(shanghaiClock(now));
+  const quoteMin = minutes(time);
+  if (nowMin >= 565 && nowMin <= 570 && quoteMin === 570) return true;
+  if (quoteMin > nowMin) return false;
+  const toSessionMinutes = (m: number) => m <= 570 ? m : m <= 690 ? m : m < 780 ? 690 : m - 90;
+  const lag = toSessionMinutes(nowMin) - toSessionMinutes(quoteMin);
   return lag >= 0 && lag <= 2;
 }
 
@@ -118,4 +143,123 @@ export function previousOpenT(store: TStore, code: string, day: string) {
   if (!item || !date) return null;
   const { open } = settleTrades(store.trades[date]?.[code] || [], item.config);
   return open ? { date, open } : null;
+}
+
+export function collectRolledTradeIdsThrough(store: Pick<TStore, "trades">, code: string, throughDate: string): string[] {
+  const ids: string[] = [];
+  for (const date of Object.keys(store.trades).sort()) {
+    if (date > throughDate) continue;
+    for (const trade of store.trades[date]?.[code] || []) {
+      ids.push(`${date}:${trade.id}`);
+    }
+  }
+  return ids.slice(-2000);
+}
+
+/**
+ * 新交易日 T+1 底仓自动滚动：
+ * - 对上次滚动日之后、今天之前已登记的昨日买卖计算净股数变化，滚入今日底仓与可卖股数（买回的今日解锁可卖）；
+ * - 若未填写持仓成本且本机持仓已有成本价，顺手补齐成本价（不覆盖用户手工修改）。
+ */
+export function rolloverTStoreForDay(
+  store: TStore,
+  today = shanghaiDay(),
+  holdings?: Array<{ code: string; shares?: number; costPrice?: number }>
+): { store: TStore; changed: boolean; rolled: Array<{ code: string; name: string; sellableShares: number; baseShares: number }> } {
+  const holdingByCode = new Map((holdings || []).map(h => [String(h.code || ""), h]));
+  if (store.lastRolloverDay === today) {
+    let filledCost = false;
+    const items = store.items.map(item => {
+      const h = holdingByCode.get(item.code);
+      if (h && item.config.costPrice <= 0 && Number(h.costPrice) > 0) {
+        filledCost = true;
+        return { ...item, config: normalizeTConfig({ ...item.config, costPrice: Number(h.costPrice) }, item.code) };
+      }
+      return item;
+    });
+    if (!filledCost) return { store, changed: false, rolled: [] };
+    return { store: normalizeTStore({ ...store, items }), changed: true, rolled: [] };
+  }
+
+  const prevDay = store.lastRolloverDay || "";
+  const rolled: Array<{ code: string; name: string; sellableShares: number; baseShares: number }> = [];
+  const activeKeys = new Set<string>();
+  for (const [date, byCode] of Object.entries(store.trades)) {
+    for (const [code, list] of Object.entries(byCode || {})) {
+      for (const trade of list) activeKeys.add(`${code}|${date}:${trade.id}`);
+    }
+  }
+  const nextItems = store.items.map(item => {
+    const initialRolled = item.rolledTradeIds !== undefined
+      ? item.rolledTradeIds
+      : prevDay
+        ? collectRolledTradeIdsThrough(store, item.code, prevDay).filter(key => key.slice(0, 10) < prevDay)
+        : [];
+    const rolledSet = new Set(initialRolled.filter(key => activeKeys.has(`${item.code}|${key}`)));
+    const candidateDates = Object.keys(store.trades)
+      .filter(date => date < today && (store.trades[date]?.[item.code]?.length || 0) > 0)
+      .sort();
+    let netDelta = 0;
+    let newlyRolled = 0;
+    for (const date of candidateDates) {
+      for (const trade of store.trades[date]?.[item.code] || []) {
+        const key = `${date}:${trade.id}`;
+        if (rolledSet.has(key)) continue;
+        rolledSet.add(key);
+        newlyRolled += 1;
+        netDelta += trade.side === "buy" ? trade.shares : -trade.shares;
+      }
+    }
+    const nextBase = newlyRolled > 0 ? Math.max(0, item.config.baseShares + netDelta) : item.config.baseShares;
+    const shouldPromoteSellable = Boolean((prevDay && prevDay < today) || newlyRolled > 0);
+    const nextSellable = shouldPromoteSellable ? nextBase : item.config.sellableShares;
+    const h = holdingByCode.get(item.code);
+    const nextCost = item.config.costPrice <= 0 && h && Number(h.costPrice) > 0 ? Number(h.costPrice) : item.config.costPrice;
+    const nextRolledList = [...rolledSet];
+    const rolledListChanged = item.rolledTradeIds === undefined
+      ? nextRolledList.length > 0
+      : nextRolledList.length !== item.rolledTradeIds.length || nextRolledList.some((k, idx) => k !== item.rolledTradeIds![idx]);
+    const configChanged = nextBase !== item.config.baseShares || nextSellable !== item.config.sellableShares || nextCost !== item.config.costPrice;
+    if (!configChanged && !rolledListChanged) return item;
+    const normalizedConfig = normalizeTConfig({
+      ...item.config,
+      baseShares: nextBase,
+      sellableShares: nextSellable,
+      costPrice: nextCost
+    }, item.code);
+    if (normalizedConfig.sellableShares !== item.config.sellableShares || normalizedConfig.baseShares !== item.config.baseShares) {
+      rolled.push({ code: item.code, name: item.name, sellableShares: normalizedConfig.sellableShares, baseShares: normalizedConfig.baseShares });
+    }
+    return {
+      ...item,
+      config: normalizedConfig,
+      ...(nextRolledList.length > 0 || item.rolledTradeIds !== undefined ? { rolledTradeIds: nextRolledList } : {})
+    };
+  });
+
+  const nextStore = normalizeTStore({ ...store, items: nextItems, lastRolloverDay: today });
+  return { store: nextStore, changed: true, rolled };
+}
+
+export function summarizeTStoreForAgent(
+  store: TStore,
+  runtimes?: Record<string, { analysis?: TAnalysis | null } | undefined>
+) {
+  return store.items.map(item => {
+    const analysis = runtimes?.[item.code]?.analysis || null;
+    const base = item.config.baseShares;
+    const sellableRatioPct = base > 0 ? Math.round((item.config.sellableShares / base) * 100) : null;
+    return {
+      code: item.code,
+      name: item.name,
+      style: item.config.style === "steady" ? "稳健" : item.config.style === "active" ? "积极" : "均衡",
+      costPrice: item.config.costPrice > 0 ? item.config.costPrice : null,
+      sellableRatioPct,
+      minSpreadPct: item.config.minSpreadPct,
+      roundsToday: analysis?.stats.rounds ?? 0,
+      realizedToday: analysis?.stats.realized ?? null,
+      openT: analysis?.open ? { kind: analysis.open.kind, time: analysis.open.time, price: analysis.open.price } : null,
+      suitability: analysis?.calibration.suitability || ""
+    };
+  });
 }

@@ -9,7 +9,31 @@ const MAX_ITEMS = 30;
 const MAX_HITS = 50;
 const CONCURRENCY = 4;
 
-const finite = value => { const number = Number(value); return Number.isFinite(number) ? number : null; };
+function finite(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+const BSE_CODE_PATTERN = /^(?:(?:43|83|87|88)\d{4}|920\d{3})$/;
+const SH_CODE_PATTERN = /^(?:6\d{5}|900\d{3}|5\d{5}|11\d{4})$/;
+const ETF_CODE_PATTERN = /^(?:5\d{5}|159\d{3})$/;
+const CONVERTIBLE_BOND_CODE_PATTERN = /^(?:110|111|113|118|123|125|126|127|128)\d{3}$/;
+
+function defaultSecid(code) {
+  if (BSE_CODE_PATTERN.test(code)) return `0.${code}`;
+  if (SH_CODE_PATTERN.test(code)) return `1.${code}`;
+  return `0.${code}`;
+}
+
+function inferAssetType(code, rawAssetType) {
+  if (rawAssetType === "stock" || rawAssetType === "etf" || rawAssetType === "convertibleBond") {
+    return rawAssetType;
+  }
+  if (rawAssetType === "bond") return "convertibleBond";
+  if (ETF_CODE_PATTERN.test(code)) return "etf";
+  if (CONVERTIBLE_BOND_CODE_PATTERN.test(code)) return "convertibleBond";
+  return "stock";
+}
 
 function normalizeItem(raw) {
   if (!raw || typeof raw !== "object") return null;
@@ -22,8 +46,9 @@ function normalizeItem(raw) {
   const value = finite(condition.value);
   if (!field || !op || value === null) return null;
   if (field === "latest" && !(value > 0)) return null;
-  const secid = /^[01]\.\d{6}$/.test(String(raw.secid || "")) ? String(raw.secid) : `${/^[69]/.test(code) ? "1" : "0"}.${code}`;
-  return { id, code, name: String(raw.name || code).slice(0, 16), secid, text: String(raw.text || "").slice(0, 80), condition: { field, op, value } };
+  const secid = /^[01]\.\d{6}$/.test(String(raw.secid || "")) ? String(raw.secid) : defaultSecid(code);
+  const assetType = inferAssetType(code, raw.assetType);
+  return { id, code, name: String(raw.name || code).slice(0, 16), secid, assetType, text: String(raw.text || "").slice(0, 80), condition: { field, op, value } };
 }
 
 const fmt = (value, digits) => Number(value.toFixed(digits)).toString();
@@ -36,6 +61,12 @@ function evaluateCondition(condition, quote) {
   if (!met) return null;
   if (condition.field === "latest") return `现价 ${fmt(actual, 3)}，已${condition.op === "lte" ? "跌到" : "涨到"} ${fmt(condition.value, 3)} ${condition.op === "lte" ? "以下" : "以上"}`;
   return `涨跌幅 ${actual > 0 ? "+" : ""}${fmt(actual, 2)}%，已${condition.op === "gte" ? `涨超 ${fmt(condition.value, 2)}%` : `跌超 ${fmt(Math.abs(condition.value), 2)}%`}`;
+}
+
+function sameWatchCondition(left, right) {
+  return Boolean(left && right && left.code === right.code && left.secid === right.secid &&
+    left.assetType === right.assetType && left.condition.field === right.condition.field &&
+    left.condition.op === right.condition.op && left.condition.value === right.condition.value);
 }
 
 function createNoteWatcher({ getQuote, notify = () => undefined, inSession, now = () => Date.now(), intervalMs = 15_000,
@@ -63,30 +94,33 @@ function createNoteWatcher({ getQuote, notify = () => undefined, inSession, now 
   }
 
   async function check() {
-    const codes = [...new Set(items.map(item => item.code))];
+    const submitted = new Map(items.map(item => [item.id, item]));
+    const securities = new Map(items.map(item => [`${item.secid}:${item.assetType}`, item]));
+    const keys = [...securities.keys()];
     const quotes = new Map();
     let failed = 0;
-    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, codes.length) }, async () => {
-      while (codes.length) {
-        const code = codes.shift();
-        const item = items.find(entry => entry.code === code);
-        if (!item) continue;
-        try { const snapshot = await getQuote({ code, name: item.name, secid: item.secid, assetType: "stock" }); quotes.set(code, snapshot?.quote || null); }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, keys.length) }, async () => {
+      while (keys.length) {
+        const key = keys.shift();
+        const { code, name, secid, assetType } = securities.get(key);
+        try { const snapshot = await getQuote({ code, name, secid, assetType }); quotes.set(key, snapshot?.quote || null); }
         catch (error) { failed += 1; lastError = String(error?.message || error).slice(0, 120); }
       }
     }));
     if (!failed) lastError = "";
     lastCheckAt = now();
     const fired = [];
+    if (!inSession(lastCheckAt)) return;
     for (const item of items) {
-      const detail = evaluateCondition(item.condition, quotes.get(item.code));
+      if (!sameWatchCondition(submitted.get(item.id), item)) continue;
+      const detail = evaluateCondition(item.condition, quotes.get(`${item.secid}:${item.assetType}`));
       if (detail) fired.push({ item, detail });
     }
     if (!fired.length) return;
     const ids = new Set(fired.map(entry => entry.item.id));
     items = items.filter(item => !ids.has(item.id));
     const at = new Date(now()).toISOString();
-    hits = [...hits, ...fired.map(({ item, detail }) => ({ id: item.id, at, detail: `${item.name} ${detail}` }))].slice(-MAX_HITS);
+    hits = [...hits, ...fired.map(({ item, detail }) => ({ item, at, detail: `${item.name} ${detail}` }))].slice(-MAX_HITS);
     if (systemNotify) {
       const title = fired.length > 1 ? `随心记：${fired.length} 个价格条件到了` : `随心记：${fired[0].item.name} 价格条件到了`;
       const body = fired.map(({ item, detail }) => `${item.name} ${detail}${item.text ? ` — ${item.text}` : ""}`).join("\n").slice(0, 240);
@@ -97,17 +131,21 @@ function createNoteWatcher({ getQuote, notify = () => undefined, inSession, now 
 
   /** 页面同步：交来当前要盯的条件，取走已触发的记录。 */
   function sync(input = {}) {
-    const taken = hits;
-    hits = [];
-    const takenIds = new Set(taken.map(hit => hit.id));
     const seen = new Set();
-    items = (Array.isArray(input.items) ? input.items : []).map(normalizeItem)
-      .filter(item => item && !takenIds.has(item.id) && !seen.has(item.id) && seen.add(item.id))
-      .slice(0, MAX_ITEMS);
+    const submitted = (Array.isArray(input.items) ? input.items : []).map(normalizeItem)
+      .filter(item => item && !seen.has(item.id) && seen.add(item.id));
+    const byId = new Map(submitted.map(item => [item.id, item]));
+    const taken = hits.filter(hit => {
+      const current = byId.get(hit.item.id);
+      return !current || sameWatchCondition(hit.item, current);
+    });
+    hits = [];
+    const takenIds = new Set(taken.map(hit => hit.item.id));
+    items = submitted.filter(item => !takenIds.has(item.id)).slice(0, MAX_ITEMS);
     systemNotify = input.systemNotify !== false;
     ensureTimer();
     if (items.length && inSession(now()) && now() - lastCheckAt > intervalMs) void tick();
-    return { hits: taken, watching: items.length, session: inSession(now()), ...(lastError ? { error: lastError } : {}) };
+    return { hits: taken.map(({ item, at, detail }) => ({ id: item.id, at, detail })), watching: items.length, session: inSession(now()), ...(lastError ? { error: lastError } : {}) };
   }
 
   return { sync, tick, stop: () => { items = []; stopTimer(); } };

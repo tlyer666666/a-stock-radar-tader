@@ -29,19 +29,41 @@ const chinaDay = (value: unknown) => {
 };
 const price = (n: number | null) => n === null ? "待补" : n.toFixed(2);
 
+type RawHistoryRow = Record<string, unknown> & { date?: string; open?: unknown; high?: unknown; low?: unknown; close?: unknown; volume?: unknown; amount?: unknown };
+type RawReviewInput = {
+  history?: unknown;
+  analysis?: {
+    limitEvent?: { date?: unknown };
+    qualification?: { riskVetoPassed?: unknown };
+    risks?: unknown;
+    rsSector?: unknown;
+    tradePlan?: { stopPrice?: unknown; takeProfitPrice?: unknown; targetPrice?: unknown };
+  };
+  security?: Record<string, unknown>;
+  quote?: Record<string, unknown>;
+  sector?: { name?: string };
+  updatedAt?: unknown;
+  actualProvider?: unknown;
+  isPreview?: unknown;
+  tradePlan?: { stopPrice?: unknown; takeProfitPrice?: unknown; targetPrice?: unknown };
+};
+type RawMarketSnapshot = { decision?: { asOf?: unknown; marketGate?: unknown; steps?: Array<{ id?: unknown; facts?: string[] }> } | undefined };
+
 /** Ordered evidence, not an additive score. Never creates an order or synthetic risk prices. */
-export function buildStockReviewDecision(payload: any, marketSnapshot?: any): ReviewDecision {
-  const rows: any[] = Array.isArray(payload?.history) ? payload.history : [];
-  const analysis = payload?.analysis || {};
-  const security = payload?.security || payload?.quote || {};
+export function buildStockReviewDecision(rawPayload: unknown, marketSnapshot?: RawMarketSnapshot | null): ReviewDecision {
+  const payload = (rawPayload && typeof rawPayload === "object" ? rawPayload : {}) as RawReviewInput;
+  const rows: RawHistoryRow[] = Array.isArray(payload.history) ? (payload.history as RawHistoryRow[]) : [];
+  const analysis = payload.analysis || {};
+  const security = payload.security || payload.quote || {};
   const asOf = date(rows.at(-1)?.date);
-  const observedDay = chinaDay(payload?.updatedAt);
+  const observedDay = chinaDay(payload.updatedAt);
   const errors: string[] = [];
   if (rows.length < 65) errors.push(`日线只有 ${rows.length} 根，MA60 与 MA20 斜率需要至少 65 根。`);
   if (!observedDay) errors.push("缺少有效采集时间，不能确认日线是否属于未来。");
   const invalid = rows.some((r, i) => {
     const d = date(r?.date), o = positive(r?.open), h = positive(r?.high), l = positive(r?.low), c = positive(r?.close);
-    return !d || (i > 0 && d <= rows[i-1].date) || (observedDay && d > observedDay) || o === null || h === null || l === null || c === null || h < Math.max(o, c, l) || l > Math.min(o, c, h);
+    const prevDate = String(rows[i - 1]?.date || "");
+    return !d || (i > 0 && d <= prevDate) || (observedDay && d > observedDay) || o === null || h === null || l === null || c === null || h < Math.max(o, c, l) || l > Math.min(o, c, h);
   });
   if (invalid) errors.push("日线有无效价格、重复/倒序日期或未来日期，不能据此确认阶段。");
   const usable = !errors.length;
@@ -55,29 +77,29 @@ export function buildStockReviewDecision(payload: any, marketSnapshot?: any): Re
   const recentEvent = eventAge !== null && eventAge < 15;
   const eventLow = eventIndex >= 0 ? positive(rows[eventIndex]?.low) : null;
   const recentHigh = usable ? Math.max(...rows.slice(-21, -1).map(r => Number(r.high))) : null;
-  const intraday = Boolean(asOf && asOf === observedDay && payload?.updatedAt && new Date(Date.parse(payload.updatedAt) + 28800000).getUTCHours() < 15);
+  const intraday = Boolean(asOf && asOf === observedDay && payload.updatedAt && new Date(Date.parse(String(payload.updatedAt)) + 28800000).getUTCHours() < 15);
   const stale = Boolean(asOf && observedDay && Date.parse(observedDay) - Date.parse(asOf) > 7 * 86400000);
   const market = marketSnapshot?.decision;
   const marketGate = !stale && !intraday && market?.asOf === asOf && (market.marketGate === "open" || market.marketGate === "blocked") ? market.marketGate : "unknown";
   const vetoes: string[] = [];
   if (!/^(?:60\d{4}|68\d{4}|00\d{4}|30\d{4}|[48]\d{5}|920\d{3})$/.test(String(security.code || ""))) vetoes.push("证券代码不在可识别的沪深北 A 股代码范围，范围检查不通过。");
   if (security.assetType && security.assetType !== "stock") vetoes.push("该证券不属于本复盘的 A 股近期涨停趋势范围。");
-  if (security.isST === true || security.st === true || payload?.quote?.isST === true || payload?.quote?.st === true || /ST|退市|退$/i.test(String(security.name || payload?.quote?.name || ""))) vetoes.push("证券含明确 ST / 退市状态或名称标记，不通过本范围的证券风险检查。");
+  if (security.isST === true || security.st === true || payload.quote?.isST === true || payload.quote?.st === true || /ST|退市|退$/i.test(String(security.name || payload.quote?.name || ""))) vetoes.push("证券含明确 ST / 退市状态或名称标记，不通过本范围的证券风险检查。");
   if (analysis.qualification?.riskVetoPassed === false) vetoes.push("上游风险否决已触发，需逐项解除后再复核。");
-  const reportedRisks = Array.isArray(analysis.risks) ? analysis.risks.filter((r: unknown) => typeof r === "string" && r.trim()) : [];
+  const reportedRisks = Array.isArray(analysis.risks) ? analysis.risks.filter((r): r is string => typeof r === "string" && Boolean(r.trim())) : [];
   if (marketGate === "blocked") vetoes.push("同日市场关口不通过：中证全指收盘位于 MA60 下方。");
   const belowAnchor = close !== null && eventLow !== null && close < eventLow;
   if (belowAnchor && !intraday && !stale) vetoes.push(`收盘低于同一日线口径的涨停锚点低点 ${price(eventLow)}，原结构失效。`);
   const sectorRs = finite(analysis.rsSector);
   const stage = !usable ? "阶段不可判断" : close! < ma20! ? "趋势转弱观察" : rising && recentEvent ? "趋势延续观察" : rising ? "上升趋势，涨停锚点待确认" : "整理等待确认";
-  const sourceNature = /preview|synthetic|demo/i.test(String(payload?.actualProvider || "")) || payload?.isPreview ? "合成 / 预览资料，不是实盘验证" : `行情来源：${payload?.actualProvider || "未标明"}`;
+  const sourceNature = /preview|synthetic|demo/i.test(String(payload.actualProvider || "")) || payload.isPreview ? "合成 / 预览资料，不是实盘验证" : `行情来源：${payload.actualProvider || "未标明"}`;
   const limitations = ["尚未逐日核对交易所日历与停牌记录；日线条数不等于已确认的市场交易日覆盖。", "涨停锚点来自上游识别，未提供官方当日限价与证券状态的独立复核。", "日线用于结构观察；复权口径未独立核验，次日成交价、限价与止损必须在同一明确口径重新核验。"];
   if (intraday) limitations.unshift("最新日线尚在盘中，本次阶段是临时观察，须以收盘数据复核。");
   if (stale) limitations.unshift("日线距采集日超过 7 个自然日，资料陈旧；保留历史结构，不确认当前市场或交易条件。");
   const conflicts = [...vetoes];
   if (belowAnchor && intraday) conflicts.push(`盘中暂破锚点低点 ${price(eventLow)}，待收盘确认，不能判为已完成的收盘失效。`);
   if (belowAnchor && stale) conflicts.push(`历史日线低于锚点低点 ${price(eventLow)}，当前结构需要更新资料后复核。`);
-  conflicts.push(...reportedRisks.map((risk: string) => `上游风险提示：${risk}`));
+  conflicts.push(...reportedRisks.map((risk) => `上游风险提示：${risk}`));
   if (sectorRs !== null && sectorRs < 0) conflicts.push(`个股相对板块偏弱（${sectorRs.toFixed(2)}），与上升趋势可能冲突；窗口沿用上游，未当作第二张趋势赞成票。`);
   if (!recentEvent) conflicts.push(eventAge === null ? "缺少可对应到日线的近期涨停锚点。" : `涨停锚点距今 ${eventAge} 根日线，已超出最近 15 根范围。`);
   if (!conflicts.length) conflicts.push("已取到的结构证据未触发上述否决；这不代表公告与交易限制已全部排除。");
@@ -85,18 +107,19 @@ export function buildStockReviewDecision(payload: any, marketSnapshot?: any): Re
   // 复盘页只陈述观察事实，不输出「规则不通过」这类校验口径的判定语。
   // 复核仍照常进行（vetoes 仍参与 status 计算），只是不再把它当作给用户看的结论标题。
   const headline = !usable ? "数据不足，阶段暂不可判" : vetoes.length ? `${stage} · 存在待核实事项` : stale ? `${stage} · 资料陈旧待更新` : `${stage} · 交易条件待核验`;
-  const plan = analysis.tradePlan || payload?.tradePlan || {};
+  const plan = analysis.tradePlan || payload.tradePlan || {};
   const distance = (value: number | null, base: number | null) => value !== null && base !== null && base > 0 ? (value / base - 1) * 100 : null;
   const last20 = rows.slice(-20), prior20 = rows.slice(-21, -1);
-  const measuredMean = (sample: any[], key: string, count: number) => usable && sample.length === count && sample.every(r => positive(r[key]) !== null) ? sample.reduce((sum, r) => sum + Number(r[key]), 0) / count : null;
+  const measuredMean = (sample: RawHistoryRow[], key: string, count: number) => usable && sample.length === count && sample.every(r => positive(r[key]) !== null) ? sample.reduce((sum, r) => sum + Number(r[key]), 0) / count : null;
   const priorVolume20 = measuredMean(prior20, "volume", 20);
   const currentVolume = usable ? positive(rows.at(-1)?.volume) : null;
   const volumeRatio20 = currentVolume !== null && priorVolume20 !== null ? currentVolume / priorVolume20 : null;
   const amount20 = measuredMean(last20, "amount", 20);
-  const atr14 = usable ? rows.slice(-14).reduce((sum, r, i) => { const prev = Number(rows[rows.length - 15 + i].close); return sum + Math.max(Number(r.high) - Number(r.low), Math.abs(Number(r.high) - prev), Math.abs(Number(r.low) - prev)); }, 0) / 14 : null;
+  const rowIndex = usable ? rows.length - 15 : 0;
+  const atr14 = usable ? rows.slice(-14).reduce((sum, r, i) => { const prev = Number(rows[rowIndex + i]?.close); return sum + Math.max(Number(r.high) - Number(r.low), Math.abs(Number(r.high) - prev), Math.abs(Number(r.low) - prev)); }, 0) / 14 : null;
   const recent10 = usable ? rows.slice(-10) : [];
-  const lowRow = recent10.reduce<any>((best, r) => !best || Number(r.low) < Number(best.low) ? r : best, null);
-  const highRow = usable ? prior20.reduce<any>((best, r) => !best || Number(r.high) > Number(best.high) ? r : best, null) : null;
+  const lowRow = recent10.reduce<RawHistoryRow | null>((best, r) => !best || Number(r.low) < Number(best.low) ? r : best, null);
+  const highRow = usable ? prior20.reduce<RawHistoryRow | null>((best, r) => !best || Number(r.high) > Number(best.high) ? r : best, null) : null;
   const metric = (id: string, label: string, value: number | null, unit: string, detail: string) => ({ id, label, value, unit, detail });
   const metrics = [
     metric("return5", "5 根涨跌", usable ? distance(close, positive(rows.at(-6)?.close)) : null, "%", "最新收盘 / 5 根前收盘 − 1；日线观察，不是策略收益"),
@@ -131,7 +154,7 @@ export function buildStockReviewDecision(payload: any, marketSnapshot?: any): Re
   if (recentEvent) addEvidence("event", "近期事件可定位", "neutral", 5, `${eventDate} 对应实际日线，距今 ${eventAge} 根，低点 ${price(eventLow)}。`, "仅定位上游事件，官方限价与证券状态另核");
   evidence.sort((a,b) => a.priority - b.priority);
   const context = [
-    {id:"market",label:"同日市场",state:marketGate === "open" ? "趋势条件通过" : marketGate === "blocked" ? "趋势条件未满足" : "资料待补",facts:[`个股截至 ${asOf || "待补"}；市场截至 ${market?.asOf || "未取得"}。`, ...(Array.isArray(market?.steps) ? market.steps.find((step: any) => step.id === "market")?.facts?.slice(0,2) || [] : []), "市场快照仅作为本次上下文保存；档案不自动引用后来的行情。"]},
+    {id:"market",label:"同日市场",state:marketGate === "open" ? "趋势条件通过" : marketGate === "blocked" ? "趋势条件未满足" : "资料待补",facts:[`个股截至 ${asOf || "待补"}；市场截至 ${String(market?.asOf || "未取得")}。`, ...(Array.isArray(market?.steps) ? market.steps.find((step) => step.id === "market")?.facts?.slice(0,2) || [] : []), "市场快照仅作为本次上下文保存；档案不自动引用后来的行情。"]},
     {id:"sector",label:payload?.sector?.name || "所属板块",state:"口径待核",facts:[sectorRs === null ? "未提供个股相对板块数据。" : `个股相对板块 ${sectorRs.toFixed(2)}（上游窗口）。`, "板块成分、观察窗口、行情日期与样本覆盖尚未独立核对，不能从名称或排名推导主线确认。"]}
   ];
   return {

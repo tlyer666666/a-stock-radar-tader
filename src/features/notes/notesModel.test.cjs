@@ -51,6 +51,9 @@ test("重复提醒：每个交易日尾盘，发出后排到下一个交易日",
   const fired = model.markFired(note, cn("2026-11-13T14:45:10"));
   assert.equal(fired.remindAt, iso("2026-11-16T14:45:00"));
   assert.equal(fired.firedFor, null);
+  assert.equal(fired.lastFiredAt, iso("2026-11-13T14:45:00"));
+  const normalized = model.normalizeNote(fired);
+  assert.equal(normalized.lastFiredAt, iso("2026-11-13T14:45:00"));
 });
 
 test("到期：不重复的提醒发一次后停在「待处理」，不会反复响；稍后提醒重新排期", () => {
@@ -196,4 +199,22 @@ test("识别分钟循环，恢复后保持原频率且不连发积压提醒", ()
   assert.equal(model.dueToFire([fired], NOW + 44 * 60_000).length, 0);
   assert.equal(model.dueToFire([fired], NOW + 45 * 60_000).length, 1);
   assert.equal(model.normalizeNote({ ...note, intervalMinutes: 0 }).repeat, "none");
+});
+
+test("分钟循环的日期限制不会被默默当成一次性或全天提醒", () => {
+  for (const text of [
+    "今天每十五分钟提醒我一次",
+    "今天，每十五分钟提醒我一次",
+    "从14:30起每15分钟提醒我一次",
+    "盘中每隔15分钟提醒我一次",
+    "每十五分钟提醒我一次，到收盘为止",
+    "每隔15分钟，提醒我休息",
+    "请帮我每15分钟提醒我一次"
+  ]) {
+    const result = model.inspectReminder(text, NOW);
+    if (/今天|盘中|为止|14:30/.test(text)) assert.match(result?.problem, /日期|时段/, text);
+    else assert.equal(result?.intervalMinutes, 15, text);
+  }
+  assert.equal(model.parseRemind("每15分钟提醒我检查盘中成交量", NOW)?.intervalMinutes, 15);
+  assert.equal(model.parseRemind("不用每15分钟提醒我", NOW), null);
 });

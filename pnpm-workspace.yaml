@@ -30,3 +30,4 @@ minimumReleaseAgeExclude:
 patchedDependencies:
   glob@7.2.3: patches/glob@7.2.3.patch
   minimatch@11.0.3: patches/minimatch@11.0.3.patch
+  picomatch@4.0.7: patches/picomatch@4.0.7.patch

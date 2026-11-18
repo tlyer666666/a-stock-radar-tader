@@ -114,15 +114,13 @@ test("shared account freezes unresolved held price basis without erasing the pri
 });
 
 test("combination configuration controls technical thresholds rather than merely appearing in metadata", () => {
-  const catalog = require("../config/strategy-signal-combinations.json");
+  const { loadNamedConfig } = require("./config-loader.cjs");
+  const catalog = structuredClone(loadNamedConfig("strategy-signal-combinations"));
   const entry = catalog.find(row => row.id === "limit_rsi_pullback_resonance");
-  const previous = entry.parameters.rsiThreshold;
   const rows = history();
   rows.forEach((row, i) => { row.close = 10 + i * .01 + (i % 2 ? .05 : 0); });
-  try {
-    entry.parameters.rsiThreshold = 101;
-    assert.equal(combinations.prepareCombinationTimeline(rows, "600001", "审计样本", rows).at(-1).confirmations.limit_rsi_pullback_resonance, false);
-  } finally { entry.parameters.rsiThreshold = previous; }
+  entry.parameters.rsiThreshold = 101;
+  assert.equal(combinations.prepareCombinationTimeline(rows, "600001", "审计样本", rows, { catalog }).at(-1).confirmations.limit_rsi_pullback_resonance, false);
 });
 
 test("walk-forward aggregate training purges trades whose exits cross into the first test date", () => {

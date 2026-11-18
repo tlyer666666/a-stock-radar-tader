@@ -1,6 +1,7 @@
 "use strict";
 const test=require("node:test"),assert=require("node:assert/strict"),fs=require("node:fs"),path=require("node:path");
 const {createHarness}=require("../qa/main-ipc-test-harness.cjs");
+const {loadElectronIpcSources}=require("../qa/ipc-source-loader.cjs");
 
 test('repeated settings and service reads use one in-memory snapshot until a successful save',()=>{
  const observed=[];const h=createHarness({getProfessionalReview:input=>{observed.push(input.settings);return {};}});
@@ -203,5 +204,51 @@ test("a temporarily locked keychain preserves old files, and ordinary saves cann
     h.invoke("settings:save",{refreshToken:""});
     assert.equal(h.json("settings").refreshToken,"");
     assert.equal(h.json("settings.last-good").refreshToken,"");
+  } finally { h.cleanup(); }
+});
+
+test("main process migrates system ciphertext on all platforms, syncs stock-agent backups, restores windows on notification click, invalidates settings cache on backup restore, and redacts noteWatcher errors", () => {
+  const { combinedSource: source } = loadElectronIpcSources();
+  const pendingBlock = source.match(/const keychainMigrationPending = \(\(\) => \{([\s\S]*?)\}\)\(\);/);
+  assert.ok(pendingBlock);
+  assert.doesNotMatch(pendingBlock[1], /process\.platform\s*!==\s*["']darwin["']/);
+  assert.match(source, /writeJson\("stock-agent",\s*value,\s*isAgentStore,\s*true\)/);
+  assert.match(source, /notification\.on\("click",\s*\(\)\s*=>\s*showOrCreateMainWindow\(\)\)/);
+  assert.match(
+    source,
+    /handleTrustedIpc\("backup:restore",[\s\S]*?loadStoredSettings\.cached\s*=\s*undefined;[\s\S]*?settingsForService\.cached\s*=\s*undefined;/
+  );
+  assert.match(
+    source,
+    /handleTrustedIpc\("notes:watch-sync",[\s\S]*?redactRuntimeText\(result\.error\)/
+  );
+});
+
+test("stock-agent deletion with synchronized backup prevents deleted conversations from resurrecting on primary corruption", () => {
+  const os = require("node:os");
+  const { writeJsonAtomic, readJsonWithBackup } = require("./persistence.cjs");
+  const { isAgentStore } = require("./stock-agent.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-agent-sync-"));
+  try {
+    const primary = path.join(dir, "stock-agent.json");
+    const backup = path.join(dir, "stock-agent.last-good.json");
+    writeJsonAtomic(primary, backup, { version: 1, conversations: [{ id: "c1", messages: [] }] }, isAgentStore, undefined, { synchronizeBackup: true });
+    writeJsonAtomic(primary, backup, { version: 1, conversations: [] }, isAgentStore, undefined, { synchronizeBackup: true });
+    fs.writeFileSync(primary, "{broken");
+    const loaded = readJsonWithBackup(primary, backup, null, isAgentStore);
+    assert.equal(loaded.recovered, true);
+    assert.deepEqual(loaded.value.conversations, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("pending restart after backup restore rejects late writes from the old app state", () => {
+  const h = createHarness({ restoredProfilePendingRestart: true });
+  try {
+    fs.writeFileSync(path.join(h.directory, "watchlist.json"), JSON.stringify([{ code: "600000", favorite: true }]));
+    assert.throws(() => h.invoke("watchlist:save", []), { code: "BACKUP_RESTARTING" });
+    assert.equal(h.json("watchlist")[0].code, "600000");
   } finally { h.cleanup(); }
 });

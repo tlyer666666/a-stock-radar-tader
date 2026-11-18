@@ -23,17 +23,34 @@ export function CustomStrategyEditor({ initial, initialAiText = "", patterns, ot
   const autoDrafted = useRef(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [aiNote, setAiNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [aiClarification, setAiClarification] = useState<{
+    clarification: string;
+    unsupportedTerms: string[];
+    alternatives: { label: string; prompt: string }[];
+  } | null>(null);
   const aiApi = typeof window === "undefined" ? undefined : window.stockApi?.ai;
   const draftWithAi = async (text = aiText) => {
     if (!aiApi || aiBusy || !text.trim()) return;
-    setAiBusy(true); setAiNote(null);
+    setAiBusy(true); setAiNote(null); setAiClarification(null);
     try {
       const result = await aiApi.draftStrategy({ text: text.trim(), patterns: patterns.map(item => ({ id: item.id, name: item.name, detail: item.detail })) });
-      const next = result.strategy as CustomStrategy;
-      setDraft(current => ({ ...current, name: next.name, description: next.description, universe: next.universe, conditions: next.conditions,
-        requiredAnyGroups: next.requiredAnyGroups || [], minMatchPercent: next.minMatchPercent, filters: next.filters || {} }));
-      setAttempted(false);
-      setAiNote({ ok: true, text: `AI 已按你的描述配好 ${next.conditions.length} 个条件，请检查后再保存。${result.notes ? `说明：${result.notes}` : ""}` });
+      const hasFollowUp = Boolean(result.clarification || result.unsupportedTerms?.length || result.alternatives?.length);
+      if (hasFollowUp) {
+        setAiClarification({
+          clarification: result.clarification || "部分条件不在当前条件库中，请确认替代写法：",
+          unsupportedTerms: result.unsupportedTerms || [],
+          alternatives: result.alternatives || []
+        });
+      }
+      if (result.strategy) {
+        const next = result.strategy as CustomStrategy;
+        setDraft(current => ({ ...current, name: next.name, description: next.description, universe: next.universe, conditions: next.conditions,
+          requiredAnyGroups: next.requiredAnyGroups || [], minMatchPercent: next.minMatchPercent, filters: next.filters || {} }));
+        setAttempted(false);
+        setAiNote({ ok: true, text: `AI 已按你的描述配好 ${next.conditions.length} 个条件，请检查后再保存。${result.notes ? `说明：${result.notes}` : ""}` });
+      } else {
+        setAiNote({ ok: false, text: result.clarification || "描述中的条件暂无法直接映射，请结合下方替代方案调整描述后再试。" });
+      }
     } catch (error) {
       setAiNote({ ok: false, text: (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "") });
     } finally { setAiBusy(false); }
@@ -106,6 +123,35 @@ export function CustomStrategyEditor({ initial, initialAiText = "", patterns, ot
         <textarea aria-label="用大白话描述选股条件" rows={2} maxLength={400} value={aiText} onChange={event => setAiText(event.target.value)} placeholder="描述你想要的选股条件…" /></label>
       <button type="button" className="secondary-btn" onClick={() => void draftWithAi()} disabled={aiBusy || saving || !aiText.trim()}>{aiBusy ? <LoaderCircle size={15} className="spin" /> : <Sparkles size={15} />}{aiBusy ? "AI 配置中…" : "AI 帮我配置"}</button>
       {aiNote && <p className={aiNote.ok ? "custom-ai-note" : "field-error"} role={aiNote.ok ? "status" : "alert"}>{aiNote.text}</p>}
+      {aiClarification && (
+        <div className="custom-ai-clarify" role="status">
+          <div className="custom-ai-clarify-head">
+            <b>需确认 / 替代建议</b>
+            {aiClarification.unsupportedTerms.length > 0 && (
+              <span className="custom-ai-unsupported">
+                暂不支持：{aiClarification.unsupportedTerms.join("、")}
+              </span>
+            )}
+          </div>
+          {aiClarification.clarification && <p>{aiClarification.clarification}</p>}
+          {aiClarification.alternatives.length > 0 && (
+            <div className="custom-ai-alt-actions">
+              {aiClarification.alternatives.map((alt) => (
+                <button
+                  key={`${alt.label}-${alt.prompt}`}
+                  type="button"
+                  className="secondary-btn"
+                  disabled={aiBusy || saving}
+                  onClick={() => { setAiText(alt.prompt); void draftWithAi(alt.prompt); }}
+                  title={alt.prompt}
+                >
+                  用「{alt.label}」重新生成
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>}
     {(error || (attempted && issues.length > 0)) && <div className="warning-banner" role="alert">{error || `请先修正 ${issues.length} 处问题：${issues[0]!.message}`}</div>}
 

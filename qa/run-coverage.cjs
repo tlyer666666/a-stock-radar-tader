@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 "use strict";
 // Run the hermetic suite with the test runner's built-in coverage and enforce the
-// floors below. The file list is read from the `test` script so the two cannot drift.
+// floors below. The file list comes from qa/test-manifest.cjs (same source as
+// `pnpm test`) so the two cannot drift.
 //
 // Scope note: this measures the hermetic (Node) suite only. The renderer components
 // are additionally exercised by the browser suites (`qa:fullstack:ui`,
@@ -16,14 +17,19 @@
 // deterministic is the real fix and is tracked as a follow-up, not papered over here.
 //
 // Raise the floors whenever coverage improves; never lower them to make a build pass.
-const { spawnSync } = require("node:child_process");
+const { spawnSync, execFileSync } = require("node:child_process");
 const path = require("node:path");
-const pkg = require("../package.json");
 
 // 2026-10-24 实测 lines 83.5 / branches 76.9 / functions 82.7：行与函数门槛上调，留出 App.tsx SSR 波动余量。
 const FLOORS = { lines: 75, branches: 74, functions: 80 };
-const files = pkg.scripts.test.match(/[\w./-]+\.test\.cjs/g) || [];
-if (!files.length) throw new Error("no test files found in the `test` script");
+// 与 `pnpm test` 同源：单测清单来自 qa/test-manifest.cjs 的磁盘自动发现，
+// 不再正则解析 package.json，清单遗漏即覆盖率盲区的问题随之消除。
+const root = path.resolve(__dirname, "..");
+const files = execFileSync(process.execPath, [path.join(__dirname, "test-manifest.cjs"), "unit"], { cwd: root, encoding: "utf8" })
+  .trim()
+  .split("\n")
+  .filter(Boolean);
+if (!files.length) throw new Error("test manifest returned no unit test files");
 
 const args = [
   "--require", "./qa/test-env.cjs",

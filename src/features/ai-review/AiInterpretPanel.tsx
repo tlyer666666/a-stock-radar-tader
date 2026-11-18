@@ -16,6 +16,7 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState(true);
+  const [liveText, setLiveText] = useState("");
   const generation = useRef(0);
   const cacheRevision = useRef(0);
 
@@ -23,24 +24,33 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
     const current = ++generation.current;
     const cachedAt = cacheRevision.current;
     const stop = () => { generation.current += 1; };
-    setValue(null); setBusy(false); setError("");
+    setValue(null); setBusy(false); setError(""); setLiveText("");
     if (!api?.cachedInterpret) return stop;
-    void api.status().then(status => { if (generation.current === current) setConfigured(status.configured); }).catch(() => {});
-    void api.cachedInterpret({ kind, ...(asOfDate ? { asOfDate } : {}) }).then(result => { if (generation.current === current && cacheRevision.current === cachedAt) setValue(result); }).catch(() => {});
+    void api.status().then(status => { if (generation.current === current) setConfigured(status.configured); }).catch(() => undefined /* optional AI status */);
+    void api.cachedInterpret({ kind, ...(asOfDate ? { asOfDate } : {}) }).then(result => { if (generation.current === current && cacheRevision.current === cachedAt) setValue(result); }).catch(() => undefined /* optional AI interpret cache */);
     return stop;
   }, [api, kind, asOfDate]);
+
+  useEffect(() => {
+    if (!busy || !api?.onStream) return;
+    return api.onStream(event => {
+      if (event.channel === "interpret" && event.kind === kind && event.phase === "token" && typeof event.text === "string" && event.text) {
+        setLiveText(event.text);
+      }
+    });
+  }, [api, busy, kind]);
 
   if (!api?.interpret) return null;
   const run = async () => {
     if (busy || !api.interpret) return;
     const current = generation.current;
     cacheRevision.current += 1; // An initial cache read must not overwrite this explicit request.
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setLiveText("");
     try {
       const result = await api.interpret({ kind, data: getData(), ...(asOfDate ? { asOfDate } : {}), force: Boolean(value) });
       if (generation.current === current) setValue(result);
     } catch (reason) { if (generation.current === current) setError(aiErrorMessage(reason)); }
-    finally { if (generation.current === current) setBusy(false); }
+    finally { if (generation.current === current) { setBusy(false); setLiveText(""); } }
   };
 
   return <section className={`panel ai-interpret ${compact ? "compact" : ""}`} aria-label="AI 解读">
@@ -50,6 +60,7 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
         {busy ? <LoaderCircle size={15} className="spin" /> : value ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "解读中…" : value ? "重新解读" : "AI 解读"}</button>
     </header>
     {error && <div className="test-result fail" role="alert"><span />{error}</div>}
+    {busy && liveText && <div className="ai-stream-preview" aria-live="polite"><p className="ai-stream-text">{liveText}</p></div>}
     {value && <article className="ai-summary">
       <h3>{value.headline || `${value.title}解读`}{kind !== "sectors" && <small>{value.asOfDate ? `数据日 ${value.asOfDate} · ` : ""}{value.model} · {new Date(value.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}{value.cached ? " · 本机已保存" : ""}</small>}</h3>
       {!!value.points.length && <div className="ai-summary-row"><b>要点</b><ul>{value.points.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}

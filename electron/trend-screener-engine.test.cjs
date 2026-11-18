@@ -455,3 +455,46 @@ test("an exact 80-session benchmark is sufficient for a full250 stock-price wind
   assert.equal(prepared.kind, "prepared"); assert.equal(prepared.raw.length, 250);
   assert.equal(prepared.benchmark.length, 80);
 });
+
+test("limit-free prefilter falls through to qfq when raw bars omit both changePct and preClose (e.g. fuyao)", () => {
+  const { prefilterTrendStock } = require("./trend-screener-engine.cjs");
+  const falling = fixture();
+  for (let i = 200; i < falling.rawRows.length; i += 1) {
+    const close = Number((20 - (i - 200) * 0.08).toFixed(2));
+    falling.rawRows[i] = { ...falling.rawRows[i], open: close, high: close + 0.1, low: close - 0.1, close };
+    delete falling.rawRows[i].changePct;
+    delete falling.rawRows[i].preClose;
+  }
+  assert.equal(
+    prefilterTrendStock({ security: falling.security, rawRows: falling.rawRows, benchmarkRows: falling.benchmarkRows, asOf: falling.asOf }, { requireLimit: false }),
+    null
+  );
+  for (let i = 1; i < falling.rawRows.length; i += 1) {
+    falling.rawRows[i].preClose = falling.rawRows[i - 1].close;
+  }
+  const excluded = prefilterTrendStock(
+    { security: falling.security, rawRows: falling.rawRows, benchmarkRows: falling.benchmarkRows, asOf: falling.asOf },
+    { requireLimit: false }
+  );
+  assert.equal(excluded?.kind, "excluded");
+  assert.match(excluded?.reason, /MA20/);
+});
+
+test("limitAt applies 5% ST limit before MAIN_BOARD_ST_RATE_EFFECTIVE and 10% after", () => {
+  const { limitAt } = require("./trend-screener-engine.cjs").trendMath;
+  const rowsBefore = [
+    { date: "2026-07-02", open: 10, high: 10, low: 10, close: 10, isST: true },
+    { date: "2026-07-03", open: 10.2, high: 10.5, low: 10.1, close: 10.5, changePct: 5, isST: true }
+  ];
+  assert.equal(limitAt(rowsBefore, 1, "main").limited, true);
+  assert.equal(limitAt([
+    { date: "2026-07-02", open: 10, high: 10, low: 10, close: 10, isST: true },
+    { date: "2026-07-03", open: 10.6, high: 11, low: 10.5, close: 11, changePct: 10, isST: true }
+  ], 1, "main").invalid, true);
+
+  const rowsAfter = [
+    { date: "2026-07-06", open: 10, high: 10, low: 10, close: 10, isST: true },
+    { date: "2026-07-07", open: 10.5, high: 11, low: 10.4, close: 11, changePct: 10, isST: true }
+  ];
+  assert.equal(limitAt(rowsAfter, 1, "main").limited, true);
+});

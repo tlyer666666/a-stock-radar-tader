@@ -1,4 +1,5 @@
 import marketCalendar from "../../../config/a-share-market-calendar.json";
+import { inferSecid } from "../../domain/securityIdentifiers";
 
 /**
  * 随心记：随手记下的想法，可选一个提醒时间（和重复规则）、可关联一只股票。
@@ -26,6 +27,7 @@ export type Note = {
   done: boolean;
   /** 最近一次已经提醒过的那个时间点（ISO）；等于 remindAt 说明这次已提醒、等你处理。 */
   firedFor: string | null;
+  /** 最近一次实际触发提醒的时间点（ISO）；用于重复提醒排期到未来后，弹窗仍显示本次触发时间。 */
   lastFiredAt: string | null;
   condition: NoteCondition | null;
   /** 条件满足、已经提醒的时间（ISO）和当时的说明；为 null 表示还在盯。 */
@@ -123,7 +125,9 @@ function cnNumber(text: string): number | null {
 }
 const NUM = "[0-9零〇一二两三四五六七八九十]{1,3}";
 const DURATION = `(?:${NUM}个?半(?:小时|钟头)|(?:${NUM}|半)个?(?:分钟|小时|钟头)|[一三]刻钟)`;
-const intervalRequest = new RegExp(`(?:^|[，。；、！？,:;!?]|提醒我)(?:请|帮我|给我)?每(?:隔)?(${DURATION})(?:提醒|叫我|通知我|看一下|检查|看看)`);
+const intervalScope = /今天|今日|今晚|明天|明日|后天|每天|每日|每周|开盘|收盘|盘中|盘前|盘后|交易日|周[一二三四五六日天]|(?:\d{1,2}|[一二三四五六七八九十]+)[点号日]|\d{1,2}:\d{2}|开始|起到/;
+const intervalRequest = new RegExp(`(?:^|[，。；、！？,;!?])((?:(?!每(?:隔)?${DURATION})[^，。；、！？,;!?]){0,32})每(?:隔)?(${DURATION})[，,、]?(?:提醒|叫我|通知我|看一下|检查|看看)`);
+const negativeInterval = /不用|不要|不必|无需|别|取消|停止/;
 const marketOffset = new RegExp(`(下午开盘|午后开盘|上午收盘|中午收盘|集合竞价|竞价|开盘|收盘)(?:([前后])(${DURATION})|(${DURATION})([前后]))`);
 const marketMinutes: Record<string, number> = {
   下午开盘: 780, 午后开盘: 780, 上午收盘: 690, 中午收盘: 690, 集合竞价: 555, 竞价: 555, 开盘: 570, 收盘: 900
@@ -174,12 +178,16 @@ export function inspectReminder(text: string, now = Date.now()): ParsedRemind | 
   const s = normalized.replace(/(?<!\d)\s+|\s+(?!\d)/g, "");
   const loop = s.match(intervalRequest);
   if (loop) {
-    const intervalMinutes = normalizeIntervalMinutes(durationMinutes(loop[1]!));
+    const prefix = loop[1]!;
+    const preceding = s.slice(0, loop.index ?? 0).split(/[，。；、！？,;!?]/).at(-1) || "";
+    if (negativeInterval.test(prefix)) return null;
+    const intervalMinutes = normalizeIntervalMinutes(durationMinutes(loop[2]!));
     if (intervalMinutes === null) return { problem: `重复间隔须为 1 至 ${MAX_INTERVAL_MINUTES} 的整数分钟` };
-    // 含日期或交易时段限定的循环不能当成全天循环保存。
-    if (/明天|后天|每天|每日|每周|开盘|收盘|盘中|盘前|盘后|交易日|直到|截至|为止|到[上下中晚早0-9一二两三四五六七八九十]/.test(s)) {
-      return { problem: "按分钟重复暂不支持指定日期或时段。可手动设置首次提醒时间和间隔。" };
+    const suffix = s.slice((loop.index ?? 0) + loop[0].length);
+    if (intervalScope.test(prefix) || intervalScope.test(preceding) || /直到|截至|为止|前停止|后停止|只在|持续\d+/.test(suffix)) {
+      return { problem: "分钟循环暂不支持指定日期或时段。请选择不按时间提醒，或明确设置首次提醒时间和间隔。" };
     }
+    if (!/^(?:请)?(?:帮我|给我|提醒我|请你)?$/.test(prefix)) return null;
     return { at: now + intervalMinutes * 60_000, label: repeatLabel("interval", intervalMinutes), repeat: "interval", intervalMinutes };
   }
   const today = cnParts(now);
@@ -398,7 +406,7 @@ export function normalizeNote(value: unknown): Note | null {
   const stockRaw = isRecord(value.stock) ? value.stock : null;
   const code = stockRaw ? String(stockRaw.code || "") : "";
   const stock = /^\d{6}$/.test(code)
-    ? { code, name: String(stockRaw!.name || code).slice(0, 16), secid: /^[01]\.\d{6}$/.test(String(stockRaw!.secid)) ? String(stockRaw!.secid) : `${code.startsWith("6") || code.startsWith("9") ? "1" : "0"}.${code}` }
+    ? { code, name: String(stockRaw!.name || code).slice(0, 16), secid: /^[01]\.\d{6}$/.test(String(stockRaw!.secid)) ? String(stockRaw!.secid) : inferSecid(code) }
     : null;
   const createdAt = iso(value.createdAt) || new Date(0).toISOString();
   const remindAt = iso(value.remindAt);
@@ -445,7 +453,7 @@ export function isAwaiting(note: Note): boolean {
   return !note.done && (Boolean(note.remindAt && note.firedFor === note.remindAt) || Boolean(note.conditionHit));
 }
 
-/** 提醒发出后：不重复的停在「已提醒、待处理」；重复的直接排到下一次。 */
+/** 提醒发出后：不重复的停在「已提醒、待处理」；重复的直接排到下一次，并保留本次触发时间 lastFiredAt。 */
 export function markFired(note: Note, now: number): Note {
   if (!note.remindAt) return note;
   if (note.repeat !== "none") {

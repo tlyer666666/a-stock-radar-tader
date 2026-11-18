@@ -74,26 +74,23 @@ test('explicit volume units and lot metadata take priority over price-based unit
 });
 
 test('a real time-share service fallback to parsed convertible-bond minute bars renders through the market workspace', async () => {
-  const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
-  const { createRequire } = require('node:module');
+  const fs = require('node:fs'), path = require('node:path');
+  const { loadServiceModule } = require('../../../qa/service-fixture.cjs');
   const ths = require('../../../electron/ths-free-market.cjs');
-  const filename = path.resolve(__dirname, '../../../electron/services.cjs'), localRequire = createRequire(filename);
-  const module = { exports: {} }, calls = [];
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module, exports: module.exports, __dirname: path.dirname(filename), __filename: filename,
-    require: id => id === './ths-free-market.cjs' ? {
+  const filename = path.resolve(__dirname, '../../../electron/services.cjs');
+  const calls = [];
+  const service = loadServiceModule(filename, {
+    './ths-free-market.cjs': {
       ...ths,
       thsFreeTimeShare: async security => { calls.push(['time', security.assetType]); throw new Error('offline time-share fixture'); },
       thsFreeKline: async (security, options) => {
         calls.push([options.interval, security.assetType, options.fqt]);
         return ths.parseThsMinuteData('202610290931,100,100,100,100,1000,100000;202610290932,100,100,100,100,1000,100000', 10);
       }
-    } : localRequire(id),
-    process, console, URL, Buffer, AbortController, AbortSignal, DOMException, TextDecoder,
-    setTimeout, clearTimeout, setImmediate, queueMicrotask
-  }, { filename });
+    }
+  });
   const security = { code: '113001', secid: '1.113001', name: '转债样本', assetType: 'convertibleBond' };
-  const result = await module.exports.getChart(security, 'time', { forceRefresh: true });
+  const result = await service.getChart(security, 'time', { forceRefresh: true });
   assert.deepEqual(calls, [['time', 'convertibleBond'], ['1', 'convertibleBond', 0]]);
   assert.match(result.note, /1 分钟线/);
   assert.equal(result.rows[0].volumeUnit, 'lots');

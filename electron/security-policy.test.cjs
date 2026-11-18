@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const { loadElectronIpcSources } = require("../qa/ipc-source-loader.cjs");
 const {
   SECRET_STORAGE_UNAVAILABLE,
   createTrustedIpcHandler,
@@ -278,25 +279,27 @@ test("runtime and debug text redaction covers URLs, headers, JSON and legacy sec
 });
 
 test("every preload IPC channel is registered through the trusted wrapper", () => {
-  const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const { mainSource, ipcSources } = loadElectronIpcSources();
   const preloadSource = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
   const invokedChannels = [...new Set(
     [...preloadSource.matchAll(/\binvoke\("([^"]+)"/g)]
       .map((match) => match[1])
   )].sort();
-  const trustedChannels = [...mainSource.matchAll(/handleTrustedIpc\("([^"]+)"/g)]
+  const trustedChannels = [...ipcSources.matchAll(/handleTrustedIpc\("([^"]+)"/g)]
     .map((match) => match[1])
     .sort();
 
   assert.deepEqual(trustedChannels, invokedChannels);
   assert.equal((mainSource.match(/ipcMain\.handle\(/g) || []).length, 1);
+  assert.equal((ipcSources.match(/ipcMain\.handle\(/g) || []).length, 0);
   assert.match(mainSource, /getTrustedWebContents = trustedMainWebContents/);
+  assert.match(mainSource, /validateIpcPayload\(channel, args\)/);
   assert.match(mainSource, /createTrustedIpcHandler\(handler, getTrustedWebContents, channel, entry\)/);
 });
 
 test("both renderer limit-up APIs expose the same serializable snapshot contract", () => {
   const preloadSource = fs.readFileSync(path.join(__dirname, "preload.cjs"), "utf8");
-  const serviceSource = fs.readFileSync(path.join(__dirname, "services.cjs"), "utf8");
+  const serviceSource = fs.readFileSync(path.join(__dirname, "services/limit-pool.cjs"), "utf8");
   assert.match(preloadSource, /discoverLimitUps: getLimitUpPoolSnapshot/);
   assert.match(preloadSource, /getLimitUpPoolSnapshot,\s*\n/);
   assert.doesNotMatch(preloadSource, /Array\.isArray\(result\)/);
@@ -313,13 +316,17 @@ test("main process wires secret storage, backtest filtering and debug logging th
   assert.doesNotMatch(mainSource, /return\s+`plain:/);
   assert.match(mainSource, /const safeMessage = redactRuntimeText\(message\)/);
 
-  const backtestHandler = mainSource.match(
+  const backtestIpcSource = fs.readFileSync(path.join(__dirname, "ipc/backtest.ipc.cjs"), "utf8");
+  const portfolioBacktestSource = fs.readFileSync(path.join(__dirname, "portfolio-backtest.cjs"), "utf8");
+  const backtestHandler = backtestIpcSource.match(
     /handleTrustedIpc\("backtest:run",([\s\S]*?)\n {2}\}\);/
   );
   assert.ok(backtestHandler);
-  assert.match(backtestHandler[1], /pickBacktestSettingOverrides\(safeOptions\.settings\)/);
-  assert.match(backtestHandler[1], /safeOptions\.settings = pickBacktestSettingOverrides\(mergedSettings\)/);
+  assert.match(backtestHandler[1], /prepareSingleBacktestRequest\(input, options,/);
+  assert.match(portfolioBacktestSource, /pickBacktestSettingOverrides\(safeOptions\.settings\)/);
+  assert.match(portfolioBacktestSource, /safeOptions\.settings = pickBacktestSettingOverrides\(mergedSettings\)/);
   assert.doesNotMatch(backtestHandler[1], /\.\.\.\(options\?\.settings/);
+  assert.doesNotMatch(portfolioBacktestSource, /\.\.\.\(options\?\.settings/);
 });
 
 test("desktop lifecycle uses the Windows tray, macOS Dock, and Linux normal quit", () => {
@@ -414,4 +421,34 @@ test("local development IPC requires the configured document including its path"
   assert.equal(isTrustedMainFrameIpcEvent(event, contents, "http://127.0.0.1:5173/"), false);
   assert.equal(isTrustedMainFrameIpcEvent(event, contents, frame.url), true);
   assert.equal(isTrustedMainFrameIpcEvent(event, contents, undefined), false);
+});
+
+test("backup:run allows localStorage JSON strings over 65536 chars while ordinary channels still reject them", () => {
+  const { createIpcPayloadBudget, assertIpcPayloadBounded, MAX_IPC_STRING_LENGTH } = require("./security-policy.cjs");
+  const largeLocalJson = JSON.stringify({ notes: "x".repeat(MAX_IPC_STRING_LENGTH + 50_000) });
+  const payload = { "a-stock-radar:notes:v1": largeLocalJson };
+
+  const entry = "file:///app/dist/index.html";
+  const mainFrame = { id: "main-frame", url: entry };
+  const trustedWebContents = { mainFrame, isDestroyed: () => false };
+  const validEvent = { sender: trustedWebContents, senderFrame: mainFrame };
+
+  const backupHandler = createTrustedIpcHandler((_, local) => Object.keys(local), () => trustedWebContents, "backup:run", entry);
+  const normalHandler = createTrustedIpcHandler((_, local) => local, () => trustedWebContents, "settings:save", entry);
+
+  assert.deepEqual(backupHandler(validEvent, payload, { reason: "manual" }), ["a-stock-radar:notes:v1"]);
+  assert.throws(() => normalHandler(validEvent, payload), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => assertIpcPayloadBounded(payload, "settings:save"), /字符串过长/);
+
+  const backupBudget = createIpcPayloadBudget("backup:run");
+  assert.equal(backupBudget.limits.bytes, 48 * 1024 * 1024);
+  assert.equal(backupBudget.limits.stringLength, 48 * 1024 * 1024);
+  assert.throws(
+    () => assertIpcPayloadBounded({ "a-stock-radar:big": "x".repeat(48 * 1024 * 1024 + 1) }, "backup:run"),
+    { code: "INVALID_IPC_PAYLOAD" }
+  );
+  assert.throws(
+    () => backupHandler(validEvent, { buf: Buffer.from("bad") }),
+    { code: "INVALID_IPC_PAYLOAD" }
+  );
 });

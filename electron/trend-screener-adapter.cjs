@@ -2,6 +2,7 @@
 
 const { fetchJsonWithPolicy } = require("./http-client.cjs");
 const { validateDailyBarRows } = require("./daily-bar-validation.cjs");
+const { isBseAshareCode } = require("./price-limit-rules.cjs");
 
 // This scanner needs amount and a confirmed adjustment basis. Do not silently
 // substitute feeds whose daily bars omit those fields or change that basis.
@@ -144,7 +145,7 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
     : /^(600|601|603|605)\d{3}$/.test(code) ? "m:1+t:2"
       : /^(300|301|302)\d{3}$/.test(code) ? "m:0+t:80"
         : /^(688|689)\d{3}$/.test(code) ? "m:1+t:23"
-          : /^(?:[48]\d{5}|920\d{3})$/.test(code) ? "m:0+t:81+s:2048" : null;
+          : isBseAshareCode(code) ? "m:0+t:81+s:2048" : null;
   async function sinaUniverse(ctx, signal) {
     if (!ctx.universe) ctx.universe = tracked(ctx, "universe", "sina-all-a", signal, async () => {
       const base = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.";
@@ -268,7 +269,7 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
   function validateRows(rows, label, priceOnly = false) {
     return validateDailyBarRows(rows, { label, priceOnly });
   }
-  const symbolFor = security => `${security.secid.startsWith("1.") ? "sh" : /^(?:[48]|920)/.test(security.code) ? "bj" : "sz"}${security.code}`;
+  const symbolFor = security => `${security.secid.startsWith("1.") ? "sh" : isBseAshareCode(security.code) ? "bj" : "sz"}${security.code}`;
   async function tencentRows(security, adjustment, signal) {
     const symbol = symbolFor(security), field = adjustment === "front" ? "qfqday" : "day";
     const url = new URL("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get");
@@ -329,8 +330,9 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
       const fetched = await ths.history({ code: security.code, secid: security.secid, assetType: "stock" },
         { limit: historyBars, fqt: adjustment === "front" ? 1 : 0, signal, now: new Date(now()).getTime(), quote });
       let rows = validateRows(fetched.map(row => ({ date: row.date, open: row.open, close: row.close, high: row.high, low: row.low,
-        volume: row.volume, amount: row.amount, amplitude: row.amplitude ?? null, changePct: row.changePct ?? null,
+        volume: row.volume, amount: row.amount, amplitude: row.amplitude ?? null,
         change: row.change ?? null, turnover: row.turnover ?? null,
+        ...(row.changePct !== undefined && row.changePct !== null ? { changePct: row.changePct } : {}),
         ...Object.fromEntries(["preClose", "previousClose", "upperLimit", "lowerLimit", "adjustmentFactor", "adjFactor", "corporateActionUnresolved", "noPriceLimit", "isST"]
           .filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]])) })), "同花顺");
       if (adjustment === "front") {

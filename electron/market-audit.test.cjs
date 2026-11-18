@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { createRequire } = require("node:module");
+const { loadServiceModule, rebindAll } = require("../qa/service-fixture.cjs");
 function load(name, append = "", requires = {}) {
   const filename = path.join(__dirname, name), module = { exports: {} };
   vm.runInNewContext(fs.readFileSync(filename, "utf8") + "\n" + append, {
@@ -15,8 +16,14 @@ function load(name, append = "", requires = {}) {
   }, { filename });
   return module.exports;
 }
+// P0-2b：eastQuote/eastmoneyKlineRow/sinaKline 已迁到 services/backtest.cjs，
+// 顶层 append 通过 _backtest 引用；fetchJson 重绑定统一走 rebindAll。
 function services(append = "") {
-  return load("services.cjs", `module.exports.fixture = { eastQuote, topicPoolForDate, eastmoneyKlineRow, sinaKline, sectorStrength, thsLimitUpConsecutiveBoards, setFetch(fn) { fetchJson = fn; }, setPools(fn) { recentLimitUpPools = fn; }, setSectorLoader(fn) { loadSectorStrength = fn; } }; ${append}`);
+  const s = loadServiceModule(path.join(__dirname, "services.cjs"), {}, {}, `module.exports.fixture = { eastQuote: _backtest.eastQuote, topicPoolForDate, eastmoneyKlineRow: _backtest.eastmoneyKlineRow, sinaKline: _backtest.sinaKline, sectorStrength, thsLimitUpConsecutiveBoards: _limit_pool.thsLimitUpConsecutiveBoards }; ${append}`);
+  s.fixture.setFetch = fn => rebindAll(s, "fetchJson", fn);
+  s.fixture.setPools = fn => rebindAll(s, "recentLimitUpPools", fn);
+  s.fixture.setSectorLoader = fn => rebindAll(s, "loadSectorStrength", fn);
+  return s;
 }
 const security = { code: "600001", secid: "1.600001", thscode: "600001.SH" };
 test("P0-01 missing Eastmoney prices are rejected instead of becoming zero, and never create price-break vetoes", async () => {
@@ -29,6 +36,42 @@ test("P0-01 missing Eastmoney prices are rejected instead of becoming zero, and 
     {latest: null, changePct: null, missingFields: ["latest"]}
   );
   assert.doesNotMatch(strategies.find(item => item.id === "riskVeto").detail, /跌破/);
+});
+test("invalid Eastmoney candles trigger the next chart source", async () => {
+  const s = services();
+  const today = new Date().toISOString().slice(0, 10);
+  s.fixture.setFetch(async (url) => {
+    if (String(url).includes("push2his.eastmoney.com")) {
+      return { data: { klines: [`${today},0,0,0,0,,`] } };
+    }
+    assert.match(String(url), /web\.ifzq\.gtimg\.cn/);
+    const day = Array.from({ length: 20 }, (_, index) => [
+      new Date(Date.now() - index * 86400000).toISOString().slice(0, 10), 10, 11, 11, 10, 100
+    ]);
+    return { data: { sh510300: { day } } };
+  });
+
+  const chart = await s.getChart({ code: "510300", assetType: "etf" }, "101", { adjustment: "none" });
+  assert.equal(chart.dataSource, "tencent_unadjusted");
+  assert.equal(chart.rows.at(-1).close, 11);
+});
+test("short Eastmoney minute charts retain intraday timestamps", async () => {
+  const s = services();
+  const today = new Date().toISOString().slice(0, 10);
+  s.fixture.setFetch(async () => ({ data: { klines: [
+    `${today} 09:31,10,11,11,10,100,105000,10,10,1,2`,
+    `${today} 09:32,11,11,11,11,0,0,0,0,0,0`,
+    `${today} 09:33,11,11,11,11,,0,0,0,0,0`
+  ] } }));
+
+  for (const interval of ["1", "120"]) {
+    const chart = await s.getChart({ code: "510300", assetType: "etf" }, interval);
+    assert.equal(chart.dataSource, "eastmoney");
+    assert.equal(chart.rows.length, 2);
+    assert.equal(chart.isPartial, true);
+    assert.equal(chart.rows[0].date, `${today} 09:31`);
+    assert.equal(chart.rows[1].date, `${today} 09:32`);
+  }
 });
 test("P0-01 market breadth excludes unknown changes from its denominator", async () => {
   const s = services(); s.fixture.setFetch(async url => String(url).includes('/clist/')
@@ -77,6 +120,22 @@ test("P1-06 a single ladder date never invents a prior-day population", async ()
   const s = services(); s.fixture.setPools(async () => [{date:"2026-10-19",pool:[{code:"600001"}]}]);
   s.fixture.setFetch(async () => ({data:{qdate:20261019,pool:[]}}));
   const result = await s.currentLadderPools(); assert.equal(result.previousDate,""); assert.equal(result.previousPool.length,0);
+});
+test("the default ladder shares THS cache entries without masking Eastmoney requests", async () => {
+  const s = services();
+  const date = "2026-10-19";
+  const calls = [];
+  s.fixture.setPools(async (_, options) => {
+    calls.push(options.provider);
+    return [{ date, pool: [{ code: options.provider === "eastmoney" ? "600001" : "600002" }] }];
+  });
+  s.fixture.setFetch(async () => ({ data: { qdate: 20261019, pool: [] } }));
+  const options = { fallbackEnabled: false, multiSourceEnabled: false };
+
+  assert.equal((await s.currentLadderPools(options)).currentPool[0].code, "600002");
+  assert.equal((await s.currentLadderPools({ ...options, provider: "eastmoney" })).currentPool[0].code, "600001");
+  assert.equal((await s.currentLadderPools({ ...options, provider: "ths" })).currentPool[0].code, "600002");
+  assert.deepEqual(calls, [undefined, "eastmoney"]);
 });
 test("P1-08 parses true consecutive boards and preserves non-consecutive windows as unknown", () => {
   const s = services(); assert.equal(s.fixture.thsLimitUpConsecutiveBoards({high_days:"3连板",is_again_limit:1}),3);

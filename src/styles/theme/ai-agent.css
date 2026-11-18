@@ -32,6 +32,7 @@
 /* 右侧：对话区 */
 .ai-agent-chat { min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .ai-agent-chat-head { display: flex; align-items: center; gap: var(--space-md); flex-wrap: wrap; padding: var(--space-sm) var(--space-lg); border-bottom: 1px solid var(--line-1); }
+.ai-agent-ctx-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent); font-size: var(--fs-2xs); font-weight: 600; }
 .ai-agent-open-stock { display: inline-flex; align-items: center; gap: 4px; margin-left: 0; font-size: var(--fs-xs); }
 .ai-agent-model select { max-width: 220px; }
 

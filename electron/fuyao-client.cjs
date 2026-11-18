@@ -44,6 +44,16 @@ const toNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const parseTimestampMs = (value) => {
+  const numeric = toNumber(value);
+  if (numeric !== null) return numeric;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
 /** 成交额量纲校验（真实成交额应满足 额 ≈ Σ(量×价)，比值在 0.5~2 附近；
  *  换手率会小 6~7 个数量级）。越界判为「不是成交额」→ null，
  *  让下游成交额阈值不成立，而不是用错误数值通过。成交量/价格缺失时无法核对，保留原值。 */
@@ -168,10 +178,14 @@ function createFuyaoClient({ getApiKey, fetchJson = fetchJsonWithPolicy, now = (
     for (let offset = 0; offset < codes.length; offset += 50) {
       const batch = codes.slice(offset, offset + 50);
       const data = await request(index ? "/api/a-share-index/prices/snapshot" : "/api/a-share/prices/snapshot", { thscodes: batch.join(",") }, { signal });
-      const at = toNumber(data?.timestamp);
+      const batchAt = parseTimestampMs(data?.timestamp);
       for (const item of items(data)) {
         const thscode = String(item?.thscode || "").toUpperCase();
         if (!batch.includes(thscode)) continue;
+        const itemAt = parseTimestampMs(item?.trade_time ?? item?.quote_time ?? item?.timestamp ?? item?.time_ms ?? item?.date_ms);
+        const at = itemAt ?? batchAt;
+        const quoteAtIsTradeTime = itemAt !== null;
+        const quoteAtIsBatchTime = !quoteAtIsTradeTime && batchAt !== null;
         const shares = toNumber(item?.volume);
         out.set(thscode, {
           thscode,
@@ -187,6 +201,8 @@ function createFuyaoClient({ getApiKey, fetchJson = fetchJsonWithPolicy, now = (
           volumeUnit: "lots",
           amount: plausibleAmount(item?.turnover, shares, toNumber(item?.last_price), { index }),
           quoteAt: at === null ? "" : new Date(at).toISOString(),
+          quoteAtIsTradeTime,
+          quoteAtIsBatchTime,
           source: "fuyao"
         });
       }

@@ -2,7 +2,7 @@
 
 // Fixed scenario assumptions, not a historical tax schedule. Keep the values with each report.
 const DEFAULT_COSTS = Object.freeze({ commissionBps: 7, slippageBps: 2, sellTaxBps: 5, transferFeeBps: 0.1, minCommission: 5 });
-const roundMoney = value => Math.round((value + Number.EPSILON) * 100) / 100;
+const roundMoney = value => (value < 0 ? -1 : 1) * Math.round(Math.abs(value) * 100 + 1e-7) / 100;
 function roundTripBps(model = DEFAULT_COSTS) {
   return 2 * (model.commissionBps + model.slippageBps + model.transferFeeBps) + model.sellTaxBps;
 }

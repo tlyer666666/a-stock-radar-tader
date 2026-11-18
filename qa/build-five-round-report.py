@@ -10,7 +10,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 ROOT=Path(__file__).resolve().parents[1]
 ART=ROOT/'artifacts/five-round-audit-20261001'
-OUT=Path('~/Desktop/a股/五轮审计版1.5.3/三方五轮全链路审计报告.docx')
+OUT=Path('/Users/fengjinwen/Desktop/a股/五轮审计版1.5.3/三方五轮全链路审计报告.docx')
 def read(name): return json.loads((ART/name).read_text())
 ledger=read('ledger.json')
 assert len(ledger['rounds'])>=5 and all(x['status']=='closed' for x in ledger['rounds']), 'All audit rounds must be closed'

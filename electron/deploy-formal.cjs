@@ -214,9 +214,11 @@ function acquireArtifactLock(projectRoot, options = {}) {
         lockInfo = JSON.parse(fsImpl.readFileSync(lockPath, "utf8"));
         ageMs = Math.max(0, now - fsImpl.statSync(lockPath).mtimeMs);
       } catch {
+        // Lockfile content may be partially written or corrupt; fall back to mtime age check.
         try {
           ageMs = Math.max(0, now - fsImpl.statSync(lockPath).mtimeMs);
         } catch {
+          // Lockfile vanished between EEXIST and statSync; treat as expired.
           ageMs = 0;
         }
       }

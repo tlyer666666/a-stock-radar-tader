@@ -40,6 +40,8 @@ jobs:
         run: pnpm ensure:electron
       - name: Lint
         run: pnpm lint
+      - name: Test manifest orphan gate
+        run: node qa/test-manifest.cjs --check
       - name: Typecheck application and review entry
         run: pnpm typecheck && pnpm typecheck:review
       - name: Hermetic tests with coverage floors
@@ -95,6 +97,8 @@ jobs:
       # 这 10 个渲染层用例长期只在本地跑（qa:fullstack:ui），是 1.5.x 期间腐化最集中的一组。
       - name: Full-stack renderer suites (qa:fullstack:ui)
         run: pnpm qa:fullstack:ui
+      - name: Independent module polish suite (qa:modules:independent)
+        run: pnpm qa:modules:independent
 
   packaged:
     name: Packaged desktop E2E
@@ -113,8 +117,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Install Electron desktop runtime
         run: pnpm ensure:electron
-      - name: Audit critical dependency vulnerabilities
-        run: pnpm audit --audit-level critical
+      - name: Verify dependency pins and high/critical advisories
+        run: pnpm verify:dependencies:security
       - name: Build packaged application
         run: pnpm build
       - name: Build independent review module

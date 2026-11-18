@@ -4,13 +4,16 @@ const { createHash } = require("node:crypto");
 const { performance } = require("node:perf_hooks");
 const { evaluateTrendStrategy, normalizeTrendStrategy } = require("./trend-strategy.cjs");
 const { simulateSharedAccount, normalizeAccount } = require("./trend-research-account.cjs");
-const STRATEGY_LIBRARY = require("../config/trend-strategy-library.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const STRATEGY_LIBRARY = loadNamedConfig("trend-strategy-library");
 
 const { DEFAULT_COSTS, fees } = require("./backtest-costs.cjs");
+const { isBseAshareCode } = require("./price-limit-rules.cjs");
+const { isRiskSecurityName } = require("./strategy-intelligence.cjs");
 const DEFAULT_EXECUTION = Object.freeze({ notional: 100000, ...DEFAULT_COSTS });
 const finite = value => typeof value === "number" && Number.isFinite(value);
 const round = (value, digits = 6) => Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
-const money = value => Math.round((value + Number.EPSILON) * 100) / 100;
+const money = value => (value < 0 ? -1 : 1) * Math.round(Math.abs(value) * 100 + 1e-7) / 100;
 const mean = values => values.length ? round(values.reduce((a, b) => a + b, 0) / values.length) : null;
 const iso = value => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) &&
   Number.isFinite(Date.parse(`${value}T00:00:00Z`)) && new Date(`${value}T00:00:00Z`).toISOString().slice(0, 10) === value;
@@ -172,7 +175,7 @@ function fillPrice(open, side, bps) {
 function quantities(stock, date) {
   const state = stateAt(stock, date);
   const star = /^68[89]/.test(stock.security.code);
-  const beijing = /^(?:[48]|920)/.test(stock.security.code);
+  const beijing = isBseAshareCode(stock.security.code);
   return { minimum: state?.minimumBuyQuantity ?? (star ? 200 : 100), step: state?.quantityStep ?? (star || beijing ? 1 : 100) };
 }
 
@@ -195,7 +198,7 @@ function evaluateSample(stock, candidate, signalIndex, calendar, execution) {
   const entryFactor = adjustmentFactor(raw, adjusted);
   if (!signalFactor || !entryFactor || Math.abs(entryFactor / signalFactor - 1) >= 1e-6) return finish("unresolved", "corporate_action_unresolved", entryDate);
   const state = identityAt(stock, entryDate);
-  if (state.listed === false || state.isST === true || /\*?ST|退市|退$/i.test(state.name)) return finish("rejected", "entry_security_ineligible");
+  if (state.listed === false || state.isST === true || isRiskSecurityName(state.name)) return finish("rejected", "entry_security_ineligible");
   const entryIssue = tradability(raw, "buy");
   if (entryIssue) return finish(entryIssue.includes("price_limits") ? "unresolved" : "rejected", entryIssue);
   const entryPrice = fillPrice(raw.open, "buy", execution.slippageBps);

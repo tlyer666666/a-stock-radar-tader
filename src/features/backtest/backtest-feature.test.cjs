@@ -11,6 +11,7 @@ require.extensions[".css"] = () => {};
 const restoreTypeScript = registerTypeScript();
 const model = require("./backtestModel.ts");
 const { BacktestView } = require("./BacktestView.tsx");
+const { overfitRiskLabel } = require("./backtestLabels.ts");
 const { initialSettings } = require("../../domain/settings.ts");
 
 const noop = () => {};
@@ -80,6 +81,12 @@ test("backtest feature keeps the single-stock controls and research context", ()
   for (const marker of ["策略单股回测", "回测条件", "回测股票", "开始回测", "返回涨停池"]) {
     assert.ok(markup.includes(marker), `missing backtest marker: ${marker}`);
   }
+  assert.equal(overfitRiskLabel("low"), "低");
+  assert.equal(overfitRiskLabel("moderate"), "中等");
+  assert.equal(overfitRiskLabel("high"), "高");
+  assert.equal(overfitRiskLabel("insufficient"), "样本不足");
+  assert.equal(overfitRiskLabel("unknown"), "待人工复核");
+  assert.equal(overfitRiskLabel(""), "--");
 });
 
 after(() => {

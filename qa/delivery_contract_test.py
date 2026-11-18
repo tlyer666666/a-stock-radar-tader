@@ -76,6 +76,20 @@ class DeliveryContractTest(unittest.TestCase):
         before = source_hashes(self.root)
         (self.root / 'app-icon.png').write_bytes(b'new-root-icon')
         self.assertNotEqual(before, source_hashes(self.root))
+        before = source_hashes(self.root)
+        (self.root / 'eslint.config.mjs').write_text('export default [];\n')
+        after_mjs = source_hashes(self.root)
+        self.assertNotEqual(before, after_mjs)
+        self.assertIn('eslint.config.mjs', after_mjs)
+
+    def test_patches_folder_participates_in_source_hashes_when_present(self):
+        before = source_hashes(self.root)
+        patches = self.root / 'patches'
+        patches.mkdir()
+        (patches / 'dep.patch').write_text('diff --git a/x b/x\n')
+        after = source_hashes(self.root)
+        self.assertNotEqual(before, after)
+        self.assertIn('patches/dep.patch', after)
 
     def test_build_receipt_rejects_stale_source_and_changed_outputs(self):
         verify = getattr(contract, 'verify_build_receipts', None)

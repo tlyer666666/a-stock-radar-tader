@@ -12,7 +12,7 @@ import type {
   PaperSimulationState, PaperStrategyGovernance, PaperStrategyStage, PaperTradeAction
 } from "./paperSimulationTypes";
 
-import { calcAshareBuyFee, paperDate, paperMatchBlock, paperQuoteEvidence, paperCorporateActionBlock, paperLotRule, paperRoundShares } from "./paperTradingRules";
+import { calcAshareBuyFee, calcAshareSellFee, paperDate, paperEffectiveQuoteIso, paperMatchBlock, paperQuoteEvidence, paperCorporateActionBlock, paperLotRule, paperRoundShares } from "./paperTradingRules";
 
 import { closeStats, compactClosedHistory } from "./paperClosedHistory";
 
@@ -67,11 +67,10 @@ export const getPaperAccountMetrics = (state: PaperSimulationState) => {
   const equity = normalized.cash + openValue;
   const archived = normalized.closedArchive?.total;
   let cursor = normalized.initialCapital + (archived?.grossProfit ?? 0) - (archived?.grossLoss ?? 0);
-  let peak = Math.max(normalized.initialCapital, normalized.equityPeak || 0, equity);
+  let peak = normalized.initialCapital;
   let maxDrawdownPercent = normalized.maxDrawdownPercent || 0;
   if (archived) {
-    const archivedLow = normalized.initialCapital + archived.minGain;
-    maxDrawdownPercent = Math.max(maxDrawdownPercent, archived.drawdown, (peak - archivedLow) / peak * 100);
+    maxDrawdownPercent = Math.max(maxDrawdownPercent, archived.drawdown);
     peak = Math.max(peak, normalized.initialCapital + archived.peakGain);
   }
   for (const p of [...normalized.closedPositions].sort((a, b) => Date.parse(a.closeTime) - Date.parse(b.closeTime))) {
@@ -79,6 +78,7 @@ export const getPaperAccountMetrics = (state: PaperSimulationState) => {
     peak = Math.max(peak, cursor);
     maxDrawdownPercent = Math.max(maxDrawdownPercent, peak > 0 ? (peak - cursor) / peak * 100 : 0);
   }
+  peak = Math.max(peak, normalized.equityPeak || 0, equity);
   maxDrawdownPercent = Math.max(maxDrawdownPercent, peak > 0 ? (peak - equity) / peak * 100 : 0);
   return { openValue, openCost, openPnl: openValue - openCost, equity, equityPeak: peak, maxDrawdownPercent };
 };
@@ -232,8 +232,11 @@ export const evaluatePaperStrategyGovernance = (
   const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
   const averageExecutionFillRatePercent = tradeCount ? totals.fillSum / tradeCount : 0;
   const peak = normalized.initialCapital + totals.peakGain;
-  const liveEquity = normalized.cash + normalized.openPositions.reduce((sum, p) => sum + p.latestPrice * p.shares, 0);
-  const maxDrawdownPercent = Math.max(totals.drawdown, (peak - liveEquity) / peak * 100, normalized.maxDrawdownPercent || 0);
+  const strategyOpenPnl = normalized.openPositions
+    .filter(p => p.strategySignature === signature)
+    .reduce((sum, p) => sum + p.latestPrice * p.shares - (p.entryPrice * p.shares + p.entryFee), 0);
+  const strategyLiveEquity = normalized.initialCapital + realizedPnl + strategyOpenPnl;
+  const maxDrawdownPercent = Math.max(totals.drawdown, peak > 0 ? Math.max(0, (peak - strategyLiveEquity) / peak * 100) : 0);
   const consecutiveLosses = totals.streak;
   const recentTenPnl = totals.recent.reduce((sum,pnl) => sum + pnl, 0);
   const severeDrawdown = maxDrawdownPercent >= 12;
@@ -418,8 +421,8 @@ export const evaluatePaperMarketReadiness = (
   const hard: string[] = [];
   const soft: string[] = [];
   const federation = payload?.dataFederation || {};
-  const federationSources = Array.isArray(federation.sources) ? federation.sources : [];
-  const realtimeSourceCount = federationSources.filter((source: any) =>
+  const federationSources = Array.isArray(federation.sources) ? (federation.sources as Array<Record<string, unknown>>) : [];
+  const realtimeSourceCount = federationSources.filter((source) =>
     source?.ok === true && source?.realtime !== false && Number(source?.latest) > 0
   ).length;
   const spreadPct = Number(federation.spreadPct);
@@ -567,7 +570,7 @@ export const evaluatePaperExecutionReadinessLocal = (
       canExecute: false
     };
   }
-  if (!(tradePlan.positionSizePercent > 0)) {
+  if (!(Number(tradePlan.positionSizePercent) > 0)) {
     return {
       score: 20,
       level: "block",
@@ -756,12 +759,35 @@ export const evaluatePaperExecutionReadinessLocal = (
     reasonList.push(`${code} 已有持仓，避免重复开仓`);
   }
 
-  const rawPortfolioRiskPercent = normalized.initialCapital > 0
-    ? normalized.openPositions.reduce((sum, position) => sum + position.latestPrice * position.shares, 0) / normalized.initialCapital * 100
+  const currentOpenValueForReadiness = normalized.openPositions.reduce((sum, position) => sum + position.latestPrice * position.shares, 0);
+  const readinessEquity = normalized.cash + currentOpenValueForReadiness;
+  const rawPortfolioRiskPercent = readinessEquity > 0
+    ? currentOpenValueForReadiness / readinessEquity * 100
     : 0;
   const maxPortfolioRiskPercent = clampNumber(safe.maxPortfolioRiskPercent ?? 70, 10, 100, 70);
   if (rawPortfolioRiskPercent > maxPortfolioRiskPercent) {
     reasonList.push(`当前组合占用 ${rawPortfolioRiskPercent.toFixed(1)}% 已超上限 ${maxPortfolioRiskPercent}%`);
+  }
+
+  const readinessLot = paperLotRule(code);
+  const readinessCommissionRate = clampNumber(
+    (Number.isFinite(safe.commissionBps) ? safe.commissionBps : 3) / 100,
+    0,
+    5,
+    0.09
+  );
+  const readinessMaxRiskMoney = normalized.cash * (safe.maxRiskPerTradePercent / 100);
+  const readinessExitFill = finalStop * (1 - (safe.slippageBps || 0) / 10000);
+  const minLotRiskLoss = Math.max(0, readinessLot.min * executionEntryPrice - readinessLot.min * readinessExitFill)
+    + calcAshareBuyFee(readinessLot.min * executionEntryPrice, readinessCommissionRate)
+    + calcAshareSellFee(readinessLot.min * readinessExitFill, readinessCommissionRate);
+  if (minLotRiskLoss > readinessMaxRiskMoney + 1e-6) {
+    reasonList.push(`按当前单笔风险上限 ${safe.maxRiskPerTradePercent}% 可买不足${readinessLot.step === 100 ? " 1 手" : "最低申报数"}（${readinessLot.min} 股），本次不建仓；如需提高上限请在设置中调整`);
+  } else {
+    const minLotCashNeeded = readinessLot.min * executionEntryPrice + calcAshareBuyFee(readinessLot.min * executionEntryPrice, readinessCommissionRate);
+    if (minLotCashNeeded > normalized.cash + 1e-6) {
+      reasonList.push("资金不足，无法满足最低申报数及入场费用");
+    }
   }
 
   const hardFailCount = reasonList.length;
@@ -807,8 +833,9 @@ export const evaluatePaperExecutionReadiness = (
   settings: Settings
 ): PaperExecutionReadiness => {
   const local = evaluatePaperExecutionReadinessLocal(state, payload, settings);
-  const remote = normalizePaperExecutionReadiness(payload?.analysis?.tradeExecutionReadiness) ||
-    normalizePaperExecutionReadiness((payload as any)?.analysis?.executionReadiness);
+  const analysisRecord = payload?.analysis as Record<string, unknown> | undefined;
+  const remote = normalizePaperExecutionReadiness(analysisRecord?.tradeExecutionReadiness) ||
+    normalizePaperExecutionReadiness(analysisRecord?.executionReadiness);
 
   if (!remote) return local;
   if (remote.level === "block") {
@@ -942,8 +969,9 @@ export const openPaperPositionFromSignal = (
   const tradePlanFillRatePercent = clampNumber(tradePlan.executionFillRatePercent, 0, 100, executionModel.fillRatePercent);
   const executionFillRatePercent = clampNumber(Math.min(executionModel.fillRatePercent, tradePlanFillRatePercent), 0, 100, executionModel.fillRatePercent);
   const marketReadiness = evaluatePaperMarketReadiness(payload, safe);
-  const remoteReadiness = normalizePaperExecutionReadiness(payload?.analysis?.tradeExecutionReadiness) ||
-    normalizePaperExecutionReadiness((payload as any)?.analysis?.executionReadiness);
+  const analysisRecord = payload?.analysis as Record<string, unknown> | undefined;
+  const remoteReadiness = normalizePaperExecutionReadiness(analysisRecord?.tradeExecutionReadiness) ||
+    normalizePaperExecutionReadiness(analysisRecord?.executionReadiness);
   if (remoteReadiness?.level === "block") {
     return {
       state: normalized,
@@ -987,7 +1015,7 @@ export const openPaperPositionFromSignal = (
       message: `交易前市场检查阻断：${marketReadiness.hard.join("；")}`
     };
   }
-  if (!(tradePlan.positionSizePercent > 0)) return { state: normalized, changed: false, message: "当前建议仓位为 0，不执行开仓" };
+  if (!(Number(tradePlan.positionSizePercent) > 0)) return { state: normalized, changed: false, message: "当前建议仓位为 0，不执行开仓" };
   if (tradePlan.killSwitchTriggered) return { state: normalized, message: "信号杀死开仓（Kill Switch）", changed: false };
   if (todayLossStreak.blockedByStreak) {
     return {
@@ -1090,13 +1118,36 @@ export const openPaperPositionFromSignal = (
     25,
     2.8
   );
-  const maxRiskMoney = normalized.cash * (safe.maxRiskPerTradePercent / 100);
-  const sharesByRisk = Math.max(
-    0,
-    paperRoundShares(code, maxRiskMoney / (latest * (stopDistancePercent / 100) || 1))
+  const stopPriceCandidate = clampNumber(tradePlan.stopLossPrice, 0.01, Number.MAX_SAFE_INTEGER, latest * (1 - stopDistancePercent / 100));
+  const takeDistancePercent = clampNumber(
+    clampNumber(tradePlan.takeProfitDistancePercent, Math.max(stopDistancePercent * 1.15, 1), 50, 4),
+    1,
+    50,
+    4
   );
+  const takePriceCandidate = clampNumber(tradePlan.takeProfitPrice, 0.01, Number.MAX_SAFE_INTEGER, latest * (1 + takeDistancePercent / 100));
+  const finalStop = Math.min(stopPriceCandidate, executionEntryPrice * (1 - stopDistancePercent / 100), executionEntryPrice * 0.99);
+  const finalTake = Math.max(takePriceCandidate, executionEntryPrice * (1 + takeDistancePercent / 100), executionEntryPrice + 0.01);
+
+  if (!(finalTake > finalStop && finalStop > 0)) {
+    return { state: normalized, message: "止盈/止损参数异常，暂不下单", changed: false };
+  }
+
+  const maxRiskMoney = normalized.cash * (safe.maxRiskPerTradePercent / 100);
+  const stopExitFill = finalStop * (1 - (safe.slippageBps || 0) / 10000);
+  const unitStopLoss = Math.max(0.0001, executionEntryPrice - stopExitFill);
   const lot = paperLotRule(code);
-  let shares = paperRoundShares(code, plannedSizeCash / latest);
+  const modeledStopLoss = (qty: number) =>
+    qty * unitStopLoss
+    + calcAshareBuyFee(qty * executionEntryPrice, commissionRate)
+    + calcAshareSellFee(qty * stopExitFill, commissionRate);
+  let sharesByRisk = Math.max(0, paperRoundShares(code, maxRiskMoney / unitStopLoss));
+  while (sharesByRisk >= lot.min && modeledStopLoss(sharesByRisk) > maxRiskMoney + 1e-6) {
+    sharesByRisk -= lot.step;
+  }
+  if (sharesByRisk < lot.min) sharesByRisk = 0;
+
+  let shares = paperRoundShares(code, plannedSizeCash / executionEntryPrice);
   // F-02 修复：风险上限必须始终生效。
   //
   // 原实现 `if (sharesByRisk > 0) shares = Math.min(...)` 在「风险金额不足一手」
@@ -1132,21 +1183,6 @@ export const openPaperPositionFromSignal = (
       message: `风险调整后仓位不足 ${lot.min} 股（策略仓位系数 ${Math.round(strategyGovernance.positionMultiplier * 100)}%），本次不追单`,
       changed: false
     };
-  }
-
-  const stopPriceCandidate = clampNumber(tradePlan.stopLossPrice, 0.01, Number.MAX_SAFE_INTEGER, latest * (1 - stopDistancePercent / 100));
-  const takeDistancePercent = clampNumber(
-    clampNumber(tradePlan.takeProfitDistancePercent, Math.max(stopDistancePercent * 1.15, 1), 50, 4),
-    1,
-    50,
-    4
-  );
-  const takePriceCandidate = clampNumber(tradePlan.takeProfitPrice, 0.01, Number.MAX_SAFE_INTEGER, latest * (1 + takeDistancePercent / 100));
-  const finalStop = Math.min(stopPriceCandidate, executionEntryPrice * (1 - stopDistancePercent / 100), executionEntryPrice * 0.99);
-  const finalTake = Math.max(takePriceCandidate, executionEntryPrice * (1 + takeDistancePercent / 100), executionEntryPrice + 0.01);
-
-  if (!(finalTake > finalStop && finalStop > 0)) {
-    return { state: normalized, message: "止盈/止损参数异常，暂不下单", changed: false };
   }
 
   const entryValue = shares * executionEntryPrice;
@@ -1259,10 +1295,16 @@ export const closePaperSimulationByCode = (
       continue;
     }
     const matchingPayload = payload?.security?.code === code ? payload : null;
-    const observed = matchingPayload ? { ...position, ...paperQuoteEvidence(matchingPayload), latestPrice: Number(matchingPayload.quote?.latest) } : position;
     const corporateBlock = matchingPayload ? paperCorporateActionBlock(position, matchingPayload) : position.settlementBlockedReason || "";
+    const { settlementBlockedReason: _staleBlock, ...unblockedPosition } = position;
+    const basePosition = corporateBlock ? position : unblockedPosition;
+    const observed = matchingPayload ? { ...basePosition, ...paperQuoteEvidence(matchingPayload), latestPrice: Number(matchingPayload.quote?.latest) } : basePosition;
     const block = corporateBlock || paperMatchBlock(observed, "sell", observed.latestPrice * (1 - (settings.slippageBps || 0) / 10000));
-    if (block) { remain.push({ ...observed, ...(corporateBlock ? { settlementBlockedReason: corporateBlock } : {}) }); blocks.push(block); continue; }
+    if (block) {
+      remain.push({ ...observed, ...(corporateBlock ? { settlementBlockedReason: corporateBlock } : {}) });
+      blocks.push(block);
+      continue;
+    }
     const closePrice = observed.latestPrice;
     const settle = settlePaperPosition(observed, closePrice, reason, now, settings);
     cash += settle.cashDelta;
@@ -1281,6 +1323,41 @@ export const closePaperSimulationByCode = (
   };
 };
 
+export const confirmPaperPositionSettlement = (
+  state: PaperSimulationState,
+  code: string,
+  payload?: AnalysisPayload | null
+): { state: PaperSimulationState; changed: boolean; message: string } => {
+  const normalized = normalizePaperState(state);
+  const matchingPayload = payload?.security?.code === code ? payload : null;
+  const refPreClose = Number(matchingPayload?.quote?.preClose);
+  const refDate = matchingPayload ? paperDate(paperEffectiveQuoteIso(matchingPayload)) : "";
+  let changed = false;
+  const openPositions = normalized.openPositions.map(position => {
+    if (position.code !== code || !position.settlementBlockedReason) return position;
+    changed = true;
+    const { settlementBlockedReason: _cleared, ...clean } = position;
+    const fallbackPreClose = Number(position.quotePreClose);
+    const calibratedClose = Number.isFinite(refPreClose) && refPreClose > 0
+      ? refPreClose
+      : Number.isFinite(fallbackPreClose) && fallbackPreClose > 0
+        ? fallbackPreClose
+        : clean.lastObservedClose;
+    const calibratedDate = refDate || position.quoteDate || clean.lastObservedCloseDate;
+    return {
+      ...clean,
+      ...(calibratedClose && calibratedClose > 0 ? { lastObservedClose: calibratedClose } : {}),
+      ...(calibratedDate ? { lastObservedCloseDate: calibratedDate } : {})
+    };
+  });
+  if (!changed) return { state: normalized, changed: false, message: "当前持仓无需解除核实阻塞" };
+  return {
+    state: { ...normalized, openPositions },
+    changed: true,
+    message: `已手动确认 ${code} 前收/除权核实，恢复正常撮合检查`
+  };
+};
+
 export const advancePaperSimulationByQuote = (
   state: PaperSimulationState,
   payload: AnalysisPayload | null,
@@ -1293,7 +1370,7 @@ export const advancePaperSimulationByQuote = (
   if (!payload || !normalized.openPositions.length) return { state: normalized, changed: false, message: "" };
   const code = String(payload.security?.code || "");
   const safe = normalizeSettings(settings);
-  const rawLatest = payload.quote?.latest;
+  const rawLatest: unknown = payload.quote?.latest;
   const latest = (typeof rawLatest === "number" || (typeof rawLatest === "string" && rawLatest.trim() !== ""))
     ? Number(rawLatest) : NaN;
   if (!Number.isFinite(latest) || latest <= 0) return { state: normalized, changed: false, message: "" };
@@ -1314,8 +1391,29 @@ export const advancePaperSimulationByQuote = (
     }
     const corporateBlock = paperCorporateActionBlock(position, payload);
     if (corporateBlock) {
-      openPositions.push({ ...position, settlementBlockedReason: corporateBlock });
-      changed ||= position.settlementBlockedReason !== corporateBlock;
+      const quoteName = String(payload.quote?.name || payload.security?.name || "");
+      const explicitCorporateAction = /^(?:XR|XD|DR)/i.test(quoteName) || Boolean(payload.quote?.corporateAction);
+      const evidence = paperQuoteEvidence(payload);
+      // Wait for close observation to record the shifted post-DR close ONLY when the quote
+      // explicitly carries a corporate-action marker; never overwrite on an unexplained preClose gap.
+      const nextEvidence = explicitCorporateAction
+        ? evidence
+        : {
+            ...(evidence.quoteDate !== undefined ? { quoteDate: evidence.quoteDate } : {}),
+            ...(evidence.quoteName !== undefined ? { quoteName: evidence.quoteName } : {}),
+            ...(evidence.quoteVolume !== undefined ? { quoteVolume: evidence.quoteVolume } : {}),
+            ...(evidence.quotePreClose !== undefined ? { quotePreClose: evidence.quotePreClose } : {})
+          };
+      const blockedPos: PaperPosition = {
+        ...position,
+        ...nextEvidence,
+        latestPrice: latest,
+        settlementBlockedReason: corporateBlock
+      };
+      openPositions.push(blockedPos);
+      changed ||= position.settlementBlockedReason !== corporateBlock
+        || latest !== position.latestPrice
+        || Object.entries(nextEvidence).some(([key, value]) => position[key as keyof PaperPosition] !== value);
       blocks.push(corporateBlock); continue;
     }
     const barProgress = advancePaperHoldingBars(position, payload.history);
@@ -1325,8 +1423,9 @@ export const advancePaperSimulationByQuote = (
     const trailingStopPrice = trailingStopPercent > 0
       ? highWaterMark * (1 - trailingStopPercent / 100)
       : 0;
+    const { settlementBlockedReason: previousBlock, ...unblockedPosition } = position;
     const withPrice: PaperPosition = {
-      ...position,
+      ...unblockedPosition,
       ...paperQuoteEvidence(payload),
       latestPrice: latest,
       highWaterMark,
@@ -1347,7 +1446,7 @@ export const advancePaperSimulationByQuote = (
       changed = true;
     } else {
       openPositions.push(withPrice);
-      changed ||= latest !== position.latestPrice || highWaterMark !== position.highWaterMark
+      changed ||= Boolean(previousBlock) || latest !== position.latestPrice || highWaterMark !== position.highWaterMark
         || holdingBars !== position.holdingBars || barProgress.lastHoldingBarDate !== position.lastHoldingBarDate
         || Object.entries(paperQuoteEvidence(payload)).some(([key, value]) => position[key as keyof PaperPosition] !== value);
     }

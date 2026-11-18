@@ -237,15 +237,22 @@ function isTrustedMainFrameIpcEvent(event, trustedWebContents, entryUrl) {
  */
 const MAX_IPC_COLLECTION_ITEMS = 5000;
 const MAX_IPC_STRING_LENGTH = 65536;
-const IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 1_000_000, keys: 500_000, bytes: 32 * 1024 * 1024 });
+const BACKUP_RUN_MAX_BYTES = 48 * 1024 * 1024;
+const IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 1_000_000, keys: 500_000, bytes: 32 * 1024 * 1024, stringLength: MAX_IPC_STRING_LENGTH });
 // Research already accepts at most 16 MiB of JSON / 250,000 OHLC rows.
 // Its structural budget accommodates that contract, including short numbers
 // whose in-memory accounting is larger than their JSON representation.
-const RESEARCH_IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 10_000_000, keys: 4_000_000, bytes: 96 * 1024 * 1024 });
+const RESEARCH_IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 10_000_000, keys: 4_000_000, bytes: 96 * 1024 * 1024, stringLength: MAX_IPC_STRING_LENGTH });
+// backup:run carries serialized localStorage entries up to 48 MiB (aligned with main.cjs).
+const BACKUP_IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 1_000_000, keys: 500_000, bytes: BACKUP_RUN_MAX_BYTES, stringLength: BACKUP_RUN_MAX_BYTES });
 
 function createIpcPayloadBudget(channel) {
-  return { nodes: 0, keys: 0, bytes: 0,
-    limits: channel === "trend-screener:research" ? RESEARCH_IPC_PAYLOAD_LIMITS : IPC_PAYLOAD_LIMITS };
+  const limits = channel === "trend-screener:research"
+    ? RESEARCH_IPC_PAYLOAD_LIMITS
+    : channel === "backup:run"
+      ? BACKUP_IPC_PAYLOAD_LIMITS
+      : IPC_PAYLOAD_LIMITS;
+  return { nodes: 0, keys: 0, bytes: 0, limits };
 }
 
 /** One budget covers every argument and nested value; never clone a wide object. */
@@ -263,9 +270,10 @@ function assertIpcPayloadBounded(value, channel = "IPC", depth = 0, budget = cre
     throw Object.assign(new TypeError(`${channel} 载荷嵌套过深`), { code: "INVALID_IPC_PAYLOAD" });
   }
   if (typeof value === "string") {
-    if (value.length > MAX_IPC_STRING_LENGTH) {
+    const maxStringLength = budget.limits?.stringLength ?? MAX_IPC_STRING_LENGTH;
+    if (value.length > maxStringLength) {
       throw Object.assign(
-        new TypeError(`${channel} 字符串过长（上限 ${MAX_IPC_STRING_LENGTH} 字符）`),
+        new TypeError(`${channel} 字符串过长（上限 ${maxStringLength} 字符）`),
         { code: "INVALID_IPC_PAYLOAD" }
       );
     }
@@ -359,6 +367,7 @@ module.exports = {
   SECRET_STORAGE_UNAVAILABLE,
   createTrustedIpcHandler,
   withIpcResult,
+  createIpcPayloadBudget,
   assertIpcPayloadBounded,
   MAX_IPC_COLLECTION_ITEMS,
   MAX_IPC_STRING_LENGTH,

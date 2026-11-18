@@ -1,6 +1,7 @@
 "use strict";
 
-const catalog = require("../config/strategy-signal-combinations.json");
+const { loadNamedConfig } = require("./config-loader.cjs");
+const catalog = loadNamedConfig("strategy-signal-combinations");
 const indicators = require("./trend-indicators.cjs");
 const selectionRules = require("./strategy-selection-rules.cjs");
 const { priceLimitRate, isBseAshareCode, upperLimitPrice } = require("./price-limit-rules.cjs");
@@ -31,11 +32,12 @@ function limitEvidenceAt(history, index, code, name) {
 
 // Full causal series are prepared once per stock; every output at index i uses
 // only values <= i. The benchmark date sequence guards missing stock pages.
-function prepareCombinationTimeline(history, code, name, benchmark = []) {
-  const parameters = Object.fromEntries(catalog.map(entry => [entry.id, entry.parameters]));
-  const common = parameters[catalog[0].id];
+function prepareCombinationTimeline(history, code, name, benchmark = [], options = {}) {
+  const entries = Array.isArray(options?.catalog) && options.catalog.length ? options.catalog : catalog;
+  const parameters = Object.fromEntries(entries.map(entry => [entry.id, entry.parameters]));
+  const common = parameters[entries[0].id];
   const commonKeys = ["marketCalendarLookback", "recentLimitSessions", "maFast", "maMiddle", "maTrend", "maLong", "maxMa20ExtensionPercent"];
-  for (const entry of catalog) {
+  for (const entry of entries) {
     if (Object.values(entry.parameters).some(value => !finite(value) || value <= 0)) throw new TypeError(`组合参数须为正有限数：${entry.id}`);
     if (commonKeys.some(key => entry.parameters[key] !== common[key])) throw new TypeError("组合共同门槛参数须一致");
   }

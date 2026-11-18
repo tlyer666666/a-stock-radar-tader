@@ -10,15 +10,15 @@ const VERDICT_TONE: Record<string, string> = { 兑现: "strong", 部分兑现: "
  * 打开时只读本机已保存的结果；点按钮才调用模型（用「总结用」的那套模型）。
  */
 /** AI 复盘的分析过程：每一轮的思路和调用了哪些复盘技能（默认收起）。 */
-function SkillSteps({ steps }: { steps: AiSkillStep[] }) {
+function SkillSteps({ steps, live = false }: { steps: AiSkillStep[]; live?: boolean }) {
   const calls = steps.flatMap(step => step.calls);
-  return <details className="ai-skill-steps">
-    <summary><Wrench size={14} />分析过程 · {steps.filter(step => step.calls.length).length} 轮，调用了 {calls.length} 次技能（{[...new Set(calls.map(call => call.name))].join("、") || "无"}）</summary>
+  return <details className="ai-skill-steps" open={live || undefined}>
+    <summary><Wrench size={14} />{live ? "实时调用进展" : "分析过程"} · {steps.filter(step => step.calls.length).length} 轮，调用了 {calls.length} 次技能（{[...new Set(calls.map(call => call.name))].join("、") || "无"}）</summary>
     <ol>{steps.map((step, index) => <li key={index}>
       {step.thought && <p>{step.thought}</p>}
       {step.calls.map((call, callIndex) => <div key={callIndex} className={`ai-skill-call${call.ok ? "" : " failed"}`}>
         <b>{call.name}</b>{call.args && call.args !== "{}" && <code>{call.args}</code>}<small>{call.summary}</small></div>)}
-      {!step.calls.length && <small>信息足够，写出复盘结论。</small>}
+      {!step.calls.length && !live && <small>信息足够，写出复盘结论。</small>}
     </li>)}</ol>
   </details>;
 }
@@ -31,6 +31,8 @@ export function AiMarketReviewPanel({ asOfDate, onReview }: { asOfDate: string; 
   const [busy, setBusy] = useState<"" | "review" | "lookback">("");
   const [error, setError] = useState("");
   const [configured, setConfigured] = useState(true);
+  const [liveSteps, setLiveSteps] = useState<AiSkillStep[]>([]);
+  const [liveText, setLiveText] = useState("");
   const generation = useRef(0);
   const cacheRevision = useRef({ review: 0, lookback: 0 });
   const report = useRef(onReview);
@@ -40,17 +42,30 @@ export function AiMarketReviewPanel({ asOfDate, onReview }: { asOfDate: string; 
     const current = ++generation.current;
     const cachedAt = { ...cacheRevision.current };
     const stop = () => { generation.current += 1; };
-    setReview(null); setLookback(null); setPreviousDate(""); setBusy(""); setError(""); report.current?.(null);
+    setReview(null); setLookback(null); setPreviousDate(""); setBusy(""); setError(""); setLiveSteps([]); setLiveText(""); report.current?.(null);
     if (!api?.cachedMarketReview) return stop;
-    void api.status().then(value => { if (generation.current === current) setConfigured(value.configured); }).catch(() => {});
+    void api.status().then(value => { if (generation.current === current) setConfigured(value.configured); }).catch(() => undefined /* optional AI status */);
     void api.cachedMarketReview(asOfDate).then(value => {
       if (generation.current !== current) return;
       setPreviousDate(value.previousDate);
       if (cacheRevision.current.review === cachedAt.review) { setReview(value.review); report.current?.(value.review); }
       if (cacheRevision.current.lookback === cachedAt.lookback) setLookback(value.lookback);
-    }).catch(() => {});
+    }).catch(() => undefined /* optional AI review cache */);
     return stop;
   }, [api, asOfDate]);
+
+  useEffect(() => {
+    if (busy !== "review" || !api?.onStream) return;
+    return api.onStream(event => {
+      if (event.channel !== "market-review") return;
+      if (event.phase === "step") {
+        const merged = [...(event.steps || []), ...(event.pendingStep ? [event.pendingStep] : [])];
+        setLiveSteps(merged);
+      } else if (event.phase === "token" && typeof event.text === "string" && event.text) {
+        setLiveText(event.text);
+      }
+    });
+  }, [api, busy]);
 
   if (!api?.marketReview || !api.lookback) return null;
   const run = async (kind: "review" | "lookback") => {
@@ -58,11 +73,12 @@ export function AiMarketReviewPanel({ asOfDate, onReview }: { asOfDate: string; 
     const current = generation.current;
     cacheRevision.current[kind] += 1; // A fresh review and a saved lookback have independent ownership.
     setBusy(kind); setError("");
+    if (kind === "review") { setLiveSteps([]); setLiveText(""); }
     try {
       if (kind === "review") { const value = await api.marketReview!({ force: Boolean(review) }); if (generation.current === current) { setReview(value); report.current?.(value); } }
       else { const value = await api.lookback!({ force: Boolean(lookback) }); if (generation.current === current) setLookback(value); }
     } catch (reason) { if (generation.current === current) setError(aiErrorMessage(reason)); }
-    finally { if (generation.current === current) setBusy(""); }
+    finally { if (generation.current === current) { setBusy(""); setLiveSteps([]); setLiveText(""); } }
   };
 
   return <section className="panel ai-market-review" aria-label="AI 市场复盘">
@@ -76,6 +92,12 @@ export function AiMarketReviewPanel({ asOfDate, onReview }: { asOfDate: string; 
       </div>
     </header>
     {error && <div className="test-result fail" role="alert"><span />{error}</div>}
+    {busy === "review" && (liveSteps.length > 0 || liveText) && (
+      <div className="ai-stream-preview" aria-live="polite">
+        {liveSteps.length > 0 && <SkillSteps steps={liveSteps} live />}
+        {liveText && <p className="ai-stream-text">{liveText}</p>}
+      </div>
+    )}
     {review && <article className="ai-summary ai-market-review-body">
       <h3>{review.headline || "盘后复盘"}<small>数据日 {review.asOfDate} · {stamp(review)} · 把握：{review.confidence}</small></h3>
       <div className="ai-cycle"><em>{review.cycle.phase}</em><span>{review.cycle.reason}{review.softwareRegime ? `（软件判断：${review.softwareRegime}）` : ""}</span></div>

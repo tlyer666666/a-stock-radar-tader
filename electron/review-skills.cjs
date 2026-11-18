@@ -147,9 +147,17 @@ function createReviewSkills(sources) {
     },
     async history_reviews(args) {
       const count = intArg(args?.count, 1, 5, 3);
-      const reviews = take(sources.previousReviews(count), count).map(review => ({ date: review.asOfDate, headline: clip(review.headline, 40), cycle: review.cycle?.phase || "",
-        mainlines: take(review.mainlines, 4).map(item => item.name), posture: clip(review.nextDay?.posture, 30), confidence: review.confidence || "" }));
-      return { summary: reviews.length ? `前几次：${reviews.map(item => `${item.date} ${item.cycle}`).join("、")}` : "本机还没有更早的 AI 复盘", data: { reviews } };
+      const reviews = take(sources.previousReviews(count), count).map(review => ({
+        date: review.asOfDate,
+        headline: clip(review.headline, 40),
+        cycle: review.cycle?.phase || "",
+        mainlines: take(review.mainlines, 4).map(item => item.name),
+        posture: clip(review.nextDay?.posture, 30),
+        confidence: review.confidence || "",
+        ...(Number.isFinite(review.lookbackHitRatePct) ? { lookbackHitRatePct: review.lookbackHitRatePct } : {}),
+        ...(Array.isArray(review.lookbackLessons) && review.lookbackLessons.length ? { lookbackLessons: take(review.lookbackLessons, 3).map(item => clip(item, 50)).filter(Boolean) } : {})
+      }));
+      return { summary: reviews.length ? `前几次：${reviews.map(item => `${item.date} ${item.cycle}${Number.isFinite(item.lookbackHitRatePct) ? `(兑现${item.lookbackHitRatePct}%)` : ""}`).join("、")}` : "本机还没有更早的 AI 复盘", data: { reviews } };
     }
   };
 

@@ -1,6 +1,6 @@
 import React from "react";
 import { createRoot, type Root } from "react-dom/client";
-import AppErrorBoundary from "./AppErrorBoundary";
+import AppErrorBoundary from "./components/AppErrorBoundary";
 import ProfessionalReview from "./ProfessionalReview";
 import { DataBridgeFailure, initializeStockApi } from "./runtimeBridge";
 import { allowPreviewRuntime } from "./runtimePreview";

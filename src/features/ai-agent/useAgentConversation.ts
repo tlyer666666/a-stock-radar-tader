@@ -39,11 +39,19 @@ function rememberDraft(key: string, draft?: Draft) {
   }
 }
 
-export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: AgentFocus) {
-  const embeddedCode = embeddedFocus?.code;
+export function useAgentConversation(
+  api: AgentApi | undefined,
+  embeddedFocus?: AgentFocus,
+  userContext?: Record<string, unknown>,
+  allowPersonalContext = true,
+  embeddedMode: "t-analysis" | "stock-drawer" = "t-analysis"
+) {
+  const embeddedCode = embeddedFocus?.code
+    ? (embeddedMode === "stock-drawer" ? `drawer:${embeddedFocus.code}` : embeddedFocus.code)
+    : undefined;
   const [state, setStateValue] = useState<AgentState | null>(null);
   const [loadError, setLoadError] = useState("");
-  const [activeId, setActiveId] = useState<string | null>(embeddedFocus ? tConversations.get(embeddedFocus.code) || null : rememberedConversation);
+  const [activeId, setActiveId] = useState<string | null>(embeddedCode ? tConversations.get(embeddedCode) || null : rememberedConversation);
   const [thread, setThread] = useState<AgentConversation | null>(null);
   const initialDraft = drafts.get(draftKey(activeId, embeddedCode));
   const [focus, setFocusValue] = useState<AgentFocus | null>(embeddedFocus || (initialDraft ? initialDraft.focus : rememberedFocus));
@@ -63,6 +71,11 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
   const sendOwner = useRef<symbol | null>(null);
   const stateRequest = useRef(0);
   const handoffDone = useRef(false);
+  const handoffContextRef = useRef<Record<string, unknown> | undefined>(undefined);
+  const userContextRef = useRef(userContext);
+  userContextRef.current = userContext;
+  const allowPersonalContextRef = useRef(allowPersonalContext);
+  allowPersonalContextRef.current = allowPersonalContext;
 
   const isCurrent = useCallback((owner: number) => mounted.current && generation.current === owner, []);
   const setRun = useCallback((value: AgentRun | null) => { currentRun.current = value; setRunValue(value); }, []);
@@ -138,7 +151,7 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
     finally { if (isCurrent(owner) && sendOwner.current === loading) { sendOwner.current = null; setSending(false); } }
   }, [api, applyFocus, embeddedCode, isCurrent, setRun, refreshState]);
 
-  const send = useCallback(async (text: string, options: { focus?: AgentFocus | null; conversationId?: string | null; title?: string; fromDraft?: boolean } = {}) => {
+  const send = useCallback(async (text: string, options: { focus?: AgentFocus | null; conversationId?: string | null; title?: string; fromDraft?: boolean; userContext?: Record<string, unknown>; allowPersonalContext?: boolean } = {}) => {
     const message = text.trim();
     if (!api || !mounted.current || !message || sendOwner.current || currentRun.current?.status === "running") return;
     const owner = ++generation.current;
@@ -147,12 +160,24 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
     const ownsSend = () => isCurrent(owner) && sendOwner.current === token;
     const target = options.conversationId === undefined ? active.current : options.conversationId;
     const stock = options.focus === undefined ? focusRef.current : options.focus;
+    const usePersonal = options.allowPersonalContext ?? allowPersonalContextRef.current;
+    const mergedContext = { ...(handoffContextRef.current || {}), ...(userContextRef.current || {}), ...(options.userContext || {}) };
+    const cleanEntries = Object.entries(mergedContext).filter(([, value]) => value !== undefined && value !== null && value !== "");
+    const activeContext = usePersonal && cleanEntries.length ? Object.fromEntries(cleanEntries) : undefined;
     const sourceKey = draftKey(active.current, embeddedCode);
     const candidate = options.fromDraft ? drafts.get(sourceKey) : undefined;
     const submitted = candidate?.text.trim() === message ? candidate : undefined;
     setSending(true); setSaving(false); setError("");
     try {
-      const started = await api.start({ message, ...(target ? { conversationId: target } : {}), focus: stock, ...(options.title ? { title: options.title } : {}), ...(skillIds ? { skillIds } : {}) });
+      const started = await api.start({
+        message,
+        ...(target ? { conversationId: target } : {}),
+        focus: stock,
+        ...(options.title ? { title: options.title } : {}),
+        ...(skillIds ? { skillIds } : {}),
+        ...(activeContext ? { userContext: activeContext } : {}),
+        allowPersonalContext: usePersonal
+      });
       if (embeddedCode) rememberTConversation(embeddedCode, started.conversationId);
       if (submitted && drafts.get(sourceKey) === submitted) {
         rememberDraft(sourceKey);
@@ -190,6 +215,12 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
       const value = await refreshState();
       if (cancelled || !isCurrent(owner)) return;
       if (embeddedFocus) {
+        if (embeddedMode === "stock-drawer") {
+          const id = (embeddedCode ? tConversations.get(embeddedCode) : undefined)
+            || value?.conversations.find(item => item.focus?.code === embeddedFocus.code && !item.title.endsWith(`做T · ${embeddedFocus.code}`))?.id;
+          if (id && value?.conversations.some(item => item.id === id)) { void openConversation(id); }
+          return;
+        }
         const id = tConversations.get(embeddedFocus.code) || value?.conversations.find(item => item.focus?.code === embeddedFocus.code && item.title.endsWith(`做T · ${embeddedFocus.code}`))?.id;
         if (id && value?.conversations.some(item => item.id === id)) { void openConversation(id); return; }
         if (value?.configured && !handoffDone.current) {
@@ -202,9 +233,10 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
       const handoff = handoffDone.current ? null : takeAgentHandoff();
       handoffDone.current = true;
       if (handoff) {
+        handoffContextRef.current = handoff.userContext;
         applyFocus(handoff.focus);
         const task = QUICK_TASKS.find(item => item.id === handoff.task) || QUICK_TASKS[0]!;
-        if (value?.configured) void send(task.prompt(handoff.focus), { focus: handoff.focus, conversationId: null, title: task.label });
+        if (value?.configured) void send(task.prompt(handoff.focus), { focus: handoff.focus, conversationId: null, title: task.label, ...(handoff.userContext ? { userContext: handoff.userContext } : {}) });
         else void openConversation(null);
       } else if (rememberedConversation && value?.conversations.some(item => item.id === rememberedConversation)) void openConversation(rememberedConversation);
     })();
@@ -254,9 +286,22 @@ export function useAgentConversation(api: AgentApi | undefined, embeddedFocus?: 
         }
       } finally { inFlight = false; }
     });
+    const unsubscribeStream = typeof window !== "undefined" && window.stockApi?.ai?.onStream
+      ? window.stockApi.ai.onStream(event => {
+          if (!ownsRun() || event.channel !== "agent" || event.runId !== runId) return;
+          const prev = currentRun.current;
+          if (!prev || prev.runId !== runId || prev.status !== "running") return;
+          if (event.phase === "step" && Array.isArray(event.steps)) {
+            setRun({ ...prev, steps: event.steps });
+          } else if (event.phase === "token" && typeof event.text === "string" && event.text) {
+            setRun({ ...prev, streamText: event.text });
+          }
+        })
+      : undefined;
+    // Active AI run progress continues polling briefly while minimized so completed replies are ready on return.
     const timer = window.setInterval(() => { void tick(); }, POLL_MS);
     void tick();
-    return () => { stopped = true; window.clearInterval(timer); };
+    return () => { stopped = true; window.clearInterval(timer); unsubscribeStream?.(); };
     // run's progress fields may change without replacing the polling owner.
   }, [api, run?.runId, run?.status, sending, isCurrent, refreshState, setRun]);
 

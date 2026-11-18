@@ -1,23 +1,15 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
-const { createRequire } = require('node:module');
+const { loadServiceModule, rebindAll } = require('../qa/service-fixture.cjs');
 
 // Exercise private cache boundaries in isolated module contexts. All providers
 // are replaced at their boundary; no test contacts markets or user storage.
+// 2026-11-15 P0-2b：services.cjs 拆分后改为共享夹具，'./services/*.cjs' 会被
+// 递归加载且同一套 require 覆盖对子模块同样生效。
 function load(name, append = '', globals = {}, requires = {}) {
-  const filename = path.join(__dirname, name), realRequire = createRequire(filename);
-  const module = { exports: {} };
-  vm.runInNewContext(fs.readFileSync(filename, 'utf8') + '\n' + append, {
-    module, exports: module.exports, require: id => requires[id] || realRequire(id),
-    __dirname, __filename: filename, process, console, URL, DOMException,
-    AbortController, AbortSignal, TextDecoder, Headers, setTimeout, clearTimeout,
-    setImmediate, queueMicrotask, Buffer, fetch: async () => { throw new Error('Unexpected network'); }, ...globals
-  }, { filename });
-  return module.exports;
+  return loadServiceModule(path.join(__dirname, name), requires, globals, append);
 }
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -26,7 +18,7 @@ test('curl fallback shares physical HTTP admission and drains every callback', a
   const http = require('./http-client.cjs');
   const callbacks = [];
   let active = 0, peak = 0;
-  const s = load('services.cjs', 'module.exports.probe = { fetchJson };', {}, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson };', {}, {
     './http-client.cjs': { ...http, fetchJsonWithPolicy: async () => { throw new Error('provider unavailable'); } },
     'node:child_process': { execFile(_file, _args, _options, done) {
       active++; peak = Math.max(peak, active);
@@ -48,7 +40,7 @@ test('curl fallback shares physical HTTP admission and drains every callback', a
 
 test('local queue overload cannot amplify provider traffic through curl fallback', async () => {
   let spawned = 0;
-  const s = load('services.cjs', 'module.exports.probe = { fetchJson };', {}, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson };', {}, {
     './http-client.cjs': { fetchJsonWithPolicy: async () => { throw Object.assign(new Error('full'), { code: 'QUEUE_FULL' }); } },
     'node:child_process': { execFile(_file, _args, _options, done) { spawned++; done(null, '{}', ''); } }
   });
@@ -59,7 +51,8 @@ test('local queue overload cannot amplify provider traffic through curl fallback
 test('sector stale fallback releases single-flight and expires before the next refresh', async () => {
   let clock = 1_000_000, calls = 0;
   class FakeDate extends Date { static now() { return clock; } }
-  const s = load('services.cjs', 'module.exports.probe = { sectorStrengthCache, setLoader(fn) { loadSectorStrength = fn; } };', { Date: FakeDate });
+  const s = load('services.cjs', 'module.exports.probe = { sectorStrengthCache: _runtime.sectorStrengthCache };', { Date: FakeDate });
+  s.probe.setLoader = fn => rebindAll(s, 'loadSectorStrength', fn);
   s.probe.setLoader(async () => { calls++; return null; });
   assert.equal(await s.sectorStrength('银行'), null);
   s.probe.setLoader(async () => { calls++; return { name: 'old' }; });
@@ -73,7 +66,8 @@ test('sector stale fallback releases single-flight and expires before the next r
 });
 
 test('sector thrown failure releases stale fallback so recovered data can load', async () => {
-  const s = load('services.cjs', 'module.exports.probe = { sectorStrengthCache, setLoader(fn) { loadSectorStrength = fn; } };');
+  const s = load('services.cjs', 'module.exports.probe = { sectorStrengthCache: _runtime.sectorStrengthCache };');
+  s.probe.setLoader = fn => rebindAll(s, 'loadSectorStrength', fn);
   s.probe.setLoader(async () => ({ name: 'old' }));
   assert.equal((await s.sectorStrength('银行', { options: { forceRefresh: true } })).name, 'old');
   s.probe.setLoader(async () => { throw new Error('offline'); });
@@ -96,9 +90,10 @@ test('news cold callers share source work and reset prevents an older completion
 });
 
 test('strategy scans bound distinct active jobs without evicting first job single-flight', async () => {
-  const s = load('services.cjs', 'module.exports.probe = { setLoader(fn) { loadStrategySignals = fn; }, strategySignalCache };');
+  const s = load('services.cjs', 'module.exports.probe = { strategySignalCache: _runtime.strategySignalCache };');
   const gate = deferred(); let calls = 0;
-  s.probe.setLoader(() => { calls++; return gate.promise; });
+  // P0-2b：loadStrategySignals 已迁到 services/strategy-scan.cjs，重绑定须在声明处生效。
+  rebindAll(s, 'loadStrategySignals', () => { calls++; return gate.promise; });
   const first = s.scanStrategySignals({ maxUniverse: 40 });
   const second = s.scanStrategySignals({ maxUniverse: 41 });
   try {
@@ -118,7 +113,7 @@ test('strategy scans bound distinct active jobs without evicting first job singl
 test('legacy JSON caller abort prevents provider calls and fallback subprocesses', async () => {
   let calls = 0, subprocesses = 0;
   const fakeFetch = async () => { calls++; return { ok: true, json: async () => ({}) }; };
-  const s = load('services.cjs', 'module.exports.probe = { fetchJson };', { fetch: fakeFetch }, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson };', { fetch: fakeFetch }, {
     './http-client.cjs': load('http-client.cjs', '', { fetch: fakeFetch }),
     'node:child_process': { execFile() { subprocesses++; throw new Error('Must not spawn'); } }
   });
@@ -133,7 +128,7 @@ test('service shutdown aborts active network work and refuses new work', async (
     entered.resolve();
     return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
   };
-  const s = load('services.cjs', 'module.exports.probe = { fetchJson };', { fetch: fakeFetch }, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson };', { fetch: fakeFetch }, {
     './http-client.cjs': load('http-client.cjs', '', { fetch: fakeFetch })
   });
   assert.equal(typeof s.shutdownServiceResources, 'function');
@@ -146,7 +141,7 @@ test('service shutdown aborts active network work and refuses new work', async (
 test('service shutdown waits for an already aborted physical request to settle', async () => {
   const entered = deferred(), released = deferred();
   const fakeFetch = async () => { entered.resolve(); await released.promise; return { ok: true, json: async () => ({}) }; };
-  const s = load('services.cjs', 'module.exports.probe = { fetchJson };', { fetch: fakeFetch }, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson };', { fetch: fakeFetch }, {
     './http-client.cjs': load('http-client.cjs', '', { fetch: fakeFetch })
   });
   const job = s.probe.fetchJson('https://offline.invalid/');
@@ -179,9 +174,9 @@ test('single-stock selected replay and per-strategy breakdown compute in a worke
 });
 
 test('heavy job admission is shared across scan and backtest before any backtest data loads', async () => {
-  const s = load('services.cjs', 'module.exports.probe = { setLoader(fn) { loadStrategySignals = fn; } };');
+  const s = load('services.cjs');
   const gate = deferred(); let loads = 0;
-  s.probe.setLoader(() => gate.promise);
+  rebindAll(s, 'loadStrategySignals', () => gate.promise);
   const first = s.scanStrategySignals({ maxUniverse: 40 });
   const second = s.scanStrategySignals({ maxUniverse: 41 });
   try {
@@ -238,7 +233,7 @@ test('cancelled curl fallback retains its transport slot until the real subproce
   const transport = require('./http-client.cjs');
   const ready = deferred(), closed = deferred();
   let child, physicallyClosed = false;
-  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl };', {}, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl: _runtime.fetchJsonWithCurl };', {}, {
     'node:child_process': { execFile(_file, _args, options, callback) {
       child = childProcess.execFile(process.execPath, ['-e', "process.on('SIGTERM',()=>setTimeout(()=>process.exit(0),150));process.stdout.write('ready');setInterval(()=>{},1000);"], options, callback);
       child.stdout.on('data', () => ready.resolve());
@@ -264,7 +259,7 @@ test('cancelled curl fallback retains its transport slot until the real subproce
 for (const malformed of [false, true]) test(`curl ${malformed ? 'parse failure' : 'successful JSON'} settles only after real subprocess close`, async () => {
   const childProcess = require('node:child_process');
   let physicallyClosed = false;
-  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl };', {}, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl: _runtime.fetchJsonWithCurl };', {}, {
     'node:child_process': { execFile(_file, _args, options, callback) {
       const script = malformed ? "process.stdout.write('{bad');" : "process.stdout.write(JSON.stringify({ok:true}));";
       const child = childProcess.execFile(process.execPath, ['-e', script], options, callback);
@@ -284,7 +279,7 @@ for (const malformed of [false, true]) test(`curl ${malformed ? 'parse failure' 
 test('curl spawn ENOENT without a real pid rejects after close and releases its transport slot', async () => {
   const childProcess = require('node:child_process');
   let child, physicallyClosed = false;
-  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl };', {}, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl: _runtime.fetchJsonWithCurl };', {}, {
     'node:child_process': { execFile(_file, args, options, callback) {
       child = childProcess.execFile(path.join(__dirname, '__synthetic_missing_executable__'), args, options, callback);
       child.once('close', () => { physicallyClosed = true; });
@@ -299,7 +294,7 @@ test('curl spawn ENOENT without a real pid rejects after close and releases its 
 });
 
 test('a synchronous curl spawn failure rejects and releases admission without waiting for a nonexistent child', async () => {
-  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl };', {}, {
+  const s = load('services.cjs', 'module.exports.probe = { fetchJsonWithCurl: _runtime.fetchJsonWithCurl };', {}, {
     'node:child_process': { execFile() { throw Object.assign(new Error('synthetic spawn failure'), { code: 'SPAWN_SYNTHETIC' }); } }
   });
   try {
