@@ -454,6 +454,181 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
     headerInput.props.onCompositionStart?.();
     headerInput.props.onCompositionEnd?.({ currentTarget: { value: "600519" } });
     headerInput.props.onChange?.({ target: { value: "" } });
+
+    const WorkspaceNavigation = require("./components/WorkspaceNavigation.tsx").default;
+    const { renderAppWorkspaceRoutes } = require("./components/AppWorkspaceRoutes.tsx");
+    const { Star } = require("lucide-react");
+    const navTree = WorkspaceNavigation({
+      items: [
+        { id: "cockpit", label: "今日驾驶舱", icon: Star },
+        { id: "bonds", label: "可转债", icon: Star }
+      ],
+      active: "cockpit",
+      counts: { cockpit: 2 },
+      collapsed: false,
+      coreOnly: true,
+      onToggleCoreOnly() {},
+      onCollapse() {},
+      onNavigate() {}
+    });
+    for (const btn of walk(navTree).filter(n => n.type === "button")) {
+      btn.props.onClick?.();
+    }
+
+    const baseRouteProps = {
+      view: "cockpit",
+      setView() {},
+      researchView: false,
+      dashboardMode: "analysis",
+      informationTab: "all",
+      setInformationTab() {},
+      watchlistNode: "all",
+      setWatchlistNode() {},
+      analysisOrigin: null,
+      observationReturnLabel: () => "返回",
+      originForView: () => ({ view: "signals", label: "返回" }),
+      navigateTo() {},
+      openAnalysis() {},
+      returnFromAnalysis() {},
+      loadSecurity: async () => {},
+      latestAnalysis: { current: null },
+      analysisRequestId: { current: 0 },
+      payload: null,
+      analysisTarget: { code: "600519", name: "贵州茅台", secid: "1.600519" },
+      loading: false,
+      error: "",
+      live: false,
+      privacyMask: false,
+      defaultCockpit: false,
+      toggleDefaultCockpit() {},
+      settings: initialSettings,
+      settingsLoadState: "ready",
+      persistSettings: async s => ({ ...initialSettings, ...s }),
+      watchlist: [],
+      holdings: [],
+      favoriteItems: [],
+      favoriteCodes: new Set(),
+      observationItems: [],
+      isFavorite: false,
+      toggleFavorite: async () => {},
+      removeObservation: async () => true,
+      saveHoldings: async () => true,
+      addFavoriteSecurity: async () => {},
+      handleQuickHoldingTrade: async () => true,
+      showToast() {},
+      notes: { notes: [], awaitingCount: 0, addNote() {}, updateNote() {}, removeNote() {}, markDone() {} },
+      tAssistant: { items: [], activeCode: null, setActiveCode() {}, addStock() {}, removeStock() {}, updateParams() {}, logTrade() {} },
+      stockMonitors: { configs: {}, alerts: [], save: () => true, remove() {}, clearAlerts() {}, ackAlert() {} },
+      copilotPhase: resolveMarketSessionPhase(),
+      copilotAlerts: [],
+      newsLiveQuotes: { "600519": { code: "600519", changePct: 1.5, price: 1500 } },
+      addNoteToT() {},
+      addNoteToMonitor: async () => {},
+      discover: async () => {},
+      discovering: false,
+      limitUps: [],
+      limitPoolMeta: { date: "", source: "", updatedAt: "" },
+      failedBoardCache: { current: null },
+      failedBoardViewState: { current: undefined },
+      rememberFailedBoardCache() {},
+      rememberFailedBoardViewState() {},
+      sectorBoard: [],
+      sectorExtra: null,
+      sectorBoardLoading: false,
+      sectorBoardError: "",
+      sectorLegacyOpen: true,
+      setSectorLegacyOpen() {},
+      loadSectorBoard: async () => true,
+      compareCandidates: [
+        { code: "000001", name: "平安银行", secid: "0.000001" },
+        { code: "600519", name: "贵州茅台", secid: "1.600519" },
+        { code: "300059", name: "东方财富", secid: "0.300059" }
+      ],
+      reviewMounted: true,
+      portfolioActive: true,
+      portfolioMounted: true,
+      portfolioInitialSecurities: [],
+      portfolioBack() {},
+      portfolioOpenSingle() {},
+      portfolioOpenSecurity() {},
+      openBacktest() {},
+      backtestCenterMode: "single",
+      setBacktestCenterMode() {},
+      backtestDraft: { code: "600519", strategyContext: null },
+      setBacktestDraft() {},
+      backtestLoading: false,
+      backtestError: "",
+      backtestResult: null,
+      backtestRunRecord: null,
+      backtestHistory: [],
+      backtestProfileComparisons: [],
+      backtestEntryContext: null,
+      invalidateBacktests() {},
+      runBacktest: async () => {},
+      runBacktestProfileComparisons: async () => {},
+      applyBacktestProfileWithGovernance: async () => {},
+      loadBacktestRecord() {},
+      exportBacktestPayload() {},
+      exportCurrentBacktest() {},
+      applyCurrentBacktestToPaper() {},
+      applyHistoryToSettings: async () => {},
+      clearBacktestHistory() {},
+      updateBacktestTargetContext() {},
+      executionDecisionLog: [],
+      clearExecutionDecisionLog() {},
+      paperSummary: {
+        normalized: { cash: 100000, openPositions: [] },
+        equity: 100000,
+        openValue: 0,
+        openPnl: 0,
+        openPnlPercent: 0,
+        cumulativeRealizedPnl: 0,
+        closedCount: 0,
+        winCount: 0
+      },
+      paperExecutionReadiness: { level: "ready", score: 80, summary: "", recommendation: "", reasons: [] },
+      paperCurrentPositions: [],
+      canPaperTrade: true,
+      latestExecutionDecision: null,
+      executePaperTrade() {},
+      closePaperTradeForCurrent() {},
+      closePaperTradeForCode() {},
+      closeAllPaperTrades() {},
+      confirmPaperSettlementForCode() {},
+      settingsCategory: "appearance",
+      openSettings() {}
+    };
+
+    const routeViews = [
+      "cockpit", "dashboard", "previous-limit-up-failed", "favorites", "holdings",
+      "watchlist", "beijing", "hsgt", "bonds", "sectors", "news", "signals",
+      "ai-picks", "ai-agent", "notes", "t-assistant", "compare", "review", "backtest", "settings"
+    ];
+    for (const v of routeViews) {
+      const routeTree = renderAppWorkspaceRoutes({
+        ...baseRouteProps,
+        view: v,
+        researchView: v === "signals"
+      });
+      for (const node of walk(routeTree)) {
+        if (!node.props) continue;
+        node.props.onReturnHome?.();
+        node.props.onOpenStock?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
+        node.props.onOpen?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
+        node.props.onOpenSecurity?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
+        node.props.onOpenPaperStock?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
+        node.props.onClosePaperPosition?.("600519");
+        node.props.onAddFavorite?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
+        node.props.onSyncCostToHolding?.("600519", 100, 1490);
+        node.props.onPrevStock?.();
+        node.props.onNextStock?.();
+        node.props.onOpenSettings?.();
+        node.props.onOpenStrategies?.();
+        node.props.onOpenAiPicks?.();
+        node.props.onOpenPortfolio?.();
+        node.props.onNavigate?.("signals");
+      }
+    }
   } finally {
     global.window = prevWindow;
     global.document = prevDocument;
