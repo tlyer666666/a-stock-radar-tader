@@ -4,7 +4,7 @@ import { initialSettings, normalizeSettings } from "../../domain/settings";
 import { createLatestSettingsWriter } from "../../latestSettingsWriter";
 import { mergeObservationPool } from "../../observationPool";
 import type { AnalysisPayload } from "../market/analysisTypes";
-import { applyHoldingTrade, type HoldingTradeSide } from "./holdingsLedger";
+import { appendHoldingTradeRecord, applyHoldingTrade, type HoldingTradeSide } from "./holdingsLedger";
 
 type UseWorkspaceCollectionsOptions = {
   payload: AnalysisPayload | null;
@@ -242,6 +242,7 @@ export function useWorkspaceCollections({
     side: HoldingTradeSide;
     shares: number;
     price: number;
+    diluteCost?: boolean;
   }) => {
     const preview = applyHoldingTrade({
       items: holdingsRef.current,
@@ -250,16 +251,20 @@ export function useWorkspaceCollections({
       ...(input.secid ? { secid: input.secid } : {}),
       side: input.side,
       shares: input.shares,
-      price: input.price
+      price: input.price,
+      ...(input.diluteCost !== undefined ? { diluteCost: input.diluteCost } : {})
     });
     if (!preview.ok) {
       showToast(preview.error);
       return false;
     }
     let feedback = preview.summary;
+    let settledRealizedPnl: number | null = preview.realizedPnl;
+    let settledName = input.name || holdingsRef.current.find(item => item.code === input.code)?.name || input.code;
     let validationMessage = "";
     try {
       const saved = await saveHoldings(current => {
+        const prevItem = current.find(item => item.code === input.code);
         const outcome = applyHoldingTrade({
           items: current,
           code: input.code,
@@ -267,16 +272,27 @@ export function useWorkspaceCollections({
           ...(input.secid ? { secid: input.secid } : {}),
           side: input.side,
           shares: input.shares,
-          price: input.price
+          price: input.price,
+          ...(input.diluteCost !== undefined ? { diluteCost: input.diluteCost } : {})
         });
         if (!outcome.ok) {
           validationMessage = outcome.error;
           throw new Error(outcome.error);
         }
         feedback = outcome.summary;
+        settledRealizedPnl = outcome.realizedPnl;
+        settledName = input.name || prevItem?.name || outcome.nextItems.find(item => item.code === input.code)?.name || input.code;
         return outcome.nextItems;
       });
       if (saved && feedback) {
+        appendHoldingTradeRecord({
+          code: input.code,
+          name: settledName,
+          side: input.side,
+          shares: input.shares,
+          price: input.price,
+          realizedPnl: settledRealizedPnl
+        });
         showToast(feedback);
         return true;
       }

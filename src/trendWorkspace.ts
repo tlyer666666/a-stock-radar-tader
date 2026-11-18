@@ -150,10 +150,25 @@ export function readTrendPlans(storage: PlanStorage): PlanReadResult {
   }
 }
 
+const MAX_SAVED_TREND_PLANS = 200;
+
 export function writeTrendPlans(storage: PlanStorage, plans: SavedTrendPlan[]): boolean {
   try {
     if (!plans.every(validPlan)) return false;
-    storage.setItem(TREND_PLAN_STORAGE_KEY, JSON.stringify({ version: 1, plans }));
+    const bounded = plans.length <= MAX_SAVED_TREND_PLANS
+      ? plans
+      : [
+          ...plans.filter(item => !item.archivedAt),
+          ...plans.filter(item => Boolean(item.archivedAt))
+        ].slice(0, MAX_SAVED_TREND_PLANS);
+    storage.setItem(TREND_PLAN_STORAGE_KEY, JSON.stringify({ version: 1, plans: bounded }));
+    if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+      try {
+        window.dispatchEvent(new CustomEvent("a-stock-radar:trend-plans-updated"));
+      } catch {
+        // ignore synthetic test environments without CustomEvent dispatch support
+      }
+    }
     return true;
   } catch {
     return false;

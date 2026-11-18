@@ -11,6 +11,11 @@ const SELECTION_CHUNK_SIZE=400;
 const HISTORY_CONCURRENCY=6;
 const BENCHMARK={code:'000985',secid:'1.000985',assetType:'index'};
 const codeEligible=code=>/^(?:000|001|002|003|600|601|603|605|30[012]|68[89])\d{3}$/.test(code)||isBseAshareCode(code);
+let currentScanToken=null;
+let activeScanProgress={active:false,processed:0,total:0,hits:0,fetched:0,startedAt:null,etaSeconds:null};
+function getStrategyScanProgress(){
+ return {...activeScanProgress};
+}
 async function mapBounded(items,worker,assertActive,concurrency=HISTORY_CONCURRENCY) {
  const results=new Array(items.length);let cursor=0;
  await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{
@@ -90,6 +95,26 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
  }
  async function load(options={},runtime={}) {
   assertActive();
+  const nowMs=()=>{const v=now();return v instanceof Date?v.getTime():Number(v)||Date.now();};
+  const scanStartedMs=nowMs();
+  const scanToken={};
+  const hitCodes=new Set();
+  let totalCandidates=0,fetchedCount=0,processedCount=0;
+  const computeEta=()=>{
+   const done=Math.max(processedCount,Math.floor(fetchedCount*0.85));
+   if(!(totalCandidates>0)||done<10)return null;
+   if(done>=totalCandidates)return 0;
+   const elapsedSec=Math.max(0.1,(nowMs()-scanStartedMs)/1000);
+   return Math.max(1,Math.round((elapsedSec/done)*(totalCandidates-done)));
+  };
+  const publishProgress=(active=true)=>{
+   if(currentScanToken!==scanToken)return;
+   activeScanProgress={active,processed:processedCount,total:totalCandidates,hits:hitCodes.size,fetched:fetchedCount,
+    startedAt:new Date(scanStartedMs).toISOString(),etaSeconds:active?computeEta():null};
+  };
+  currentScanToken=scanToken;
+  publishProgress(true);
+  try {
   const {ctx,benchmark:prefetchedBenchmark}=await resolveContext(options);
   const universe=await universeFor(options,runtime);
   const {boards}=universe;
@@ -98,6 +123,8 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
   const candidateSnapshots=candidateLimit?universe.snapshots.slice(0,candidateLimit):universe.snapshots;
   const boardsFailed=boards.filter(board=>!board.complete).length;
   if(!candidates.length)throw Error(`全市场股票名单为空${boardsFailed?`（${boardsFailed}个板块读取失败）`:''}，无法选股`);
+  totalCandidates=candidates.length;
+  publishProgress(true);
   // 本地日线库：先批量取当天收盘快照，已有日线的股票只补一根，不再逐只完整下载。
   if(typeof prepareHistories==='function'){
    try{await prepareHistories(candidateSnapshots);}catch{/* 预取失败只会退回逐只下载 */}
@@ -120,7 +147,7 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
   const watchSecurities=watchStrategies.length?(Array.isArray(options.watchlistSecurities)?options.watchlistSecurities:[]).map(item=>({...item,code:String(item?.code||'')}))
    .filter(item=>codeEligible(item.code)&&!isRiskSecurityName(item.name)&&!watchSeen.has(item.code)&&watchSeen.add(item.code)).slice(0,300):[];
   const historyFailures=new Map(),historySources=new Set(),reports=[],retained={};let failed=0;const failedNames=[],noBars=[];
-  const readChunk=chunk=>{const read=mapBounded(chunk,security=>loadHistory(security,bars,options),assertActive);read.catch(()=>{});return read;};
+  const readChunk=chunk=>{const read=mapBounded(chunk,async security=>{try{return await loadHistory(security,bars,options);}finally{fetchedCount=Math.min(totalCandidates,fetchedCount+1);publishProgress(true);}},assertActive);read.catch(()=>{});return read;};
   let pending=chunks.length?readChunk(chunks[0]):null;
   const benchmarkResult=await benchmarkRead;
   const benchmark=benchmarkResult?.ok&&Array.isArray(benchmarkResult.value)?benchmarkResult.value:[];
@@ -149,7 +176,13 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
     const key=failure.category,previous=historyFailures.get(key);
     historyFailures.set(key,{...failure,count:(previous?.count||0)+failure.count});
    }
-   reports.push(await runEngine(chunks[index],historiesByCode,benchmark,engineOptions));
+   const chunkReport=await runEngine(chunks[index],historiesByCode,benchmark,engineOptions);
+   reports.push(chunkReport);
+   processedCount+=Number(chunkReport?.dataQuality?.processed)||0;
+   for(const group of Array.isArray(chunkReport?.strategies)?chunkReport.strategies:[]){
+    for(const stock of Array.isArray(group?.stocks)?group.stocks:[])if(stock?.code)hitCodes.add(String(stock.code));
+   }
+   publishProgress(true);
    assertActive();
    // 只为自选/持仓第二轮保留它们自己的日线，不保留全市场日线。
    for(const code of watchSeen)if(historiesByCode[code])retained[code]=historiesByCode[code];
@@ -179,7 +212,12 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
     ...(typeof watchReport.dataQuality?.benchmarkReady==='boolean'?{benchmarkReady:watchReport.dataQuality.benchmarkReady}:{}),
     note:securities.length?'':'自选、观察池与持仓中没有可选股票'};
   }
-  report.qualifiedCount=new Set(report.strategies.flatMap(group=>(Array.isArray(group.stocks)?group.stocks:[]).map(stock=>stock.code))).size;
+  for(const group of Array.isArray(report.strategies)?report.strategies:[]){
+   for(const stock of Array.isArray(group?.stocks)?group.stocks:[])if(stock?.code)hitCodes.add(String(stock.code));
+  }
+  report.qualifiedCount=hitCodes.size;
+  processedCount=Number(report.dataQuality?.processed)||processedCount;
+  publishProgress(true);
   if(!ctx.inferred){
    let current=null;try{current=context().asOfDate;}catch{current=null;}
    if(current!==ctx.asOfDate)throw Error('交易日已切换，请重新选股以使用完整收盘数据');
@@ -213,7 +251,12 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
    universeCoverage:{boards,listed:universe.listed,eligible:candidates.length,excludedRisk:universe.excludedRisk,failed:boardsFailed,requestsComplete:boardsFailed===0&&!boards.some(b=>b.fromCache),complete:boardsFailed===0},
    cacheValidUntil:degraded?null:ctx.cacheValidUntil,watchlistCoverage,selectionDiagnostics,
    warning:[report.warning,...warnings].filter(Boolean).join(' '),notes};
+  } finally {
+   if(currentScanToken===scanToken){
+    activeScanProgress={...activeScanProgress,active:false,etaSeconds:null};
+   }
+  }
  }
- return {context,load};
+ return {context,load,getProgress:getStrategyScanProgress};
 }
-module.exports={createStrategySelectionService,mergeSelectionReports,SELECTION_HISTORY_BARS,MARKET_SESSIONS};
+module.exports={createStrategySelectionService,mergeSelectionReports,getStrategyScanProgress,SELECTION_HISTORY_BARS,MARKET_SESSIONS};

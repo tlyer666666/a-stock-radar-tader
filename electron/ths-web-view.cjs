@@ -17,6 +17,7 @@ const PAGES = Object.freeze({
   login: "https://upass.10jqka.com.cn/login?redir=" + encodeURIComponent("https://data.10jqka.com.cn/hgt/hgtb/")
 });
 const ALLOWED_HOST_SUFFIXES = ["10jqka.com.cn", "thsi.cn", "10jqka.com", "hexin.cn"];
+const MAX_CRASH_COUNT = 3;
 
 function allowedThsUrl(value) {
   try {
@@ -26,6 +27,18 @@ function allowedThsUrl(value) {
     return ALLOWED_HOST_SUFFIXES.some(suffix => host === suffix || host.endsWith(`.${suffix}`));
   } catch {
     return false;
+  }
+}
+
+function detectThsStockCode(value) {
+  if (!allowedThsUrl(value)) return "";
+  try {
+    const { pathname, hostname } = new URL(String(value));
+    if (/\/(?:gn|thshy|zs|bk)\//i.test(pathname) && !/stockpage|basic/i.test(hostname)) return "";
+    const match = pathname.match(/(?:\/|_|^)([036]\d{5}|[489]\d{5})(?:\/|\.s?html|$)/i);
+    return match ? match[1] : "";
+  } catch {
+    return "";
   }
 }
 
@@ -46,6 +59,8 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
   let lastError = "";
   let loadGeneration = 0;
   let pendingUrl = ""; // 正在导航的目标：导航失败时页面地址还没切换，需按目标地址认领错误
+  let crashCount = 0;
+  let lastBounds = null;
 
   const windowReady = () => {
     const win = getWindow();
@@ -87,6 +102,11 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
     contents.on("will-redirect", (event, url) => {
       if (!allowedThsUrl(typeof url === "string" ? url : event.url)) event.preventDefault();
     });
+    contents.on("will-frame-navigate", (event, url) => {
+      if (view !== createdView || !allowedThsUrl(typeof url === "string" ? url : event?.url)) {
+        event?.preventDefault?.();
+      }
+    });
     contents.on("did-fail-load", (_, code, description, url, isMainFrame) => {
       if (view === createdView && (url === contents.getURL() || (pendingUrl && url === pendingUrl)) && isMainFrame !== false && code !== -3) {
         lastError = `${description || "加载失败"}（${code}）`;
@@ -94,9 +114,24 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       }
     });
     contents.on("did-finish-load", () => { if (view === createdView) lastError = ""; });
-    contents.on("render-process-gone", () => {
+    contents.on("render-process-gone", (_, details) => {
       if (view !== createdView) return;
+      if (details?.reason === "clean-exit") {
+        destroyView();
+        return;
+      }
+      const wasOpen = Boolean(attachedTo);
+      const previousPage = loadedPage || "hsgt";
+      crashCount += 1;
+      if (crashCount >= MAX_CRASH_COUNT) {
+        destroyView({ preserveError: "内嵌行情页异常退出过多，请点击重新加载" });
+        return;
+      }
       destroyView();
+      if (wasOpen && lastBounds) {
+        ensureView();
+        if (place(lastBounds)) void load(previousPage);
+      }
     });
     return view;
   }
@@ -108,12 +143,12 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
     attachedTo = null;
   }
 
-  function destroyView() {
+  function destroyView({ preserveError = "" } = {}) {
     const previous = view;
     detach();
     view = null;
     loadedPage = "";
-    lastError = "";
+    lastError = preserveError;
     loadGeneration++;
     if (previous && !previous.webContents.isDestroyed()) {
       try { previous.webContents.close(); } catch (error) { onError(error); }
@@ -127,10 +162,14 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
     const [width, height] = win.getContentSize();
     const scaled = bounds && normalizeBounds({ x: bounds.x * zoom, y: bounds.y * zoom, width: bounds.width * zoom, height: bounds.height * zoom }, { width, height });
     if (!scaled) return false;
+    lastBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     if (attachedTo !== win) {
       detach();
       win.contentView.addChildView(view);
       attachedTo = win;
+    }
+    if (typeof view.webContents.setZoomFactor === "function") {
+      try { view.webContents.setZoomFactor(zoom); } catch { /* ignore */ }
     }
     view.setBounds(scaled);
     return true;
@@ -156,18 +195,23 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
 
   function state() {
     const contents = view && !view.webContents.isDestroyed() ? view.webContents : null;
+    const currentUrl = contents ? contents.getURL() : "";
+    const detectedStockCode = detectThsStockCode(currentUrl);
     return {
       open: Boolean(contents && attachedTo),
-      url: contents ? contents.getURL() : "",
+      url: currentUrl,
       title: contents ? contents.getTitle() : "",
       loading: contents ? contents.isLoading() : false,
       canGoBack: contents ? contents.navigationHistory?.canGoBack?.() ?? contents.canGoBack?.() ?? false : false,
-      error: lastError
+      error: lastError,
+      ...(detectedStockCode ? { detectedStockCode } : {})
     };
   }
 
   return {
     show({ bounds, page } = {}) {
+      crashCount = 0;
+      if (lastError === "内嵌行情页异常退出过多，请点击重新加载") lastError = "";
       ensureView();
       if (!place(bounds)) return state();
       if (!loadedPage || (page && page !== loadedPage && PAGES[page])) void load(page || "hsgt");
@@ -183,28 +227,43 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       return state();
     },
     async command({ action } = {}) {
+      if (action === "reload" && (!view || view.webContents.isDestroyed())) {
+        crashCount = 0;
+        lastError = "";
+        if (lastBounds) {
+          ensureView();
+          if (place(lastBounds)) await load("hsgt");
+        }
+        return state();
+      }
       if (!view || view.webContents.isDestroyed()) return state();
       const owner = view;
       const contents = view.webContents;
-      if (action === "home") await load("hsgt");
-      else if (action === "login") await load("login");
-      else if (action === "reload") { loadGeneration++; lastError = ""; contents.reload(); }
+      if (action === "home") { crashCount = 0; await load("hsgt"); }
+      else if (action === "login") { crashCount = 0; await load("login"); }
+      else if (action === "reload") { crashCount = 0; loadGeneration++; lastError = ""; contents.reload(); }
       else if (action === "back") {
         loadGeneration++; lastError = "";
         if (contents.navigationHistory?.canGoBack?.()) contents.navigationHistory.goBack();
         else if (contents.canGoBack?.()) contents.goBack();
       } else if (action === "external") safeExternal(contents.getURL());
       else if (action === "logout") {
-        // 只清除这个嵌入网页自己的会话数据（同花顺登录状态），不影响软件其他数据。
-        await session.fromPartition(THS_WEB_PARTITION).clearStorageData();
+        // 只清除这个嵌入网页自己的会话数据（同花顺登录状态与缓存），不影响软件其他数据。
+        const ses = session.fromPartition(THS_WEB_PARTITION);
+        await ses.clearStorageData();
+        await ses.clearCache?.();
         if (view !== owner || contents.isDestroyed()) return state();
         await load("hsgt");
       } else throw Object.assign(new TypeError("未知的沪深港通网页操作"), { code: "INVALID_IPC_PAYLOAD" });
       return state();
     },
     state,
-    destroy: destroyView
+    destroy() {
+      crashCount = 0;
+      lastBounds = null;
+      destroyView();
+    }
   };
 }
 
-module.exports = { createThsWebViewManager, allowedThsUrl, normalizeBounds, THS_WEB_PARTITION, PAGES };
+module.exports = { createThsWebViewManager, allowedThsUrl, detectThsStockCode, normalizeBounds, THS_WEB_PARTITION, PAGES };

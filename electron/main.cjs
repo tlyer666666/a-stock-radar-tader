@@ -11,7 +11,8 @@ const {
   dialog,
   session,
   powerMonitor,
-  Notification
+  Notification,
+  screen
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
@@ -20,6 +21,12 @@ const { pathToFileURL } = require("node:url");
 const { createCustomStrategyStore } = require("./custom-strategy-store.cjs");
 const { createLocalSecretStorage, createLocalFirstSecretStorage, hasSystemCiphertext } = require("./local-secret-storage.cjs");
 const { migrateLegacyUserData } = require("./user-data-migration.cjs");
+const {
+  capItemsPreservingFavorites,
+  readJsonWithBackup,
+  tightenUserDataPermissions,
+  writeJsonAtomic
+} = require("./persistence.cjs");
 
 if (process.env.A_STOCK_E2E_USER_DATA) {
   const isolatedUserData = path.resolve(process.env.A_STOCK_E2E_USER_DATA);
@@ -32,6 +39,11 @@ if (process.env.A_STOCK_E2E_USER_DATA) {
   } catch (error) {
     process.stderr.write(`[userData-migration] ${error instanceof Error ? error.message : String(error)}\n`);
   }
+}
+try {
+  tightenUserDataPermissions(app.getPath("userData"));
+} catch {
+  // Permission tightening is best-effort and must never block startup.
 }
 
 // 1.6.49：不再使用 macOS 钥匙串（每次更新重新签名后都会弹登录密码）。
@@ -54,12 +66,6 @@ const keychainMigrationPending = (() => {
   } catch { return false; }
 })();
 if (process.platform === "darwin" && !keychainMigrationPending) app.commandLine?.appendSwitch?.("use-mock-keychain");
-
-const {
-  capItemsPreservingFavorites,
-  readJsonWithBackup,
-  writeJsonAtomic
-} = require("./persistence.cjs");
 const {
   createTrustedIpcHandler,
   withIpcResult,
@@ -143,7 +149,7 @@ const { validateIpcPayload } = require("./ipc/contract.cjs");
 const { registerAllIpc } = require("./ipc/register-all.cjs");
 const { buildNewsImpactPromptInput } = require("./news-service.cjs");
 const trendScreener = createTrendScreenerService(createTrendMarketData({ ths: trendThsLane, dailyStore: dailyBarStore, asOf: dailyBarAsOf }));
-const reviewWindows = createReviewWindowManager({ BrowserWindow, root: path.join(__dirname, '..'), packaged: app.isPackaged, devUrl: process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173', hidden: process.env.A_STOCK_E2E_HIDDEN === '1', openExternal: url => shell.openExternal(url), onError: error => debugLog(`review external ${error.message}`) });
+const reviewWindows = createReviewWindowManager({ BrowserWindow, screen, root: path.join(__dirname, '..'), packaged: app.isPackaged, devUrl: process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173', hidden: process.env.A_STOCK_E2E_HIDDEN === '1', openExternal: url => shell.openExternal(url), onError: error => debugLog(`review external ${error.message}`) });
 
 let mainWindow;
 let tray;
@@ -866,12 +872,20 @@ function createWindow() {
   applyWindowTheme(normalizeSettings(readJson("settings", {}, isSettingsRecord)).theme);
   const dark = nativeTheme.shouldUseDarkColors;
   const hiddenE2E = process.env.A_STOCK_E2E_HIDDEN === "1";
+  let primaryWorkArea;
+  try {
+    primaryWorkArea = screen?.getPrimaryDisplay?.()?.workAreaSize;
+  } catch {
+    primaryWorkArea = undefined;
+  }
+  const workWidth = Number(primaryWorkArea?.width) > 0 ? Number(primaryWorkArea.width) : 1480;
+  const workHeight = Number(primaryWorkArea?.height) > 0 ? Number(primaryWorkArea.height) : 940;
   const createdWindow = new BrowserWindow({
     show: !hiddenE2E,
-    width: 1480,
-    height: 940,
+    width: Math.min(1480, workWidth),
+    height: Math.min(940, workHeight),
     minWidth: 1024,
-    minHeight: 720,
+    minHeight: 640,
     backgroundColor: dark ? "#070b14" : "#f4f6fb",
     icon: applicationIconPath(),
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
@@ -990,6 +1004,60 @@ function readAiProfileStore() {
     runtimeErrorLog("secret-migration-failed", error, "ai-profiles");
     return nextStore;
   }
+}
+
+function directoryBytesBounded(rootDir, maxDepth = 3) {
+  if (!rootDir || maxDepth < 0) return 0;
+  let total = 0;
+  try {
+    const entries = fs.readdirSync(rootDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(rootDir, entry.name);
+      if (entry.isFile()) {
+        try { total += fs.statSync(fullPath).size; } catch { /* ignore */ }
+      } else if (entry.isDirectory() && maxDepth > 0) {
+        total += directoryBytesBounded(fullPath, maxDepth - 1);
+      }
+    }
+  } catch {
+    return 0;
+  }
+  return total;
+}
+
+function computeStorageSummary() {
+  const userDataDir = app.getPath("userData");
+  let userDataBytes = 0;
+  try {
+    const entries = fs.readdirSync(userDataDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      try { userDataBytes += fs.statSync(path.join(userDataDir, entry.name)).size; } catch { /* ignore */ }
+    }
+  } catch {
+    userDataBytes = 0;
+  }
+  const barStats = typeof dailyBarStore?.getStorageStats === "function"
+    ? dailyBarStore.getStorageStats()
+    : { fileCount: 0, totalBytes: 0 };
+  let sessionDir = "";
+  try { sessionDir = app.getPath("sessionData"); } catch { sessionDir = ""; }
+  const cacheRoots = new Set();
+  for (const base of [userDataDir, sessionDir].filter(Boolean)) {
+    for (const sub of ["Cache", "Code Cache", "GPUCache", path.join("Partitions", "ths-web", "Cache"), path.join("Partitions", "ths-web", "Code Cache"), path.join("Partitions", "ths-web", "GPUCache")]) {
+      cacheRoots.add(path.join(base, sub));
+    }
+  }
+  let webCacheBytes = 0;
+  for (const cacheRoot of cacheRoots) {
+    webCacheBytes += directoryBytesBounded(cacheRoot, 3);
+  }
+  return {
+    userDataBytes,
+    dailyBarsBytes: barStats.totalBytes,
+    dailyBarsCount: barStats.fileCount,
+    webCacheBytes
+  };
 }
 
 function readMigratedBackupConfig() {
@@ -1287,6 +1355,7 @@ if (!hasSingleInstanceLock) {
     isAgentStore,
     createBackupService,
     readMigratedBackupConfig,
+    getStorageSummary: computeStorageSummary,
     customStrategiesForScan,
     customStrategyStore,
     resetNewsCache,
@@ -1294,6 +1363,7 @@ if (!hasSingleInstanceLock) {
     applyWindowTheme,
     getThemeMode: () => themeMode,
     reviewWindows,
+    closeReviewWindow: () => reviewWindows.closeWindow(),
     showSystemNotification,
     intervalReminders,
     noteWatcher,

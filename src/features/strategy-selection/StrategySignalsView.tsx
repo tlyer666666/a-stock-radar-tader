@@ -15,6 +15,7 @@ import { formatShanghaiDateTime } from "../../dateUtils";
 import { aiScoreMap, buildAiPicks, ratingTone, sortByAiScore } from "./aiSelectionModel";
 import { getSelectionReport, setSelectionReport, takePendingStrategyText } from "./selectionReportStore";
 import { inferSecid } from "../../domain/securityIdentifiers";
+import { TREND_PLAN_STORAGE_KEY, readTrendPlans, saveQuickObservationPlan } from "../../trendWorkspace";
 import {
   normalizeSignalReport,
   defaultStrategyId,
@@ -182,7 +183,72 @@ function StrategyTableHead({ columns }: { columns: string[] }) {
   return <><colgroup>{columns.map((label, index) => <col key={label} className={`strategy-result-col-${index}`} />)}</colgroup><thead><tr>{columns.map(label => <th key={label} scope="col">{label}</th>)}</tr></thead></>;
 }
 
-export const StrategyStockPanel = memo(function StrategyStockPanel({ group, onOpen, dataState, live = true, quoteRefreshSeconds = 15, aiScores }: { live?: boolean; quoteRefreshSeconds?: number; group: StrategySignalGroup; onOpen?: ((security: Security) => void) | undefined; dataState?: SelectionDataState | undefined; aiScores?: Map<string, AiRankItem> | undefined }) {
+function StrategyRowQuickActions({
+  stock,
+  livePrice,
+  isFav,
+  isPlanned,
+  onToggleFavorite,
+  onAddQuickPlan
+}: {
+  stock: StrategySignalStock;
+  livePrice?: number | null | undefined;
+  isFav: boolean;
+  isPlanned: boolean;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  onAddQuickPlan?: ((stock: StrategySignalStock, livePrice?: number | null) => void) | undefined;
+}) {
+  if (!onToggleFavorite && !onAddQuickPlan) return null;
+  const sec = toSecurity(stock);
+  return (
+    <div className="ai-picks-quick-actions" onClick={event => event.stopPropagation()}>
+      {onToggleFavorite && (
+        <button
+          type="button"
+          className={`table-action${isFav ? " active" : ""}`}
+          onClick={() => onToggleFavorite(sec)}
+          title={isFav ? "移出自选板块" : "加入自选板块"}
+        >
+          {isFav ? "已自选" : "+自选"}
+        </button>
+      )}
+      {onAddQuickPlan && (
+        <button
+          type="button"
+          className={`table-action${isPlanned ? " active" : ""}`}
+          onClick={() => onAddQuickPlan(stock, livePrice ?? null)}
+          title={isPlanned ? "已在次日观察计划中" : "一键加入次日观察计划"}
+        >
+          {isPlanned ? "已在计划" : "+计划"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export const StrategyStockPanel = memo(function StrategyStockPanel({
+  group,
+  onOpen,
+  dataState,
+  live = true,
+  quoteRefreshSeconds = 15,
+  aiScores,
+  favoriteCodes,
+  onToggleFavorite,
+  plannedCodes,
+  onAddQuickPlan
+}: {
+  live?: boolean;
+  quoteRefreshSeconds?: number;
+  group: StrategySignalGroup;
+  onOpen?: ((security: Security) => void) | undefined;
+  dataState?: SelectionDataState | undefined;
+  aiScores?: Map<string, AiRankItem> | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  plannedCodes?: ReadonlySet<string> | undefined;
+  onAddQuickPlan?: ((stock: StrategySignalStock, livePrice?: number | null) => void) | undefined;
+}) {
   const stocks = group.stocks;
   const { page, totalPages, go } = usePage(`strategy:${group.id}`, stocks.length);
   const pageStocks = stocks.slice((page - 1) * 20, page * 20);
@@ -195,13 +261,28 @@ export const StrategyStockPanel = memo(function StrategyStockPanel({ group, onOp
     <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="策略候选表格，可横向滚动">
       <table className="strategy-result-table" aria-label={`${group.name}选股结果`}>
         <StrategyTableHead columns={group.custom ? signalTableColumns.map(label => label === "排序分" ? "匹配度" : label) : signalTableColumns} />
-        {pageStocks.map(stock => { const notes = stockNotes(stock); const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined; return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
-          <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}{!!stock.reasons?.length && <small className="strategy-stock-reasons">{stock.reasons.join(" · ")}</small>}</th>
-          <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
-          <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
-          <td className="strategy-stock-limit">{limitAge(stock)}{invalidation(stock) && <small className="strategy-stock-reasons" title="依据本策略的支撑规则计算；具体失效条件见右侧“次日注意”">{invalidation(stock)}</small>}</td>
-          <td>{stock.matchRate !== null && stock.matchRate !== undefined ? <>{stock.matchRate}%<small className="strategy-stock-reasons">排序分 {stock.signalStrength ?? "--"}</small></> : <>{stock.signalStrength ?? "--"}{stock.overheatCount !== null && stock.overheatCount !== undefined && <small className="strategy-stock-reasons">过热 {stock.overheatCount} 项</small>}</>}</td>
-        </tr><StockNotesRow notes={notes} pending={stock.needsConfirmation} colSpan={5} onClick={openStock} /></tbody>; })}
+        {pageStocks.map(stock => {
+          const notes = stockNotes(stock);
+          const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined;
+          const livePrice = Number(quotes.entries[stock.code]?.quote?.latest);
+          return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
+            <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}{!!stock.reasons?.length && <small className="strategy-stock-reasons">{stock.reasons.join(" · ")}</small>}</th>
+            <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
+            <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
+            <td className="strategy-stock-limit">{limitAge(stock)}{invalidation(stock) && <small className="strategy-stock-reasons" title="依据本策略的支撑规则计算；具体失效条件见右侧“次日注意”">{invalidation(stock)}</small>}</td>
+            <td>
+              {stock.matchRate !== null && stock.matchRate !== undefined ? <>{stock.matchRate}%<small className="strategy-stock-reasons">排序分 {stock.signalStrength ?? "--"}</small></> : <>{stock.signalStrength ?? "--"}{stock.overheatCount !== null && stock.overheatCount !== undefined && <small className="strategy-stock-reasons">过热 {stock.overheatCount} 项</small>}</>}
+              <StrategyRowQuickActions
+                stock={stock}
+                livePrice={Number.isFinite(livePrice) && livePrice > 0 ? livePrice : stock.latest}
+                isFav={Boolean(favoriteCodes?.has(stock.code))}
+                isPlanned={Boolean(plannedCodes?.has(stock.code))}
+                onToggleFavorite={onToggleFavorite}
+                onAddQuickPlan={onAddQuickPlan}
+              />
+            </td>
+          </tr><StockNotesRow notes={notes} pending={stock.needsConfirmation} colSpan={5} onClick={openStock} /></tbody>;
+        })}
       </table>
       {!stocks.length && <div className="strategy-stock-empty"><Target size={28} /><b>{dataState?.title || "本轮未选出股票"}</b><p>{dataState?.description || "全市场（剔除ST）中当前没有股票同时满足本策略条件。"}</p></div>}
     </div>
@@ -210,7 +291,31 @@ export const StrategyStockPanel = memo(function StrategyStockPanel({ group, onOp
 });
 
 let rememberedAiSort = true;
-export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel({ groups, onOpen, onStrategy, dataState, live = true, quoteRefreshSeconds = 15, aiScores }: { live?: boolean; quoteRefreshSeconds?: number; groups: StrategySignalGroup[]; onOpen?: ((security: Security) => void) | undefined; onStrategy?: ((id: string) => void) | undefined; dataState?: SelectionDataState | undefined; aiScores?: Map<string, AiRankItem> | undefined }) {
+export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel({
+  groups,
+  onOpen,
+  onStrategy,
+  dataState,
+  live = true,
+  quoteRefreshSeconds = 15,
+  aiScores,
+  favoriteCodes,
+  onToggleFavorite,
+  plannedCodes,
+  onAddQuickPlan
+}: {
+  live?: boolean;
+  quoteRefreshSeconds?: number;
+  groups: StrategySignalGroup[];
+  onOpen?: ((security: Security) => void) | undefined;
+  onStrategy?: ((id: string) => void) | undefined;
+  dataState?: SelectionDataState | undefined;
+  aiScores?: Map<string, AiRankItem> | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  plannedCodes?: ReadonlySet<string> | undefined;
+  onAddQuickPlan?: ((stock: StrategySignalStock, livePrice?: number | null) => void) | undefined;
+}) {
   const [aiSort, setAiSort] = useState(rememberedAiSort);
   const [featuredOnly, setFeaturedOnly] = useState(rememberedFeaturedOnly);
   const hasAi = Boolean(aiScores?.size);
@@ -228,13 +333,29 @@ export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel
     <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="股票汇总表格，可横向滚动">
       <table className="strategy-result-table strategy-summary-table" aria-label="各策略选股按股票汇总">
         <StrategyTableHead columns={summaryTableColumns} />
-        {pageStocks.map(stock => { const notes = stockNotes(stock); const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined; return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
-          <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}</th>
-          <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
-          <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
-          <td>{limitAge(stock)}</td>
-          <td><small className="strategy-stock-reasons strategy-family-line">{stock.familyCount} 类：{[...new Set(stock.strategies.map(item => familyLabel[item.family || ""] || "其他"))].join("、")}</small><div className="strategy-hit-chips">{stock.strategies.slice(0, 3).map(item => onStrategy ? <button key={item.id} type="button" className="strategy-hit-chip" onClick={event => { event.stopPropagation(); onStrategy(item.id); }}>{item.name}</button> : <span key={item.id}>{item.name}</span>)}{stock.strategies.length > 3 && <small>+{stock.strategies.length - 3}</small>}</div></td>
-        </tr><StockNotesRow notes={notes} colSpan={5} onClick={openStock} /></tbody>; })}
+        {pageStocks.map(stock => {
+          const notes = stockNotes(stock);
+          const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined;
+          const livePrice = Number(quotes.entries[stock.code]?.quote?.latest);
+          return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
+            <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}</th>
+            <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
+            <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
+            <td>{limitAge(stock)}</td>
+            <td>
+              <small className="strategy-stock-reasons strategy-family-line">{stock.familyCount} 类：{[...new Set(stock.strategies.map(item => familyLabel[item.family || ""] || "其他"))].join("、")}</small>
+              <div className="strategy-hit-chips">{stock.strategies.slice(0, 3).map(item => onStrategy ? <button key={item.id} type="button" className="strategy-hit-chip" onClick={event => { event.stopPropagation(); onStrategy(item.id); }}>{item.name}</button> : <span key={item.id}>{item.name}</span>)}{stock.strategies.length > 3 && <small>+{stock.strategies.length - 3}</small>}</div>
+              <StrategyRowQuickActions
+                stock={stock}
+                livePrice={Number.isFinite(livePrice) && livePrice > 0 ? livePrice : stock.latest}
+                isFav={Boolean(favoriteCodes?.has(stock.code))}
+                isPlanned={Boolean(plannedCodes?.has(stock.code))}
+                onToggleFavorite={onToggleFavorite}
+                onAddQuickPlan={onAddQuickPlan}
+              />
+            </td>
+          </tr><StockNotesRow notes={notes} colSpan={5} onClick={openStock} /></tbody>;
+        })}
       </table>
       {!rows.length && <div className="strategy-stock-empty"><Target size={28} /><b>{dataState?.title || "本轮未选出股票"}</b>{dataState && <p>{dataState.description}</p>}</div>}
     </div>
@@ -264,7 +385,27 @@ let rememberedFocus: Focus | null = null;
  * 策略选股：策略驱动的统一选股工作台。左侧策略库（我的策略 / 涨停形态 / 趋势模型），
  * 选择策略后右侧只展示该策略选出的股票；自定义策略可新建、编辑、复制、删除，保存后立即参与选股。
  */
-export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocus, live = true, quoteRefreshSeconds = 15 }: { live?: boolean; quoteRefreshSeconds?: number; onOpen?: ((security: Security) => void) | undefined; onOpenAiPicks?: (() => void) | undefined; initialFocus?: "trend" | undefined } = {}) {
+export default function StrategySignalsView({
+  onOpen,
+  onOpenAiPicks,
+  favoriteCodes,
+  onToggleFavorite,
+  onAddQuickPlan,
+  onShowToast,
+  initialFocus,
+  live = true,
+  quoteRefreshSeconds = 15
+}: {
+  live?: boolean;
+  quoteRefreshSeconds?: number;
+  onOpen?: ((security: Security) => void) | undefined;
+  onOpenAiPicks?: (() => void) | undefined;
+  favoriteCodes?: ReadonlySet<string> | undefined;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  onAddQuickPlan?: ((security: Security, latestPrice?: number | null) => void) | undefined;
+  onShowToast?: ((message: string) => void) | undefined;
+  initialFocus?: "trend" | undefined;
+} = {}) {
   const [report, setReport] = useState<StrategySignalReport | null>(() => getSelectionReport<StrategySignalReport>());
   const [catalog, setCatalog] = useState<StrategySignalGroup[]>([]);
   // 已下线的策略（retired）不进策略库、不参与选股；只留给「我的策略」编辑器显示已引用的条件。
@@ -281,6 +422,7 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
   const [loading, setLoading] = useState(true);
   const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [scanProgress, setScanProgress] = useState<{ processed: number; total: number; etaSeconds: number | null } | null>(null);
   const [error, setError] = useState("");
   const [customStrategies, setCustomStrategies] = useState<CustomStrategy[]>([]);
   const [customError, setCustomError] = useState("");
@@ -292,6 +434,114 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
   const [notice, setNotice] = useState("");
   const [aiRanking, setAiRanking] = useState<AiRanking | null>(null);
   const [editorAiText, setEditorAiText] = useState("");
+  const workspaceQuickEnabled = Boolean(onToggleFavorite || onAddQuickPlan || onShowToast || onOpenAiPicks);
+  const [localFavCodes, setLocalFavCodes] = useState<Set<string>>(() => new Set());
+  const [plannedCodes, setPlannedCodes] = useState<Set<string>>(() => {
+    try {
+      if (typeof window === "undefined" || !window.localStorage) return new Set();
+      return new Set(readTrendPlans(window.localStorage).plans.filter(p => !p.archivedAt).map(p => p.candidate.security.code));
+    } catch {
+      return new Set();
+    }
+  });
+  useEffect(() => {
+    if (!workspaceQuickEnabled || favoriteCodes !== undefined) return;
+    if (typeof window === "undefined" || typeof window.stockApi?.getWatchlist !== "function") return;
+    let active = true;
+    void window.stockApi.getWatchlist().then(list => {
+      if (!active || !Array.isArray(list)) return;
+      setLocalFavCodes(new Set(list.filter(item => item.favorite || !item.autoAdded).map(item => item.code)));
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [workspaceQuickEnabled, favoriteCodes]);
+  useEffect(() => {
+    if (!workspaceQuickEnabled || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const syncPlans = (event?: Event) => {
+      if (event && "key" in event) {
+        const se = event as StorageEvent;
+        if (se.key !== null && se.key !== TREND_PLAN_STORAGE_KEY) return;
+      }
+      try {
+        if (window.localStorage) {
+          setPlannedCodes(new Set(readTrendPlans(window.localStorage).plans.filter(p => !p.archivedAt).map(p => p.candidate.security.code)));
+        }
+      } catch {
+        // ignore storage restrictions
+      }
+    };
+    window.addEventListener("storage", syncPlans);
+    window.addEventListener("a-stock-radar:trend-plans-updated", syncPlans);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("storage", syncPlans);
+        window.removeEventListener("a-stock-radar:trend-plans-updated", syncPlans);
+      }
+    };
+  }, [workspaceQuickEnabled]);
+  const effectiveFavoriteCodes = favoriteCodes ?? localFavCodes;
+  const handleQuickFavorite = useCallback((sec: Security) => {
+    if (onToggleFavorite) {
+      onToggleFavorite(sec);
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.stockApi?.getWatchlist !== "function" || typeof window.stockApi?.saveWatchlist !== "function") return;
+    void window.stockApi.getWatchlist().then(async current => {
+      const list = Array.isArray(current) ? current : [];
+      const existing = list.find(item => item.code === sec.code);
+      const isFav = Boolean(existing && (existing.favorite || !existing.autoAdded));
+      const now = new Date().toISOString();
+      const next: WatchItem[] = isFav
+        ? existing?.autoAdded
+          ? list.map(item => {
+              if (item.code !== sec.code) return item;
+              const copy = { ...item, favorite: false };
+              delete copy.favoriteAddedAt;
+              return copy;
+            })
+          : list.filter(item => item.code !== sec.code)
+        : existing
+          ? list.map(item => item.code === sec.code ? { ...item, favorite: true, favoriteAddedAt: now } : item)
+          : [...list, { ...sec, createdAt: now, favoriteAddedAt: now, favorite: true, autoAdded: false, note: "" }];
+      const saved = await window.stockApi.saveWatchlist(next);
+      setLocalFavCodes(new Set(saved.filter(item => item.favorite || !item.autoAdded).map(item => item.code)));
+      const msg = isFav ? `已将 ${sec.name} 移出自选板块` : `已将 ${sec.name} 加入自选板块`;
+      if (onShowToast) onShowToast(msg);
+      else setNotice(msg);
+    }).catch(() => {
+      if (onShowToast) onShowToast("自选保存失败");
+      else setNotice("自选保存失败");
+    });
+  }, [onToggleFavorite, onShowToast]);
+  const handleQuickPlan = useCallback((stock: StrategySignalStock, livePrice?: number | null) => {
+    const sec = toSecurity(stock);
+    const refPrice = typeof livePrice === "number" && Number.isFinite(livePrice) && livePrice > 0 ? livePrice : stock.latest;
+    if (onAddQuickPlan) {
+      onAddQuickPlan(sec, refPrice ?? null);
+      return;
+    }
+    if (typeof window === "undefined" || !window.localStorage) return;
+    const result = saveQuickObservationPlan(window.localStorage, {
+      code: stock.code,
+      name: stock.name,
+      secid: sec.secid,
+      referencePrice: refPrice ?? null,
+      asOf: report?.asOfDate || stock.signalDate,
+      reason: stock.reasons?.[0] || "策略选股快捷入池"
+    });
+    if (!result.ok) {
+      if (onShowToast) onShowToast(result.error);
+      else setNotice(result.error);
+      return;
+    }
+    setPlannedCodes(prev => {
+      const next = new Set(prev);
+      next.add(stock.code);
+      return next;
+    });
+    const msg = result.created ? `${stock.name} 已加入次日观察计划` : `${stock.name} 已在活跃观察计划中`;
+    if (onShowToast) onShowToast(msg);
+    else setNotice(msg);
+  }, [onAddQuickPlan, onShowToast, report?.asOfDate]);
   const jobs = useRef(createServiceJobScope());
   const revision = useRef(0);
   const customApi = typeof window.stockApi.listCustomStrategies === "function";
@@ -319,7 +569,7 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
   const load = useCallback(async (refresh = false) => {
     void jobs.current.cancelAll();
     const current = ++revision.current;
-    setLoading(true); setLoadStartedAt(Date.now()); setElapsedSeconds(0); setError("");
+    setLoading(true); setLoadStartedAt(Date.now()); setElapsedSeconds(0); setScanProgress(null); setError("");
     try {
       const raw = await jobs.current.run(requestId => window.stockApi.scanStrategySignals({ requestId, strategyIds: [], maxUniverse: 300, refresh }));
       if (revision.current !== current) return;
@@ -328,7 +578,7 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
       setActiveId(previous => next.strategies.some(group => group.id === previous && !group.custom) ? previous : defaultStrategyId(next.strategies.filter(group => !group.custom)));
     } catch (reason) {
       if (revision.current === current) setError(reason instanceof Error ? reason.message : String(reason));
-    } finally { if (revision.current === current) setLoading(false); }
+    } finally { if (revision.current === current) { setLoading(false); setScanProgress(null); } }
   }, []);
   useEffect(() => {
     void load();
@@ -336,7 +586,41 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
   }, [load]);
   useEffect(() => {
     if (!loading || loadStartedAt === null) return;
-    return startVisibleInterval(() => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - loadStartedAt) / 1000))), 1000);
+    let lastStatusPollAt = Date.now();
+    let statusBusy = false;
+    const activeRev = revision.current;
+    return startVisibleInterval(() => {
+      const now = Date.now();
+      setElapsedSeconds(Math.max(0, Math.floor((now - loadStartedAt) / 1000)));
+      if (!statusBusy && now - lastStatusPollAt >= 1500 && typeof window.stockApi?.scanStrategySignals === "function") {
+        statusBusy = true;
+        lastStatusPollAt = now;
+        void Promise.resolve(window.stockApi.scanStrategySignals({ statusOnly: true } as never))
+          .then(res => {
+            if (!mounted.current || revision.current !== activeRev) return;
+            const prog = res && typeof res === "object" && !Array.isArray(res) && "progress" in res
+              ? (res as { progress?: unknown }).progress
+              : null;
+            if (prog && typeof prog === "object" && !Array.isArray(prog)) {
+              const p = prog as Record<string, unknown>;
+              const total = Number(p.total ?? p.universeSize ?? 0);
+              const processed = Number(p.processed ?? p.completed ?? p.done ?? p.scanned ?? 0);
+              if (Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0) {
+                const clampedDone = Math.min(total, Math.max(0, Math.floor(processed)));
+                const rawEta = Number(p.etaSeconds ?? p.remainingSeconds);
+                let etaSeconds: number | null = Number.isFinite(rawEta) && rawEta >= 0 ? Math.round(rawEta) : null;
+                if (etaSeconds === null && clampedDone > 0 && clampedDone < total) {
+                  const elapsedSec = Math.max(1, (Date.now() - loadStartedAt) / 1000);
+                  etaSeconds = Math.max(0, Math.round(((total - clampedDone) / clampedDone) * elapsedSec));
+                }
+                setScanProgress({ processed: clampedDone, total: Math.floor(total), etaSeconds });
+              }
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => { statusBusy = false; });
+      }
+    }, 1000);
   }, [loading, loadStartedAt]);
   const strategies = report?.strategies || catalog;
   const patternGroups = useMemo(() => strategies.filter(group => !group.custom), [strategies]);
@@ -460,7 +744,7 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
   const renderMain = () => {
     if (editor) return <CustomStrategyEditor key={`${editor.id || "new"}:${editorSession}`} initial={editor} initialAiText={editorAiText} patterns={patterns} others={customStrategies} saving={saving} error={editorError}
       onSave={strategy => void saveStrategy(strategy)} onCancel={() => { setEditor(null); setEditorError(""); }} onImportSettings={editor.id ? undefined : () => void importSettings()} />;
-    if (mode === "stock" && report) return <StrategyStockSummaryPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} groups={strategies} onOpen={onOpen} onStrategy={activate} dataState={summaryDataState} aiScores={aiScores} />;
+    if (mode === "stock" && report) return <StrategyStockSummaryPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} groups={strategies} onOpen={onOpen} onStrategy={activate} dataState={summaryDataState} aiScores={aiScores} {...(workspaceQuickEnabled ? { favoriteCodes: effectiveFavoriteCodes, onToggleFavorite: handleQuickFavorite, plannedCodes, onAddQuickPlan: handleQuickPlan } : {})} />;
     if (focused.kind === "trend") return <Suspense fallback={<div className="panel strategy-stock-empty"><LoaderCircle className="spin" size={24} /><b>正在载入趋势模型…</b></div>}>
       <TrendScreenerView embedded focusStrategyId={focused.id as TrendStrategyId} onOpen={security => onOpen?.(security)} /></Suspense>;
     if (focusedCustom) {
@@ -474,23 +758,27 @@ export default function StrategySignalsView({ onOpen, onOpenAiPicks, initialFocu
             <button type="button" className="secondary-btn danger-btn" onClick={() => setDeleteRequest({ strategy: focusedCustom, request: { title: `删除「${focusedCustom.name}」？`, message: "删除后不可恢复；设置页的自主策略组合不受影响。", confirmLabel: "删除", tone: "danger" } })}><Trash2 size={15} />删除</button></div></section>
         {group.error && <div className="warning-banner" role="alert"><CircleAlert size={17} />本策略未参与本轮选股：{group.error}</div>}
         {summary.external.length > 0 && <div className="strategy-pending-note" role="note"><CircleAlert size={16} />含 {summary.external.join("、")} 等需个股数据的条件：批量选股时按“待确认”处理，列表中标出依赖它们的股票，点开个股分析即可核对。</div>}
-        {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={`custom:${group.id}`} group={group} onOpen={onOpen} aiScores={aiScores} dataState={focusedCustom.universe === "watchlist" ? personalDataState : poolDataState} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
+        {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={`custom:${group.id}`} group={group} onOpen={onOpen} aiScores={aiScores} dataState={focusedCustom.universe === "watchlist" ? personalDataState : poolDataState} {...(workspaceQuickEnabled ? { favoriteCodes: effectiveFavoriteCodes, onToggleFavorite: handleQuickFavorite, plannedCodes, onAddQuickPlan: handleQuickPlan } : {})} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
         <CustomStrategyRules strategy={focusedCustom} group={group} patterns={patterns} />
       </>;
     }
     if (!active) return null;
     return <><section className="panel strategy-signal-group-head"><div className="strategy-signal-group-copy"><div className="strategy-signal-title-line"><h2>{active.name}</h2><i className={`strategy-type-badge ${composite(active) ? "composite" : "base"}`}>{composite(active) ? "组合共振" : "基础策略"}</i>{active.featured && <i className="strategy-type-badge featured" title="按 2021–2026 全A日线回放挑出的较强策略">精选</i>}</div><p>{active.detail}</p></div>
       {customApi && <div className="custom-strategy-actions"><button type="button" className="secondary-btn" onClick={() => openEditor({ ...emptyCustomStrategy(), name: `${active.name.slice(0, 24)}·我的版本`, conditions: [{ ref: `pattern:${active.id}`, required: true }] })}><Plus size={15} />以此为基础新建</button></div>}</section>
-      {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={active.id} group={active} onOpen={onOpen} aiScores={aiScores} dataState={poolDataState} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
+      {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={active.id} group={active} onOpen={onOpen} aiScores={aiScores} dataState={poolDataState} {...(workspaceQuickEnabled ? { favoriteCodes: effectiveFavoriteCodes, onToggleFavorite: handleQuickFavorite, plannedCodes, onAddQuickPlan: handleQuickPlan } : {})} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
       <StrategySelectionRules key={`${active.id}:rules`} group={active} /></>;
   };
   return <div className="strategy-signals-view strategy-selection-only strategy-selection-workspace">
     <div className="page-heading"><div><h1>策略选股</h1><p>先选策略，再看按该策略选出的股票；可新建自己的条件组合，保存后立即参与选股。</p></div><div className="heading-actions">
       {report && <div className="strategy-mode-switch" role="group" aria-label="查看方式"><button className={mode === "strategy" ? "active" : ""} aria-pressed={mode === "strategy"} onClick={() => switchMode("strategy")}>按策略</button><button className={mode === "stock" ? "active" : ""} aria-pressed={mode === "stock"} onClick={() => switchMode("stock")}>按股票汇总</button></div>}
-      {loading && <button className="secondary-btn" onClick={() => { revision.current += 1; void jobs.current.cancelAll(); setLoading(false); setError("本轮选股已取消，点击重新选股可重试。"); }}>取消</button>}
+      {loading && <button className="secondary-btn" onClick={() => { revision.current += 1; void jobs.current.cancelAll(); setLoading(false); setScanProgress(null); setError("本轮选股已取消，点击重新选股可重试。"); }}>取消</button>}
       <button className="primary-btn" disabled={loading} onClick={() => void load(true)}>{loading ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{loading ? "正在选股" : "重新选股"}</button>
     </div></div>
-    {loading && <div className="signal-test-status"><span role="status">{strategies.length ? `正在按 ${patternGroups.length + customStrategies.length} 套策略规则选股` : "正在获取策略规则并选股"}{report ? `，列表为上轮结果，数据日 ${report.asOfDate || "未提供"}` : ""}。</span>{" "}<span role="timer" aria-live="off">已耗时 {elapsedSeconds < 60 ? `${elapsedSeconds} 秒` : `${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`}。</span>{" "}<span>全市场逐只读取日线，首次建库可能需要数分钟，最长等待25分钟；可随时取消，已缓存日线会供下次选股复用。</span></div>}
+    {loading && <div className="signal-test-status"><span role="status">{strategies.length ? `正在按 ${patternGroups.length + customStrategies.length} 套策略规则选股` : "正在获取策略规则并选股"}{report ? `，列表为上轮结果，数据日 ${report.asOfDate || "未提供"}` : ""}。</span>{" "}<span role="timer" aria-live="off">已耗时 {elapsedSeconds < 60 ? `${elapsedSeconds} 秒` : `${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`}。</span>{" "}<span>全市场逐只读取日线，首次建库可能需要数分钟，最长等待25分钟；可随时取消，已缓存日线会供下次选股复用。</span>{scanProgress && scanProgress.total > 0 && (() => {
+      const pct = Math.min(100, Math.round((scanProgress.processed / scanProgress.total) * 100));
+      const etaText = scanProgress.etaSeconds !== null ? ` · 预计剩余 ${Math.floor(scanProgress.etaSeconds / 60)} 分 ${scanProgress.etaSeconds % 60} 秒` : "";
+      return <div className="signal-scan-progress" aria-live="off"><progress max={scanProgress.total} value={scanProgress.processed} aria-label="策略扫描进度" /><span>{`已扫描 ${scanProgress.processed} / ${scanProgress.total} 只（${pct}%）${etaText}`}</span></div>;
+    })()}</div>}
     {error && <div className="warning-banner" role="alert"><CircleAlert size={17} />{error}{report ? ` 当前显示上轮结果，数据日 ${report.asOfDate || "未提供"}。` : ""}</div>}
     {catalogError && !report && <div className="warning-banner" role="alert"><CircleAlert size={17} />策略目录加载失败：{catalogError}<button className="secondary-btn" onClick={() => loadCatalog()}>重试</button></div>}
     {customError && <div className="warning-banner" role="alert"><CircleAlert size={17} />我的策略读取失败：{customError}<button className="secondary-btn" onClick={() => void loadCustom()}>重试</button></div>}

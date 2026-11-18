@@ -1,5 +1,7 @@
 "use strict";
 
+const { getStrategyScanProgress: defaultGetStrategyScanProgress } = require("../strategy-selection-service.cjs");
+
 function registerStrategyIpc({
   handleTrustedIpc,
   serviceRequestId,
@@ -12,6 +14,7 @@ function registerStrategyIpc({
   usableWatchlist,
   usableHoldings,
   scanStrategySignals,
+  getStrategyScanProgress = defaultGetStrategyScanProgress,
   cancelServiceJob,
   getStrategyDefinitions,
   customStrategyStore,
@@ -23,6 +26,12 @@ function registerStrategyIpc({
 }) {
   handleTrustedIpc("strategy:scan", (event, options = {}) => {
     const safeOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+    if (safeOptions.statusOnly === true) {
+      const progress = typeof getStrategyScanProgress === "function"
+        ? getStrategyScanProgress()
+        : { active: false, processed: 0, total: 0, hits: 0, fetched: 0, startedAt: null, etaSeconds: null };
+      return { statusOnly: true, progress };
+    }
     const runtime = serviceRequestRuntime(event, safeOptions);
     const settings = settingsForService();
     const customStrategies = customStrategiesForScan();

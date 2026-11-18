@@ -7,6 +7,8 @@ import { AiStockReviewPanel } from "../ai-picks/AiStockReviewPanel";
 import LimitEcologyPanel from "../dashboard/LimitEcologyPanel";
 import ConsecutiveBoardLadder from "./ConsecutiveBoardLadder";
 import { WorkspaceErrorBoundary } from "../../components/AppErrorBoundary";
+import StockMonitorEditor from "../../components/StockMonitorEditor";
+import { saveQuickObservationPlan } from "../../trendWorkspace";
 import { buildStopLossMonitorConfig, computeMonitorStopPrice, maskSensitiveText } from "../collections/holdingsLedger";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import type { ChartCandleRow } from "../../shared/ipc-contract";
@@ -25,8 +27,8 @@ import type {
 } from "./analysisTypes";
 import type { LimitPoolMeta, LimitPoolRowRecord } from "./useMarketWorkspaceFeed";
 import {
-  Activity, ArrowLeftRight, BarChart3, Bell, Bookmark, BookmarkCheck, CheckCircle2, ChevronLeft,
-  CircleAlert, CircleDot, Database, ExternalLink, Gauge, Layers3,
+  Activity, ArrowLeftRight, BarChart3, Bell, Bookmark, BookmarkCheck, CheckCircle2, ChevronLeft, ChevronRight,
+  CircleAlert, CircleDot, ClipboardPlus, Database, ExternalLink, Gauge, Layers3,
   LineChart, LoaderCircle, MessagesSquare, Newspaper, PlusCircle, RefreshCw, ShieldAlert, ShieldCheck,
   SlidersHorizontal, Target, TrendingDown, TrendingUp, X, Zap
 } from "lucide-react";
@@ -135,6 +137,9 @@ export type DashboardProps = {
   onQuickHoldingTrade?: ((trade: { code: string; name: string; secid: string; side: "buy" | "sell"; shares: number; price: number }) => Promise<boolean> | boolean) | undefined;
   onTransferToT?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
   onShowToast?: ((message: string) => void) | undefined;
+  onOpenSettings?: ((category?: string) => void) | undefined;
+  onPrevStock?: (() => void) | undefined;
+  onNextStock?: (() => void) | undefined;
 };
 
 export function Dashboard({
@@ -176,18 +181,24 @@ export function Dashboard({
   privacyMask = false,
   onQuickHoldingTrade,
   onTransferToT,
-  onShowToast
+  onShowToast,
+  onOpenSettings,
+  onPrevStock,
+  onNextStock
 }: DashboardProps) {
   const [showFullExecutionDecisionLog, setShowFullExecutionDecisionLog] = useState(false);
   const [externalArchive, setExternalArchive] = useState<ExternalFactorArchiveSummary | null>(null);
   const [agentDrawerOpen, setAgentDrawerOpen] = useState(false);
+  const [monitorEditorOpen, setMonitorEditorOpen] = useState(false);
   const [quickTradeOpen, setQuickTradeOpen] = useState(false);
   const [quickTradeSide, setQuickTradeSide] = useState<"buy" | "sell">("buy");
   const [quickTradeShares, setQuickTradeShares] = useState("100");
   const [quickTradePrice, setQuickTradePrice] = useState("");
   const [quickTradeSubmitting, setQuickTradeSubmitting] = useState(false);
+  const agentTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setQuickTradeOpen(false);
+    setMonitorEditorOpen(false);
     setQuickTradePrice("");
     setAgentDrawerOpen(false);
     let active = true;
@@ -201,7 +212,10 @@ export function Dashboard({
   useEffect(() => {
     if (!agentDrawerOpen || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setAgentDrawerOpen(false);
+      if (event.key === "Escape") {
+        setAgentDrawerOpen(false);
+        agentTriggerRef.current?.focus({ preventScroll: true });
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
@@ -210,6 +224,21 @@ export function Dashboard({
       }
     };
   }, [agentDrawerOpen]);
+  useEffect(() => {
+    if (mode !== "analysis" || (!onPrevStock && !onNextStock) || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.altKey || event.isComposing) return;
+      if (event.key === "ArrowUp" && onPrevStock) {
+        event.preventDefault();
+        onPrevStock();
+      } else if (event.key === "ArrowDown" && onNextStock) {
+        event.preventDefault();
+        onNextStock();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, onNextStock, onPrevStock]);
   if (mode === "analysis" && !payload) {
     const targetName = typeof analysisTarget === "string"
       ? analysisTarget
@@ -439,6 +468,30 @@ export function Dashboard({
               <ChevronLeft size={17} />
               {backLabel}
             </button>
+            {(onPrevStock || onNextStock) && (
+              <span className="analysis-seq-nav" role="group" aria-label="列表顺序切股">
+                <button
+                  type="button"
+                  className="secondary-btn icon-only-btn"
+                  disabled={!onPrevStock}
+                  onClick={onPrevStock}
+                  title="上一只股票 (Alt+↑)"
+                  aria-label="上一只股票"
+                >
+                  <ChevronLeft size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn icon-only-btn"
+                  disabled={!onNextStock}
+                  onClick={onNextStock}
+                  title="下一只股票 (Alt+↓)"
+                  aria-label="下一只股票"
+                >
+                  <ChevronRight size={15} />
+                </button>
+              </span>
+            )}
             <button className="secondary-btn" onClick={onToggleWatch}>
               {isWatched ? <BookmarkCheck size={17} /> : <Bookmark size={17} />}
               {isWatched ? "已加入自选" : "加入自选"}
@@ -671,6 +724,41 @@ export function Dashboard({
                     -7%
                   </button>
                 )}
+                {monitors?.save && (
+                  <button
+                    type="button"
+                    className={`secondary-btn mw-action-btn${monitorEditorOpen ? " active" : ""}`}
+                    aria-expanded={monitorEditorOpen}
+                    onClick={() => setMonitorEditorOpen(v => !v)}
+                    title="设置自定义价格、涨跌幅、换手或成交额提醒条件"
+                  >
+                    <SlidersHorizontal size={14} />
+                    自定义盯盘
+                  </button>
+                )}
+                {!assetLabel && /^\d{6}$/.test(activeCode) && (
+                  <button
+                    type="button"
+                    className="secondary-btn mw-action-btn"
+                    onClick={() => {
+                      if (typeof window === "undefined" || !window.localStorage) return;
+                      const refPrice = hasLivePrice ? liveLatestNum : nullableNumber(quote.preClose);
+                      const res = saveQuickObservationPlan(window.localStorage, {
+                        code: activeCode,
+                        name: activeName,
+                        secid: security.secid,
+                        referencePrice: refPrice,
+                        reason: "个股分析工作台一键加入次日观察计划"
+                      });
+                      if (!res.ok) onShowToast?.(res.error);
+                      else onShowToast?.(res.created ? `已将 ${activeName} 加入次日观察计划（驾驶舱/趋势计划可查看）` : `${activeName} 已在次日观察计划中`);
+                    }}
+                    title="生成参考入场区间与止损位，次日早盘自动进入今日驾驶舱竞价对账"
+                  >
+                    <ClipboardPlus size={14} />
+                    +次日计划
+                  </button>
+                )}
                 {onTransferToT && (
                   <button
                     type="button"
@@ -683,8 +771,11 @@ export function Dashboard({
                 )}
                 {canOpenAgent() && (
                   <button
+                    ref={agentTriggerRef}
                     type="button"
                     className={`secondary-btn mw-action-btn${agentDrawerOpen ? " active" : ""}`}
+                    aria-expanded={agentDrawerOpen}
+                    aria-controls="mw-agent-drawer"
                     onClick={() => setAgentDrawerOpen(v => !v)}
                   >
                     <MessagesSquare size={14} />
@@ -693,6 +784,26 @@ export function Dashboard({
                 )}
               </div>
             </section>
+
+            {monitorEditorOpen && monitors?.save && (
+              <div className="panel mw-quick-monitor-panel">
+                <StockMonitorEditor
+                  key={activeCode}
+                  stock={{ code: activeCode, name: activeName }}
+                  config={activeMonitorConfig ?? undefined}
+                  onSave={nextConfig => {
+                    const ok = monitors.save(activeCode, nextConfig);
+                    if (ok) {
+                      if (!isWatched) onAdd({ code: activeCode, name: activeName, secid: security.secid });
+                      setMonitorEditorOpen(false);
+                      onShowToast?.(`已保存 ${activeName} 自定义盯盘条件`);
+                    }
+                    return ok;
+                  }}
+                  onCancel={() => setMonitorEditorOpen(false)}
+                />
+              </div>
+            )}
 
             {quickTradeOpen && onQuickHoldingTrade && (
               <form className="panel mw-quick-trade-panel" onSubmit={e => void submitQuickTrade(e)} aria-label="快捷加减仓记账">
@@ -769,7 +880,7 @@ export function Dashboard({
             <AiStockReviewPanel security={{ code: activeCode, name: activeName }} agentContext={agentContext} />
 
             {agentDrawerOpen && canOpenAgent() && (
-              <aside className="panel mw-agent-drawer" aria-label="个股侧边 AI 问股">
+              <aside id="mw-agent-drawer" className="panel mw-agent-drawer" role="dialog" aria-label="个股侧边 AI 问股">
                 <header className="mw-agent-drawer-head">
                   <div>
                     <MessagesSquare size={15} />
@@ -787,7 +898,10 @@ export function Dashboard({
                       type="button"
                       className="icon-button"
                       aria-label="关闭侧边问股"
-                      onClick={() => setAgentDrawerOpen(false)}
+                      onClick={() => {
+                        setAgentDrawerOpen(false);
+                        agentTriggerRef.current?.focus({ preventScroll: true });
+                      }}
                     >
                       <X size={15} />
                     </button>
@@ -803,6 +917,7 @@ export function Dashboard({
                         embeddedMode="stock-drawer"
                         userContext={agentContext}
                         onOpenStock={onOpen}
+                        onOpenSettings={onOpenSettings ? () => onOpenSettings("ai") : undefined}
                       />
                     </Suspense>
                   </WorkspaceErrorBoundary>
@@ -1853,6 +1968,12 @@ function PriceChart({
   const startIndex = Math.max(0, endIndex - windowSize);
   const data = fullData.slice(startIndex, endIndex);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const chartRectRef = useRef<{ left: number; width: number } | null>(null);
+  const hoverRafRef = useRef<number | null>(null);
+  const pendingHoverRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (hoverRafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(hoverRafRef.current);
+  }, []);
   const fullMaValues = useMemo(() => calculatePriceMovingAverages(fullData), [fullData]);
   const showBoll = indicators.includes("BOLL");
   const fullBollBands = useMemo(
@@ -1923,10 +2044,35 @@ function PriceChart({
       Math.min(data.length - 1, Math.round((data.length - 1) * ratio))
     )
   )];
+  const captureChartRect = (event: MouseEvent<SVGSVGElement>) => {
+    const r = event.currentTarget.getBoundingClientRect();
+    chartRectRef.current = { left: r.left, width: r.width };
+  };
   const handleMove = (event: MouseEvent<SVGSVGElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
+    const rect = chartRectRef.current || event.currentTarget.getBoundingClientRect();
+    if (!chartRectRef.current) chartRectRef.current = { left: rect.left, width: rect.width };
+    if (rect.width <= 0) return;
     const ratio = Math.max(0, Math.min(0.9999, (event.clientX - rect.left) / rect.width));
-    setHoverIndex(Math.min(data.length - 1, Math.floor(ratio * data.length)));
+    const idx = Math.min(data.length - 1, Math.floor(ratio * data.length));
+    pendingHoverRef.current = idx;
+    if (typeof window?.requestAnimationFrame !== "function") {
+      setHoverIndex(idx);
+      return;
+    }
+    if (hoverRafRef.current !== null) return;
+    hoverRafRef.current = window.requestAnimationFrame(() => {
+      hoverRafRef.current = null;
+      setHoverIndex(pendingHoverRef.current);
+    });
+  };
+  const handleLeave = () => {
+    chartRectRef.current = null;
+    pendingHoverRef.current = null;
+    if (hoverRafRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+    setHoverIndex(null);
   };
   return (
     <div className="chart-wrap">
@@ -1946,8 +2092,9 @@ function PriceChart({
         preserveAspectRatio="none"
         role="img"
         aria-label="股票K线行情"
+        onMouseEnter={captureChartRect}
         onMouseMove={handleMove}
-        onMouseLeave={() => setHoverIndex(null)}
+        onMouseLeave={handleLeave}
       >
         {[0, 0.25, 0.5, 0.75, 1].map((ratio, index) => (
           <g key={ratio}>

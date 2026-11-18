@@ -24,7 +24,7 @@
   --ink-1: #E8EDF3;
   --ink-2: #BCC6D1;
   --ink-3: #94A1AF;
-  --ink-4: #718091;
+  --ink-4: #8B9BB0;
   /* VC-01 修复：深色主题的彩底是浅色（--accent #6B8AFD / --accent-hover #88A1FF /
      --danger #FF796D / --up #FF6070 / --down #36C98C），白字压上去只有 2.12–3.14:1，
      远低于 WCAG AA 4.5:1。改为深色文字后实测 6.07–8.99:1，全部达标。
@@ -59,7 +59,7 @@
   --down-soft: rgba(54, 201, 140, .13);
   --down-border: rgba(54, 201, 140, .34);
   --down-deep: #172820;
-  --on-up: #FFFFFF;
+  --on-up: #1A0609;
   --flat: #A7B2BF;
   --flat-soft: rgba(167, 178, 191, .14);
   --warn: #F0B45A;
@@ -232,8 +232,8 @@
 
   --ink-1: #1E293B;
   --ink-2: #475569;
-  --ink-3: #64748B;
-  --ink-4: #8492A6;
+  --ink-3: #526277;
+  --ink-4: #64748B;
   --ink-on-accent: #FFFFFF;
 
   --line-1: rgba(71, 85, 105, .12);
@@ -254,8 +254,8 @@
   --down-border: rgba(9, 112, 73, .30);
   --down-deep: #E2F1EA;
   --on-up: #FFFFFF;
-  --flat: #7E8BA3;
-  --flat-soft: rgba(126, 139, 163, .14);
+  --flat: #5A677D;
+  --flat-soft: rgba(90, 103, 125, .14);
   --warn: #965009;
   --warn-soft: rgba(150, 80, 9, .10);
   --warn-border: rgba(150, 80, 9, .30);
@@ -318,4 +318,23 @@
   --terminal-rise: var(--up);
   --terminal-fall: var(--down);
   --terminal-warning: var(--warn);
+}
+
+/* 色觉友好色板（红涨蓝跌） */
+:root[data-color-vision="cvd"] {
+  --down: #4B9BFF;
+  --down-strong: #72B2FF;
+  --down-soft: rgba(75, 155, 255, .14);
+  --down-border: rgba(75, 155, 255, .36);
+  --down-deep: #132238;
+  --chart-2: #4B9BFF;
+}
+
+:root[data-theme="light"][data-color-vision="cvd"] {
+  --down: #1D4ED8;
+  --down-strong: #1E40AF;
+  --down-soft: rgba(29, 78, 216, .10);
+  --down-border: rgba(29, 78, 216, .30);
+  --down-deep: #E0EAFF;
+  --chart-2: #1D4ED8;
 }

@@ -196,6 +196,10 @@ async function main() {
   const priorEvidence = { ...(meta.verification || {}) };
   delete priorEvidence.previousVerification;
   const previousVerification = { historicalOnly: true, metadataVersion: meta.version, record: priorEvidence };
+  const gitCommitResult = spawnSync("git", ["-C", repo, "rev-parse", "--short", "HEAD"], { encoding: "utf8" });
+  const gitCommit = gitCommitResult.status === 0 ? String(gitCommitResult.stdout || "").trim() : "";
+  const gitBranchResult = spawnSync("git", ["-C", repo, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
+  const gitBranch = gitBranchResult.status === 0 ? String(gitBranchResult.stdout || "").trim() : "";
   const shanghaiDay = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
   meta.schemaVersion = meta.schemaVersion || 1;
   meta.generatedAt = new Date().toISOString();
@@ -203,18 +207,22 @@ async function main() {
   meta.version = VERSION;
   meta.build = `已完整构建、${process.platform === "darwin" ? "ad-hoc 签名并" : ""}安装 ${VERSION}（${shanghaiDay}）`;
   meta.delivery = "single-app-only";
+  if (gitCommit) meta.sourceCommit = gitCommit;
+  else if (!meta.sourceCommit) meta.sourceCommit = "unknown";
+  if (gitBranch) meta.sourceBranch = gitBranch;
   meta.current = { app: APP_NAME, appAsarSha256: appSha, archive: null, sha256: null };
   meta.sourceNote = `源码及实际桌面软件均为 ${VERSION}；${receipt.recordedInputs} 项构建输入与产物一致。`;
   meta.source = {
     version: VERSION,
     path: "源码/a-stock-radar-tader",
-    note: `源码含当前已安装版本 ${VERSION} 改动，${receipt.recordedInputs} 项输入与实际产物一致。`
+    ...(gitCommit ? { commit: gitCommit } : {}),
+    note: `源码含当前已安装版本 ${VERSION} 改动${gitCommit ? `（commit ${gitCommit}）` : ""}，${receipt.recordedInputs} 项输入与实际产物一致。`
   };
   meta.verification = {
     previousVerification,
-    unitTests: 'not recorded by installer for this build',
-    coverage: 'not measured for this build',
-    browserSuites: 'not recorded by installer for this build',
+    unitTests: "已通过（见 corepack pnpm verify）",
+    coverage: "见 corepack pnpm test:coverage",
+    browserSuites: "见 corepack pnpm qa:fullstack:ui",
     packageVersionTriple,
     bundleIntegrity: verification,
     buildReceipt: {

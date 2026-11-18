@@ -2,7 +2,8 @@ import { SelectionKline } from "../strategy-selection/SelectionKline";
 import { AlertTriangle, ArrowDownRight, ArrowRight, Bookmark, BookmarkCheck, Calculator, Check, ChevronDown, ChevronRight, CircleHelp, ClipboardCheck, Download, Layers3, ListFilter, LoaderCircle, Play, RefreshCw, Search, ShieldCheck, Square, Target, Trash2, TrendingUp, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { TrendCandidate, TrendScanStatus, TrendStrategyId, TrendQualityConfig, TrendStrategySelection, TrendExecutionCheck } from "../../trendScreenerTypes";
-import { indexTrendCandidates, createSavedTrendPlan, readTrendPlans, reviewSavedTrendPlan, trendCandidatesCsv, trendPlanId, writeTrendPlans, type SavedTrendPlan, type TrendReviewDraft, appendTrendScanJournal, readTrendScanJournal, trendScanJournalCsv } from "../../trendWorkspace";
+import { indexTrendCandidates, createSavedTrendPlan, readTrendPlans, reviewSavedTrendPlan, trendCandidatesCsv, trendPlanId, writeTrendPlans, TREND_PLAN_STORAGE_KEY, type SavedTrendPlan, type TrendReviewDraft, appendTrendScanJournal, readTrendScanJournal, trendScanJournalCsv } from "../../trendWorkspace";
+import { ariaSortOf, sortButtonLabel, sortGlyph, sortRowsBy, toggleColumnSort, type ColumnSort } from "../../domain/columnSort";
 import { calculateTrendPosition, evaluateTrendExit } from "../../trendPlan";
 import { TREND_CONFIG_FIELDS, TREND_STRATEGY_CHOICES, strategyName, validQualityConfig, qualityPresetName } from "../../trendStrategyConfig";
 import { currentTrendExecution, requestTrendExecution, trendBoardQuantity, TREND_EXECUTION_TTL_MS } from "../../trendExecution";
@@ -15,8 +16,33 @@ import { readTrendViewPreferences, saveTrendViewPreferences, type TrendViewPrefe
 type Filter = "all" | "signal" | "A" | "B" | "watch";
 type Action = "start" | "cancel" | null;
 type ScanFailure = { message: string; action: "status" | Exclude<Action, null> };
+type TrendSortKey = "score" | "asOf" | "deviation" | "stop" | "entryGap";
 const RESULT_PAGE_SIZE = 50;
+const MAX_SAVED_PLANS = 200;
 const EMPTY_CANDIDATES: TrendCandidate[] = [];
+const capTrendPlans = (plans: SavedTrendPlan[]): SavedTrendPlan[] =>
+  plans.length <= MAX_SAVED_PLANS
+    ? plans
+    : [
+        ...plans.filter(item => !item.archivedAt),
+        ...plans.filter(item => Boolean(item.archivedAt))
+      ].slice(0, MAX_SAVED_PLANS);
+const trendCandidateSortValue = (candidate: TrendCandidate, key: TrendSortKey): number | null => {
+  if (key === "score") {
+    const ratio = candidate.evidence.length
+      ? (candidate.evidence.filter(item => item.passed).length / candidate.evidence.length) * 100
+      : 0;
+    return (candidate.stage === "signal" ? 1000 : 0) + ratio + (candidate.metrics.relativeStrength20 ?? 0);
+  }
+  if (key === "asOf") {
+    const digits = Number(candidate.asOf.replace(/\D/g, ""));
+    return Number.isFinite(digits) && digits > 0 ? digits : null;
+  }
+  if (key === "deviation") return candidate.metrics.deviationPercent;
+  if (key === "stop") return candidate.plan?.stop ?? null;
+  if (!candidate.plan || !Number.isFinite(candidate.metrics.close) || candidate.metrics.close <= 0) return null;
+  return ((candidate.plan.maxEntry - candidate.metrics.close) / candidate.metrics.close) * 100;
+};
 type RowWorkspace = {
   expanded: boolean; evidenceExpanded: boolean; calculatorOpen: boolean;
   calculatorTab: "entry" | "exit"; entryRequested: boolean; exitRequested: boolean;
@@ -229,15 +255,19 @@ function CandidateRow({ candidate, isPreview, saved, workspace, onWorkspaceChang
 }) {
   const { expanded } = workspace;
   const detailId = useId();
+  const passedCount = candidate.evidence.filter(item => item.passed).length;
+  const entryGap = candidate.plan && Number.isFinite(candidate.metrics.close) && candidate.metrics.close > 0
+    ? ((candidate.plan.maxEntry - candidate.metrics.close) / candidate.metrics.close) * 100
+    : null;
   return <>
     <tr className="trend-result-row">
       <th scope="row"><b>{candidate.security.name}</b><small>{candidate.security.code}{isPreview ? " · DEMO" : ""}{saved ? " · 已保存" : ""}</small></th>
       <td>{strategyName(candidate.strategy)}</td>
-      <td>{candidate.stage === "signal" ? candidate.setup?.label || candidate.patterns.map(pattern => filterLabels[pattern]).join(" / ") || "有效信号" : "趋势观察"}</td>
+      <td>{candidate.stage === "signal" ? candidate.setup?.label || candidate.patterns.map(pattern => filterLabels[pattern]).join(" / ") || "有效信号" : "趋势观察"}{candidate.evidence.length > 0 && <small> · {passedCount}/{candidate.evidence.length}</small>}</td>
       <td>{candidate.asOf}</td>
-      <td className="trend-numeric">{number(candidate.metrics.close)}</td>
+      <td className="trend-numeric">{number(candidate.metrics.close)} <small>{candidate.metrics.deviationPercent >= 0 ? "+" : ""}{number(candidate.metrics.deviationPercent, 1)}%</small></td>
       <td className="trend-numeric">{candidate.plan ? number(candidate.plan.stop) : "—"}</td>
-      <td className="trend-numeric">{candidate.plan ? number(candidate.plan.maxEntry) : "—"}</td>
+      <td className="trend-numeric">{candidate.plan ? <>{number(candidate.plan.maxEntry)}{entryGap !== null && <small> ({entryGap >= 0 ? "+" : ""}{number(entryGap, 1)}%)</small>}</> : "—"}</td>
       <td>{isPreview ? <span>演示数据不请求真实行情</span> : <SelectionKline security={candidate.security} signalDate={candidate.stage === "signal" ? candidate.asOf : undefined} />}</td>
       <td><button className="trend-text-button" aria-expanded={expanded} aria-controls={detailId} aria-label={`${expanded ? "收起" : "详情与计划"}：${candidate.security.name}`} onClick={() => onWorkspaceChange({ expanded: !expanded })}>{expanded ? "收起" : "详情 / 计划"}<ChevronDown size={14} className={expanded ? "trend-rotate" : ""} /></button></td>
     </tr>
@@ -295,7 +325,76 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
     try { return readTrendPlans(window.localStorage); }
     catch { return { plans: [] as SavedTrendPlan[], error: "无法读取本地计划，请检查存储权限。" }; }
   });
+  const [tableSort, setTableSort] = useState<ColumnSort<TrendSortKey> | null>(null);
   const [saveNotice, setSaveNotice] = useState("");
+  const latestPlansRef = useRef<SavedTrendPlan[]>(storage.plans);
+  latestPlansRef.current = storage.plans;
+  const draftTimerRef = useRef<number | null>(null);
+  const pendingDraftPlansRef = useRef<SavedTrendPlan[] | null>(null);
+  const selfWritingPlansRef = useRef(false);
+  const writePlansSafely = useCallback((plans: SavedTrendPlan[]): boolean => {
+    selfWritingPlansRef.current = true;
+    try {
+      return writeTrendPlans(window.localStorage, plans);
+    } finally {
+      selfWritingPlansRef.current = false;
+    }
+  }, []);
+  const flushPendingDraft = useCallback(() => {
+    if (draftTimerRef.current !== null) {
+      window.clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    const pending = pendingDraftPlansRef.current;
+    if (!pending) return;
+    pendingDraftPlansRef.current = null;
+    try {
+      if (!writePlansSafely(pending)) {
+        setSaveNotice("复核输入未保存：本地存储不可写或空间不足。请导出并检查存储权限。");
+      }
+    } catch {
+      setSaveNotice("复核输入未保存：本地存储不可用。");
+    }
+  }, [writePlansSafely]);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return;
+    const syncPlans = (event?: Event) => {
+      if (selfWritingPlansRef.current) return;
+      if (event && "key" in event) {
+        const storageEvent = event as StorageEvent;
+        if (storageEvent.key !== null && storageEvent.key !== TREND_PLAN_STORAGE_KEY) return;
+      }
+      flushPendingDraft();
+      try {
+        const next = readTrendPlans(window.localStorage);
+        if (next.error) return;
+        setStorage(prev => {
+          if (
+            prev.error === next.error &&
+            prev.plans.length === next.plans.length &&
+            prev.plans.every((item, idx) => {
+              const other = next.plans[idx];
+              return other !== undefined && item.id === other.id && item.archivedAt === other.archivedAt && item.savedAt === other.savedAt;
+            })
+          ) {
+            return prev;
+          }
+          latestPlansRef.current = next.plans;
+          return next;
+        });
+      } catch {
+        // ignore storage read error during background sync
+      }
+    };
+    window.addEventListener("focus", syncPlans);
+    window.addEventListener("storage", syncPlans);
+    window.addEventListener("a-stock-radar:trend-plans-updated", syncPlans);
+    return () => {
+      window.removeEventListener("focus", syncPlans);
+      window.removeEventListener("storage", syncPlans);
+      window.removeEventListener("a-stock-radar:trend-plans-updated", syncPlans);
+    };
+  }, [flushPendingDraft]);
   const mounted = useRef(false);
   const requestId = useRef(0);
   const pollPending = useRef(false);
@@ -310,10 +409,13 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
     return () => window.clearTimeout(timer);
   }, [preferences]);
   useEffect(() => {
-    const flush = () => { saveTrendViewPreferences(latestPreferences.current); };
+    const flush = () => {
+      flushPendingDraft();
+      saveTrendViewPreferences(latestPreferences.current);
+    };
     window.addEventListener('pagehide', flush);
     return () => { window.removeEventListener('pagehide', flush); flush(); };
-  }, []);
+  }, [flushPendingDraft]);
 
   const readStatus = useCallback(async () => {
     if (actionPending.current) return;
@@ -409,25 +511,45 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
   };
   const updatePlans = (plans: SavedTrendPlan[], message: string) => {
     if (storage.error) { setSaveNotice(storage.error); return; }
+    if (draftTimerRef.current !== null) {
+      window.clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    pendingDraftPlansRef.current = null;
+    const bounded = capTrendPlans(plans);
     try {
-      if (!writeTrendPlans(window.localStorage, plans)) { setSaveNotice("计划保存失败：本地存储不可写或空间不足，当前记录未更改。"); return; }
-      setStorage({ plans, error: "" }); setSaveNotice(message);
+      if (!writePlansSafely(bounded)) { setSaveNotice("计划保存失败：本地存储不可写或空间不足，当前记录未更改。"); return; }
+      latestPlansRef.current = bounded;
+      setStorage({ plans: bounded, error: "" }); setSaveNotice(message);
     } catch { setSaveNotice("本地存储不可用，当前记录未更改。"); }
   };
   const saveCandidate = (candidate: TrendCandidate, reviewDraft: TrendReviewDraft) => {
     if (!status) return;
     const snapshot = { ...createSavedTrendPlan(candidate, status), reviewDraft };
     if (planIndex.has(snapshot.id)) return;
-    updatePlans([snapshot, ...storage.plans], `已保存 ${candidate.security.name} 的 ${candidate.asOf} 快照，可在“我的计划”复核。`);
+    updatePlans([snapshot, ...latestPlansRef.current], `已保存 ${candidate.security.name} 的 ${candidate.asOf} 快照，可在“我的计划”复核。`);
   };
 
   const updateDraft = (id: string, reviewDraft: TrendReviewDraft) => {
     if (storage.error) return;
-    const plans = storage.plans.map((plan) => plan.id === id ? { ...plan, reviewDraft } : plan);
-    try {
-      if (writeTrendPlans(window.localStorage, plans)) setStorage({ plans, error: "" });
-      else setSaveNotice("复核输入未保存：本地存储不可写或空间不足。请导出并检查存储权限。");
-    } catch { setSaveNotice("复核输入未保存：本地存储不可用。"); }
+    const plans = capTrendPlans(latestPlansRef.current.map((plan) => plan.id === id ? { ...plan, reviewDraft } : plan));
+    latestPlansRef.current = plans;
+    pendingDraftPlansRef.current = plans;
+    setStorage({ plans, error: "" });
+    if (draftTimerRef.current !== null) window.clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = window.setTimeout(() => {
+      draftTimerRef.current = null;
+      const pending = pendingDraftPlansRef.current;
+      pendingDraftPlansRef.current = null;
+      if (!pending) return;
+      try {
+        if (!writePlansSafely(pending)) {
+          setSaveNotice("复核输入未保存：本地存储不可写或空间不足。请导出并检查存储权限。");
+        }
+      } catch {
+        setSaveNotice("复核输入未保存：本地存储不可用。");
+      }
+    }, 250);
   };
   const candidates = status?.candidates || EMPTY_CANDIDATES;
   const planIndex = useMemo(() => new Map(storage.plans.map(plan => [plan.id, plan])), [storage.plans]);
@@ -437,18 +559,42 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
     // Retain state only for current candidates or user-owned snapshots, never prior scan history.
     for (const id of rowWorkspaces.current.keys()) if (!planIndex.has(id) && !candidateIds.has(id)) rowWorkspaces.current.delete(id);
   }, [candidateIds, planIndex]);
-  useEffect(() => { setResultPage(1); }, [filter, query, strategyFilter, tab, planArchive]);
+  useEffect(() => { setResultPage(1); }, [filter, query, strategyFilter, tab, planArchive, tableSort]);
   const searchText = query.trim().toLocaleLowerCase();
   const matchesQuery = (candidate: TrendCandidate) => `${candidate.security.code} ${candidate.security.name}`.toLocaleLowerCase().includes(searchText);
   const matchesStrategy = (candidate: TrendCandidate) => strategyFilter === "all" || (candidate.strategy?.id || "classic-v1") === strategyFilter;
-  const filtered = useMemo(() => candidates.filter((candidate) => {
+  const filteredRaw = useMemo(() => candidates.filter((candidate) => {
     const matchesFilter = filter === "watch" ? candidate.stage === "watch" : filter === "signal" ? candidate.stage === "signal" : filter === "A" || filter === "B" ? candidate.stage === "signal" && candidate.patterns.includes(filter) : true;
     return matchesFilter && matchesStrategy(candidate) && `${candidate.security.code} ${candidate.security.name}`.toLocaleLowerCase().includes(searchText);
   }), [candidates, filter, searchText, strategyFilter]);
+  const filtered = useMemo(
+    () => tableSort ? sortRowsBy(filteredRaw, item => trendCandidateSortValue(item, tableSort.key), tableSort.direction) : filteredRaw,
+    [filteredRaw, tableSort]
+  );
   const filteredStockCount = useMemo(() => new Set(filtered.map(item => item.security.secid)).size, [filtered]);
   const archivedPlanCount = useMemo(() => storage.plans.reduce((total, plan) => total + Number(Boolean(plan.archivedAt)), 0), [storage.plans]);
   const plansInArchive = useMemo(() => storage.plans.filter(plan => Boolean(plan.archivedAt) === (planArchive === "archived")), [storage.plans, planArchive]);
-  const plansFiltered = useMemo(() => plansInArchive.filter(plan => matchesQuery(plan.candidate) && matchesStrategy(plan.candidate)), [plansInArchive, searchText, strategyFilter]);
+  const plansFilteredRaw = useMemo(() => plansInArchive.filter(plan => matchesQuery(plan.candidate) && matchesStrategy(plan.candidate)), [plansInArchive, searchText, strategyFilter]);
+  const plansFiltered = useMemo(
+    () => tableSort ? sortRowsBy(plansFilteredRaw, item => trendCandidateSortValue(item.candidate, tableSort.key), tableSort.direction) : plansFilteredRaw,
+    [plansFilteredRaw, tableSort]
+  );
+  const renderSortTh = (key: TrendSortKey, label: string) => {
+    const activeSort = tableSort ?? { key: "" as TrendSortKey, direction: "desc" as const };
+    const state = ariaSortOf(activeSort, key);
+    return (
+      <th scope="col" aria-sort={state}>
+        <button
+          type="button"
+          className={`column-sort-button${state === "none" ? "" : " active"}`}
+          aria-label={sortButtonLabel(activeSort, key, label)}
+          onClick={() => setTableSort(current => current ? toggleColumnSort(current, key) : { key, direction: "desc" })}
+        >
+          {label}{sortGlyph(activeSort, key)}
+        </button>
+      </th>
+    );
+  };
   const totals = useMemo(() => {
     const counts: Record<Filter, number> = { all: 0, signal: 0, watch: 0, A: 0, B: 0 };
     for (const candidate of candidates) {
@@ -530,7 +676,7 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
       {tab === "plans" && <div className="trend-filters" role="group" aria-label="计划归档状态"><button className={planArchive === "active" ? "active" : ""} aria-pressed={planArchive === "active"} onClick={() => setPlanArchive("active")}>使用中 {storage.plans.length - archivedPlanCount}</button><button className={planArchive === "archived" ? "active" : ""} aria-pressed={planArchive === "archived"} onClick={() => setPlanArchive("archived")}>已归档 {archivedPlanCount}</button></div>}
       <div className="trend-results-context"><span>{tab === "candidates" ? `${filterLabels[filter]} · ${filtered.length} 条结果 / ${filteredStockCount} 只股票` : `${planArchive === "archived" ? "已归档" : "使用中"}快照 · ${plansFiltered.length} 条`}</span><p>{tab === "plans" ? "先复核最新信号，再检查冻结止损与退出条件。" : phase === "idle" ? "启动扫描后显示真实筛选结果。" : !complete ? "当前覆盖不完整；无候选不代表全市场没有机会。" : "同股可命中多个策略；候选条数与去重股票数分别统计。"}</p></div>
       {visibleCount > 0 && <nav className="trend-results-toolbar" aria-label="研究结果分页"><span>第 {currentPage} / {pageCount} 页 · {pageStart + 1}–{Math.min(pageStart + RESULT_PAGE_SIZE, visibleCount)} / {visibleCount} 条，每页最多 {RESULT_PAGE_SIZE} 条</span><button className="trend-btn trend-btn-small" disabled={currentPage === 1} onClick={() => setResultPage(currentPage - 1)}>上一页</button><button className="trend-btn trend-btn-small" disabled={currentPage === pageCount} onClick={() => setResultPage(currentPage + 1)}>下一页</button></nav>}
-      <div className="trend-candidate-list"><div className="trend-result-scroll" tabIndex={0} role="region" aria-label="研究结果表格"><table className="trend-result-table"><thead><tr><th scope="col">股票 / 代码</th><th scope="col">策略</th><th scope="col">信号 / 形态</th><th scope="col">数据截止</th><th scope="col">收盘</th><th scope="col">止损 S</th><th scope="col">最高入场 Pmax</th><th scope="col">日K走势</th><th scope="col">操作</th></tr></thead><tbody>{candidateWindow.map((candidate) => {
+      <div className="trend-candidate-list"><div className="trend-result-scroll" tabIndex={0} role="region" aria-label="研究结果表格"><table className="trend-result-table"><thead><tr><th scope="col">股票 / 代码</th><th scope="col">策略</th>{renderSortTh("score", "信号 / 评分")}{renderSortTh("asOf", "数据截止")}{renderSortTh("deviation", "收盘 / 距均线")}{renderSortTh("stop", "止损 S")}{renderSortTh("entryGap", "最高入场 Pmax")}<th scope="col">日K走势</th><th scope="col">操作</th></tr></thead><tbody>{candidateWindow.map((candidate) => {
         const id = trendPlanId(candidate, Boolean(status?.isPreview));
         const saved = planIndex.get(id);
         const review = saved ? reviewSavedTrendPlan(saved, status, candidateIndex) : { latestCandidate: candidate, ...(status?.asOf ? { latestAsOf: status.asOf } : {}), marketGate };
@@ -553,7 +699,7 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
       <TrendScanDiagnostics status={status} />
       <section className="trend-status-card" aria-label="交易日新鲜度"><h2>交易日新鲜度：{status?.freshness?.state === "current" ? "当前" : status?.freshness?.state === "stale" ? "陈旧" : "未知"}</h2><p>预期最近完整交易日 {status?.freshness?.expectedDate || "未知"} · 实际源日期 {status?.freshness?.actualDate || "未知"}</p><p>{status?.freshness?.reason || "尚未由交易日历验证源日期；覆盖完整不代表数据为最新。"}</p></section>
       <section className={`trend-gate is-${marketGate}`} aria-label="市场开仓门槛"><div className="trend-gate-icon"><ShieldCheck size={25} /></div><h2>{gateTitle}</h2><p>{gateText}</p><div><span>共同市场代理</span><b>中证全指 / MA60</b></div><small>截至 {status?.asOf || "尚未取得数据"} · 北交所仍需单独复核</small></section>
-      <section className="trend-status-card" aria-label="扫描状态"><div className="trend-status-head"><div><h2>{active ? <LoaderCircle size={17} className="trend-spin" /> : <Layers3 size={17} />}{phaseText[phase]}</h2></div><span className={`trend-status-badge ${complete ? "is-complete" : ""}`}>{coverageText}</span></div><div className="trend-scan-numbers"><strong>{status && phase !== "idle" ? count(status.processed) : "—"}<small> / {status?.universeLoaded ? count(status.universeLoaded) : "待载入"}</small></strong><span>已处理证券 / 已载入名单</span><b>{active ? `${number(progress, 0)}%` : status?.asOf ? `数据截止 ${status.asOf}` : "手动启动扫描"}</b></div><div className="trend-progress" role="progressbar" aria-label="已载入名单处理进度" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${progress}%` }} /></div><div className="trend-health-counts"><span>源端总数 <b>{status?.universeExpected == null ? "未知" : count(status.universeExpected)}</b></span><span>规则排除 <b>{status ? count(status.excluded) : "—"}</b></span><span>数据不可用 <b>{status ? count(status.unavailable) : "—"}</b></span><span>请求失败 <b>{status ? count(status.failed) : "—"}</b></span></div>{status?.performance && <div className="trend-performance"><span>原始 / 复权请求 <b>{status.performance.rawRequests} / {status.performance.adjustedRequests}</b></span><span>缓存命中 <b>{status.performance.cacheHits}</b></span><span>预筛排除 <b>{status.performance.prefilterExcluded}</b></span><span>扫描耗时 <b>{number(status.performance.elapsedMs / 1000, 1)} 秒</b></span></div>}<details className="trend-coverage-details"><summary>板块覆盖与扫描详情<ChevronDown size={14} /></summary><p>{status?.note || "点击“扫描全 A 股”载入名单与历史日线；首次扫描可能需要较长时间。"}</p><div className="trend-board-list">{status?.boards.length ? status.boards.map((board) => <div key={board.id} className="trend-board"><b>{board.label || boardNames[board.id] || board.id}</b><span>{count(board.loaded)} / {board.expected == null ? "未知" : count(board.expected)}</span><em className={board.complete ? "is-complete" : ""}>{board.complete ? "完整" : "部分"}</em>{board.error && <small>{board.error}</small>}</div>) : <p>尚无板块覆盖信息。</p>}</div><div className="trend-status-meta"><span>任务更新 {dateTime(status?.updatedAt)}</span><span>任务编号 {status?.jobId || "—"}</span><span>{status?.isPreview ? "数据性质：DEMO 虚构演示" : "数据由独立扫描服务返回；以失败明细与覆盖情况核验可用性。"}</span></div></details>{status && (status.errors.length > 0 || status.failed > 0) && <details className="trend-failures"><summary><AlertTriangle size={13} />扫描问题与失败明细（{status.errors.length} 条）</summary><ul>{status.errors.map((item, index) => <li key={`${item.stage}-${item.code || index}`}><b>{item.stage}{item.code ? ` · ${item.code}` : ""}</b> {item.message}</li>)}</ul></details>}</section>
+      <section className="trend-status-card" aria-label="扫描状态"><div className="trend-status-head"><div><h2>{active ? <LoaderCircle size={17} className="trend-spin" /> : <Layers3 size={17} />}{phaseText[phase]}</h2></div><span className={`trend-status-badge ${complete ? "is-complete" : ""}`}>{coverageText}</span></div><div className="trend-scan-numbers" role="status" aria-live="polite"><strong>{status && phase !== "idle" ? count(status.processed) : "—"}<small> / {status?.universeLoaded ? count(status.universeLoaded) : "待载入"}</small></strong><span>已处理证券 / 已载入名单</span><b>{active ? `${number(progress, 0)}%` : status?.asOf ? `数据截止 ${status.asOf}` : "手动启动扫描"}</b></div><div className="trend-progress" role="progressbar" aria-label="已载入名单处理进度" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${progress}%` }} /></div><div className="trend-health-counts"><span>源端总数 <b>{status?.universeExpected == null ? "未知" : count(status.universeExpected)}</b></span><span>规则排除 <b>{status ? count(status.excluded) : "—"}</b></span><span>数据不可用 <b>{status ? count(status.unavailable) : "—"}</b></span><span>请求失败 <b>{status ? count(status.failed) : "—"}</b></span></div>{status?.performance && <div className="trend-performance"><span>原始 / 复权请求 <b>{status.performance.rawRequests} / {status.performance.adjustedRequests}</b></span><span>缓存命中 <b>{status.performance.cacheHits}</b></span><span>预筛排除 <b>{status.performance.prefilterExcluded}</b></span><span>扫描耗时 <b>{number(status.performance.elapsedMs / 1000, 1)} 秒</b></span></div>}<details className="trend-coverage-details"><summary>板块覆盖与扫描详情<ChevronDown size={14} /></summary><p>{status?.note || "点击“扫描全 A 股”载入名单与历史日线；首次扫描可能需要较长时间。"}</p><div className="trend-board-list">{status?.boards.length ? status.boards.map((board) => <div key={board.id} className="trend-board"><b>{board.label || boardNames[board.id] || board.id}</b><span>{count(board.loaded)} / {board.expected == null ? "未知" : count(board.expected)}</span><em className={board.complete ? "is-complete" : ""}>{board.complete ? "完整" : "部分"}</em>{board.error && <small>{board.error}</small>}</div>) : <p>尚无板块覆盖信息。</p>}</div><div className="trend-status-meta"><span>任务更新 {dateTime(status?.updatedAt)}</span><span>任务编号 {status?.jobId || "—"}</span><span>{status?.isPreview ? "数据性质：DEMO 虚构演示" : "数据由独立扫描服务返回；以失败明细与覆盖情况核验可用性。"}</span></div></details>{status && (status.errors.length > 0 || status.failed > 0) && <details className="trend-failures"><summary><AlertTriangle size={13} />扫描问题与失败明细（{status.errors.length} 条）</summary><ul>{status.errors.map((item, index) => <li key={`${item.stage}-${item.code || index}`}><b>{item.stage}{item.code ? ` · ${item.code}` : ""}</b> {item.message}</li>)}</ul></details>}</section>
 
       </aside></details>
     </div>

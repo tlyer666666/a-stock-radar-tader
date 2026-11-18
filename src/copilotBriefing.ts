@@ -133,14 +133,15 @@ export function buildCopilotAlerts(input: {
   }
 
   for (const alert of (input.monitorAlerts || []).slice(0, 5)) {
+    const validStock = /^\d{6}$/.test(alert.code);
     push({
       id: `monitor:${alert.id}`,
       kind: "monitor",
-      tag: "自选监控",
+      tag: "盯盘预警",
       title: `${alert.name}（${alert.code}）`,
       detail: alert.detail,
-      targetView: "favorites",
-      ...(/^\d{6}$/.test(alert.code) ? { stock: { code: alert.code, name: alert.name } } : {})
+      targetView: validStock ? "dashboard" : "favorites",
+      ...(validStock ? { stock: { code: alert.code, name: alert.name } } : {})
     });
   }
 

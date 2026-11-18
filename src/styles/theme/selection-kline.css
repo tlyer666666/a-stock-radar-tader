@@ -22,9 +22,10 @@
 .selection-kline-trigger > span { display: grid; min-height: 56px; place-items: center; font-size: var(--fs-xs); }
 .selection-kline-trigger small { display: block; font-size: var(--fs-2xs); color: var(--ink-2); }
 .selection-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-.selection-chart .candle-up { stroke: var(--up); fill: var(--up); }
+.selection-chart .candle-up { stroke: var(--up); fill: var(--surface-1); }
+.selection-chart .candle-up rect { stroke: var(--up); stroke-width: 1.15; fill: var(--surface-1); }
 .selection-chart .candle-down { stroke: var(--down); fill: var(--down); }
-.selection-chart rect { stroke: none; }
+.selection-chart .candle-down rect { stroke: none; }
 .selection-chart text { fill: var(--ink-2); font-size: 11px; }
 .selection-chart .chart-grid { stroke: var(--chart-grid); }
 .selection-chart .chart-crosshair { stroke: var(--ink-3); stroke-dasharray: 3 4; }
@@ -54,6 +55,10 @@
 }
 
 :root .terminal-shell .trend-result-table { min-width: 1260px; }
+:root .terminal-shell .trend-result-table th:first-child,
+:root .terminal-shell .trend-result-table td:first-child { position: sticky; left: 0; z-index: 2; background: var(--surface-1); }
+:root .terminal-shell .trend-result-table th:last-child,
+:root .terminal-shell .trend-result-table td:last-child { position: sticky; right: 0; z-index: 2; background: var(--surface-1); }
 :root .terminal-shell .trend-result-table th:nth-child(8), :root .terminal-shell .trend-result-table td:nth-child(8) { min-width: 194px; width: 194px; }
 
 .selection-chart-ranges { display: flex; gap: 4px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 3px; }

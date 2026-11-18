@@ -146,7 +146,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
 
   useEffect(() => {
     if (!live || !codes) return;
-    return startVisibleInterval(() => {
+    const stopVisible = startVisibleInterval(() => {
       const inSession = inTradingSession();
       if (inSession) {
         inSessionRef.current = true;
@@ -157,6 +157,26 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
         setClockTick(Date.now());
       }
     }, REFRESH_MS);
+    const canBgPoll = typeof window !== "undefined" && typeof window.setInterval === "function" && typeof document !== "undefined";
+    const bgTimer = canBgPoll
+      ? window.setInterval(() => {
+          if (typeof document === "undefined" || !document.hidden) return;
+          if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+          const inSession = inTradingSession();
+          if (inSession) {
+            inSessionRef.current = true;
+            setClockTick(Date.now());
+            void loadAll(true);
+          } else if (inSessionRef.current) {
+            inSessionRef.current = false;
+            setClockTick(Date.now());
+          }
+        }, 20_000)
+      : undefined;
+    return () => {
+      stopVisible();
+      if (bgTimer !== undefined) window.clearInterval(bgTimer);
+    };
   }, [live, codes, loadAll]);
 
   const runtimes = useMemo(() => {
@@ -216,7 +236,11 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       messages.push(`${item.name}：${signal.title} ${signal.shares} 股，参考价 ${signal.price.toFixed(2)}`);
     }
     if (!messages.length) return;
-    onAlertRef.current(`做T提示 · ${messages.join("；")}`);
+    const alertText = `做T提示 · ${messages.join("；")}`;
+    onAlertRef.current(alertText);
+    if (typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
+      void window.stockApi.notify({ title: "做T助手盘中信号", body: alertText }).catch(() => undefined);
+    }
     const synthesis = typeof window !== "undefined" ? window.speechSynthesis : undefined;
     if (store.voice && synthesis && typeof SpeechSynthesisUtterance !== "undefined") {
       const utterance = new SpeechSynthesisUtterance(`做T提示，${messages.join("。")}`);

@@ -25,6 +25,27 @@ function retryText(entry: MarketSourceHealthEntry | undefined, now: number) {
   return `${seconds} 秒后自动重试`;
 }
 
+export function humanizeMarketSourceError(raw: unknown): string {
+  const text = String(raw || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  if (/Unexpected token\s*['"]?<|not valid JSON|<!DOCTYPE|<html/i.test(text)) {
+    return "免费接口触发频率或验证限制";
+  }
+  if (/\bHTTP\s*429\b|rate\s*limit|too many requests/i.test(text)) {
+    return "请求过于频繁（429），可在设置中调大刷新间隔";
+  }
+  if (/\bHTTP\s*(?:401|403)\b|unauthorized|forbidden/i.test(text)) {
+    return "接口访问受限或凭证失效";
+  }
+  if (/ETIMEDOUT|timeout|timed?\s*out|AbortError/i.test(text)) {
+    return "请求响应超时";
+  }
+  if (/fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|socket hang up/i.test(text)) {
+    return "网络连接异常";
+  }
+  return text.slice(0, 48);
+}
+
 export function describeSourceHealth(health: MarketSourceHealth | null | undefined, now = Date.now()): SourceHealthNotice | null {
   const quotes = Array.isArray(health?.quotes) ? health!.quotes : [];
   const byId = new Map(quotes.map((entry) => [entry.id, entry]));
@@ -42,7 +63,7 @@ export function describeSourceHealth(health: MarketSourceHealth | null | undefin
   // 配置了扶摇时它是报价首选：扶摇不可用而同花顺免费行情正常，也给一条接力提示。
   const fuyao = byId.get("fuyao");
   if (failing(fuyao) && !failing(ths)) {
-    const reason = String(fuyao?.lastError || "").replace(/\s+/g, " ").slice(0, 48);
+    const reason = humanizeMarketSourceError(fuyao?.lastError);
     return {
       tone: "relay",
       key: `relay-fuyao:${fuyao?.lastFailAt || ""}`,
@@ -50,7 +71,7 @@ export function describeSourceHealth(health: MarketSourceHealth | null | undefin
     };
   }
   if (!failing(ths)) return null;
-  const reason = String(ths?.lastError || "").replace(/\s+/g, " ").slice(0, 48);
+  const reason = humanizeMarketSourceError(ths?.lastError);
   const relay = workingRelay ? (LABELS[workingRelay.id] || workingRelay.name) : "备用线路";
   return {
     tone: "relay",

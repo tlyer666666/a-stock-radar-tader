@@ -104,12 +104,29 @@ function getServiceDiagnostics() {
   return { ...serviceRuntime.getDiagnostics(), charts: chartRuntime.getDiagnostics(), sectorFundFlows: sectorFundFlows.getDiagnostics(), caches: Object.fromEntries(Object.entries({ historyCache, chartCache, federationCache, topicPoolCache, conceptChainCache, sectorLookupCache, sectorStrengthCache, securitySearchCache, ladderPoolsCaches, strategySignalCache }).map(([name, cache]) => [name, cache.getDiagnostics()])) };
 }
 
+const MAX_ACTIVE_CURL = 2;
+let activeCurlCount = 0;
+
 function fetchJsonWithCurl(url, timeoutMs, referer = "", signal) {
   return Promise.resolve().then(() => serviceRuntime.track(() => {
     const producerSignal = serviceSignal(signal);
-    return trackServiceRequest(runWithTransportSlot(() => executeJsonWithCurl(url, timeoutMs, referer, producerSignal), {
-      url, signal: producerSignal, minimumGapMs: 180
-    }));
+    producerSignal.throwIfAborted();
+    if (activeCurlCount >= MAX_ACTIVE_CURL) {
+      return Promise.reject(Object.assign(new Error("行情备用通道并发已满，跳过重试"), { code: "CURL_CONCURRENCY_LIMIT" }));
+    }
+    activeCurlCount += 1;
+    let tracked;
+    try {
+      tracked = trackServiceRequest(runWithTransportSlot(() => executeJsonWithCurl(url, timeoutMs, referer, producerSignal), {
+        url, signal: producerSignal, minimumGapMs: 180
+      }));
+    } catch (syncError) {
+      activeCurlCount = Math.max(0, activeCurlCount - 1);
+      throw syncError;
+    }
+    return tracked.finally(() => {
+      activeCurlCount = Math.max(0, activeCurlCount - 1);
+    });
   }));
 }
 
@@ -224,10 +241,16 @@ async function performFetchJson(url, options = {}, timeoutMs = 12000) {
     // 默认行为保持不变（未设置该变量时仍启用 curl 兜底）。
     if (String(process.env.ASTOCK_DISABLE_CURL || "") === "1") throw error;
     if (!isEastmoney) throw error;
+    const upstreamStatus = Number(error?.status || error?.cause?.status || 0);
+    if (upstreamStatus === 429 || upstreamStatus === 403 || /\bHTTP\s+(?:429|403)\b/i.test(String(error?.message || ""))) {
+      throw error;
+    }
+    if (activeCurlCount >= MAX_ACTIVE_CURL) throw error;
     try {
       return await fetchJsonWithCurl(requestUrl, timeoutMs, "https://quote.eastmoney.com/", signal);
     } catch (curlError) {
       signal.throwIfAborted();
+      if (curlError?.code === "CURL_CONCURRENCY_LIMIT") throw error;
       if (curlError && typeof curlError === "object" && !curlError.cause) curlError.cause = error;
       throw curlError;
     }

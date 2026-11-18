@@ -82,6 +82,7 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
   if (typeof previousSession !== "function") throw new TypeError("本地日线库需要交易日历");
   const memory = new Map();
   const verified = new Map();
+  const activeTempFiles = new Set();
   let writeSequence = 0;
   let prepared = { asOf: "", quotes: new Map() };
   const stats = { hits: 0, appended: 0, downloads: 0, writeFailures: 0 };
@@ -162,14 +163,28 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     const file = fileFor(code);
     if (!file) return;
     const temp = `${file}.${process.pid}.${++writeSequence}.tmp`;
+    activeTempFiles.add(temp);
     try {
       await fs.promises.mkdir(path.dirname(file), { recursive: true });
-      await fs.promises.writeFile(temp, JSON.stringify({ version: STORE_VERSION, source: entry.source, checkedAsOf: entry.checkedAsOf,
-        checkedAt: entry.checkedAt ?? null, requested: entry.requested || 0, savedAt: new Date(now()).toISOString(), rows: encodeRows(entry.rows) }));
+      await fs.promises.writeFile(
+        temp,
+        JSON.stringify({
+          version: STORE_VERSION,
+          source: entry.source,
+          checkedAsOf: entry.checkedAsOf,
+          checkedAt: entry.checkedAt ?? null,
+          requested: entry.requested || 0,
+          savedAt: new Date(now()).toISOString(),
+          rows: encodeRows(entry.rows)
+        }),
+        { mode: 0o600 }
+      );
       await fs.promises.rename(temp, file);
     } catch {
       stats.writeFailures += 1;
       await fs.promises.rm(temp, { force: true }).catch(() => {});
+    } finally {
+      activeTempFiles.delete(temp);
     }
   }
 
@@ -300,7 +315,90 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     return clean ? read(clean) : Promise.resolve(null);
   };
 
-  return { prepareDay, history, peek, stats: () => ({ ...stats }) };
+  async function cleanupStaleBars({ activeCodes, maxAgeDays = 180 } = {}) {
+    const base = dir();
+    if (!base) return { removedTmp: 0, removedOrphans: 0 };
+    let entries;
+    try {
+      entries = await fs.promises.readdir(base, { withFileTypes: true });
+    } catch {
+      return { removedTmp: 0, removedOrphans: 0 };
+    }
+    let codeSet = null;
+    if (activeCodes instanceof Set) {
+      codeSet = activeCodes;
+    } else if (Array.isArray(activeCodes)) {
+      codeSet = new Set(
+        activeCodes
+          .map(item => (typeof item === "string" ? item.trim() : String(item?.code || "").trim()))
+          .filter(Boolean)
+      );
+    }
+    const pruneOrphans = Boolean(codeSet && codeSet.size > 4000);
+    const maxAgeMs = Math.max(1, Number(maxAgeDays) || 180) * 24 * 3600 * 1000;
+    const currentMs = now();
+    let removedTmp = 0;
+    let removedOrphans = 0;
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const fullPath = path.join(base, entry.name);
+      if (entry.name.endsWith(".tmp")) {
+        if (activeTempFiles.has(fullPath)) continue;
+        try {
+          await fs.promises.rm(fullPath, { force: true });
+          removedTmp += 1;
+        } catch {
+          // Ignore races on leftover temp cleanup.
+        }
+        continue;
+      }
+      if (!pruneOrphans) continue;
+      const match = /^(\d{6})\.json$/.exec(entry.name);
+      if (!match || codeSet.has(match[1])) continue;
+      try {
+        const stat = await fs.promises.stat(fullPath);
+        if (currentMs - stat.mtimeMs > maxAgeMs) {
+          memory.delete(match[1]);
+          verified.delete(match[1]);
+          await fs.promises.rm(fullPath, { force: true });
+          removedOrphans += 1;
+        }
+      } catch {
+        // Ignore concurrently removed or inaccessible files.
+      }
+    }
+    return { removedTmp, removedOrphans };
+  }
+
+  function getStorageStats() {
+    const base = dir();
+    if (!base) return { fileCount: 0, totalBytes: 0 };
+    try {
+      const entries = fs.readdirSync(base, { withFileTypes: true });
+      let fileCount = 0;
+      let totalBytes = 0;
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === "selection-universe.json") continue;
+        try {
+          const stat = fs.statSync(path.join(base, entry.name));
+          fileCount += 1;
+          totalBytes += stat.size;
+        } catch {
+          // Ignore concurrently removed files.
+        }
+      }
+      return { fileCount, totalBytes };
+    } catch {
+      return { fileCount: 0, totalBytes: 0 };
+    }
+  }
+
+  const startupCleanupTimer = setTimeout(() => {
+    void cleanupStaleBars().catch(() => {});
+  }, 15000);
+  startupCleanupTimer?.unref?.();
+
+  return { prepareDay, history, peek, cleanupStaleBars, getStorageStats, stats: () => ({ ...stats }) };
 }
 
 module.exports = { createDailyBarStore, STORE_VERSION, lotsConsistent };

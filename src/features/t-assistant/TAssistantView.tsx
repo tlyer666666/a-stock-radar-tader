@@ -20,6 +20,7 @@ type Props = {
   live: boolean;
   onOpenStock: (security: Security) => void;
   onToast: (message: string) => void;
+  onSyncCostToHolding?: ((code: string, shares: number, newCost: number) => void) | undefined;
 };
 
 type TradeDraft = { day: string; side: "buy" | "sell"; price: string; shares: string; time: string };
@@ -29,7 +30,7 @@ const toneOf = (value: number | null | undefined) => !value ? "" : value > 0 ? "
 const sideTone = (side: "buy" | "sell" | null) => side === "buy" ? "buy" : side === "sell" ? "sell" : "";
 const clockOf = (ms: number | null) => ms ? new Date(ms + 8 * 3600_000).toISOString().slice(11, 19) : "--";
 
-export default function TAssistantView({ api, holdings, live, onOpenStock, onToast }: Props) {
+export default function TAssistantView({ api, holdings, live, onOpenStock, onToast, onSyncCostToHolding }: Props) {
   const { store, runtimes } = api;
   // Display settings are shared across stocks; the keyed detail still isolates drawings and trade drafts.
   const [preferences, setPreferences] = useState(() =>
@@ -91,7 +92,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
       <aside className="panel t-assistant-list" aria-label="跟踪的股票">
         {store.items.map(entry => <StockRow key={entry.code} item={entry} runtime={runtimes[entry.code]} active={entry.code === selected} onSelect={() => setSelected(entry.code)} />)}
       </aside>
-      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} display={{ preferences, setPreferences }} />}
+      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} onSyncCostToHolding={onSyncCostToHolding} display={{ preferences, setPreferences }} />}
     </div>}
   </div>;
 }
@@ -113,7 +114,7 @@ function StockRow({ item, runtime, active, onSelect }: { item: TItem; runtime: T
   </button>;
 }
 
-function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; display: TToolboxDisplay }) {
+function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSyncCostToHolding, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; onSyncCostToHolding?: ((code: string, shares: number, newCost: number) => void) | undefined; display: TToolboxDisplay }) {
   const { analysis, share } = runtime;
   const replay = useMemo(
     () => (showReplay && share ? replayT(share, { code: item.code, name: item.name }, item.config) : runtime.replay ?? null),
@@ -212,7 +213,27 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, displa
       </div>
       <div className="t-assistant-grid">
         <SignalCard analysis={analysis} referenceNote={runtime.signalNote} onRecord={() => startDraft(true)} />
-        <LevelsCard analysis={analysis} />
+        <LevelsCard
+          analysis={analysis}
+          onSyncCost={
+            onSyncCostToHolding && trades.length > 0 && analysis.stats.newCost !== null && analysis.stats.newCost > 0
+              ? () => {
+                  const netDelta = trades.reduce((acc, t) => acc + (t.side === "buy" ? t.shares : -t.shares), 0);
+                  const postTShares = Math.max(0, item.config.baseShares + netDelta);
+                  if (postTShares > 0 && analysis.stats.newCost !== null && analysis.stats.newCost > 0) {
+                    onSyncCostToHolding(item.code, postTShares, Math.round(analysis.stats.newCost * 1000) / 1000);
+                  }
+                }
+              : undefined
+          }
+          canSyncCost={Boolean(
+            onSyncCostToHolding &&
+            trades.length > 0 &&
+            analysis.stats.newCost !== null &&
+            analysis.stats.newCost > 0 &&
+            item.config.baseShares + trades.reduce((acc, t) => acc + (t.side === "buy" ? t.shares : -t.shares), 0) > 0
+          )}
+        />
       </div>
       <div className="panel t-assistant-chart-panel">
         <div className="t-assistant-chart-head">
@@ -248,7 +269,7 @@ function SignalCard({ analysis, referenceNote, onRecord }: { analysis: TAnalysis
   </div>;
 }
 
-function LevelsCard({ analysis }: { analysis: TAnalysis }) {
+function LevelsCard({ analysis, onSyncCost, canSyncCost = false }: { analysis: TAnalysis; onSyncCost?: (() => void) | undefined; canSyncCost?: boolean }) {
   const { levels, open, stats } = analysis;
   const rows: Array<[string, number | null, string]> = [
     ["上轨（高抛区）", levels.upper, "sell"], ["均价线", levels.vwap, ""], ["下轨（低吸区）", levels.lower, "buy"],
@@ -271,6 +292,13 @@ function LevelsCard({ analysis }: { analysis: TAnalysis }) {
       <div><dt>每股成本降低</dt><dd className={toneOf(stats.costReduction)}>{signed(stats.costReduction, 3)}</dd></div>
       {stats.newCost !== null && <div><dt>做T后成本</dt><dd>{fmt(stats.newCost, 3)}</dd></div>}
     </dl>
+    {canSyncCost && onSyncCost && (
+      <div className="t-assistant-config-sync">
+        <button type="button" className="secondary-btn" onClick={onSyncCost}>
+          <WalletCards size={14} />同步新成本到持仓
+        </button>
+      </div>
+    )}
   </div>;
 }
 

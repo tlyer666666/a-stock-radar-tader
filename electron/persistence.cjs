@@ -37,6 +37,47 @@ function readJsonFile(filePath, validator) {
 // 时间戳由 ISO 派生且定长，按文件名升序即按时间升序。
 const CORRUPTED_COPY_LIMIT = 3;
 
+function safeChmod(targetPath, mode) {
+  if (process.platform === "win32" || !targetPath) return false;
+  try {
+    fs.chmodSync(targetPath, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function tightenUserDataPermissions(userDataDir) {
+  if (process.platform === "win32" || typeof userDataDir !== "string" || !userDataDir.trim()) {
+    return { directoryTightened: false, tightenedFiles: 0 };
+  }
+  let directoryTightened = false;
+  let tightenedFiles = 0;
+  try {
+    if (!fs.existsSync(userDataDir)) return { directoryTightened: false, tightenedFiles: 0 };
+    directoryTightened = safeChmod(userDataDir, 0o700);
+    const entries = fs.readdirSync(userDataDir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(userDataDir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "daily-bars") safeChmod(fullPath, 0o700);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (
+        entry.name.endsWith(".json")
+        || entry.name.endsWith(".key")
+        || /\.(?:json|key)\.corrupted-/.test(entry.name)
+      ) {
+        if (safeChmod(fullPath, 0o600)) tightenedFiles += 1;
+      }
+    }
+  } catch {
+    // Best-effort permission tightening must never block application startup.
+  }
+  return { directoryTightened, tightenedFiles };
+}
+
 function pruneCorruptedCopies(filePath, limit = CORRUPTED_COPY_LIMIT) {
   try {
     const directory = path.dirname(filePath);
@@ -61,6 +102,7 @@ function quarantineFile(filePath) {
       target = `${filePath}.corrupted-${stamp}-${sequence}`;
     }
     fs.copyFileSync(filePath, target);
+    safeChmod(target, 0o600);
     pruneCorruptedCopies(filePath);
     return target;
   } catch {
@@ -128,16 +170,19 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
     const backupTemporaryPath = path.join(path.dirname(backupPath), `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.tmp`);
     try {
       fs.copyFileSync(sourcePath, backupTemporaryPath);
+      safeChmod(backupTemporaryPath, 0o600);
       const handle = fs.openSync(backupTemporaryPath, "r+");
       try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
       fs.renameSync(backupTemporaryPath, backupPath);
+      safeChmod(backupPath, 0o600);
     } finally {
       try { fs.unlinkSync(backupTemporaryPath); } catch { /* Already renamed or cleanup failed; preserve the original error. */ }
     }
   };
   try {
     const serialized = JSON.stringify(value, null, 2);
-    fs.writeFileSync(temporaryPath, serialized, "utf8");
+    fs.writeFileSync(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
+    safeChmod(temporaryPath, 0o600);
     const handle = fs.openSync(temporaryPath, "r+");
     try {
       fs.fsyncSync(handle);
@@ -151,7 +196,10 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
     // backup failure cannot falsely reject an already committed save.
     if (options.synchronizeBackup === true) {
       backupPreviouslyExisted = fs.existsSync(backupPath);
-      if (backupPreviouslyExisted) fs.copyFileSync(backupPath, previousBackupPath);
+      if (backupPreviouslyExisted) {
+        fs.copyFileSync(backupPath, previousBackupPath);
+        safeChmod(previousBackupPath, 0o600);
+      }
       replaceBackup(temporaryPath);
       backupWasReplaced = true;
     }
@@ -165,6 +213,7 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
     }
     try {
       fs.renameSync(temporaryPath, filePath);
+      safeChmod(filePath, 0o600);
     } catch (error) {
       // A failed primary commit must not make a newly prepared recovery copy
       // look like an accepted save on the next load, especially when the old
@@ -210,5 +259,6 @@ module.exports = {
   CORRUPTED_COPY_LIMIT,
   capItemsPreservingFavorites,
   readJsonWithBackup,
+  tightenUserDataPermissions,
   writeJsonAtomic
 };

@@ -58,6 +58,7 @@ import { useAutoBackup } from "./features/backup/backupClient";
 import { NoteReminderStack } from "./features/notes/NoteReminderStack";
 import { WorkspaceErrorBoundary } from "./components/AppErrorBoundary";
 import WorkspaceNavigation from "./components/WorkspaceNavigation";
+import { applySavedVisualPreferences } from "./features/settings/SettingsView";
 import { initialSettings, normalizeSettings } from "./domain/settings";
 
 export {
@@ -141,19 +142,66 @@ function App() {
   const sidebarCoreOnlyRef = useRef(sidebarCoreOnly);
   sidebarCoreOnlyRef.current = sidebarCoreOnly;
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsCategory, setSettingsCategory] = useState("sources");
+  const [isOffline, setIsOffline] = useState<boolean>(() => typeof navigator !== "undefined" && navigator.onLine === false);
 
-  const [toast, setToast] = useState("");
-  const toastTimer = useRef<number | undefined>(undefined);
-  const showToast = useCallback((message: string) => {
-    window.clearTimeout(toastTimer.current);
-    setToast(message);
-    toastTimer.current = window.setTimeout(() => setToast(""), 2600);
+  type ToastEntry = { id: number; text: string; tone: "info" | "warn" | "error"; durationMs: number };
+  const [toasts, setToasts] = useState<ToastEntry[]>([]);
+  const toastHoverRef = useRef(false);
+  const toastSeqRef = useRef(0);
+  const dismissToast = useCallback((id: number) => {
+    setToasts(current => current.filter(item => item.id !== id));
   }, []);
-  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  const showToast = useCallback((message: string) => {
+    const text = String(message || "").trim();
+    if (!text) return;
+    const tone: ToastEntry["tone"] = /失败|错误|异常|无效|不能|拒绝|受限|不可用|超限/.test(text)
+      ? "error"
+      : /注意|提示|警告|暂停|脱敏|已关闭/.test(text)
+        ? "warn"
+        : "info";
+    const durationMs = tone === "error" ? 5600 : tone === "warn" ? 3800 : 2600;
+    const id = ++toastSeqRef.current;
+    setToasts(current => [...current.filter(item => item.text !== text).slice(-2), { id, text, tone, durationMs }]);
+  }, []);
+  useEffect(() => {
+    if (!toasts.length || typeof window === "undefined") return undefined;
+    const timers = toasts.map(item =>
+      window.setTimeout(() => {
+        if (!toastHoverRef.current) {
+          setToasts(current => current.filter(entry => entry.id !== item.id));
+        }
+      }, item.durationMs)
+    );
+    return () => { timers.forEach(t => window.clearTimeout(t)); };
+  }, [toasts]);
+
+  const openSettings = useCallback((category = "sources") => {
+    setSettingsCategory(category);
+    setView("settings");
+  }, []);
 
   useEffect(() => {
+    applySavedVisualPreferences();
     if (defaultCockpit) setView("cockpit");
   }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+    window.__aStockOpenSettings = openSettings;
+    const onOffline = () => setIsOffline(true);
+    const onOnline = () => setIsOffline(false);
+    if (typeof window.addEventListener === "function") {
+      window.addEventListener("offline", onOffline);
+      window.addEventListener("online", onOnline);
+    }
+    return () => {
+      delete window.__aStockOpenSettings;
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("offline", onOffline);
+        window.removeEventListener("online", onOnline);
+      }
+    };
+  }, [openSettings]);
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
     const onGlobalKeyDown = (event: KeyboardEvent) => {
@@ -600,7 +648,9 @@ function App() {
     ? "实时刷新已暂停"
     : marketDegraded
       ? "行情连接待恢复"
-      : "行情监控运行中";
+      : researchView
+        ? "收盘快照选股就绪"
+        : "行情监控运行中";
   const marketStatusDetail = payload?.updatedAt
     ? `当前 ${actualProviderLabel} · ${new Date(payload.updatedAt).toLocaleTimeString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}`
     : `主线 ${requestedProviderLabel} · 涨停池 ${limitUps.length} 只`;
@@ -674,14 +724,23 @@ function App() {
           favoritesCount: favoriteItems.length,
           awaitingNotesCount: notes.awaitingCount,
           tItemsCount: tAssistant.store.items.length,
-          onNavigateView: navigateTo
+          onNavigateView: navigateTo,
+          hasMonitorAlerts: stockMonitors.alerts.length > 0,
+          onClearMonitorAlerts: stockMonitors.clearAlerts
         })}
 
-        {sourceNotice && sourceNotice.key !== providerBannerDismissed && (
+        {isOffline && (
+          <div className="offline-status-banner" role="alert">
+            <CircleAlert size={15} />
+            <span>本机网络已断开，实时轮询已自动暂停并保留上次有效快照；网络恢复后将自动重连。</span>
+          </div>
+        )}
+
+        {sourceNotice && !isOffline && sourceNotice.key !== providerBannerDismissed && (
           <div className={`provider-setup-banner ${sourceNotice.tone}`} role={sourceNotice.tone === "down" ? "alert" : "status"}>
             <CircleAlert size={16} />
             <span>{sourceNotice.message}</span>
-            <button className="secondary-btn" onClick={() => navigateTo("settings")}>查看数据源</button>
+            <button className="secondary-btn" onClick={() => openSettings("sources")}>查看数据源</button>
             <button className="icon-button" aria-label="关闭数据源提示" title="关闭提示" onClick={() => setProviderBannerDismissed(sourceNotice.key)}><X size={15} /></button>
           </div>
         )}
@@ -711,6 +770,7 @@ function App() {
             </div>
             <div className="copilot-launch-actions">
               <button type="button" className="secondary-btn" onClick={() => navigateTo("cockpit")}>今日驾驶舱</button>
+              {!defaultCockpit && <button type="button" className="secondary-btn" onClick={() => { toggleDefaultCockpit(true); navigateTo("cockpit"); }} title="下次打开软件直接进入今日驾驶舱">设为默认首页</button>}
               <button type="button" className="secondary-btn" onClick={() => navigateTo("ai-picks")}>AI 选股</button>
               <button type="button" className="secondary-btn" onClick={() => navigateTo("ai-agent")}>AI 问股</button>
               <button type="button" className="icon-button" aria-label="收起速览条" title="收起" onClick={() => setLaunchStripDismissed(true)}><X size={14} /></button>
@@ -824,23 +884,45 @@ function App() {
           closePaperTradeForCurrent,
           closePaperTradeForCode,
           closeAllPaperTrades,
-          confirmPaperSettlementForCode
+          confirmPaperSettlementForCode,
+          settingsCategory,
+          openSettings
         })}
 
         <footer className="terminal-statusbar">
-          {!researchView && (
-            <div className="sidebar-status">
-              <div className="status-row">
-                <span className={`live-dot ${!live ? "paused" : marketDegraded ? "degraded" : ""}`} />
-                <div><strong>{marketStatus}</strong><small>{marketStatusDetail}</small></div>
-              </div>
-              <div className="quota-text"><span>请求主源 {requestedProviderLabel}</span><b>实际 {actualProviderLabel}</b></div>
+          <div className="sidebar-status">
+            <div className="status-row">
+              <span className={`live-dot ${isOffline || !live ? "paused" : marketDegraded ? "degraded" : ""}`} />
+              <div><strong>{isOffline ? "本机离线" : marketStatus}</strong><small>{marketStatusDetail}</small></div>
             </div>
-          )}
+            <div className="quota-text"><span>请求主源 {requestedProviderLabel}</span><b>实际 {actualProviderLabel}</b></div>
+          </div>
           <div className="version">趋势定制版 v{version} · 仅供研究，不构成投资建议</div>
         </footer>
       </main>
-      {toast && <div className="toast" role="status" aria-live="polite"><ShieldCheck size={17} />{toast}</div>}
+      {toasts.length > 0 && (
+        <div
+          className="toast-stack"
+          onMouseEnter={() => { toastHoverRef.current = true; }}
+          onMouseLeave={() => {
+            toastHoverRef.current = false;
+            setToasts(current => current.slice(1));
+          }}
+        >
+          {toasts.map(item => (
+            <div
+              key={item.id}
+              className={`toast is-${item.tone}`}
+              role="status"
+              aria-live={item.tone === "error" ? "assertive" : "polite"}
+            >
+              {item.tone === "error" || item.tone === "warn" ? <CircleAlert size={17} /> : <ShieldCheck size={17} />}
+              <span>{item.text}</span>
+              <button type="button" className="toast-close-btn" aria-label="关闭提示" onClick={() => dismissToast(item.id)}><X size={14} /></button>
+            </div>
+          ))}
+        </div>
+      )}
       <WorkspaceErrorBoundary label="随心记提醒" compact>
         <NoteReminderStack
           api={notes}

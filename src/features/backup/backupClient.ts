@@ -6,6 +6,12 @@ export type BackupFile = { name: string; size: number };
 export type BackupStatus = {
   folder: string; auto: boolean; keep: number; lastBackupAt: string; lastError: string; hasPassword: boolean;
   files: BackupFile[]; suggestions: Array<{ label: string; path: string }>;
+  storageSummary?: {
+    userDataBytes: number;
+    dailyBarsBytes: number;
+    dailyBarsCount: number;
+    webCacheBytes: number;
+  } | undefined;
 };
 export type BackupApi = {
   status(): Promise<BackupStatus>;

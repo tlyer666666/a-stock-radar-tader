@@ -81,17 +81,19 @@ export function AiMarketReviewPanel({ asOfDate, onReview }: { asOfDate: string; 
     finally { if (generation.current === current) { setBusy(""); setLiveSteps([]); setLiveText(""); } }
   };
 
+  const canJumpAi = typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function";
   return <section className="panel ai-market-review" aria-label="AI 市场复盘">
     <header className="ai-stock-review-head">
       <div><Bot size={18} /><span><b>AI 复盘</b><small>{configured ? `AI 先看本页概况，再自主调用复盘技能（板块强度、涨停原因、连板梯队、炸板跌停、热股、龙虎榜、异动、板块成分、个股体检、历次复盘）补数据，最后写复盘${previousDate ? `；可回看 ${previousDate} 的判断` : "；次日可回看兑现情况"}` : "未配置模型：到「设置 → AI 助手」添加模型配置"}</small></span></div>
       <div className="ai-selection-actions">
+        {!configured && canJumpAi && <button type="button" className="secondary-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>去配置 AI</button>}
         <button type="button" className="secondary-btn" onClick={() => void run("lookback")} disabled={!configured || Boolean(busy) || !previousDate} title={previousDate ? "" : "还没有更早的 AI 复盘"}>
           {busy === "lookback" ? <LoaderCircle size={15} className="spin" /> : <History size={15} />}{busy === "lookback" ? "回看中…" : lookback ? "重新回看" : "回看上次判断"}</button>
         <button type="button" className="primary-btn" onClick={() => void run("review")} disabled={!configured || Boolean(busy)}>
           {busy === "review" ? <LoaderCircle size={15} className="spin" /> : review ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy === "review" ? "AI 调用技能分析中…" : review ? "重新复盘" : "AI 复盘"}</button>
       </div>
     </header>
-    {error && <div className="test-result fail" role="alert"><span />{error}</div>}
+    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
     {busy === "review" && (liveSteps.length > 0 || liveText) && (
       <div className="ai-stream-preview" aria-live="polite">
         {liveSteps.length > 0 && <SkillSteps steps={liveSteps} live />}

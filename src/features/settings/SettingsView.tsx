@@ -5,14 +5,58 @@ import { AiSettingsCard } from "./AiSettingsCard";
 import { BackupSettingsCard } from "../backup/BackupSettingsCard";
 import { quickStrategyPresets as strategyPresets } from "../../quickStrategyPresets";
 import { clampNumber, normalizeRiskProfile, riskProfilePresets, sameStrategySet, strategyOptions } from "../../domain/settings";
-import { sourceStatusLabel } from "../market/marketSourceHealth";
+import { humanizeMarketSourceError, sourceStatusLabel } from "../market/marketSourceHealth";
 import { startVisibleInterval } from "../../visiblePolling";
 /* B-04 / B-11：行情来源的「最近成功时间」统一按北京时间显示，非法时间戳兜底 “--”。 */
 import { formatShanghaiTime } from "../../dateUtils";
 
-export function SettingsView({ value, loadState, onSave }: { value: Settings; loadState: "loading" | "ready" | "failed"; onSave: (next: Partial<Settings>) => Promise<Settings> }) {
+export const UI_SCALE_STORAGE_KEY = "a-stock-radar:ui-scale:v1";
+export const COLOR_VISION_STORAGE_KEY = "a-stock-radar:color-vision:v1";
+
+export function applySavedVisualPreferences(): void {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  try {
+    const rawScale = Number(window.localStorage?.getItem(UI_SCALE_STORAGE_KEY) || "100");
+    const scale = [90, 100, 110, 120].includes(rawScale) ? rawScale : 100;
+    document.documentElement.style.zoom = scale === 100 ? "" : `${scale}%`;
+    const cvd = window.localStorage?.getItem(COLOR_VISION_STORAGE_KEY) === "cvd" ? "cvd" : "standard";
+    document.documentElement.dataset.colorVision = cvd;
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function SettingsView({
+  value,
+  loadState,
+  onSave,
+  initialCategory
+}: {
+  value: Settings;
+  loadState: "loading" | "ready" | "failed";
+  onSave: (next: Partial<Settings>) => Promise<Settings>;
+  initialCategory?: string | undefined;
+}) {
   const [draft, setDraft] = useState<Settings>({ ...value, provider: "ths" });
-  const [category, setCategory] = useState("sources");
+  const [category, setCategory] = useState(() => initialCategory || "sources");
+  const [uiScale, setUiScale] = useState<number>(() => {
+    try {
+      const n = Number(typeof window !== "undefined" ? window.localStorage?.getItem(UI_SCALE_STORAGE_KEY) : 100);
+      return [90, 100, 110, 120].includes(n) ? n : 100;
+    } catch {
+      return 100;
+    }
+  });
+  const [colorVision, setColorVision] = useState<"standard" | "cvd">(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage?.getItem(COLOR_VISION_STORAGE_KEY) === "cvd" ? "cvd" : "standard";
+    } catch {
+      return "standard";
+    }
+  });
+  useEffect(() => {
+    if (initialCategory) setCategory(initialCategory);
+  }, [initialCategory]);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     signature: string;
@@ -43,7 +87,8 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
     if (!entry || entry.status === "idle") return fallback;
     const latency = Number.isFinite(entry.lastLatencyMs) ? ` · ${entry.lastLatencyMs}ms` : "";
     if (entry.status === "ok") return `${sourceStatusLabel(entry)} · ${formatShanghaiTime(entry.lastOkAt)}${latency}`;
-    return `${sourceStatusLabel(entry)}${entry.lastError ? ` · ${entry.lastError.slice(0, 40)}` : ""}`;
+    const errText = humanizeMarketSourceError(entry.lastError);
+    return `${sourceStatusLabel(entry)}${errText ? ` · ${errText}` : ""}`;
   };
   const laneState = (id: string) => healthById.get(id)?.status || "idle";
   // Credentials participate only in this in-memory comparison; never log or persist it.
@@ -315,6 +360,40 @@ export function SettingsView({ value, loadState, onSave }: { value: Settings; lo
           <label className="switch-row">
             <span><b>只提醒精确节点</b><small>仅在 T+3 / T+5 / T+7 / T+9 触发。</small></span>
             <input type="checkbox" checked={draft.exactNodesOnly} onChange={(e) => setDraft({ ...draft, exactNodesOnly: e.target.checked })} />
+            <i />
+          </label>
+          <div className="field">
+            <span>界面字号缩放 <b>{uiScale}%</b></span>
+            <div className="ui-scale-presets" role="group" aria-label="界面字号缩放">
+              {[90, 100, 110, 120].map(scale => (
+                <button
+                  type="button"
+                  key={scale}
+                  aria-pressed={uiScale === scale}
+                  onClick={() => {
+                    setUiScale(scale);
+                    try { window.localStorage?.setItem(UI_SCALE_STORAGE_KEY, String(scale)); } catch { /* ignore */ }
+                    applySavedVisualPreferences();
+                  }}
+                >
+                  <b>{scale}%</b>
+                  <small>{scale === 90 ? "紧凑高密" : scale === 100 ? "标准默认" : scale === 110 ? "大屏舒适" : "远视距大字"}</small>
+                </button>
+              ))}
+            </div>
+          </div>
+          <label className="switch-row">
+            <span><b>色觉友好色板（红涨蓝跌）</b><small>将下跌绿色切换为高对比蓝色，配合 K 线空心阳线方便红绿色弱投资者一眼分辨阴阳。</small></span>
+            <input
+              type="checkbox"
+              checked={colorVision === "cvd"}
+              onChange={(e) => {
+                const next = e.target.checked ? "cvd" : "standard";
+                setColorVision(next);
+                try { window.localStorage?.setItem(COLOR_VISION_STORAGE_KEY, next); } catch { /* ignore */ }
+                applySavedVisualPreferences();
+              }}
+            />
             <i />
           </label>
           <div className="api-note">

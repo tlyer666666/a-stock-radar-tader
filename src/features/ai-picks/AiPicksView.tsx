@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Award, Bookmark, BookmarkCheck, Bot, ChevronRight, CircleAlert, History, ListChecks, LoaderCircle, MessagesSquare, RefreshCw, Sparkles, Target, Wand2 } from "lucide-react";
+import { Award, Bookmark, BookmarkCheck, Bot, ChevronRight, CircleAlert, History, ListChecks, LoaderCircle, MessagesSquare, RefreshCw, Settings, Sparkles, Target, Wand2 } from "lucide-react";
 import { AiCustomBoard } from "./AiCustomBoard";
 import { PageHeading } from "../../components/terminal/TerminalPrimitives";
 import { AiDimChips, AiFrameworkPicker, AiScoreCell, useAiFrameworks } from "./AiFrameworkParts";
@@ -10,7 +10,7 @@ import { createServiceJobScope } from "../../serviceJobClient";
 import { selectionSummaryDataState } from "../../domain/strategySelectionDataState";
 import { startVisibleInterval } from "../../visiblePolling";
 import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
-import { readTrendPlans, saveQuickObservationPlan } from "../../trendWorkspace";
+import { readTrendPlans, saveQuickObservationPlan, TREND_PLAN_STORAGE_KEY } from "../../trendWorkspace";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -51,6 +51,7 @@ const stamp = (value: { model: string; generatedAt: string; cached?: boolean | u
 export default function AiPicksView({
   onOpen,
   onOpenStrategies,
+  onOpenSettings,
   favoriteCodes,
   onToggleFavorite,
   onShowToast,
@@ -59,6 +60,7 @@ export default function AiPicksView({
 }: {
   onOpen?: ((security: Security) => void) | undefined;
   onOpenStrategies?: (() => void) | undefined;
+  onOpenSettings?: (() => void) | undefined;
   favoriteCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
   onShowToast?: ((message: string) => void) | undefined;
@@ -68,12 +70,38 @@ export default function AiPicksView({
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai;
   const [plannedCodes, setPlannedCodes] = useState<Set<string>>(() => {
     try {
-      if (typeof window === "undefined") return new Set();
+      if (typeof window === "undefined" || !window.localStorage) return new Set();
       return new Set(readTrendPlans(window.localStorage).plans.filter(p => !p.archivedAt).map(p => p.candidate.security.code));
     } catch {
       return new Set();
     }
   });
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function" || !window.localStorage) return;
+    const syncPlanned = (event?: Event) => {
+      if (event && "key" in event) {
+        const storageEvent = event as StorageEvent;
+        if (storageEvent.key !== null && storageEvent.key !== TREND_PLAN_STORAGE_KEY) return;
+      }
+      try {
+        const nextCodes = new Set(readTrendPlans(window.localStorage).plans.filter(p => !p.archivedAt).map(p => p.candidate.security.code));
+        setPlannedCodes(prev => {
+          if (prev.size === nextCodes.size && [...prev].every(code => nextCodes.has(code))) return prev;
+          return nextCodes;
+        });
+      } catch {
+        // ignore storage read error
+      }
+    };
+    window.addEventListener("focus", syncPlanned);
+    window.addEventListener("storage", syncPlanned);
+    window.addEventListener("a-stock-radar:trend-plans-updated", syncPlanned);
+    return () => {
+      window.removeEventListener("focus", syncPlanned);
+      window.removeEventListener("storage", syncPlanned);
+      window.removeEventListener("a-stock-radar:trend-plans-updated", syncPlanned);
+    };
+  }, []);
   const [report, setReport] = useState<StrategySignalReport | null>(() => getSelectionReport<StrategySignalReport>());
   const [scanning, setScanning] = useState(false);
   const [scanError, setScanError] = useState("");
@@ -236,6 +264,50 @@ export default function AiPicksView({
   const coverage = scoringCoverage(ranking, candidateCodes, expectedModels);
   const action = scoreAction({ selected: selection.list, scored: coverage.complete, total: candidateCodes, answered: coverage.answered });
   const selectable = !isHistory;
+  const batchAddPlans = () => {
+    if (typeof window === "undefined" || !window.localStorage || !selection.list.length) return;
+    const rowByCode = new Map(boardRows.map(row => [row.code, row]));
+    const candByCode = new Map(candidates.map(item => [item.code, item]));
+    let addedCount = 0;
+    let existingCount = 0;
+    let skippedNoPrice = 0;
+    const addedCodes: string[] = [];
+    for (const code of selection.list) {
+      const row = rowByCode.get(code);
+      const source = row?.source || candByCode.get(code);
+      const name = row?.name || source?.name || code;
+      const livePrice = Number(quotes.entries[code]?.quote?.latest);
+      const refPrice = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : source?.latest;
+      const res = saveQuickObservationPlan(window.localStorage, {
+        code,
+        name,
+        secid: source?.secid || secidFor(code),
+        referencePrice: refPrice,
+        asOf: asOfDate || source?.signalDate,
+        reason: row?.ai?.highlights || (row?.ai ? `AI评分 ${row.ai.score} (${row.ai.rating})` : "AI 候选批量关注")
+      });
+      if (!res.ok) {
+        skippedNoPrice += 1;
+      } else {
+        addedCodes.push(code);
+        if (res.created) addedCount += 1;
+        else existingCount += 1;
+      }
+    }
+    if (addedCodes.length) {
+      setPlannedCodes(prev => {
+        const next = new Set(prev);
+        for (const code of addedCodes) next.add(code);
+        return next;
+      });
+    }
+    const parts = [
+      addedCount ? `新增 ${addedCount} 只观察计划` : "",
+      existingCount ? `${existingCount} 只已在计划中` : "",
+      skippedNoPrice ? `${skippedNoPrice} 只暂缺参考价` : ""
+    ].filter(Boolean);
+    onShowToast?.(parts.length ? `批量流转完成：${parts.join("，")}` : "未生成新的观察计划");
+  };
 
   if (!api) return <div className="ai-picks-view"><div className="page-heading"><div><h1>AI 选股</h1><p>AI 打分、每日复盘和大白话建策略需要在桌面版使用。</p></div></div>
     <div className="panel strategy-stock-empty"><Bot size={28} /><b>浏览器预览不调用 AI</b><p>请在桌面版「设置 → AI 助手」添加模型配置后使用。</p></div></div>;
@@ -271,7 +343,7 @@ export default function AiPicksView({
         {frameworks.available && <AiFrameworkPicker inline catalog={frameworks.catalog} onChoose={id => void frameworks.choose(id)} disabled={Boolean(busy)} />}
         {!custom && profiles && profiles.profiles.length > 1 && <label className="ai-profile-select"><span>总结用</span><select aria-label="每日总结使用的模型" value={profiles.activeId} disabled={Boolean(busy)} onChange={event => void switchProfile(event.target.value)}>
           {profiles.profiles.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
-        {!custom && <><button type="button" className="secondary-btn" onClick={() => void scan(true)} disabled={scanning || Boolean(busy)}>
+        {!custom && <>{!configured && onOpenSettings && <button type="button" className="secondary-btn" onClick={onOpenSettings}><Settings size={15} />前往 AI 设置</button>}<button type="button" className="secondary-btn" onClick={() => void scan(true)} disabled={scanning || Boolean(busy)}>
           <RefreshCw size={15} />刷新候选</button><button type="button" className="primary-btn" onClick={() => void run("rank", action.force, action.only)} disabled={!configured || scanning || Boolean(busy) || !picks.length}>
           {busy === "rank" ? <LoaderCircle size={15} className="spin" /> : action.force && !action.only ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy === "rank" ? "AI 打分中…" : action.label}</button>
         <button type="button" className="secondary-btn" onClick={() => void run("summary", Boolean(summary))} disabled={!configured || scanning || Boolean(busy) || !picks.length}>
@@ -286,7 +358,7 @@ export default function AiPicksView({
           <input type="checkbox" checked={rankIds.includes(item.id)} disabled={Boolean(busy)} onChange={() => void toggleRankModel(item.id)} />{item.name}<small>{item.model}</small></label>)}
         <small>综合分取平均，分差 ≥ 20 标“模型分歧”；每套各计费</small>
       </div>}
-      {error && <div className="test-result fail" role="alert"><span />{error}</div>}
+      {error && <div className="test-result fail" role="alert"><span />{error}{onOpenSettings && <> <button type="button" className="link-btn" onClick={onOpenSettings}>前往 AI 设置</button></>}</div>}
     </section>}
 
     {leaderboard && (leaderboard.evaluatedSamples > 0 || leaderboard.lookbackStats.count > 0 || leaderboard.recentMisses.length > 0) && (
@@ -364,7 +436,7 @@ export default function AiPicksView({
     )}
 
     {custom && <AiCustomBoard configured={configured} reload={reload} expectedModels={expectedModels} historyRanking={historyDay?.custom} historyDate={isHistory ? viewing.asOfDate : undefined}
-      onOpen={onOpen} onChanged={loadHistory} live={live} quoteRefreshSeconds={quoteRefreshSeconds} />}
+      onOpen={onOpen} onOpenSettings={onOpenSettings} onShowToast={onShowToast} onChanged={loadHistory} live={live} quoteRefreshSeconds={quoteRefreshSeconds} />}
 
     {!custom && shownSummary && <article className="panel ai-summary" aria-label="AI 每日总结">
       <h3>{shownSummary.headline || "本轮选股总结"}<small>{shownSummary.asOfDate ? `数据日 ${shownSummary.asOfDate} · ` : ""}{stamp(shownSummary)}</small></h3>
@@ -387,10 +459,11 @@ export default function AiPicksView({
         {shownRanking && <div role="group" aria-label="按评级筛选">{RATING_FILTERS.map(item => <button key={item} type="button" className={filter === item ? "active" : ""} aria-pressed={filter === item} onClick={() => setFilter(item)}>{item}{item !== "全部" ? ` ${shownRanking.items.filter(row => !row.fallback && row.rating === item).length}` : ""}</button>)}</div>}</div>
       {!!shownRanking?.failed?.length && <div className="test-result fail" role="status"><span />{shownRanking.failed.join("、")} 的日线没读到，这次没有参与打分，可稍后再点「AI 打分」补上。</div>}
       {partialModels.length > 0 && <div className="test-result fail" role="status"><span />{partialModels.map(item => `${item.name} 有 ${item.missed} 只这一批没有返回`).join("；")}，这些股票按基础分显示或暂缺 AI 点评，可点「重新打分」再试。</div>}
-      {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}{shownRanking?.items.length ? "。请核对模型完成情况。" : ""}</div>}
+      {failedModels.length > 0 && <div className="test-result fail" role="alert"><span />{failedModels.map(item => `${item.name} 打分失败：${item.error || "未知原因"}`).join("；")}{shownRanking?.items.length ? "。请核对模型完成情况。" : ""}{onOpenSettings && <> <button type="button" className="link-btn" onClick={onOpenSettings}>前往 AI 设置</button></>}</div>}
       <div className="ai-board-toolbar">
       {selectable && (!!candidates.length || removedCount > 0) && <AiSelectionBar selection={selection} removeLabel="移除" removeDisabled={Boolean(busy)} hint="勾选几只可以只给它们打分；点行首 × 把股票从候选里移除（不影响策略选股结果）"
         onRemoveSelected={() => { if (busy) return; updateExcluded([...excluded, ...selection.list]); selection.clear(); }} removedCount={removedCount} onRestore={() => { if (!busy) updateExcluded([]); }} />}
+      {selectable && selection.list.length > 0 && <button type="button" className="secondary-btn" disabled={Boolean(busy)} onClick={batchAddPlans}><Target size={14} />批量+观察计划（{selection.list.length} 只）</button>}
       {!isHistory && !!pageRows.length && <SelectionQuoteControls total={pageRows.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />}
       </div>
       <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="AI 打分榜表格，可横向滚动">
@@ -429,7 +502,7 @@ export default function AiPicksView({
             <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? (shownRanking?.models?.length || 1) : expectedModels} /> : <small>未打分</small>}</td>
             {multi && <td className="ai-model-scores">{(row.ai?.scores || []).map(score => <span key={score.id} className={ratingTone(score.rating)}>{score.name} <b>{score.score}</b></span>)}
               {row.ai?.disagreement && <em className="ai-disagreement" title={`各模型分差 ${row.ai.spread} 分`}>模型分歧</em>}</td>}
-            <th scope="row" className="strategy-stock-name"><b>{row.name}</b><small>{row.code}</small>{row.source && <small className="strategy-stock-reasons">{row.source.strategies.map(item => item.name).slice(0, 3).join(" · ")}{row.source.strategies.length > 3 ? ` 等 ${row.source.strategies.length} 个策略` : ""}</small>}</th>
+            <th scope="row" className="strategy-stock-name">{onOpen ? <button type="button" className="strategy-security-link" onClick={event => { event.stopPropagation(); open({ code: row.code, name: row.name, secid: row.source?.secid }); }} aria-label={`查看 ${row.name} ${row.code} 个股分析`}><b>{row.name}</b><small>{row.code}</small></button> : <><b>{row.name}</b><small>{row.code}</small></>}{row.source && <small className="strategy-stock-reasons">{row.source.strategies.map(item => item.name).slice(0, 3).join(" · ")}{row.source.strategies.length > 3 ? ` 等 ${row.source.strategies.length} 个策略` : ""}</small>}</th>
             <td><SelectionKline security={sec} signalDate={row.source?.signalDate} /></td>
             {!isHistory && <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[row.code]} selectionClose={row.source?.latest} /></td>}
             {hasDims && <td className="ai-dims-cell"><AiDimChips dims={row.ai?.dims} /></td>}

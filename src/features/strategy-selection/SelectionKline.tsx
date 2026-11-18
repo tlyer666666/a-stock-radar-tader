@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw, X } from 'lucide-react';
+import TimeShareChart from '../market/TimeShareChart';
 import { calculatePriceMovingAverages } from '../../priceChartSeries';
 import { startVisibleInterval } from '../../visiblePolling';
 import { subscribeSelectionChart, type SelectionChart, type SelectionCandle } from './selectionChartData';
@@ -75,24 +76,124 @@ function Chart({ data, compact = false, signalDate, sessions = 120 }: { data: Se
 function Detail({ security, signalDate, data, error, loading, refresh, close }: { security: Security; signalDate?: string | undefined; data: SelectionChart | null; error: string; loading: boolean; refresh: () => void; close: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   const title = useId();
+  const [chartMode, setChartMode] = useState<'daily' | 'timeshare'>('daily');
   const [sessions, setSessions] = useState(120);
+  const [tsState, setTsState] = useState<{
+    loading: boolean;
+    error: string;
+    rows: Array<Record<string, unknown>>;
+    preClose: number | null;
+    source: string;
+    note: string;
+    updatedAt: string;
+    unitsPerLot?: number | undefined;
+    volumeUnit?: 'lots' | 'shares' | undefined;
+  }>({ loading: false, error: '', rows: [], preClose: null, source: '', note: '', updatedAt: '' });
+  const tsAliveRef = useRef(true);
+  const tsReqRef = useRef(0);
   const behindSignal = Boolean(data && signalDate && data.rows.at(-1)!.date < signalDate);
   useEffect(() => {
+    tsAliveRef.current = true;
     const dialog = ref.current!;
     const trigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialog.showModal();
-    return () => { dialog.close(); if (trigger?.isConnected) trigger.focus({ preventScroll: true }); };
+    return () => {
+      tsAliveRef.current = false;
+      tsReqRef.current += 1;
+      dialog.close();
+      if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+    };
   }, []);
+  const loadTimeShare = async (forceRefresh = false) => {
+    if (typeof window === 'undefined' || typeof window.stockApi?.getChart !== 'function') {
+      setTsState(prev => ({ ...prev, loading: false, error: '当前环境不支持当日分时读取' }));
+      return;
+    }
+    const reqId = ++tsReqRef.current;
+    setTsState(prev => ({ ...prev, loading: true, error: '' }));
+    try {
+      let res: Awaited<ReturnType<Window['stockApi']['getChart']>>;
+      try {
+        res = await window.stockApi.getChart(security, 'time', { forceRefresh });
+      } catch {
+        res = await window.stockApi.getChart(security, 'timeshare', { forceRefresh });
+      }
+      if (!tsAliveRef.current || reqId !== tsReqRef.current) return;
+      const rows = Array.isArray(res) ? (res as Array<Record<string, unknown>>) : Array.isArray(res?.rows) ? (res.rows as Array<Record<string, unknown>>) : [];
+      if (!rows.length) throw new Error('暂无分时数据');
+      const pre = Number(res?.preClose);
+      const volUnit = res?.volumeUnit === 'lots' || res?.volumeUnit === 'shares' ? res.volumeUnit : undefined;
+      setTsState({
+        loading: false,
+        error: '',
+        rows,
+        preClose: Number.isFinite(pre) && pre > 0 ? pre : null,
+        source: String(res?.source || '实时分时'),
+        note: String(res?.note || ''),
+        updatedAt: String(res?.updatedAt || new Date().toISOString()),
+        ...(typeof res?.unitsPerLot === 'number' ? { unitsPerLot: res.unitsPerLot } : {}),
+        ...(volUnit ? { volumeUnit: volUnit } : {})
+      });
+    } catch (err) {
+      if (!tsAliveRef.current || reqId !== tsReqRef.current) return;
+      setTsState(prev => ({
+        ...prev,
+        loading: false,
+        error: err instanceof Error ? err.message : '当日分时加载失败'
+      }));
+    }
+  };
+  useEffect(() => {
+    if (chartMode === 'timeshare' && !tsState.rows.length && !tsState.loading) {
+      void loadTimeShare(false);
+    }
+  }, [chartMode, security.code, security.secid]);
   return createPortal(<dialog ref={ref} className="selection-kline-dialog" aria-labelledby={title} onMouseDown={event => {
       if (event.target !== event.currentTarget) return;
       const box = event.currentTarget.getBoundingClientRect();
       if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) close();
     }} onCancel={event => { event.preventDefault(); close(); }} onClick={event => event.stopPropagation()}>
     <header><div><small>策略选股 · K线详情</small><h2 id={title}>{security.name} <span>{security.code}</span></h2></div><button type="button" className="secondary-btn" aria-label="关闭K线详情" onClick={close} autoFocus><X size={18} /></button></header>
-    <div className="selection-chart-toolbar"><div className="selection-chart-ranges" role="group" aria-label="日K显示范围">{[30,60,120].map(count => <button key={count} type="button" aria-pressed={sessions === count} onClick={() => setSessions(count)}>近{count}日</button>)}</div><button type="button" className="secondary-btn" disabled={loading} onClick={refresh}><RefreshCw size={14} />{loading ? '刷新中…' : '刷新K线'}</button></div>
-    {behindSignal && <p className="selection-chart-error" role="status">日K行情早于信号日，请刷新后核对。</p>}
-    {error && <p className="selection-chart-error" role="alert">{error}{data ? '；保留上次图表。' : '，请点击刷新K线重试。'}</p>}
-    {data ? <><Chart data={data} signalDate={signalDate} sessions={sessions} /><div className="selection-chart-meta"><p>{data.source} · {data.adjustment}</p><p>行情截至 {data.rows.at(-1)?.date} · {sessionNote(data.rows.at(-1)!.date)}</p><p>获取时间 {Number.isFinite(Date.parse(data.updatedAt)) ? new Date(data.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未提供'}（北京时间）</p><p>图表为最新行情，与选股快照分别更新。显示期间每60秒检查更新；隐藏页面暂停。历史不足所选范围时按实际数量展示。{data.note}</p></div></> : !error && <p role="status">正在加载日K线…</p>}
+    <div className="selection-chart-toolbar">
+      <div className="selection-chart-ranges" role="group" aria-label="图表模式切换">
+        <button type="button" aria-pressed={chartMode === 'daily'} onClick={() => setChartMode('daily')}>日K线</button>
+        <button type="button" aria-pressed={chartMode === 'timeshare'} onClick={() => setChartMode('timeshare')}>当日分时</button>
+      </div>
+      {chartMode === 'daily' ? (
+        <>
+          <div className="selection-chart-ranges" role="group" aria-label="日K显示范围">{[30,60,120].map(count => <button key={count} type="button" aria-pressed={sessions === count} onClick={() => setSessions(count)}>近{count}日</button>)}</div>
+          <button type="button" className="secondary-btn" disabled={loading} onClick={refresh}><RefreshCw size={14} />{loading ? '刷新中…' : '刷新K线'}</button>
+        </>
+      ) : (
+        <button type="button" className="secondary-btn" disabled={tsState.loading} onClick={() => void loadTimeShare(true)}><RefreshCw size={14} />{tsState.loading ? '刷新中…' : '刷新分时'}</button>
+      )}
+    </div>
+    {chartMode === 'daily' ? (
+      <>
+        {behindSignal && <p className="selection-chart-error" role="status">日K行情早于信号日，请刷新后核对。</p>}
+        {error && <p className="selection-chart-error" role="alert">{error}{data ? '；保留上次图表。' : '，请点击刷新K线重试。'}</p>}
+        {data ? <><Chart data={data} signalDate={signalDate} sessions={sessions} /><div className="selection-chart-meta"><p>{data.source} · {data.adjustment}</p><p>行情截至 {data.rows.at(-1)?.date} · {sessionNote(data.rows.at(-1)!.date)}</p><p>获取时间 {Number.isFinite(Date.parse(data.updatedAt)) ? new Date(data.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未提供'}（北京时间）</p><p>图表为最新行情，与选股快照分别更新。显示期间每60秒检查更新；隐藏页面暂停。历史不足所选范围时按实际数量展示。{data.note}</p></div></> : !error && <p role="status">正在加载日K线…</p>}
+      </>
+    ) : (
+      <>
+        {tsState.error && <p className="selection-chart-error" role="alert">{tsState.error}{tsState.rows.length ? '；保留上次分时图表。' : '，请点击刷新分时重试。'}</p>}
+        {tsState.rows.length > 0 ? (
+          <>
+            <TimeShareChart
+              rows={tsState.rows}
+              preClose={tsState.preClose}
+              assetType={security.assetType || 'stock'}
+              unitsPerLot={tsState.unitsPerLot}
+              volumeUnit={tsState.volumeUnit}
+            />
+            <div className="selection-chart-meta">
+              <p>{tsState.source} · 不复权</p>
+              <p>获取时间 {Number.isFinite(Date.parse(tsState.updatedAt)) ? new Date(tsState.updatedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '未提供'}（北京时间）{tsState.note ? ` · ${tsState.note}` : ''}</p>
+            </div>
+          </>
+        ) : !tsState.error && <p role="status">正在加载当日分时…</p>}
+      </>
+    )}
   </dialog>, document.body);
 }
 export function SelectionKline({ security, signalDate }: { security: Security; signalDate?: string | undefined }) {

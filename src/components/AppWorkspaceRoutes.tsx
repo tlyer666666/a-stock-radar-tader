@@ -164,6 +164,8 @@ type AppWorkspaceRoutesProps = {
   closePaperTradeForCode: (code: string, reason?: PaperClosedPosition["closeReason"]) => void;
   closeAllPaperTrades: (reason?: PaperClosedPosition["closeReason"]) => void;
   confirmPaperSettlementForCode?: ((code: string) => void) | undefined;
+  settingsCategory?: string | undefined;
+  openSettings?: ((category?: string) => void) | undefined;
 };
 
 export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
@@ -273,8 +275,18 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
     closePaperTradeForCurrent,
     closePaperTradeForCode,
     closeAllPaperTrades,
-    confirmPaperSettlementForCode
+    confirmPaperSettlementForCode,
+    settingsCategory,
+    openSettings
   } = props;
+
+  const currentAnalysisCode = payload?.security?.code || (typeof analysisTarget === "string" ? analysisTarget : analysisTarget?.code) || "";
+  const seqIndex = currentAnalysisCode ? compareCandidates.findIndex(item => item.code === currentAnalysisCode) : -1;
+  const prevStock = seqIndex > 0 ? compareCandidates[seqIndex - 1] : undefined;
+  const nextStock = seqIndex >= 0 && seqIndex + 1 < compareCandidates.length ? compareCandidates[seqIndex + 1] : undefined;
+  const handleToggleFavoriteSecurity = (stock: Security) => { void toggleFavorite(stock); };
+  const handleOpenAiSettings = () => (openSettings ? openSettings("ai") : navigateTo("settings"));
+  const returnToSignals = () => navigateTo("signals");
 
   return (
     <div className={`page ${view === "review" ? "review-page-host" : ""}`}>
@@ -319,6 +331,9 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               onQuickHoldingTrade={handleQuickHoldingTrade}
               onTransferToT={addNoteToT}
               onShowToast={showToast}
+              onOpenSettings={openSettings}
+              onPrevStock={prevStock ? () => openAnalysis(prevStock, analysisOrigin) : undefined}
+              onNextStock={nextStock ? () => openAnalysis(nextStock, analysisOrigin) : undefined}
               onDiscover={discover}
               discovering={discovering}
               limitUps={limitUps}
@@ -397,6 +412,21 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               monitors={stockMonitors}
               privacyMask={privacyMask}
               onTransferToT={addNoteToT}
+              paperPositions={paperSummary.normalized.openPositions}
+              paperMetrics={{
+                equity: paperSummary.equity,
+                cash: paperSummary.normalized.cash,
+                openValue: paperSummary.openValue,
+                openPnl: paperSummary.openPnl,
+                openPnlPercent: paperSummary.openPnlPercent,
+                cumulativeRealizedPnl: paperSummary.cumulativeRealizedPnl,
+                closedCount: paperSummary.closedCount,
+                winCount: paperSummary.winCount
+              }}
+              onClosePaperPosition={(code) => closePaperTradeForCode(code, "MANUAL")}
+              onOpenPaperStock={(security: Security) =>
+                openAnalysis(security, { view: "holdings", label: "返回持仓股" })
+              }
               onSave={saveHoldings}
               onOpen={(item: HoldingItem) =>
                 openAnalysis(item, { view: "holdings", label: "返回持仓股" })
@@ -412,6 +442,11 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               items={observationItems}
               activeNode={watchlistNode}
               onNodeChange={setWatchlistNode}
+              quotes={Object.fromEntries(
+                Object.entries(newsLiveQuotes).map(([code, q]) => [code, { latest: q.price, changePct: q.changePct }])
+              )}
+              favoriteCodes={favoriteCodes}
+              onAddFavorite={(item) => { void addFavoriteSecurity(item); }}
               onOpen={(item: WatchItem) => openAnalysis(item, {
                 view: "watchlist",
                 node: watchlistNode,
@@ -423,13 +458,15 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         </WorkspaceErrorBoundary>
       )}
       {view === "beijing" && (
-        <WorkspaceErrorBoundary key={view} label="北交所" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={view} label="北交所" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
             <SectorView
               dedicatedSector="北交所"
               rows={[]}
               loading={false}
               loadError=""
+              favoriteCodes={favoriteCodes}
+              onToggleFavorite={handleToggleFavoriteSecurity}
               onRefresh={() => true}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "beijing", label: "返回北交所" })}
             />
@@ -437,15 +474,20 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         </WorkspaceErrorBoundary>
       )}
       {view === "hsgt" && (
-        <WorkspaceErrorBoundary key={view} label="沪深港通" onReturnHome={() => navigateTo("signals")}>
-          <Suspense fallback={<LoadingState />}><HsgtWebView /></Suspense>
+        <WorkspaceErrorBoundary key={view} label="沪深港通" onReturnHome={returnToSignals}>
+          <Suspense fallback={<LoadingState />}>
+            <HsgtWebView onOpenStock={(code) => openAnalysis(code, { view: "hsgt", label: "返回沪深港通" })} />
+          </Suspense>
         </WorkspaceErrorBoundary>
       )}
       {view === "bonds" && (
-        <WorkspaceErrorBoundary key={view} label="可转债" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={view} label="可转债" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
             <ConvertibleBondView
               onOpenSecurity={(security: Security) => openAnalysis(security, { view: "bonds", label: "返回可转债" })}
+              favoriteCodes={favoriteCodes}
+              onToggleFavorite={handleToggleFavoriteSecurity}
+              onShowToast={showToast}
               live={live}
             />
           </Suspense>
@@ -455,13 +497,15 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         {/* 板块强度：榜单（按涨幅排名）是主视图。
             原来这里放的是板块目录浏览，榜单被藏在默认收起的折叠块里，
             用户进入「板块强度」根本看不到排行 —— 现已对调。 */}
-        <WorkspaceErrorBoundary key={`${view}-board`} label="板块强度" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={`${view}-board`} label="板块强度" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
             <SectorView
               rows={sectorBoard}
               extra={sectorExtra}
               loading={sectorBoardLoading}
               loadError={sectorBoardError}
+              favoriteCodes={favoriteCodes}
+              onToggleFavorite={handleToggleFavoriteSecurity}
               aiPanel={<AiInterpretPanel kind="sectors" disabled={!sectorBoard.length && !sectorExtra?.concepts.length} getData={() => sectorsForAi(sectorBoard, sectorExtra)} />}
               onRefresh={() => loadSectorBoard(true)}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "sectors", label: "返回板块强度" })}
@@ -500,12 +544,15 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         </WorkspaceErrorBoundary>
       )}
       {researchView && (
-        <WorkspaceErrorBoundary key={view} label="策略选股" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={view} label="策略选股" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
             <StrategySignalsView
               live={live}
               quoteRefreshSeconds={settings.quoteRefreshSeconds}
               initialFocus={view === "trend-screener" ? "trend" : undefined}
+              favoriteCodes={favoriteCodes}
+              onToggleFavorite={handleToggleFavoriteSecurity}
+              onShowToast={showToast}
               onOpen={(stock: Security) => openAnalysis(stock, { view: "signals", label: "返回策略选股" })}
               onOpenAiPicks={() => navigateTo("ai-picks")}
             />
@@ -513,14 +560,15 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         </WorkspaceErrorBoundary>
       )}
       {view === "ai-picks" && (
-        <WorkspaceErrorBoundary key={view} label="AI 选股" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={view} label="AI 选股" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
             <AiPicksView
               live={live}
               quoteRefreshSeconds={settings.quoteRefreshSeconds}
               favoriteCodes={favoriteCodes}
-              onToggleFavorite={(stock: Security) => { void toggleFavorite(stock); }}
+              onToggleFavorite={handleToggleFavoriteSecurity}
               onShowToast={showToast}
+              onOpenSettings={handleOpenAiSettings}
               onOpen={(stock: Security) => openAnalysis(stock, { view: "ai-picks", label: "返回 AI 选股" })}
               onOpenStrategies={() => navigateTo("signals")}
             />
@@ -528,12 +576,12 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         </WorkspaceErrorBoundary>
       )}
       {view === "ai-agent" && (
-        <WorkspaceErrorBoundary key={view} label="AI 问股" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={view} label="AI 问股" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
             <AiAgentView
               holdings={holdings}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "ai-agent", label: "返回 AI 问股" })}
-              onOpenSettings={() => navigateTo("settings")}
+              onOpenSettings={handleOpenAiSettings}
             />
           </Suspense>
         </WorkspaceErrorBoundary>
@@ -561,6 +609,17 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               api={tAssistant}
               holdings={holdings}
               live={live}
+              onSyncCostToHolding={(code, shares, newCost) => {
+                void saveHoldings(items =>
+                  items.map(item =>
+                    item.code === code
+                      ? { ...item, shares, costPrice: Number(Math.max(0.001, newCost).toFixed(3)) }
+                      : item
+                  )
+                ).then(ok => {
+                  if (ok) showToast(`已同步 ${code} 做T后成本 ¥${newCost.toFixed(3)} 到持仓`);
+                });
+              }}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "t-assistant", label: "返回做T助手" })}
               onToast={showToast}
             />
@@ -658,6 +717,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
             <SettingsView
               value={settings}
               loadState={settingsLoadState}
+              initialCategory={settingsCategory}
               onSave={async (next) => {
                 const analysisGeneration = analysisRequestId.current;
                 const refreshTarget = latestAnalysis.current?.security;
