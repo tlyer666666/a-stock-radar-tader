@@ -40,7 +40,7 @@ import { createNumberFormatters } from "./domain/formatters";
 import { isPreviewStockApi } from "./runtimeBridge";
 import { AiMarketReviewPanel } from "./features/ai-review/AiMarketReviewPanel";
 import { AiStockReviewPanel } from "./features/ai-picks/AiStockReviewPanel";
-import { readTrendPlans, saveQuickObservationPlan } from "./trendWorkspace";
+import { readTrendPlans, saveQuickObservationPlan, TREND_PLAN_STORAGE_KEY } from "./trendWorkspace";
 import { strategyName } from "./trendStrategyConfig";
 import { reconcilePlansAfterClose, type PlanReconciliationRow } from "./features/cockpit/cockpitModel";
 import { canOpenAgent, openAgentFor, openAgentPage } from "./features/ai-agent/agentModel";
@@ -1216,9 +1216,17 @@ export default function ProfessionalReview({
       if (event.key === REVIEW_ARCHIVE_KEY || event.key === archiveKey || event.key === null) {
         setArchive(loadCurrentArchive(previewMode));
       }
+      if (event.key === TREND_PLAN_STORAGE_KEY || event.key === null) {
+        setPlanVersion(v => v + 1);
+      }
     };
+    const syncPlans = () => setPlanVersion(v => v + 1);
     window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
+    window.addEventListener("a-stock-radar:trend-plans-updated", syncPlans);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("a-stock-radar:trend-plans-updated", syncPlans);
+    };
   }, [archiveKey, previewMode]);
 
   const persistArchive = async (record: ReviewRecord) => {
@@ -1243,6 +1251,7 @@ export default function ProfessionalReview({
     if (onAddQuickPlan) {
       onAddQuickPlan(sec, latestPrice);
       setPlanVersion(v => v + 1);
+      notify(`已将 ${sec.name} 加入次日观察计划`);
       return;
     }
     if (typeof window === "undefined" || !window.localStorage) {
@@ -1940,7 +1949,7 @@ function StockReview({
                   className="review-link-btn"
                   onClick={() => onAddQuickPlan(stockSecurity, Number.isFinite(latestPrice) && latestPrice > 0 ? latestPrice : null)}
                 >
-                  +加入次日计划
+                  {planRows.some(r => !r.plan.archivedAt) ? "已在次日计划" : "+加入次日计划"}
                 </button>
               )}
               {onAddToT && /^\d{6}$/.test(stockCode) && (

@@ -8,9 +8,21 @@ const { workerScriptPath } = require("../worker-runner.cjs");
 const { DEFAULT_OPERATION_TIMEOUTS } = require("../job-lifecycle.cjs");
 const { fuyaoQuoteSupports } = require("../fuyao-quote.cjs");
 const { createDailyBarStore } = require("../daily-bar-store.cjs");
+const { producerContext } = require("../service-context.cjs");
 const _runtime = require("./runtime.cjs");
 const { fuyao, stockIndustryIndex, serviceRuntime, workerRunner, strategySignalCache } = _runtime;
-function serviceSignal(...args) { return _runtime.serviceSignal(...args); }
+const jobSignalByStore = new WeakMap();
+function serviceSignal(...args) {
+  if (args.length > 0 && args[0] !== undefined) return _runtime.serviceSignal(...args);
+  const store = producerContext.getStore();
+  if (!store) return _runtime.serviceSignal();
+  let cached = jobSignalByStore.get(store);
+  if (!cached) {
+    cached = _runtime.serviceSignal();
+    jobSignalByStore.set(store, cached);
+  }
+  return cached;
+}
 function trackServiceRequest(...args) { return _runtime.trackServiceRequest(...args); }
 function toSecurity(...args) { return _runtime.toSecurity(...args); }
 const _backtest = require("./backtest.cjs");
@@ -204,6 +216,7 @@ const dailyBarStore = createDailyBarStore({
   previousSession: date => dailyBarCalendar.previousSession(date),
   nextSession: date => dailyBarCalendar.nextSession(date)
 });
+_runtime.bindShutdownResources?.({ dailyBarStore });
 
 /** 本地日线库只在内置交易日历确认的“最近完整交易日”工作；日历过期时直接下载，不入库。 */
 function dailyBarAsOf() {
@@ -251,11 +264,12 @@ function writeSelectionUniverseCache(boards) {
   const keep = row => ({ code: row.code, name: row.name, secid: row.secid, industry: row.industry, assetType: row.assetType || "stock",
     ...(row.listingDate ? { listingDate: row.listingDate, listingDateSource: row.listingDateSource } : {}) });
   const payload = { v: 1, savedAt: Date.now(), savedDate: shanghaiDateText(), boards: Object.fromEntries(boards.map(board => [board.label, board.rows.map(keep)])) };
-  const tempFile = `${file}.tmp`;
   const run = async () => {
+    const pid = typeof process !== "undefined" ? process.pid : require("node:process").pid;
+    const tempFile = path.join(path.dirname(file), `selection-universe.json.${pid}.${Date.now()}.tmp`);
     try {
       await fsPromises.mkdir(path.dirname(file), { recursive: true });
-      await fsPromises.writeFile(tempFile, JSON.stringify(payload));
+      await fsPromises.writeFile(tempFile, JSON.stringify(payload), { mode: 0o600 });
       await fsPromises.rename(tempFile, file);
       return true;
     } catch {
@@ -327,12 +341,16 @@ async function loadSelectionUniverse() {
     board.complete = true;
     board.fromCache = cached.savedDate;
   }
-  if (boards.every(board => board.complete && !board.fromCache)) writeSelectionUniverseCache(boards);
+  const allFreshComplete = boards.every(board => board.complete && !board.fromCache);
+  if (allFreshComplete) writeSelectionUniverseCache(boards);
   if (boards.every(board => !board.rows.length)) throw new Error(boards.map(board => `${board.label}：${board.error || "空名单"}`).join("；"));
   const rows = boards.flatMap(board => board.rows).map(row => {
     const industry = String(row?.industry || "").trim();
     return !industry || industry === "未分类" ? { ...row, industry: industryFromIndex(String(row?.code || "")) || "未分类" } : row;
   });
+  if (allFreshComplete && typeof dailyBarStore !== "undefined" && typeof dailyBarStore?.cleanupStaleBars === "function") {
+    void dailyBarStore.cleanupStaleBars({ activeCodes: rows.map(r => r.code) }).catch(() => {});
+  }
   return { rows, boards: boards.map(({ rows: _rows, ...board }) => board) };
 }
 
@@ -349,6 +367,7 @@ const strategySelectionLoader = createStrategySelectionService({
     return result.rows;
   },
   runEngine: buildStrategySignalReportInWorker,
+  getDiagnostics: () => strategySelectionMarketData.getDiagnostics?.({ signal: serviceSignal() }) || {},
   assertActive: () => serviceSignal()?.throwIfAborted()
 });
 

@@ -5,6 +5,7 @@ import { useTAssistant } from "../t-assistant/useTAssistant";
 import { useNotes } from "../notes/useNotes";
 import type { NoteCondition } from "../notes/notesModel";
 import useStockMonitors from "../../useStockMonitors";
+import { MAX_MONITOR_CONDITIONS } from "../../stockMonitorRules";
 import { readTrendPlans } from "../../trendWorkspace";
 import { startVisibleInterval } from "../../visiblePolling";
 import { describeSourceHealth } from "../market/marketSourceHealth";
@@ -81,7 +82,10 @@ export function useWorkspaceCopilot({
     onAlert: alert => {
       const msg = `${alert.name}（${alert.code}）：${alert.detail}`;
       showToast(msg);
-      if (typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
+      const isBackground =
+        typeof document !== "undefined" &&
+        (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus()));
+      if (isBackground && typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
         void window.stockApi.notify({
           title: `盯盘预警 · ${alert.name}（${alert.code}）`,
           body: alert.detail
@@ -167,6 +171,20 @@ export function useWorkspaceCopilot({
     };
   }, [live, settings.newsRefreshSeconds, settings.newsVoiceEnabled]);
 
+  const [planSyncTick, setPlanSyncTick] = useState(0);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onPlansUpdated = () => setPlanSyncTick(t => t + 1);
+    window.addEventListener("a-stock-radar:trend-plans-updated", onPlansUpdated);
+    window.addEventListener("storage", onPlansUpdated);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("a-stock-radar:trend-plans-updated", onPlansUpdated);
+        window.removeEventListener("storage", onPlansUpdated);
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (settingsLoadState !== "ready") return;
     const syncWorkspace = window.stockApi?.ai?.agent?.syncWorkspace;
@@ -204,7 +222,7 @@ export function useWorkspaceCopilot({
       });
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [settingsLoadState, tAssistant.store, tAssistant.runtimes, notes.store.notes, paperSummary.normalized.openPositions]);
+  }, [settingsLoadState, tAssistant.store, tAssistant.runtimes, notes.store.notes, paperSummary.normalized.openPositions, planSyncTick]);
 
   useEffect(() => {
     if (!copilotOpen) return;
@@ -238,12 +256,18 @@ export function useWorkspaceCopilot({
 
   const addNoteToT = useCallback((security: Security) => {
     const matchedHolding = holdings.find(h => h.code === security.code);
+    const existingT = tAssistant.store.items.find(item => item.code === security.code);
     const problem = tAssistant.addStock(
       { code: security.code, name: matchedHolding?.name || security.name, secid: security.secid },
       matchedHolding
         ? {
             ...(matchedHolding.costPrice ? { costPrice: matchedHolding.costPrice } : {}),
-            ...(matchedHolding.shares ? { sellableShares: matchedHolding.shares } : {})
+            ...(matchedHolding.shares
+              ? {
+                  baseShares: matchedHolding.shares,
+                  sellableShares: existingT?.config.sellableShares ?? matchedHolding.shares
+                }
+              : {})
           }
         : undefined
     );
@@ -270,17 +294,24 @@ export function useWorkspaceCopilot({
       )
         ? prevConditions
         : [...prevConditions, nextCondition];
+      if (merged.length > MAX_MONITOR_CONDITIONS) {
+        showToast(`单只股票最多可设置 ${MAX_MONITOR_CONDITIONS} 条盯盘条件`);
+        return;
+      }
       const savedOk = stockMonitors.save(security.code, {
         enabled: true,
         mode: existing?.mode || "any",
         cooldownMinutes: existing?.cooldownMinutes || 5,
         conditions: merged
       });
+      if (!savedOk) {
+        showToast("同步盯盘条件失败，请检查数值与本地存储空间");
+        return;
+      }
       if (!favoriteCodes.has(security.code) && !holdings.some(h => h.code === security.code)) {
         await addFavoriteSecurity(security);
       }
-      if (savedOk) showToast(`已同步 ${security.name} 价格条件到实时盯盘`);
-      else showToast(stockMonitors.storageError || "同步盯盘条件失败");
+      showToast(`已同步 ${security.name} 价格条件到实时盯盘`);
       return;
     }
     onOpenStock(security, "notes", "返回随心记");

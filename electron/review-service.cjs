@@ -514,7 +514,7 @@ async function loadProfessionalReview(options) {
   ]);
   const limitUps = Array.isArray(limitUpSnapshot?.rows) ? limitUpSnapshot.rows : [];
   const latestIndexDate = Array.isArray(indices)
-    ? indices.map((item) => String(item?.date || "").slice(0, 10)).find((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
+    ? indices.map((item) => String(item?.date || item?.chart?.rows?.at?.(-1)?.date || "").slice(0, 10)).find((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
     : "";
   const fallbackDate = latestIndexDate || new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10); // 优先最近指数交易日，兜底北京时间日期
   const safeEmotion = emotion || {

@@ -42,6 +42,7 @@ export function buildPaletteEntries(input: {
   favorites: WatchItem[];
   watchlist: WatchItem[];
   remoteStocks?: Security[];
+  privacyMask?: boolean | undefined;
 }): PaletteEntry[] {
   const q = String(input.query || "").trim().toLowerCase();
   const entries: PaletteEntry[] = [];
@@ -64,7 +65,7 @@ export function buildPaletteEntries(input: {
 
   // Prioritize holdings -> favorites -> watchlist -> remote search hits -> views -> commands.
   for (const h of input.holdings) {
-    pushStock(h, `持仓 · 成本 ${h.costPrice.toFixed(2)}`, "持仓");
+    pushStock(h, `持仓 · 成本 ${input.privacyMask ? "****" : h.costPrice.toFixed(2)}`, "持仓");
   }
   for (const f of input.favorites) {
     pushStock(f, "自选股", "自选");

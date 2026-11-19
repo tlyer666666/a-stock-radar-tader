@@ -10,6 +10,13 @@
  * - 视图位置由渲染进程按占位区域上报（CSS 像素），这里按主窗口缩放换算后贴到主窗口上。
  */
 const { normalizeExternalHttpsUrl } = require("./security-policy.cjs");
+const { isAStockCode: ruleIsAStockCode, isBseAshareCode } = require("./price-limit-rules.cjs");
+const isAStockCode = typeof ruleIsAStockCode === "function"
+  ? ruleIsAStockCode
+  : (code = "") => {
+      const value = String(code).trim();
+      return /^(?:00[0-3]|30[012]|60[0135]|68[89])\d{3}$/.test(value) || isBseAshareCode(value);
+    };
 const guardedPartitions = new WeakSet();
 const THS_WEB_PARTITION = "persist:ths-web";
 const PAGES = Object.freeze({
@@ -34,9 +41,14 @@ function detectThsStockCode(value) {
   if (!allowedThsUrl(value)) return "";
   try {
     const { pathname, hostname } = new URL(String(value));
-    if (/\/(?:gn|thshy|zs|bk)\//i.test(pathname) && !/stockpage|basic/i.test(hostname)) return "";
-    const match = pathname.match(/(?:\/|_|^)([036]\d{5}|[489]\d{5})(?:\/|\.s?html|$)/i);
-    return match ? match[1] : "";
+    const host = hostname.toLowerCase();
+    if (/\/(?:gn|thshy|zs|bk)\//i.test(pathname) && !/stockpage|basic/i.test(host)) return "";
+    const match = pathname.match(/(?:\/|_|^)(\d{6})(?:\/|\.s?html|$)/i);
+    if (!match) return "";
+    const code = match[1];
+    if (!isAStockCode(code)) return "";
+    if (/^88[1456]\d{3}$/.test(code) && host !== "stockpage.10jqka.com.cn") return "";
+    return code;
   } catch {
     return "";
   }
@@ -61,6 +73,7 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
   let pendingUrl = ""; // 正在导航的目标：导航失败时页面地址还没切换，需按目标地址认领错误
   let crashCount = 0;
   let lastBounds = null;
+  let desiredOpen = false;
 
   const windowReady = () => {
     const win = getWindow();
@@ -99,13 +112,31 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       event.preventDefault();
       safeExternal(target);
     });
-    contents.on("will-redirect", (event, url) => {
-      if (!allowedThsUrl(typeof url === "string" ? url : event.url)) event.preventDefault();
+    contents.on("will-redirect", (event, url, _isInPlace, isMainFrame) => {
+      if (view !== createdView) {
+        event?.preventDefault?.();
+        return;
+      }
+      const target = typeof url === "string" ? url : String(event?.url || "");
+      const mainFrame = typeof event?.isMainFrame === "boolean"
+        ? event.isMainFrame
+        : isMainFrame !== false;
+      if (!allowedThsUrl(target)) {
+        event?.preventDefault?.();
+        if (mainFrame) safeExternal(target);
+        return;
+      }
+      if (mainFrame) pendingUrl = String(target || "");
     });
     contents.on("will-frame-navigate", (event, url) => {
-      if (view !== createdView || !allowedThsUrl(typeof url === "string" ? url : event?.url)) {
+      if (view !== createdView) {
         event?.preventDefault?.();
+        return;
       }
+      if (event?.isMainFrame === true) return;
+      const target = typeof url === "string" ? url : String(event?.url || "");
+      if (target === "about:blank" || allowedThsUrl(target)) return;
+      event?.preventDefault?.();
     });
     contents.on("did-fail-load", (_, code, description, url, isMainFrame) => {
       if (view === createdView && (url === contents.getURL() || (pendingUrl && url === pendingUrl)) && isMainFrame !== false && code !== -3) {
@@ -120,7 +151,7 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
         destroyView();
         return;
       }
-      const wasOpen = Boolean(attachedTo);
+      const wasOpen = Boolean(attachedTo) && desiredOpen;
       const previousPage = loadedPage || "hsgt";
       crashCount += 1;
       if (crashCount >= MAX_CRASH_COUNT) {
@@ -210,8 +241,11 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
 
   return {
     show({ bounds, page } = {}) {
-      crashCount = 0;
-      if (lastError === "内嵌行情页异常退出过多，请点击重新加载") lastError = "";
+      desiredOpen = true;
+      if (normalizeBounds(bounds)) {
+        lastBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+      }
+      if (crashCount >= MAX_CRASH_COUNT) return state();
       ensureView();
       if (!place(bounds)) return state();
       if (!loadedPage || (page && page !== loadedPage && PAGES[page])) void load(page || "hsgt");
@@ -223,24 +257,25 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       return state();
     },
     hide() {
+      desiredOpen = false;
       detach();
       return state();
     },
     async command({ action } = {}) {
-      if (action === "reload" && (!view || view.webContents.isDestroyed())) {
+      if ((action === "reload" || action === "home" || action === "login") && (!view || view.webContents.isDestroyed())) {
         crashCount = 0;
         lastError = "";
-        if (lastBounds) {
+        if (desiredOpen && lastBounds) {
           ensureView();
-          if (place(lastBounds)) await load("hsgt");
+          if (place(lastBounds)) await load(action === "login" ? "login" : "hsgt");
         }
         return state();
       }
       if (!view || view.webContents.isDestroyed()) return state();
       const owner = view;
       const contents = view.webContents;
-      if (action === "home") { crashCount = 0; await load("hsgt"); }
-      else if (action === "login") { crashCount = 0; await load("login"); }
+      if (action === "home") { crashCount = 0; lastError = ""; await load("hsgt"); }
+      else if (action === "login") { crashCount = 0; lastError = ""; await load("login"); }
       else if (action === "reload") { crashCount = 0; loadGeneration++; lastError = ""; contents.reload(); }
       else if (action === "back") {
         loadGeneration++; lastError = "";
@@ -259,7 +294,9 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
     },
     state,
     destroy() {
+      desiredOpen = false;
       crashCount = 0;
+      lastError = "";
       lastBounds = null;
       destroyView();
     }

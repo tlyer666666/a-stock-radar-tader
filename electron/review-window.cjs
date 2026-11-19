@@ -26,6 +26,7 @@ function createReviewWindowManager({ BrowserWindow, screen, root, packaged, devU
     closeWindow() {
       const current = reviewWindow;
       reviewWindow = undefined;
+      pending = undefined;
       if (!current || current.isDestroyed()) return false;
       try {
         current.destroy();
@@ -47,7 +48,7 @@ function createReviewWindowManager({ BrowserWindow, screen, root, packaged, devU
       }
     },
     open() {
-      if (pending) return pending;
+      if (pending && reviewWindow && !reviewWindow.isDestroyed()) return pending;
       if (reviewWindow && !reviewWindow.isDestroyed()) {
         if (!hidden) { if (reviewWindow.isMinimized()) reviewWindow.restore(); reviewWindow.show(); reviewWindow.focus(); }
         return Promise.resolve({ ok: true });
@@ -63,18 +64,29 @@ function createReviewWindowManager({ BrowserWindow, screen, root, packaged, devU
         webPreferences: { preload: path.join(root, 'electron', 'review-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, devTools: !packaged }
       });
       reviewWindow = created;
-      created.on('closed', () => { if (reviewWindow === created) reviewWindow = undefined; });
+      let currentPending;
+      created.on('closed', () => {
+        if (reviewWindow === created) reviewWindow = undefined;
+        if (pending === currentPending) pending = undefined;
+      });
       created.webContents.setWindowOpenHandler(({ url }) => { safeExternal(url); return { action: 'deny' }; });
       created.webContents.on('will-navigate', (event, url) => { if (!isAllowedRendererNavigation(url, target)) { event.preventDefault(); safeExternal(url); } });
       created.webContents.on('render-process-gone', () => { if (!created.isDestroyed()) created.destroy(); });
-      pending = Promise.resolve().then(() => packaged ? created.loadFile(file) : created.loadURL(target)).then(() => {
-        if (!created.isDestroyed() && !hidden) created.show();
-        return { ok: true };
+      currentPending = Promise.resolve().then(() => {
+        if (created.isDestroyed()) return { ok: false };
+        return (packaged ? created.loadFile(file) : created.loadURL(target)).then(() => {
+          if (created.isDestroyed()) return { ok: false };
+          if (!hidden) created.show();
+          return { ok: true };
+        });
       }).catch(error => {
         if (!created.isDestroyed()) created.destroy();
         throw error;
-      }).finally(() => { pending = undefined; });
-      return pending;
+      }).finally(() => {
+        if (pending === currentPending) pending = undefined;
+      });
+      pending = currentPending;
+      return currentPending;
     }
   };
 }

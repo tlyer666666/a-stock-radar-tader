@@ -83,7 +83,7 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
     const observer = new ResizeObserver(schedule);
     if (frame.current) observer.observe(frame.current);
     const overlays = new MutationObserver(schedule);
-    overlays.observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:["open","hidden","aria-modal"]});
+    overlays.observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:["open","hidden","aria-modal","data-overlay","class"]});
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);

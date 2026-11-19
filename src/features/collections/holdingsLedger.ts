@@ -71,6 +71,7 @@ export function maskSensitiveText(value: string, masked: boolean, fallback = "**
 }
 
 const roundPrice = (value: number): number => Math.round(value * 1000) / 1000;
+const round2 = (value: number): number => Math.round(value * 100) / 100;
 
 /**
  * 按真实交易记录重算持仓数量与加权摊薄成本价：
@@ -88,8 +89,8 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
   const shares = rawShares;
 
   const price = Number(input.price);
-  if (!Number.isFinite(price) || price <= 0) {
-    return { ok: false, error: "成交均价必须大于 0" };
+  if (!Number.isFinite(price) || price < 0.001) {
+    return { ok: false, error: !Number.isFinite(price) || price <= 0 ? "成交均价必须大于 0" : "成交均价不能低于 0.001 元" };
   }
 
   const now = input.now || new Date().toISOString();
@@ -99,9 +100,15 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
   if (input.side === "buy") {
     const meta = inferSecurityMeta(code);
     const totalShares = existing ? existing.shares + shares : shares;
-    const weightedCost = existing
-      ? roundPrice((existing.shares * existing.costPrice + shares * price) / totalShares)
-      : roundPrice(price);
+    if (!Number.isSafeInteger(totalShares) || totalShares <= 0) {
+      return { ok: false, error: "合并后持仓股数超出安全整数范围" };
+    }
+    const weightedCost = Math.max(
+      0.001,
+      existing
+        ? roundPrice((existing.shares * existing.costPrice + shares * price) / totalShares)
+        : roundPrice(price)
+    );
     const resolvedName = String(input.name || existing?.name || code).trim().slice(0, 24) || code;
     const resolvedThscode = existing?.thscode || input.thscode || meta.thscode;
     const resolvedMarketName = existing?.marketName || input.marketName || meta.marketName;
@@ -143,7 +150,7 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
     return { ok: false, error: `卖出股数（${shares} 股）不能超过当前持仓（${existing.shares} 股）` };
   }
 
-  const realizedPnl = Math.round((price - existing.costPrice) * shares * 100) / 100;
+  const fullClosePnl = round2((price - existing.costPrice) * shares);
   const remainingShares = existing.shares - shares;
 
   if (remainingShares === 0) {
@@ -154,14 +161,18 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
       action: "closed",
       remainingShares: 0,
       costPrice: existing.costPrice,
-      realizedPnl,
-      summary: `${existing.name} 已清仓卖出 ${existing.shares} 股 @ ${price.toFixed(2)}，估算实现盈亏 ${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toFixed(2)} 元`
+      realizedPnl: fullClosePnl,
+      summary: `${existing.name} 已清仓卖出 ${existing.shares} 股 @ ${price.toFixed(2)}，估算实现盈亏 ${fullClosePnl >= 0 ? "+" : ""}${fullClosePnl.toFixed(2)} 元`
     };
   }
 
+  const rawNextCost = (existing.shares * existing.costPrice - shares * price) / remainingShares;
   const nextCost = input.diluteCost
-    ? Math.max(0.001, roundPrice((existing.shares * existing.costPrice - shares * price) / remainingShares))
+    ? Math.max(0.001, roundPrice(rawNextCost))
     : existing.costPrice;
+  const realizedPnl = input.diluteCost
+    ? (rawNextCost >= 0.001 ? 0 : round2((0.001 - rawNextCost) * remainingShares))
+    : fullClosePnl;
 
   const nextItem: HoldingItem = {
     ...existing,
@@ -172,6 +183,11 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
   };
   const nextItems = [...input.items.filter(item => item.code !== code), nextItem]
     .sort((left, right) => left.code.localeCompare(right.code));
+  const summary = input.diluteCost
+    ? realizedPnl > 0
+      ? `${existing.name} 已减仓 ${shares} 股 @ ${price.toFixed(2)}，剩余 ${remainingShares} 股（盈亏已摊薄剩余成本至 ${nextCost.toFixed(3)}，超出保底部分记实现盈亏 +${realizedPnl.toFixed(2)} 元）`
+      : `${existing.name} 已减仓 ${shares} 股 @ ${price.toFixed(2)}，剩余 ${remainingShares} 股（当笔盈亏已用于摊薄剩余成本至 ${nextCost.toFixed(3)}）`
+    : `${existing.name} 已减仓 ${shares} 股 @ ${price.toFixed(2)}，剩余 ${remainingShares} 股（成本 ${nextCost.toFixed(3)}）`;
   return {
     ok: true,
     nextItems,
@@ -179,7 +195,7 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
     remainingShares,
     costPrice: nextCost,
     realizedPnl,
-    summary: `${existing.name} 已减仓 ${shares} 股 @ ${price.toFixed(2)}，剩余 ${remainingShares} 股（${input.diluteCost ? "摊薄成本" : "成本"} ${nextCost.toFixed(3)}）`
+    summary
   };
 }
 
@@ -301,9 +317,31 @@ export function summarizeHoldingTrades(records: HoldingTradeRecord[]): {
 }
 
 const stripCodeDecorators = (token: string): string => {
-  const cleaned = token.trim().toUpperCase().replace(/\.(SH|SZ|BJ)$/i, "").replace(/^[01]\./, "");
+  const cleaned = token
+    .trim()
+    .toUpperCase()
+    .replace(/^(?:SH|SZ|BJ)(?=\d{6}$)/i, "")
+    .replace(/\.(SH|SZ|BJ)$/i, "")
+    .replace(/^[01]\./, "");
   return /^\d{6}$/.test(cleaned) ? cleaned : "";
 };
+
+const isMarketTag = (token: string): boolean =>
+  /^(?:沪A|深A|京A|沪B|深B|沪市|深市|京市|北交所|北证|上海A股|深圳A股|SH|SZ|BJ|SSE|SZSE|BSE)$/i.test(token.trim());
+
+const isShareholderAccountToken = (token: string): boolean =>
+  /^[A-Z]?\d{8,12}$/i.test(token.trim());
+
+const isRowSerialToken = (token: string): boolean =>
+  /^(?:序号)?\d{1,3}[.)、]?$/.test(token.trim()) && !stripCodeDecorators(token);
+
+const isNumericOrPercentToken = (token: string): boolean =>
+  /^[-+]?[\d,]+(?:\.\d+)?(?:[%‰元股手万亿¥￥])?$/.test(token.trim());
+
+const isBrokerNumericSlotToken = (token: string): boolean =>
+  isNumericOrPercentToken(token) || /^(?:--|—)$/.test(token.trim());
+
+const hasDecimalPart = (token: string): boolean => /\.\d+/.test(token.trim());
 
 const parsePositiveNumber = (token: string): number => {
   const cleaned = token.trim().replace(/,/g, "").replace(/[股元¥￥]/g, "");
@@ -331,8 +369,9 @@ function splitHoldingColumns(line: string): string[] {
   const normalized = line
     .replace(/,\s+/g, "\t")
     .replace(/[，、;|]+/g, "\t");
-  const commaDelimitedHeaderOrCode = /^\s*(?:(?:[01]\.)?\d{6}(?:\.(?:SH|SZ|BJ))?|[^,\t]+,\s*(?:[01]\.)?\d{6}(?:\.(?:SH|SZ|BJ))?)\s*,/i.test(normalized);
-  if (!normalized.includes("\t") && normalized.includes(",") && (!/\s/.test(normalized) || commaDelimitedHeaderOrCode)) {
+  const commaAdjacentToCode = /(?:^|,)\s*(?:(?:SH|SZ|BJ)?\d{6}|[01]\.\d{6}|\d{6}\.(?:SH|SZ|BJ))\s*,|,\s*(?:(?:SH|SZ|BJ)?\d{6}|[01]\.\d{6}|\d{6}\.(?:SH|SZ|BJ))\s*(?:,|$)/i.test(normalized);
+  const commaHeaderWithoutThousands = !/\d,\d{3}\b/.test(normalized) && /(?:证券代码|股票代码|代码|持仓|股票余额|数量|成本)/i.test(normalized);
+  if (!normalized.includes("\t") && normalized.includes(",") && (!/\s/.test(normalized) || commaAdjacentToCode || commaHeaderWithoutThousands)) {
     return normalized.split(",").map(part => part.trim()).filter(Boolean);
   }
   return normalized
@@ -341,8 +380,191 @@ function splitHoldingColumns(line: string): string[] {
     .filter(Boolean);
 }
 
+type HoldingHeaderMap = {
+  code: number;
+  name?: number | undefined;
+  shares: number;
+  availableShares?: number | undefined;
+  costPrice: number;
+  note?: number | undefined;
+};
+
+function detectHoldingHeaderColumns(tokens: string[]): HoldingHeaderMap | null {
+  if (tokens.length < 3) return null;
+  let code = -1;
+  let name = -1;
+  let shares = -1;
+  let availableShares = -1;
+  let costPrice = -1;
+  let note = -1;
+  tokens.forEach((raw, idx) => {
+    const t = raw.trim();
+    if (!t) return;
+    if (code < 0 && !/股东|账户|席位/.test(t) && /(?:证券|股票|标的)?代码|^code$|^symbol$/i.test(t)) {
+      code = idx;
+      return;
+    }
+    if (name < 0 && !/市场|账户|股东/.test(t) && /(?:证券|股票|标的)?(?:名称|简称)|^name$/i.test(t)) {
+      name = idx;
+      return;
+    }
+    if (availableShares < 0 && !/市值|盈亏|成本|均价|比例/.test(t) && /可用|可卖/.test(t)) {
+      availableShares = idx;
+      return;
+    }
+    if (costPrice < 0 && !/市值|金额|盈亏|比例/.test(t) && /成本|买入均价|持仓均价/.test(t)) {
+      costPrice = idx;
+      return;
+    }
+    if (
+      shares < 0 &&
+      !/可用|可卖|冻结|市值|盈亏|成本|比例|占比|成交/.test(t) &&
+      /(?:股票|证券|持仓|持股|当前|实际)?(?:余额|数量)|^持仓$|^数量$|^shares$/i.test(t)
+    ) {
+      shares = idx;
+      return;
+    }
+    if (note < 0 && /^(?:备注|说明|策略备注|note)$/i.test(t)) {
+      note = idx;
+    }
+  });
+  if (code >= 0 && shares >= 0 && costPrice >= 0 && code !== shares && shares !== costPrice && code !== costPrice) {
+    return {
+      code,
+      ...(name >= 0 ? { name } : {}),
+      shares,
+      ...(availableShares >= 0 ? { availableShares } : {}),
+      costPrice,
+      ...(note >= 0 ? { note } : {})
+    };
+  }
+  return null;
+}
+
+const isCandidateHoldingName = (token: string): boolean => {
+  const t = token.trim();
+  return Boolean(
+    t &&
+    !stripCodeDecorators(t) &&
+    !isMarketTag(t) &&
+    !isShareholderAccountToken(t) &&
+    !isBrokerNumericSlotToken(t) &&
+    !isRowSerialToken(t)
+  );
+};
+
+function pickAdjacentName(tokens: string[], codeIndex: number): { name: string; nameIndex: number; afterCodeIdx: number } {
+  let afterCodeIdx = codeIndex + 1;
+  while (afterCodeIdx < tokens.length && isMarketTag(tokens[afterCodeIdx] || "")) {
+    afterCodeIdx += 1;
+  }
+  let name = "";
+  let nameIndex = -1;
+  if (afterCodeIdx < tokens.length && isCandidateHoldingName(tokens[afterCodeIdx] || "")) {
+    name = tokens[afterCodeIdx]!.trim().slice(0, 24);
+    nameIndex = afterCodeIdx;
+    afterCodeIdx += 1;
+  } else {
+    for (let left = codeIndex - 1; left >= 0; left -= 1) {
+      const leftTok = tokens[left] || "";
+      if (isMarketTag(leftTok) || isShareholderAccountToken(leftTok)) continue;
+      if (isCandidateHoldingName(leftTok)) {
+        name = leftTok.trim().slice(0, 24);
+        nameIndex = left;
+        break;
+      }
+      if (afterCodeIdx >= tokens.length) continue;
+      break;
+    }
+  }
+  while (
+    afterCodeIdx < tokens.length &&
+    (isMarketTag(tokens[afterCodeIdx] || "") || isShareholderAccountToken(tokens[afterCodeIdx] || ""))
+  ) {
+    afterCodeIdx += 1;
+  }
+  return { name, nameIndex, afterCodeIdx };
+}
+
+function tryParseWithHeaderMap(
+  rowTokens: string[],
+  headerMap: HoldingHeaderMap,
+  lineNo: number
+): ParsedHoldingRow | null {
+  const maxRequired = Math.max(headerMap.code, headerMap.shares, headerMap.costPrice);
+  if (rowTokens.length <= maxRequired) return null;
+  const code = stripCodeDecorators(rowTokens[headerMap.code] ?? "");
+  if (!code) return null;
+
+  const sharesTok = rowTokens[headerMap.shares] ?? "";
+  const costTok = rowTokens[headerMap.costPrice] ?? "";
+  if (sharesTok.includes("%") || costTok.includes("%")) return null;
+  const shares = parsePositiveNumber(sharesTok);
+  const costPrice = parsePositiveNumber(costTok);
+  if (!Number.isSafeInteger(shares) || shares <= 0 || !Number.isFinite(costPrice) || costPrice < 0.001) {
+    return null;
+  }
+
+  let availableShares: number | undefined;
+  if (headerMap.availableShares !== undefined) {
+    if (headerMap.availableShares >= rowTokens.length) return null;
+    const availTok = rowTokens[headerMap.availableShares] ?? "";
+    if (/^(?:--|—)$/.test(availTok.trim())) {
+      availableShares = undefined;
+    } else {
+      if (availTok.includes("%") || (hasDecimalPart(availTok) && !hasDecimalPart(sharesTok))) return null;
+      const parsedAvail = parseNonNegativeNumber(availTok);
+      if (!Number.isSafeInteger(parsedAvail) || parsedAvail < 0 || parsedAvail > shares) return null;
+      availableShares = parsedAvail;
+    }
+  }
+
+  let name = "";
+  if (headerMap.name !== undefined && headerMap.name < rowTokens.length) {
+    const candidateName = rowTokens[headerMap.name] ?? "";
+    if (isCandidateHoldingName(candidateName)) {
+      name = candidateName.trim().slice(0, 24);
+    }
+  }
+  if (!name) {
+    name = pickAdjacentName(rowTokens, headerMap.code).name;
+  }
+
+  let note = "";
+  if (headerMap.note !== undefined && headerMap.note < rowTokens.length) {
+    const rawNote = (rowTokens[headerMap.note] ?? "").trim();
+    if (rawNote && !isBrokerNumericSlotToken(rawNote) && !isMarketTag(rawNote) && !isShareholderAccountToken(rawNote)) {
+      note = rawNote.slice(0, 160);
+    }
+  } else {
+    const mappedIndices = new Set<number>([
+      headerMap.code,
+      headerMap.shares,
+      headerMap.costPrice,
+      ...(headerMap.name !== undefined ? [headerMap.name] : []),
+      ...(headerMap.availableShares !== undefined ? [headerMap.availableShares] : [])
+    ]);
+    const lastMapped = Math.max(...mappedIndices);
+    note = rowTokens
+      .slice(lastMapped + 1)
+      .filter(tok => isCandidateHoldingName(tok))
+      .join(" ")
+      .slice(0, 160);
+  }
+
+  return {
+    line: lineNo,
+    code,
+    name: name || code,
+    shares,
+    ...(availableShares !== undefined ? { availableShares } : {}),
+    costPrice: Math.max(0.001, roundPrice(costPrice)),
+    note
+  };
+}
+
 /**
- * 解析多行文本导入（支持空格、制表符 TSV、中英文逗号 CSV）。
+ * 解析多行文本导入（支持空格、制表符 TSV、中英文逗号 CSV、带表头或无表头券商多列导出）。
  * 常见格式：
  * - `600519 贵州茅台 200 1480.5`
  * - `600519,200,1480.5`
@@ -352,20 +574,45 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
   const lines = String(rawText || "").split(/\r?\n/);
   const byCode = new Map<string, ParsedHoldingRow>();
   const errors: string[] = [];
+  let headerMap: HoldingHeaderMap | null = null;
 
   lines.forEach((rawLine, index) => {
     const trimmed = rawLine.trim();
     if (!trimmed) return;
-    if (/(?:^(?:证券代码|股票代码|代码|名称|stock)|证券代码|股票代码|股票余额|持仓余额|可用余额|成本价)/i.test(trimmed) && !/\d{6}/.test(trimmed)) return;
-
     const rawTokens = splitHoldingColumns(trimmed);
-    const tokens = rawTokens.length >= 4 && /^(?:序号)?\d{1,3}[.)、]?$/.test(rawTokens[0] || "") && !stripCodeDecorators(rawTokens[0] || "")
+    if (!rawTokens.some(tok => Boolean(stripCodeDecorators(tok)))) {
+      const detectedHeader = detectHoldingHeaderColumns(rawTokens);
+      if (detectedHeader) {
+        headerMap = detectedHeader;
+        return;
+      }
+      if (/(?:^(?:证券代码|股票代码|代码|名称|stock)|证券代码|股票代码|股票余额|持仓余额|持仓数量|可用余额|成本价)/i.test(trimmed) && !/\d{6}/.test(trimmed)) {
+        return;
+      }
+    }
+
+    const tokens = rawTokens.length >= 4 && isRowSerialToken(rawTokens[0] || "")
       ? rawTokens.slice(1)
       : rawTokens;
 
+    if (headerMap) {
+      const fromRaw = tryParseWithHeaderMap(rawTokens, headerMap, index + 1);
+      if (fromRaw) {
+        byCode.set(fromRaw.code, fromRaw);
+        return;
+      }
+      if (tokens !== rawTokens) {
+        const fromTrimmed = tryParseWithHeaderMap(tokens, headerMap, index + 1);
+        if (fromTrimmed) {
+          byCode.set(fromTrimmed.code, fromTrimmed);
+          return;
+        }
+      }
+    }
+
     let codeIndex = -1;
     let code = "";
-    for (let i = 0; i < Math.min(2, tokens.length); i += 1) {
+    for (let i = 0; i < tokens.length; i += 1) {
       const candidate = stripCodeDecorators(tokens[i] || "");
       if (candidate) {
         code = candidate;
@@ -379,45 +626,113 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
       return;
     }
 
-    let name = "";
-    let remaining: string[];
-    if (codeIndex === 1) {
-      name = tokens[0]!.slice(0, 24);
-      remaining = tokens.slice(2);
-    } else {
-      remaining = tokens.slice(1);
-      if (remaining.length > 0 && Number.isNaN(parseNonNegativeNumber(remaining[0] || ""))) {
-        name = remaining.shift()!.slice(0, 24);
-      }
+    const { name, nameIndex, afterCodeIdx } = pickAdjacentName(tokens, codeIndex);
+    const tail = tokens.slice(afterCodeIdx);
+    const remaining = tail.length >= 2 || codeIndex < 2
+      ? tail
+      : tokens.filter((tok, idx) =>
+          idx !== codeIndex &&
+          idx !== nameIndex &&
+          !isMarketTag(tok) &&
+          !isShareholderAccountToken(tok)
+        );
+
+    let numericSpan = 0;
+    while (numericSpan < remaining.length && isBrokerNumericSlotToken(remaining[numericSpan] || "")) {
+      numericSpan += 1;
     }
 
-    const n0 = parsePositiveNumber(remaining[0] ?? "");
-    const n1 = parseNonNegativeNumber(remaining[1] ?? "");
-    const n2 = parsePositiveNumber(remaining[2] ?? "");
-    const isBrokerMultiCol =
-      remaining.length >= 3 &&
+    const tok0 = remaining[0] ?? "";
+    const tok1 = remaining[1] ?? "";
+    const n0 = !tok0.includes("%") ? parsePositiveNumber(tok0) : Number.NaN;
+    const n1 = !tok1.includes("%") ? parseNonNegativeNumber(tok1) : Number.NaN;
+
+    const hasAvailableCol =
+      numericSpan >= 3 &&
+      !(hasDecimalPart(tok1) && !hasDecimalPart(tok0)) &&
       Number.isSafeInteger(n0) &&
       n0 >= 1 &&
       Number.isSafeInteger(n1) &&
       n1 >= 0 &&
-      n1 <= n0 &&
-      Number.isFinite(n2) &&
-      n2 > 0 &&
-      (n1 === 0 || n1 === n0 || (n1 >= 100 && (n2 < n1 || n1 % 100 === 0)));
+      n1 <= n0;
 
+    const isBrokerMultiCol = hasAvailableCol || numericSpan >= 3;
     const shares = n0;
-    const costPrice = isBrokerMultiCol ? n2 : parsePositiveNumber(remaining[1] ?? "");
-    const availableShares = isBrokerMultiCol ? n1 : undefined;
+    const availableShares = hasAvailableCol ? n1 : undefined;
 
-    if (!Number.isSafeInteger(shares) || shares <= 0 || !Number.isFinite(costPrice) || costPrice <= 0) {
+    let costPrice = Number.NaN;
+    if (!isBrokerMultiCol) {
+      costPrice = !tok1.includes("%") ? parsePositiveNumber(tok1) : Number.NaN;
+    } else {
+      let costSearchStart = hasAvailableCol ? 2 : 1;
+      if (hasAvailableCol && numericSpan >= 4) {
+        const tok2 = remaining[2] ?? "";
+        const n2 = !tok2.includes("%") ? parseNonNegativeNumber(tok2) : Number.NaN;
+        if (
+          /^(?:--|—)$/.test(tok2.trim()) ||
+          (!hasDecimalPart(tok2) &&
+            Number.isSafeInteger(n2) &&
+            (n2 === 0 || (n1 + n2 === shares && hasDecimalPart(remaining[3] ?? ""))))
+        ) {
+          costSearchStart = 3;
+        }
+      }
+      for (let idx = costSearchStart; idx < numericSpan; idx += 1) {
+        const candidateTok = remaining[idx] ?? "";
+        if (candidateTok.includes("%") || candidateTok.includes("‰")) continue;
+        const val = parsePositiveNumber(candidateTok);
+        if (!Number.isFinite(val) || val <= 0) continue;
+
+        if (Number.isSafeInteger(shares) && shares >= 10) {
+          let isMarketValue = false;
+          for (let later = idx + 1; later < numericSpan; later += 1) {
+            const laterTok = remaining[later] ?? "";
+            if (laterTok.includes("%") || laterTok.includes("‰")) continue;
+            const laterVal = parsePositiveNumber(laterTok);
+            if (Number.isFinite(laterVal) && laterVal > 0 && laterVal < val) {
+              if (Math.abs(val - shares * laterVal) / (shares * laterVal) <= 0.03) {
+                isMarketValue = true;
+                break;
+              }
+            }
+          }
+          if (isMarketValue) continue;
+
+          const nextTok = (remaining[idx + 1] ?? "").trim();
+          if (/^[-+]?\d+(?:\.\d+)?%$/.test(nextTok)) {
+            const pctAbs = Math.abs(Number(nextTok.replace("%", "")));
+            if (Number.isFinite(pctAbs) && pctAbs > 0) {
+              let isUnsignedPnl = false;
+              for (let later = idx + 2; later < numericSpan; later += 1) {
+                const laterTok = remaining[later] ?? "";
+                if (laterTok.includes("%") || laterTok.includes("‰")) continue;
+                const laterPrice = parsePositiveNumber(laterTok);
+                if (Number.isFinite(laterPrice) && laterPrice > 0) {
+                  if (Math.abs((val / (shares * laterPrice)) * 100 - pctAbs) <= 1.5) {
+                    isUnsignedPnl = true;
+                    break;
+                  }
+                }
+              }
+              if (isUnsignedPnl) continue;
+            }
+          }
+        }
+
+        costPrice = val;
+        break;
+      }
+    }
+
+    if (!Number.isSafeInteger(shares) || shares <= 0 || !Number.isFinite(costPrice) || costPrice < 0.001) {
       errors.push(`第 ${index + 1} 行（${code}）缺少有效的数量或成本价，格式示例：600519 贵州茅台 200 1480.5`);
       return;
     }
 
     const note = isBrokerMultiCol
       ? remaining
-          .slice(3)
-          .filter(tok => !/^[-+]?[\d,]+(?:\.\d+)?(?:[%元股¥￥])?$/.test(tok.trim()))
+          .slice(numericSpan)
+          .filter(tok => isCandidateHoldingName(tok))
           .join(" ")
           .slice(0, 160)
       : remaining.slice(2).join(" ").slice(0, 160);
@@ -427,7 +742,7 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
       name: name || code,
       shares,
       ...(availableShares !== undefined ? { availableShares } : {}),
-      costPrice: roundPrice(costPrice),
+      costPrice: Math.max(0.001, roundPrice(costPrice)),
       note
     });
   });

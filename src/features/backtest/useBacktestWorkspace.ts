@@ -70,8 +70,10 @@ type UseBacktestWorkspaceOptions = {
 };
 
 const csvEscape = (value: unknown) => {
-  const text = String(value ?? "");
-  return `"${text.replace(/"/g, '""').replace(/\r?\n/g, " ")}"`;
+  const raw = String(value ?? "");
+  const text = raw.replace(/\r?\n/g, " ");
+  const safe = /^[\s\uFEFF]*[=+\-@]|^[\t\r\n]/.test(raw) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
 };
 
 const backtestSourceLabel = (sourceView: View, dashboardMode: "pool" | "analysis") => {
@@ -329,7 +331,7 @@ export function useBacktestWorkspace({
       ["回测时间", "证券代码", "证券名称", "开始日期", "策略", "是否通过", "完成交易", "累计净收益%", "累计盈亏", "总信号", "有效样本", "平均单笔净收益", "胜率", "资金最大回撤", "样本外样本", "样本外净边际", "滚动窗口通过率", "过拟合风险", "训练外退化%", "BenchmarkR1", "BenchmarkR3", "BenchmarkR5"],
       [
         record.createdAt,
-        record.securityCode,
+        /^\d{6}$/.test(String(record.securityCode || "")) ? `'${record.securityCode}` : record.securityCode,
         record.securityName,
         record.draft.startDate,
         record.draft.strategyContext?.strategyName || record.strategyProfile.selectedStrategies.join(" / "),
@@ -441,7 +443,7 @@ export function useBacktestWorkspace({
     }
     const rows = lines.map(row => (Array.isArray(row) ? row.map(csvEscape).join(",") : ""));
     rows.push(csvEscape(JSON.stringify(record.rawResult || {})));
-    const csv = rows.join("\n");
+    const csv = "\uFEFF" + rows.join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");

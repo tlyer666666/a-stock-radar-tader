@@ -165,7 +165,7 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     const temp = `${file}.${process.pid}.${++writeSequence}.tmp`;
     activeTempFiles.add(temp);
     try {
-      await fs.promises.mkdir(path.dirname(file), { recursive: true });
+      await fs.promises.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
       await fs.promises.writeFile(
         temp,
         JSON.stringify({
@@ -344,6 +344,14 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
       const fullPath = path.join(base, entry.name);
       if (entry.name.endsWith(".tmp")) {
         if (activeTempFiles.has(fullPath)) continue;
+        if (!/^\d{6}\.json\.\d+\.\d+\.tmp$/.test(entry.name)) {
+          try {
+            const stat = await fs.promises.stat(fullPath);
+            if (currentMs - stat.mtimeMs <= STALE_RETRY_MS) continue;
+          } catch {
+            continue;
+          }
+        }
         try {
           await fs.promises.rm(fullPath, { force: true });
           removedTmp += 1;
@@ -393,12 +401,20 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     }
   }
 
-  const startupCleanupTimer = setTimeout(() => {
+  let startupCleanupTimer = setTimeout(() => {
+    startupCleanupTimer = null;
     void cleanupStaleBars().catch(() => {});
   }, 15000);
   startupCleanupTimer?.unref?.();
 
-  return { prepareDay, history, peek, cleanupStaleBars, getStorageStats, stats: () => ({ ...stats }) };
+  function shutdown() {
+    if (startupCleanupTimer) {
+      clearTimeout(startupCleanupTimer);
+      startupCleanupTimer = null;
+    }
+  }
+
+  return { prepareDay, history, peek, cleanupStaleBars, getStorageStats, shutdown, stats: () => ({ ...stats }) };
 }
 
 module.exports = { createDailyBarStore, STORE_VERSION, lotsConsistent };

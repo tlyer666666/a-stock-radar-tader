@@ -155,11 +155,13 @@ const MAX_SAVED_TREND_PLANS = 200;
 export function writeTrendPlans(storage: PlanStorage, plans: SavedTrendPlan[]): boolean {
   try {
     if (!plans.every(validPlan)) return false;
-    const bounded = plans.length <= MAX_SAVED_TREND_PLANS
-      ? plans
+    const seenIds = new Set<string>();
+    const deduped = plans.filter(item => !seenIds.has(item.id) && Boolean(seenIds.add(item.id)));
+    const bounded = deduped.length <= MAX_SAVED_TREND_PLANS
+      ? deduped
       : [
-          ...plans.filter(item => !item.archivedAt),
-          ...plans.filter(item => Boolean(item.archivedAt))
+          ...deduped.filter(item => !item.archivedAt),
+          ...deduped.filter(item => Boolean(item.archivedAt))
         ].slice(0, MAX_SAVED_TREND_PLANS);
     storage.setItem(TREND_PLAN_STORAGE_KEY, JSON.stringify({ version: 1, plans: bounded }));
     if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
@@ -250,35 +252,22 @@ function boardForCode(code: string): TrendCandidate["board"] {
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
-/**
- * 从 AI 选股 / 个股快速生成合规的趋势观察计划并写入 `TREND_PLAN_STORAGE_KEY`，
- * 以便「今日驾驶舱」与「专业复盘」直接承接买点区间与止损对照。
- */
-export function saveQuickObservationPlan(
-  storage: PlanStorage,
-  input: {
-    code: string;
-    name: string;
-    secid?: string | undefined;
-    referencePrice?: number | null | undefined;
-    asOf?: string | undefined;
-    reason?: string | undefined;
-    stopPercent?: number | undefined;
-  }
-): { ok: true; plan: SavedTrendPlan; created: boolean } | { ok: false; error: string } {
+type QuickObservationPlanInput = {
+  code: string;
+  name: string;
+  secid?: string | undefined;
+  referencePrice?: number | null | undefined;
+  asOf?: string | undefined;
+  reason?: string | undefined;
+  stopPercent?: number | undefined;
+};
+
+function buildQuickObservationPlan(input: QuickObservationPlanInput): { ok: true; plan: SavedTrendPlan } | { ok: false; error: string; missingPrice?: boolean } {
   const code = String(input.code || "").trim();
   if (!/^\d{6}$/.test(code)) return { ok: false, error: "仅支持 6 位 A 股代码建立观察计划" };
-  const read = readTrendPlans(storage);
-  if (read.error) return { ok: false, error: read.error };
-
-  const existing = read.plans.find(item => !item.archivedAt && item.candidate.security.code === code);
-  if (existing) {
-    return { ok: true, plan: existing, created: false };
-  }
-
   const ref = Number(input.referencePrice);
   if (!Number.isFinite(ref) || ref <= 0) {
-    return { ok: false, error: "当前标的缺少有效参考价格，请先刷新行情后重试" };
+    return { ok: false, error: "当前标的缺少有效参考价格，请先刷新行情后重试", missingPrice: true };
   }
   const basePrice = ref;
   const stopPct = Number.isFinite(input.stopPercent) && Number(input.stopPercent) > 1 && Number(input.stopPercent) <= 20
@@ -337,7 +326,82 @@ export function saveQuickObservationPlan(
     warnings: ["由快捷入口转入观察计划，请结合开盘承接与预设止损人工复核"]
   };
 
-  const plan = createSavedTrendPlan(candidate, { isPreview: false, coverageComplete: true, marketGate: "open" });
-  const ok = writeTrendPlans(storage, [plan, ...read.plans]);
-  return ok ? { ok: true, plan, created: true } : { ok: false, error: "观察计划写入本机存储失败" };
+  return { ok: true, plan: createSavedTrendPlan(candidate, { isPreview: false, coverageComplete: true, marketGate: "open" }) };
+}
+
+/**
+ * 从 AI 选股 / 个股快速生成合规的趋势观察计划并写入 `TREND_PLAN_STORAGE_KEY`，
+ * 以便「今日驾驶舱」与「专业复盘」直接承接买点区间与止损对照。
+ */
+export function saveQuickObservationPlan(
+  storage: PlanStorage,
+  input: QuickObservationPlanInput
+): { ok: true; plan: SavedTrendPlan; created: boolean } | { ok: false; error: string } {
+  const code = String(input.code || "").trim();
+  if (!/^\d{6}$/.test(code)) return { ok: false, error: "仅支持 6 位 A 股代码建立观察计划" };
+  const read = readTrendPlans(storage);
+  if (read.error) return { ok: false, error: read.error };
+
+  const existing = read.plans.find(item => !item.archivedAt && item.candidate.security.code === code);
+  if (existing) {
+    return { ok: true, plan: existing, created: false };
+  }
+
+  const built = buildQuickObservationPlan(input);
+  if (!built.ok) return { ok: false, error: built.error };
+  const ok = writeTrendPlans(storage, [built.plan, ...read.plans]);
+  return ok ? { ok: true, plan: built.plan, created: true } : { ok: false, error: "观察计划写入本机存储失败" };
+}
+
+/** 批量流转多个标的至次日观察计划，仅执行一次读取、校验、落盘与事件广播。 */
+export function saveQuickObservationPlansBatch(
+  storage: PlanStorage,
+  inputs: QuickObservationPlanInput[]
+): { created: string[]; existing: string[]; missingPrice: string[]; invalid: string[]; storageError: string } {
+  const read = readTrendPlans(storage);
+  if (read.error) {
+    return { created: [], existing: [], missingPrice: [], invalid: [], storageError: read.error };
+  }
+  const activeCodes = new Set(read.plans.filter(item => !item.archivedAt).map(item => item.candidate.security.code));
+  const pendingById = new Map<string, SavedTrendPlan>();
+  const created: string[] = [];
+  const existing: string[] = [];
+  const missingPrice: string[] = [];
+  const invalid: string[] = [];
+
+  for (const input of inputs) {
+    const code = String(input.code || "").trim();
+    if (!/^\d{6}$/.test(code)) {
+      invalid.push(code);
+      continue;
+    }
+    if (activeCodes.has(code)) {
+      existing.push(code);
+      continue;
+    }
+    const built = buildQuickObservationPlan(input);
+    if (!built.ok) {
+      if (built.missingPrice) missingPrice.push(code);
+      else invalid.push(code);
+      continue;
+    }
+    activeCodes.add(code);
+    pendingById.set(built.plan.id, built.plan);
+    created.push(code);
+  }
+
+  if (pendingById.size > 0) {
+    const newPlans = [...pendingById.values()];
+    const ok = writeTrendPlans(storage, [...newPlans, ...read.plans]);
+    if (!ok) {
+      return {
+        created: [],
+        existing,
+        missingPrice,
+        invalid,
+        storageError: "观察计划写入本机存储失败，请检查磁盘或浏览器存储配额"
+      };
+    }
+  }
+  return { created, existing, missingPrice, invalid, storageError: "" };
 }

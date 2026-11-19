@@ -101,6 +101,8 @@ export function HoldingsView({
   paperPositions,
   paperMetrics,
   onClosePaperPosition,
+  onConfirmPaperSettlement,
+  onRefreshPaperPositions,
   onOpenPaperStock,
   initialLedgerTab = "real",
   onSave,
@@ -124,6 +126,8 @@ export function HoldingsView({
     winCount?: number | undefined;
   } | undefined;
   onClosePaperPosition?: ((code: string) => void) | undefined;
+  onConfirmPaperSettlement?: ((code: string) => void) | undefined;
+  onRefreshPaperPositions?: (() => Promise<void> | void) | undefined;
   onOpenPaperStock?: ((security: Security) => void) | undefined;
   initialLedgerTab?: "real" | "paper" | undefined;
   onSave: (update: (items: HoldingItem[]) => HoldingItem[]) => Promise<boolean>;
@@ -409,9 +413,10 @@ export function HoldingsView({
     setBatchMessage("");
     try {
       let resolved: Security | undefined;
-      if (!items.some(item => item.code === cleanCode) && typeof window !== "undefined" && window.stockApi?.search) {
+      if (tradeSide === "buy" && !items.some(item => item.code === cleanCode) && typeof window !== "undefined" && typeof window.stockApi?.search === "function") {
         const choices = await window.stockApi.search(cleanCode);
-        resolved = choices.find(entry => entry.code === cleanCode);
+        resolved = Array.isArray(choices) ? choices.find(entry => entry.code === cleanCode) : undefined;
+        if (!resolved) throw new Error("未找到该证券，请确认代码后重试");
       }
       let summaryText = "";
       let settledPnl: number | null = null;
@@ -474,15 +479,24 @@ export function HoldingsView({
     setBatchMessage("");
     try {
       const resolvedNames: Record<string, Security> = {};
-      if (typeof window !== "undefined" && window.stockApi?.search) {
-        const needLookup = pasteParsed.entries.filter(row => row.name === row.code).slice(0, 12);
-        await Promise.allSettled(
-          needLookup.map(async row => {
-            const choices = await window.stockApi.search(row.code);
-            const hit = choices.find(entry => entry.code === row.code);
-            if (hit) resolvedNames[row.code] = hit;
-          })
-        );
+      if (typeof window !== "undefined" && typeof window.stockApi?.search === "function") {
+        const existingByCode = new Map(items.map(item => [item.code, item]));
+        const needLookup = pasteParsed.entries.filter(row => {
+          if (row.name !== row.code) return false;
+          const cached = existingByCode.get(row.code);
+          return !cached || !cached.name || cached.name === row.code;
+        });
+        const chunkSize = 8;
+        for (let i = 0; i < needLookup.length; i += chunkSize) {
+          const chunk = needLookup.slice(i, i + chunkSize);
+          await Promise.allSettled(
+            chunk.map(async row => {
+              const choices = await window.stockApi.search(row.code);
+              const hit = Array.isArray(choices) ? choices.find(entry => entry.code === row.code) : undefined;
+              if (hit) resolvedNames[row.code] = hit;
+            })
+          );
+        }
       }
       const saved = await onSave(current => mergeImportedHoldings(current, pasteParsed.entries, resolvedNames));
       if (saved) {
@@ -532,14 +546,14 @@ export function HoldingsView({
         eyebrow="PERSONAL HOLDINGS BOARD"
         title="持仓股"
         description="持仓数据仅保存在本机；支持单只录入、买卖加减仓自动摊薄成本、多行粘贴导入及一键止损盯盘。"
-        actions={<button className="secondary-btn" onClick={() => void refreshQuotes()} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新行情</button>}
+        actions={<button className="secondary-btn" onClick={() => { void refreshQuotes(); if (ledgerTab === "paper") void onRefreshPaperPositions?.(); }} disabled={refreshing}>{refreshing ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}刷新行情</button>}
       />
       {hasPaperSwitch && (
         <div className="holdings-mode-tabs holdings-account-tabs" role="tablist" aria-label="实盘与模拟盘持仓切换">
           <button type="button" role="tab" aria-selected={ledgerTab === "real"} className={ledgerTab === "real" ? "active" : ""} onClick={() => setLedgerTab("real")}>
             实盘持仓 ({items.length})
           </button>
-          <button type="button" role="tab" aria-selected={ledgerTab === "paper"} className={ledgerTab === "paper" ? "active" : ""} onClick={() => setLedgerTab("paper")}>
+          <button type="button" role="tab" aria-selected={ledgerTab === "paper"} className={ledgerTab === "paper" ? "active" : ""} onClick={() => { setLedgerTab("paper"); void onRefreshPaperPositions?.(); }}>
             模拟盘持仓 ({paperPositions?.length ?? 0})
           </button>
         </div>
@@ -580,16 +594,25 @@ export function HoldingsView({
                   const pnl = (pos.latestPrice - pos.entryPrice) * pos.shares - pos.entryFee;
                   const costBase = pos.entryPrice * pos.shares + pos.entryFee;
                   const pnlPct = costBase > 0 ? (pnl / costBase) * 100 : 0;
-                  const sec: Security = { code: pos.code, name: pos.name, secid: inferSecid(pos.code), assetType: "stock" };
+                  const assetType: Security["assetType"] =
+                    pos.code.startsWith("11") || pos.code.startsWith("12")
+                      ? "convertibleBond"
+                      : pos.code.startsWith("5") || pos.code.startsWith("159")
+                        ? "etf"
+                        : "stock";
+                  const sec: Security = { code: pos.code, name: pos.name, secid: inferSecid(pos.code), assetType };
                   return (
                     <div className="tr" key={pos.id || pos.code} role="row">
                       <span role="rowheader" className="stock-cell"><b>{pos.name}</b><small>{pos.code}</small></span>
                       <span role="cell">{maskSensitiveText(pos.shares.toLocaleString("zh-CN"), privacyMask)} 股 <small>成本 {fmt(pos.entryPrice)} 元</small></span>
                       <span role="cell"><b>{fmt(pos.latestPrice)} 元</b><small>止损 {fmt(pos.stopPrice)} · 止盈 {fmt(pos.takePrice)}</small></span>
                       <span role="cell">{maskSensitiveText(fmtMoney(mktVal), privacyMask)}</span>
-                      <span role="cell" className={pnl >= 0 ? "holding-pnl up" : "holding-pnl down"}><b>{maskSensitiveText(signedMoney(pnl), privacyMask)}</b><small>{signedPercent(pnlPct)}</small></span>
+                      <span role="cell" className={Number.isFinite(pnl) ? (pnl >= 0 ? "holding-pnl up" : "holding-pnl down") : ""}><b>{maskSensitiveText(signedMoney(pnl), privacyMask)}</b><small>{signedPercent(pnlPct)}</small></span>
                       <span role="cell" className="holdings-row-actions">
                         {onOpenPaperStock && <button type="button" className="table-action" onClick={() => onOpenPaperStock(sec)}>分析</button>}
+                        {Boolean(pos.settlementBlockedReason) && onConfirmPaperSettlement && (
+                          <button type="button" className="table-action" title={pos.settlementBlockedReason} onClick={() => onConfirmPaperSettlement(pos.code)}>确认除权基准</button>
+                        )}
                         {onClosePaperPosition && <button type="button" className="table-action danger" onClick={() => onClosePaperPosition(pos.code)}>平仓</button>}
                       </span>
                     </div>
@@ -789,7 +812,7 @@ export function HoldingsView({
                 </span>
                 <span role="cell">{row.quoteAvailable ? <><b>{fmt(row.latest)} 元</b><small className={Number.isFinite(row.changePct) ? row.changePct >= 0 ? "holding-pnl up" : "holding-pnl down" : ""}>{Number.isFinite(row.changePct) ? signedPercent(row.changePct) : "--"}</small><small>{row.quoteFailed ? "上次报价" : "报价更新"} {formatShanghaiDateTime(row.quoteUpdatedAt)}{row.quoteFailed ? " · 刷新失败" : ""}</small></> : <small>{row.quoteFailed ? "刷新失败，报价待恢复" : "等待报价"}</small>}</span>
                 <span role="cell">{row.quoteAvailable ? <>{maskSensitiveText(fmtMoney(row.marketValue), privacyMask)}{row.quoteFailed && <small>参考市值</small>}</> : "--"}</span>
-                <span role="cell" className={row.profit >= 0 ? "holding-pnl up" : "holding-pnl down"}>{row.quoteAvailable ? <><b>{maskSensitiveText(signedMoney(row.profit), privacyMask)}</b><small>{signedPercent(row.profitPercent)}{row.quoteFailed ? " · 参考盈亏" : ""}</small></> : "--"}</span>
+                <span role="cell" className={row.quoteAvailable && Number.isFinite(row.profit) ? (row.profit >= 0 ? "holding-pnl up" : "holding-pnl down") : ""}>{row.quoteAvailable ? <><b>{maskSensitiveText(signedMoney(row.profit), privacyMask)}</b><small>{signedPercent(row.profitPercent)}{row.quoteFailed ? " · 参考盈亏" : ""}</small></> : "--"}</span>
                 <span role="cell" className="holdings-row-actions">
                   <button className="table-action" onClick={() => onOpen(row.item)}>分析</button>
                   <button className="table-action" onClick={() => { setEntryMode("single"); editHolding(row.item); }}>编辑</button>

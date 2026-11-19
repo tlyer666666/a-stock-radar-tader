@@ -603,9 +603,15 @@ export default function StrategySignalsView({
               : null;
             if (prog && typeof prog === "object" && !Array.isArray(prog)) {
               const p = prog as Record<string, unknown>;
+              if (p.active === false) return;
               const total = Number(p.total ?? p.universeSize ?? 0);
-              const processed = Number(p.processed ?? p.completed ?? p.done ?? p.scanned ?? 0);
-              if (Number.isFinite(total) && total > 0 && Number.isFinite(processed) && processed >= 0) {
+              const rawProcessed = Number(p.processed ?? p.completed ?? p.done ?? p.scanned ?? 0);
+              const rawFetched = Number(p.fetched ?? 0);
+              const processed = Math.max(
+                Number.isFinite(rawProcessed) ? rawProcessed : 0,
+                Number.isFinite(rawFetched) ? Math.floor(rawFetched * 0.85) : 0
+              );
+              if (Number.isFinite(total) && total > 0 && processed >= 0) {
                 const clampedDone = Math.min(total, Math.max(0, Math.floor(processed)));
                 const rawEta = Number(p.etaSeconds ?? p.remainingSeconds);
                 let etaSeconds: number | null = Number.isFinite(rawEta) && rawEta >= 0 ? Math.round(rawEta) : null;

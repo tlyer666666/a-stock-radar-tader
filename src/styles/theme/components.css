@@ -5025,7 +5025,7 @@ html .terminal-shell .member-row.no-funds {
   height: 100dvh;
   max-height: 100dvh;
   margin: 0;
-  padding: 0;
+  padding: 84px var(--space-md) var(--space-lg);
   border: 0;
   background: var(--overlay);
 }
@@ -5038,7 +5038,7 @@ html .terminal-shell .member-row.no-funds {
   position: fixed;
   right: 20px;
   bottom: 38px;
-  z-index: 95;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   gap: 8px;

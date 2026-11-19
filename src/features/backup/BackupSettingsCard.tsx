@@ -76,6 +76,7 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
   const startRestore = async (file: BackupFile) => {
     if (busy) return;
     const seq = ++restoreSeqRef.current;
+    setRestore(null);
     setBusy("inspect"); setMessage(null);
     try {
       await api.inspect(file.name);
@@ -125,9 +126,9 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
       <h4>备份文件夹</h4>
       <p className="backup-folder">{status?.folder ? <><Cloud size={14} />{folderLabel ? `${folderLabel} · ` : ""}<code>{status.folder}</code></> : "还没有选择文件夹"}</p>
       <div className="backup-actions">
-        <button type="button" className="secondary-btn" disabled={Boolean(busy)} onClick={() => void act("folder", () => api.chooseFolder())}><FolderOpen size={14} />选择文件夹</button>
+        <button type="button" className="secondary-btn" disabled={Boolean(busy)} onClick={() => { setRestore(null); void act("folder", () => api.chooseFolder()); }}><FolderOpen size={14} />选择文件夹</button>
         {status?.suggestions.filter(item => item.path !== status.folder).map(item => <button key={item.path} type="button" className="secondary-btn" disabled={Boolean(busy)}
-          onClick={() => void act("folder", () => api.configure({ suggestedFolder: item.path }), `已改为备份到${item.label}`)}><Cloud size={14} />用{item.label}</button>)}
+          onClick={() => { setRestore(null); void act("folder", () => api.configure({ suggestedFolder: item.path }), `已改为备份到${item.label}`); }}><Cloud size={14} />用{item.label}</button>)}
       </div>
       {status && !status.suggestions.length && <p className="source-health-note">没找到网盘同步文件夹。想备份到 Google 云端硬盘，先安装「Google Drive 电脑版」并登录，它会在本机建一个同步文件夹，再回来选它（国内需要能访问 Google）。</p>}
     </section>
@@ -188,7 +189,7 @@ export function BackupSettingsCard({ hidden }: { hidden: boolean }) {
     {message && <p className={`backup-message ${message.tone}`} role={message.tone === "error" ? "alert" : "status"}>{message.tone === "error" && <CircleAlert size={14} />}{message.text}</p>}
     {status?.storageSummary && (
       <p className="source-health-note" aria-label="本机存储空间占用">
-        本机目录占用：业务数据 {sizeText(Math.max(0, status.storageSummary.userDataBytes - status.storageSummary.dailyBarsBytes - status.storageSummary.webCacheBytes))} · 本地日线库 {sizeText(status.storageSummary.dailyBarsBytes)}（{status.storageSummary.dailyBarsCount} 只股票，退市超 180 天自动回收） · 内嵌网页缓存 {sizeText(status.storageSummary.webCacheBytes)}。
+        本机目录占用：业务数据 {sizeText(status.storageSummary.userDataBytes)} · 本地日线库 {sizeText(status.storageSummary.dailyBarsBytes)}（{status.storageSummary.dailyBarsCount} 只股票，退市超 180 天自动回收） · 内嵌网页缓存 {sizeText(status.storageSummary.webCacheBytes)}。
       </p>
     )}
     <p className="source-health-note">备份里有：设置（不含令牌和 API Key）、自选、持仓、观察记录、随心记、做T助手、自定义策略、AI 打分与问股对话、回测与复盘记录、纸面账户。不含行情缓存和日线库（换电脑后会自动重新下载）。</p>

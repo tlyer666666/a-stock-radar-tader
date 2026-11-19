@@ -12,14 +12,15 @@ const HISTORY_CONCURRENCY=6;
 const BENCHMARK={code:'000985',secid:'1.000985',assetType:'index'};
 const codeEligible=code=>/^(?:000|001|002|003|600|601|603|605|30[012]|68[89])\d{3}$/.test(code)||isBseAshareCode(code);
 let currentScanToken=null;
+const activeScans=[];
 let activeScanProgress={active:false,processed:0,total:0,hits:0,fetched:0,startedAt:null,etaSeconds:null};
 function getStrategyScanProgress(){
  return {...activeScanProgress};
 }
-async function mapBounded(items,worker,assertActive,concurrency=HISTORY_CONCURRENCY) {
+async function mapBounded(items,worker,assertActive,concurrency=HISTORY_CONCURRENCY,isStopped=null) {
  const results=new Array(items.length);let cursor=0;
  await Promise.all(Array.from({length:Math.min(concurrency,items.length)},async()=>{
-  while(cursor<items.length){assertActive();const index=cursor++;try{results[index]={ok:true,value:await worker(items[index],index)};}catch(error){assertActive();results[index]={ok:false,error:error instanceof Error?error.message:String(error),failure:classifySelectionFailure(error)};}}
+  while(cursor<items.length){if(isStopped?.())break;assertActive();const index=cursor++;try{results[index]={ok:true,value:await worker(items[index],index)};}catch(error){if(isStopped?.())break;assertActive();results[index]={ok:false,error:error instanceof Error?error.message:String(error),failure:classifySelectionFailure(error)};}}
  }));
  return results;
 }
@@ -97,7 +98,9 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
   assertActive();
   const nowMs=()=>{const v=now();return v instanceof Date?v.getTime():Number(v)||Date.now();};
   const scanStartedMs=nowMs();
-  const scanToken={};
+  let finished=false;
+  let unwinding=false;
+  const isStopped=()=>finished||unwinding;
   const hitCodes=new Set();
   let totalCandidates=0,fetchedCount=0,processedCount=0;
   const computeEta=()=>{
@@ -107,11 +110,14 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
    const elapsedSec=Math.max(0.1,(nowMs()-scanStartedMs)/1000);
    return Math.max(1,Math.round((elapsedSec/done)*(totalCandidates-done)));
   };
+  let scanToken;
   const publishProgress=(active=true)=>{
-   if(currentScanToken!==scanToken)return;
+   if(finished||currentScanToken!==scanToken)return;
    activeScanProgress={active,processed:processedCount,total:totalCandidates,hits:hitCodes.size,fetched:fetchedCount,
     startedAt:new Date(scanStartedMs).toISOString(),etaSeconds:active?computeEta():null};
   };
+  scanToken={publish:()=>publishProgress(true)};
+  activeScans.push(scanToken);
   currentScanToken=scanToken;
   publishProgress(true);
   try {
@@ -147,47 +153,57 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
   const watchSecurities=watchStrategies.length?(Array.isArray(options.watchlistSecurities)?options.watchlistSecurities:[]).map(item=>({...item,code:String(item?.code||'')}))
    .filter(item=>codeEligible(item.code)&&!isRiskSecurityName(item.name)&&!watchSeen.has(item.code)&&watchSeen.add(item.code)).slice(0,300):[];
   const historyFailures=new Map(),historySources=new Set(),reports=[],retained={};let failed=0;const failedNames=[],noBars=[];
-  const readChunk=chunk=>{const read=mapBounded(chunk,async security=>{try{return await loadHistory(security,bars,options);}finally{fetchedCount=Math.min(totalCandidates,fetchedCount+1);publishProgress(true);}},assertActive);read.catch(()=>{});return read;};
+  const readChunk=chunk=>{const read=mapBounded(chunk,async security=>{try{return await loadHistory(security,bars,options);}finally{if(!isStopped()){fetchedCount=Math.min(totalCandidates,fetchedCount+1);publishProgress(true);}}},assertActive,HISTORY_CONCURRENCY,isStopped);read.catch(()=>{});return read;};
   let pending=chunks.length?readChunk(chunks[0]):null;
   const benchmarkResult=await benchmarkRead;
   const benchmark=benchmarkResult?.ok&&Array.isArray(benchmarkResult.value)?benchmarkResult.value:[];
   assertActive();
-  for(let index=0;index<chunks.length;index++){
-   const results=await pending;assertActive();
-   pending=index+1<chunks.length?readChunk(chunks[index+1]):null;
-   // 1.6.47：个别股票日线因网络抖动读取失败时，本批计算前再读一次。
-   const retryIndexes=results.map((result,offset)=>result?.ok&&Array.isArray(result.value)&&result.value.length?-1:offset).filter(offset=>offset>=0);
-   if(retryIndexes.length&&retryIndexes.length<=Math.max(20,Math.ceil(chunks[index].length/5))){
-    const again=await mapBounded(retryIndexes.map(offset=>chunks[index][offset]),security=>loadHistory(security,bars,options),assertActive).catch(()=>[]);
+  try {
+   for(let index=0;index<chunks.length;index++){
+    const results=await pending;assertActive();
+    pending=index+1<chunks.length?readChunk(chunks[index+1]):null;
+    // 1.6.47：个别股票日线因网络抖动读取失败时，本批计算前再读一次。
+    const retryIndexes=results.map((result,offset)=>result?.ok&&Array.isArray(result.value)&&result.value.length?-1:offset).filter(offset=>offset>=0);
+    if(retryIndexes.length&&retryIndexes.length<=Math.max(20,Math.ceil(chunks[index].length/5))){
+     const again=await mapBounded(retryIndexes.map(offset=>chunks[index][offset]),security=>loadHistory(security,bars,options),assertActive,HISTORY_CONCURRENCY,isStopped).catch(()=>[]);
+     assertActive();
+     again.forEach((result,position)=>{if(result?.ok&&Array.isArray(result.value)&&result.value.length)results[retryIndexes[position]]=result;});
+    }
+    const historiesByCode={};
+    results.forEach((result,offset)=>{
+     if(result?.ok)historySources.add(String(result.value?.dataSource||'公开行情'));
+     const security=chunks[index][offset];
+     if(result?.ok&&Array.isArray(result.value)&&result.value.length){historiesByCode[security.code]=result.value;}
+     // 读取成功但没有日线：新股未上市/刚上市（N、C 开头）或长期停牌，先记下，循环结束后再决定算不算失败。
+     else if(result?.ok||security.noTradeSnapshot===true)noBars.push(`${security.code}${security.name?` ${security.name}`:''}`);
+     else{failed++;if(failedNames.length<6)failedNames.push(`${security.code}${security.name?` ${security.name}`:''}`);}
+    });
+    // Aggregate diagnostics while this batch is live; never retain successful raw daily bars here.
+    for(const failure of buildSelectionDiagnostics({histories:results}).failures){
+     const key=failure.category,previous=historyFailures.get(key);
+     historyFailures.set(key,{...failure,count:(previous?.count||0)+failure.count});
+    }
+    const chunkReport=await runEngine(chunks[index],historiesByCode,benchmark,engineOptions);
+    reports.push(chunkReport);
+    processedCount=Math.min(totalCandidates,processedCount+chunks[index].length);
+    for(const group of Array.isArray(chunkReport?.strategies)?chunkReport.strategies:[]){
+     for(const stock of Array.isArray(group?.stocks)?group.stocks:[])if(stock?.code)hitCodes.add(String(stock.code));
+    }
+    publishProgress(true);
     assertActive();
-    again.forEach((result,position)=>{if(result?.ok&&Array.isArray(result.value)&&result.value.length)results[retryIndexes[position]]=result;});
+    // 只为自选/持仓第二轮保留它们自己的日线，不保留全市场日线。
+    for(const code of watchSeen)if(historiesByCode[code])retained[code]=historiesByCode[code];
    }
-   const historiesByCode={};
-   results.forEach((result,offset)=>{
-    if(result?.ok)historySources.add(String(result.value?.dataSource||'公开行情'));
-    const security=chunks[index][offset];
-    if(result?.ok&&Array.isArray(result.value)&&result.value.length){historiesByCode[security.code]=result.value;}
-    // 读取成功但没有日线：新股未上市/刚上市（N、C 开头）或长期停牌，先记下，循环结束后再决定算不算失败。
-    else if(result?.ok||security.noTradeSnapshot===true)noBars.push(`${security.code}${security.name?` ${security.name}`:''}`);
-    else{failed++;if(failedNames.length<6)failedNames.push(`${security.code}${security.name?` ${security.name}`:''}`);}
-   });
-   // Aggregate diagnostics while this batch is live; never retain successful raw daily bars here.
-   for(const failure of buildSelectionDiagnostics({histories:results}).failures){
-    const key=failure.category,previous=historyFailures.get(key);
-    historyFailures.set(key,{...failure,count:(previous?.count||0)+failure.count});
+  } catch (chunkError) {
+   unwinding=true;
+   throw chunkError;
+  } finally {
+   if(pending){
+    unwinding=true;
+    await pending.catch(()=>null);
    }
-   const chunkReport=await runEngine(chunks[index],historiesByCode,benchmark,engineOptions);
-   reports.push(chunkReport);
-   processedCount+=Number(chunkReport?.dataQuality?.processed)||0;
-   for(const group of Array.isArray(chunkReport?.strategies)?chunkReport.strategies:[]){
-    for(const stock of Array.isArray(group?.stocks)?group.stocks:[])if(stock?.code)hitCodes.add(String(stock.code));
-   }
-   publishProgress(true);
-   assertActive();
-   // 只为自选/持仓第二轮保留它们自己的日线，不保留全市场日线。
-   for(const code of watchSeen)if(historiesByCode[code])retained[code]=historiesByCode[code];
   }
-  if(pending)await pending.catch(()=>null);
+  processedCount=totalCandidates;
   // 少量「读取成功但没有日线」是新股或长期停牌（2026-11-06 实测：N森峰、钧锐锶、菊乐股份、琼民源A）；
   // 一次出现很多则更像数据源出错，仍按读取失败处理，结果也不当作干净结果缓存。
   const noBarsAreFailures=noBars.length>20;
@@ -216,7 +232,6 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
    for(const stock of Array.isArray(group?.stocks)?group.stocks:[])if(stock?.code)hitCodes.add(String(stock.code));
   }
   report.qualifiedCount=hitCodes.size;
-  processedCount=Number(report.dataQuality?.processed)||processedCount;
   publishProgress(true);
   if(!ctx.inferred){
    let current=null;try{current=context().asOfDate;}catch{current=null;}
@@ -252,8 +267,18 @@ function createStrategySelectionService({calendar=createTradingCalendar(),now=()
    cacheValidUntil:degraded?null:ctx.cacheValidUntil,watchlistCoverage,selectionDiagnostics,
    warning:[report.warning,...warnings].filter(Boolean).join(' '),notes};
   } finally {
+   finished=true;
+   const scanIndex=activeScans.indexOf(scanToken);
+   if(scanIndex>=0)activeScans.splice(scanIndex,1);
    if(currentScanToken===scanToken){
-    activeScanProgress={...activeScanProgress,active:false,etaSeconds:null};
+    currentScanToken=null;
+    const fallbackScan=activeScans.at(-1)||null;
+    if(fallbackScan){
+     currentScanToken=fallbackScan;
+     fallbackScan.publish();
+    }else{
+     activeScanProgress={...activeScanProgress,active:false,etaSeconds:null};
+    }
    }
   }
  }

@@ -72,21 +72,37 @@ const securitySearchCache = new BoundedCache({ maxBytes: 512 * 1024, maxEntries:
 
 const strategySignalCache = new BoundedCache({ maxEntries: 12, maxBytes: 8 * 1024 * 1024, now: () => Date.now() });
 
+let fuyaoQuoteSource = null;
+let dailyBarStore = null;
+
+function bindShutdownResources(resources = {}) {
+  if (resources.fuyaoQuoteSource) fuyaoQuoteSource = resources.fuyaoQuoteSource;
+  if (resources.dailyBarStore) dailyBarStore = resources.dailyBarStore;
+}
+
+function isRiskStockName(name = "") {
+  const normalized = String(name).replace(/\s+/g, "").toUpperCase();
+  return normalized.includes("ST") || normalized.includes("退");
+}
+
 function serviceSignal(signal) {
   return serviceRuntime.signal(signal);
 }
 
 function shutdownServiceResources() {
-  serviceController.abort(new DOMException("应用正在退出，任务已取消", "AbortError"));
+  const reason = new DOMException("应用正在退出，任务已取消", "AbortError");
+  serviceController.abort(reason);
   return Promise.allSettled([
     ...serviceRequests,
-    serviceRuntime.shutdown(serviceController.signal.reason),
-    chartRuntime.shutdown(serviceController.signal.reason),
+    serviceRuntime.shutdown(reason),
+    chartRuntime.shutdown(reason),
     shutdownNewsService(),
-    stockIndustryIndex.shutdown(serviceController.signal.reason),
-    sectorLimitCounts.shutdown(serviceController.signal.reason),
+    stockIndustryIndex.shutdown(reason),
+    sectorLimitCounts.shutdown(reason),
+    fuyaoQuoteSource?.shutdown?.(reason),
+    dailyBarStore?.shutdown?.(),
     shutdownDataFederation(),
-    workerRunner.shutdown(serviceController.signal.reason),
+    workerRunner.shutdown(reason),
     sectorExplorer.dispose(),
     thsOfficial.drainThsQuoteRequests()
   ]).then(() => undefined);
@@ -391,9 +407,10 @@ const sectorLimitCounts = require("../sector-limit-counts.cjs").createSectorLimi
   loadMembers: async (sector, { signal }) => {
     const indexCode = sector.indexCode || (/^88[156]\d{3}$/.test(sector.code) ? sector.code : "");
     if (fuyao.configured() && indexCode) {
-      const members = await fuyao.constituents(`${indexCode}.TI`, { signal });
-      if (!members.length) throw new Error("板块成分名单为空");
-      return { members, complete: sector.memberCount === null || members.length >= sector.memberCount };
+      const rawMembers = await fuyao.constituents(`${indexCode}.TI`, { signal });
+      if (!rawMembers.length) throw new Error("板块成分名单为空");
+      const members = rawMembers.filter(row => !row.isSt && !isRiskStockName(row.name));
+      return { members, skipped: rawMembers.length - members.length, complete: sector.memberCount === null || rawMembers.length >= sector.memberCount };
     }
     const members = await thsOfficial.fetchThsSectorMembers(fetchWithPolicy,
       sector.boardType === "concept" ? { kind: "concept", cid: sector.conceptCid } : { kind: "industry", code: sector.code },
@@ -405,7 +422,8 @@ const sectorLimitCounts = require("../sector-limit-counts.cjs").createSectorLimi
     const result = await fuyao.limitUpPool({ signal });
     const stamp = Date.parse(result.fetchedAt);
     const asOfDate = Number.isFinite(stamp) ? new Date(stamp + 8 * 3600000).toISOString().slice(0, 10) : "";
-    return { stocks: result.rows, complete: new Set(result.rows.map(row => row.code)).size === result.total,
+    const stocks = result.rows.filter(row => !row.isSt && !isRiskStockName(row.name));
+    return { stocks, complete: new Set(result.rows.map(row => row.code)).size === result.total,
       asOfDate, fetchedAt: result.fetchedAt };
   }
 });
@@ -430,6 +448,7 @@ module.exports = {
   sectorExplorer,
   securitySearchCache,
   strategySignalCache,
+  bindShutdownResources,
   serviceSignal,
   shutdownServiceResources,
   trackServiceRequest,

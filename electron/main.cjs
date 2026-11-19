@@ -335,7 +335,11 @@ function normalizeHoldings(value) {
     const updatedAt = Number.isFinite(Date.parse(row?.updatedAt)) ? row.updatedAt : createdAt;
     const holding = {
       ...normalizeSecurityIdentity(row, code),
-      assetType: row?.assetType,
+      assetType: row?.assetType === "etf"
+        ? "etf"
+        : row?.assetType === "convertibleBond" || row?.assetType === "bond"
+          ? "convertibleBond"
+          : "stock",
       shares: Math.min(shares, 1_000_000_000),
       costPrice: Math.min(costPrice, 10_000_000),
       createdAt,
@@ -658,15 +662,34 @@ function scheduleRendererRecovery(reason, targetWindow = mainWindow) {
   }, RENDERER_RECOVERY_DELAY_MS);
 }
 
+const MAX_ACTIVE_NOTIFICATIONS = 32;
+const activeNotifications = new Set();
+
 function showSystemNotification(input) {
   const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
   const title = String(value.title || "").trim().slice(0, 60);
   const body = String(value.body || "").trim().slice(0, 240);
   if (!title) throw new Error("通知标题为空");
-  if (process.platform === "darwin" && app.dock && mainWindow && !mainWindow.isFocused()) app.dock.bounce("informational");
+  if (isQuitting || process.env.A_STOCK_E2E_HIDDEN === "1") return { shown: false };
+  if (
+    process.platform === "darwin"
+    && app.dock
+    && (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFocused())
+  ) {
+    app.dock.bounce("informational");
+  }
   if (!Notification.isSupported()) return { shown: false };
   const notification = new Notification({ title, body, silent: false });
+  const releaseNotification = () => { activeNotifications.delete(notification); };
+  if (activeNotifications.size >= MAX_ACTIVE_NOTIFICATIONS) {
+    const oldest = activeNotifications.values().next().value;
+    activeNotifications.delete(oldest);
+  }
+  activeNotifications.add(notification);
   notification.on("click", () => showOrCreateMainWindow());
+  notification.once("click", releaseNotification);
+  notification.once("close", releaseNotification);
+  notification.once("failed", releaseNotification);
   notification.show();
   return { shown: true };
 }
@@ -1012,6 +1035,7 @@ function directoryBytesBounded(rootDir, maxDepth = 3) {
   try {
     const entries = fs.readdirSync(rootDir, { withFileTypes: true });
     for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
       const fullPath = path.join(rootDir, entry.name);
       if (entry.isFile()) {
         try { total += fs.statSync(fullPath).size; } catch { /* ignore */ }
@@ -1025,18 +1049,30 @@ function directoryBytesBounded(rootDir, maxDepth = 3) {
   return total;
 }
 
+const STORAGE_SUMMARY_TTL_MS = 60_000;
+let cachedStorageSummary = null;
+
 function computeStorageSummary() {
   const userDataDir = app.getPath("userData");
+  const nowMs = Date.now();
+  if (
+    cachedStorageSummary
+    && cachedStorageSummary.userDataDir === userDataDir
+    && nowMs - cachedStorageSummary.computedAt < STORAGE_SUMMARY_TTL_MS
+  ) {
+    return { ...cachedStorageSummary.value };
+  }
   let userDataBytes = 0;
   try {
     const entries = fs.readdirSync(userDataDir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isFile()) continue;
+      if (entry.isSymbolicLink() || !entry.isFile()) continue;
       try { userDataBytes += fs.statSync(path.join(userDataDir, entry.name)).size; } catch { /* ignore */ }
     }
   } catch {
     userDataBytes = 0;
   }
+  userDataBytes += directoryBytesBounded(path.join(userDataDir, "Local Storage"), 2);
   const barStats = typeof dailyBarStore?.getStorageStats === "function"
     ? dailyBarStore.getStorageStats()
     : { fileCount: 0, totalBytes: 0 };
@@ -1052,12 +1088,14 @@ function computeStorageSummary() {
   for (const cacheRoot of cacheRoots) {
     webCacheBytes += directoryBytesBounded(cacheRoot, 3);
   }
-  return {
+  const value = {
     userDataBytes,
     dailyBarsBytes: barStats.totalBytes,
     dailyBarsCount: barStats.fileCount,
     webCacheBytes
   };
+  cachedStorageSummary = { userDataDir, computedAt: nowMs, value };
+  return { ...value };
 }
 
 function readMigratedBackupConfig() {
@@ -1300,6 +1338,9 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) {
   app.quit();
 } else {
+  if (process.platform === "win32") {
+    app.setAppUserModelId(app.isPackaged ? "com.tlyer666666.astockmonitor" : process.execPath);
+  }
   app.on("second-instance", () => {
     if (isQuitting || !app.isReady()) return;
     showOrCreateMainWindow();
@@ -1454,9 +1495,11 @@ const finishShutdown = createShutdownGate({
 
 app.on("before-quit", (event) => {
   isQuitting = true;
+  activeNotifications.clear();
   cancelRendererRecovery();
   trendScanOwner = undefined;
   trendScreener.cancel();
+  dailyBarStore?.shutdown?.();
   noteWatcherInstance?.stop();
   intervalReminders.stop();
   finishShutdown(event);

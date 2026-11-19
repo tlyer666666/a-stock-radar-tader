@@ -10,6 +10,7 @@ const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 const MAGIC = Buffer.from("AS1");
+const LINK_FALLBACK_CODES = new Set(["ENOTSUP", "EPERM", "ENOSYS", "EXDEV"]);
 
 function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } = {}) {
   if (!keyPath) throw new TypeError("缺少本机密钥文件路径");
@@ -27,7 +28,7 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
     }
     if (!create) return null;
     const key = randomBytes(KEY_BYTES);
-    fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+    fs.mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o700 });
     // 损坏的密钥文件先改名留存（便于排查/恢复），不直接覆盖。
     if (hasCorrupted) {
       try { fs.renameSync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
@@ -35,11 +36,19 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
     }
     // 先写临时文件并落盘（fsync），再用硬链接原子地放到正式位置：
     // 断电不会留下半个密钥；并发启动时不覆盖别人刚写好的密钥。
-    const tmpPath = `${keyPath}.tmp.${process.pid}.${Date.now()}`;
+    const tmpPath = `${keyPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
     const fd = fs.openSync(tmpPath, "wx", 0o600);
     try { fs.writeSync(fd, key); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     try {
-      fs.linkSync(tmpPath, keyPath);
+      try {
+        fs.linkSync(tmpPath, keyPath);
+      } catch (linkError) {
+        if (!LINK_FALLBACK_CODES.has(linkError?.code)) throw linkError;
+        fs.copyFileSync(tmpPath, keyPath, fs.constants.COPYFILE_EXCL);
+        if (process.platform !== "win32") {
+          try { fs.chmodSync(keyPath, 0o600); } catch { /* 受限文件系统尽力而为 */ }
+        }
+      }
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
       return loadKey(false);

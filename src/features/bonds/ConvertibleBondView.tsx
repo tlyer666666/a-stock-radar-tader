@@ -115,7 +115,16 @@ export default function ConvertibleBondView({
   const [localFavCodes, setLocalFavCodes] = useState<Set<string>>(() => new Set());
   const alive = useRef(true);
   const busy = useRef(false);
+  const requestSeq = useRef(0);
+  const copyTimer = useRef<number | null>(null);
   const api = typeof window === "undefined" ? null : window.stockApi;
+
+  useEffect(() => () => {
+    if (copyTimer.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(copyTimer.current);
+      copyTimer.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (favoriteCodes !== undefined || typeof api?.getWatchlist !== "function") return;
@@ -162,21 +171,25 @@ export default function ConvertibleBondView({
   }, [api, onToggleFavorite, onShowToast]);
 
   const load = useCallback(async (forceRefresh = false) => {
-    if (busy.current || typeof api?.getConvertibleBonds !== "function") {
-      if (typeof api?.getConvertibleBonds !== "function") setError("当前连接未提供可转债接口。");
+    if (typeof api?.getConvertibleBonds !== "function") {
+      setError("当前连接未提供可转债接口。");
       return;
     }
+    if (busy.current && !forceRefresh) return;
+    const seq = ++requestSeq.current;
     busy.current = true;
     setLoading(true);
     if (forceRefresh) setError("");
     try {
       const value = await api.getConvertibleBonds({ forceRefresh, waitForQuotes: false });
-      if (alive.current && value) { setSnapshot(value); setError(""); }
+      if (alive.current && requestSeq.current === seq && value) { setSnapshot(value); setError(""); }
     } catch (reason) {
-      if (alive.current) setError(reason instanceof Error ? reason.message : String(reason));
+      if (alive.current && requestSeq.current === seq) setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
-      busy.current = false;
-      if (alive.current) setLoading(false);
+      if (requestSeq.current === seq) {
+        busy.current = false;
+        if (alive.current) setLoading(false);
+      }
     }
   }, [api]);
 
@@ -222,10 +235,21 @@ export default function ConvertibleBondView({
             className="secondary-btn"
             onClick={() => {
               const text = rows.slice(0, limit).map(b => b.code).join("\n");
-              void navigator.clipboard?.writeText(text).then(() => {
+              if (typeof navigator === "undefined" || typeof navigator.clipboard?.writeText !== "function") {
+                onShowToast?.("当前环境不支持剪贴板写入");
+                return;
+              }
+              void navigator.clipboard.writeText(text).then(() => {
+                if (!alive.current) return;
                 setCopied(true);
-                window.setTimeout(() => setCopied(false), 1800);
-              }).catch(() => undefined);
+                if (copyTimer.current !== null && typeof window !== "undefined") window.clearTimeout(copyTimer.current);
+                if (typeof window !== "undefined") {
+                  copyTimer.current = window.setTimeout(() => {
+                    copyTimer.current = null;
+                    if (alive.current) setCopied(false);
+                  }, 1800);
+                }
+              }).catch(() => onShowToast?.("复制失败，请检查剪贴板权限"));
             }}
           >
             {copied ? <Check size={14} /> : <Copy size={14} />}

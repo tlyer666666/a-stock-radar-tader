@@ -2,6 +2,14 @@
 const { createServiceRuntime, semanticKey } = require('./service-runtime.cjs');
 const { BoundedCache } = require('./bounded-cache.cjs');
 const { createTradingCalendar, shanghaiClock, validDate } = require('./trend-trading-calendar.cjs');
+const _priceLimitRules = require('./price-limit-rules.cjs');
+const isAStockCode = typeof _priceLimitRules.isAStockCode === 'function'
+  ? _priceLimitRules.isAStockCode
+  : (code = '') => {
+      const value = String(code).trim();
+      return /^(?:00[0-3]|30[012]|60[0135]|68[89])\d{3}$/.test(value) || _priceLimitRules.isBseAshareCode(value);
+    };
+const NON_ASHARE_KNOWN_RE = /^(?:200|900|400|420|820)\d{3}$/;
 
 const MEMBER_TTL = 4 * 60 * 60 * 1000;
 const POOL_TTL = 60 * 1000;
@@ -35,13 +43,17 @@ function normalizeDate(value) {
 
 function stockRows(rows) {
   if (!Array.isArray(rows)) throw new Error('股票名单缺失');
-  const stocks = new Map(); let valid = true;
+  const stocks = new Map(), skippedCodes = new Set(); let valid = true;
   for (const row of rows) {
     const code = String(row?.code ?? '').trim();
-    if (!/^(?:00\d{4}|30\d{4}|60\d{4}|68\d{4}|[48]\d{5}|92\d{4})$/.test(code)) { valid = false; continue; }
+    if (!isAStockCode(code)) {
+      if (NON_ASHARE_KNOWN_RE.test(code)) skippedCodes.add(code);
+      else valid = false;
+      continue;
+    }
     if (!stocks.has(code)) stocks.set(code, { code, name: String(row?.name ?? '').trim() });
   }
-  return { stocks: [...stocks.values()], valid };
+  return { stocks: [...stocks.values()], valid, skipped: skippedCodes.size };
 }
 
 function createSectorLimitCounts({ loadMembers, loadPool, now = Date.now } = {}) {
@@ -67,6 +79,9 @@ function createSectorLimitCounts({ loadMembers, loadPool, now = Date.now } = {})
         limitUps: null, limitUpStocks: [], memberCount: sector.memberCount ?? (members?.complete ? members.stocks.length : null),
         countComplete: false, asOfDate: normalizeDate(pool?.asOfDate), fetchedAt: pool?.fetchedAt ?? new Date(now()).toISOString(), source: SOURCE, warning
       });
+      const expectedMemberCount = value => sector.memberCount === null
+        ? null
+        : Math.max(0, sector.memberCount - (Number(value?.skipped) || 0));
       let members, pool;
       try {
         // Sequential loading keeps underlying I/O within the two admitted jobs.
@@ -75,8 +90,9 @@ function createSectorLimitCounts({ loadMembers, loadPool, now = Date.now } = {})
         members = await runtime.cached(membersCache, memberKey, MEMBER_TTL, async () => {
           const result = await runtime.track(() => loadMembers(sector, { signal: runtime.signal() }));
           const rows = stockRows(result?.members);
-          return { ...rows, complete: result.complete === true && rows.valid, asOfDate: result.asOfDate };
-        }, { shouldCache: value => current() && value.complete && (sector.memberCount === null || value.stocks.length >= sector.memberCount) && (!value.asOfDate || matchesDate(value.asOfDate)) });
+          const upstreamSkipped = Number.isSafeInteger(result?.skipped) && result.skipped > 0 ? result.skipped : 0;
+          return { ...rows, skipped: rows.skipped + upstreamSkipped, complete: result.complete === true && rows.valid, asOfDate: result.asOfDate };
+        }, { shouldCache: value => current() && value.complete && (expectedMemberCount(value) === null || value.stocks.length >= expectedMemberCount(value)) && (!value.asOfDate || matchesDate(value.asOfDate)) });
         runtime.checkpoint();
         pool = await runtime.cached(poolCache, `${epoch}:${date}`, POOL_TTL, async () => {
           const result = await runtime.track(() => loadPool({ signal: runtime.signal(), forceRefresh }));
@@ -95,7 +111,8 @@ function createSectorLimitCounts({ loadMembers, loadPool, now = Date.now } = {})
       if (!pool.complete || pool.stale) return unknown('实时涨停池不完整或已过期，暂不能确认涨停家数', pool, members);
       const codes = new Set(members.stocks.map(stock => stock.code));
       const limitUpStocks = pool.stocks.filter(stock => codes.has(stock.code));
-      const countComplete = members.complete && (sector.memberCount === null || members.stocks.length >= sector.memberCount);
+      const expectedMembers = expectedMemberCount(members);
+      const countComplete = members.complete && (expectedMembers === null || members.stocks.length >= expectedMembers);
       return { limitUps: countComplete || limitUpStocks.length ? limitUpStocks.length : null, limitUpStocks,
         memberCount: sector.memberCount ?? (countComplete ? members.stocks.length : null), countComplete,
         asOfDate: normalizeDate(pool.asOfDate), fetchedAt: pool.fetchedAt, source: SOURCE,

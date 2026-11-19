@@ -201,7 +201,7 @@ html .terminal-shell .chart-panel .indicator-zero { stroke: var(--stock-chart-gr
 html .terminal-shell .chart-panel .indicator-reference { stroke: var(--stock-chart-grid); stroke-width: 1; }
 html .terminal-shell .chart-panel .indicator-bar.up { fill: var(--stock-chart-rise); }
 html .terminal-shell .chart-panel .indicator-bar.down { fill: var(--stock-chart-fall); }
-html .terminal-shell .chart-panel .indicator-yellow { color: var(--stock-chart-ma5); stroke: var(--stock-chart-ma5); }
+html .terminal-shell .chart-panel .indicator-yellow { color: var(--warn); stroke: var(--stock-chart-ma5); }
 html .terminal-shell .chart-panel .indicator-blue { color: var(--stock-chart-ma10); stroke: var(--stock-chart-ma10); }
 html .terminal-shell .chart-panel .indicator-purple { color: var(--stock-chart-ma20); stroke: var(--stock-chart-ma20); }
 
@@ -214,7 +214,7 @@ html .terminal-shell .chart-panel .chart-legend {
   font-size: var(--fs-sm);
 }
 
-html .terminal-shell .chart-panel .chart-legend .rise { background: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .chart-legend .rise { background: transparent; border: 1.5px solid var(--stock-chart-rise); box-sizing: border-box; }
 html .terminal-shell .chart-panel .chart-legend .fall { background: var(--stock-chart-fall); }
 html .terminal-shell .chart-panel .chart-legend .ma5 { background: var(--stock-chart-ma5); }
 html .terminal-shell .chart-panel .chart-legend .ma10 { background: var(--stock-chart-ma10); }

@@ -32,7 +32,12 @@ function registerMarketIpc({
   handleTrustedIpc("market:source-health", () => getMarketSourceHealth());
   handleTrustedIpc("bond:list", (_, options = {}) => getConvertibleBonds(options));
   // 沪深港通：同花顺数据中心网页嵌入（独立会话，用户自行登录同花顺账号）。
-  handleTrustedIpc("ths-web:show", (_, options = {}) => thsWebView().show({ bounds: options?.bounds, page: options?.page === "login" ? "login" : "hsgt" }));
+  handleTrustedIpc("ths-web:show", (_, options = {}) =>
+    thsWebView().show({
+      bounds: options?.bounds,
+      page: options?.page === "login" ? "login" : options?.page === "hsgt" ? "hsgt" : undefined
+    })
+  );
   handleTrustedIpc("ths-web:bounds", (_, options = {}) => thsWebView().setBounds({ bounds: options?.bounds }));
   handleTrustedIpc("ths-web:hide", () => thsWebView().hide());
   handleTrustedIpc("ths-web:command", (_, options = {}) => thsWebView().command({ action: typeof options?.action === "string" ? options.action : "" }));

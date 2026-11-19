@@ -24,7 +24,8 @@ export type BackupApi = {
   restore(token: string): Promise<{ ok: boolean }>;
 };
 
-export const isAppLocalKey = (key: string) => key.startsWith("a-stock-radar") || key === "ai-picks-excluded";
+export const isAppLocalKey = (key: string) =>
+  key.startsWith("a-stock-radar") || key === "ai-picks-excluded" || key === "astock:display-density:v1";
 export const backupApi = (): BackupApi | undefined => (typeof window === "undefined" ? undefined : (window.stockApi as { backup?: BackupApi } | undefined)?.backup);
 
 export function collectLocalData(storage: Storage | undefined = typeof window === "undefined" ? undefined : window.localStorage): Record<string, string> {

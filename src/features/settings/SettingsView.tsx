@@ -9,36 +9,31 @@ import { humanizeMarketSourceError, sourceStatusLabel } from "../market/marketSo
 import { startVisibleInterval } from "../../visiblePolling";
 /* B-04 / B-11：行情来源的「最近成功时间」统一按北京时间显示，非法时间戳兜底 “--”。 */
 import { formatShanghaiTime } from "../../dateUtils";
+import {
+  applySavedVisualPreferences,
+  COLOR_VISION_STORAGE_KEY,
+  normalizeSettingsCategory,
+  type SettingsCategoryId,
+  UI_SCALE_STORAGE_KEY
+} from "../../domain/visualPreferences";
 
-export const UI_SCALE_STORAGE_KEY = "a-stock-radar:ui-scale:v1";
-export const COLOR_VISION_STORAGE_KEY = "a-stock-radar:color-vision:v1";
-
-export function applySavedVisualPreferences(): void {
-  if (typeof window === "undefined" || typeof document === "undefined") return;
-  try {
-    const rawScale = Number(window.localStorage?.getItem(UI_SCALE_STORAGE_KEY) || "100");
-    const scale = [90, 100, 110, 120].includes(rawScale) ? rawScale : 100;
-    document.documentElement.style.zoom = scale === 100 ? "" : `${scale}%`;
-    const cvd = window.localStorage?.getItem(COLOR_VISION_STORAGE_KEY) === "cvd" ? "cvd" : "standard";
-    document.documentElement.dataset.colorVision = cvd;
-  } catch {
-    // ignore storage errors
-  }
-}
+export { applySavedVisualPreferences, COLOR_VISION_STORAGE_KEY, UI_SCALE_STORAGE_KEY };
 
 export function SettingsView({
   value,
   loadState,
   onSave,
-  initialCategory
+  initialCategory,
+  categoryRequestSeq
 }: {
   value: Settings;
   loadState: "loading" | "ready" | "failed";
   onSave: (next: Partial<Settings>) => Promise<Settings>;
   initialCategory?: string | undefined;
+  categoryRequestSeq?: number | undefined;
 }) {
   const [draft, setDraft] = useState<Settings>({ ...value, provider: "ths" });
-  const [category, setCategory] = useState(() => initialCategory || "sources");
+  const [category, setCategory] = useState(() => normalizeSettingsCategory(initialCategory));
   const [uiScale, setUiScale] = useState<number>(() => {
     try {
       const n = Number(typeof window !== "undefined" ? window.localStorage?.getItem(UI_SCALE_STORAGE_KEY) : 100);
@@ -55,8 +50,8 @@ export function SettingsView({
     }
   });
   useEffect(() => {
-    if (initialCategory) setCategory(initialCategory);
-  }, [initialCategory]);
+    if (initialCategory !== undefined) setCategory(normalizeSettingsCategory(initialCategory));
+  }, [initialCategory, categoryRequestSeq]);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     signature: string;
@@ -249,7 +244,14 @@ export function SettingsView({
     <div className="settings-workspace">
       <PageHeading eyebrow="THREE-LINE MARKET DATA" title="数据源设置" description="同花顺免费行情为主源，无需 Token；东方财富与腾讯并行校验和故障接力。QuantAPI Refresh Token 为可选项，只加密保存在本机。" />
       {loadState !== "ready" && <div role="alert" className="test-result fail">{loadState === "loading" ? "正在读取本地设置，完成前暂不可保存。" : "本地设置读取失败，已禁止保存以保护原配置。请重新加载软件后重试。"}</div>}
-      <nav className="settings-category-tabs" aria-label="设置分类">{[{ id: "sources", label: "行情连接" }, { id: "monitoring", label: "监控与提醒" }, { id: "execution", label: "执行参数" }, { id: "strategies", label: "策略组合" }, { id: "ai", label: "AI 助手" }, { id: "backup", label: "数据备份" }].map(item => <button type="button" key={item.id} aria-pressed={category === item.id} aria-controls={`settings-${item.id}`} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav>
+      <nav className="settings-category-tabs" aria-label="设置分类">{([
+        { id: "sources", label: "行情连接" },
+        { id: "monitoring", label: "监控与提醒" },
+        { id: "execution", label: "执行参数" },
+        { id: "strategies", label: "策略组合" },
+        { id: "ai", label: "AI 助手" },
+        { id: "backup", label: "数据备份" }
+      ] as Array<{ id: SettingsCategoryId; label: string }>).map(item => <button type="button" key={item.id} aria-pressed={category === item.id} aria-controls={`settings-${item.id}`} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav>
       <div className="settings-grid">
         <div className="panel settings-card" id="settings-sources" hidden={category !== "sources"}>
           <PanelTitle title="行情主数据源" subtitle={draft.fuyaoApiKey ? "同花顺扶摇行情为主，免费行情、东方财富、腾讯接力" : "同花顺免费行情为主，三线并存"} icon={Database} />

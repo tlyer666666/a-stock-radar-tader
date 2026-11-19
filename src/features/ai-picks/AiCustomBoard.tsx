@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Bookmark, Briefcase, Eye, LoaderCircle, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2 } from "lucide-react";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
-import { saveQuickObservationPlan } from "../../trendWorkspace";
+import { saveQuickObservationPlansBatch } from "../../trendWorkspace";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -162,6 +162,11 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
   const pageRows = rows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const securities = useMemo(() => pageRows.map(toSecurity), [pageRows]);
   const quotes = useSelectionQuotes(securities, live && !isHistory, quoteRefreshSeconds);
+  const seenQuotesRef = useRef<Record<string, number>>({});
+  for (const [code, entry] of Object.entries(quotes.entries)) {
+    const p = Number(entry?.quote?.latest);
+    if (Number.isFinite(p) && p > 0) seenQuotesRef.current[code] = p;
+  }
   const multi = (shown?.models?.length || 0) > 1;
   const hasDims = Boolean(shown?.items.some(item => item.dims?.length));
   const failedModels = (shown?.models || []).filter(item => !item.ok);
@@ -181,36 +186,38 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
   };
   const batchAddPlans = () => {
     if (typeof window === "undefined" || !window.localStorage || !selection.list.length) return;
-    let addedCount = 0;
-    let existingCount = 0;
-    let skippedNoPrice = 0;
     const itemByCode = new Map((shown?.items || []).map(item => [item.code, item]));
     const stockByCode = new Map(list.map(item => [item.code, item]));
-    for (const code of selection.list) {
+    const inputs = selection.list.map(code => {
       const stock = stockByCode.get(code);
       const livePrice = Number(quotes.entries[code]?.quote?.latest);
-      const refPrice = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : profileByCode.get(code)?.latest;
+      const cachedQuote = seenQuotesRef.current[code] ?? 0;
+      const refPrice = Number.isFinite(livePrice) && livePrice > 0
+        ? livePrice
+        : cachedQuote > 0
+          ? cachedQuote
+          : profileByCode.get(code)?.latest;
       const aiItem = itemByCode.get(code);
-      const res = saveQuickObservationPlan(window.localStorage, {
+      return {
         code,
         name: stock?.name || aiItem?.name || code,
         secid: secidFor(code),
         referencePrice: refPrice,
         asOf: shown?.asOfDate,
         reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "我的股票关注")
-      });
-      if (!res.ok) {
-        skippedNoPrice += 1;
-      } else if (res.created) {
-        addedCount += 1;
-      } else {
-        existingCount += 1;
-      }
+      };
+    });
+    const res = saveQuickObservationPlansBatch(window.localStorage, inputs);
+    if (res.created.length + res.existing.length > 0) selection.clear();
+    if (res.storageError) {
+      setNotice(res.storageError);
+      onShowToast?.(res.storageError);
+      return;
     }
     const parts = [
-      addedCount ? `新增 ${addedCount} 只观察计划` : "",
-      existingCount ? `${existingCount} 只已在计划中` : "",
-      skippedNoPrice ? `${skippedNoPrice} 只暂缺参考价` : ""
+      res.created.length ? `新增 ${res.created.length} 只观察计划` : "",
+      res.existing.length ? `${res.existing.length} 只已在计划中` : "",
+      res.missingPrice.length ? `${res.missingPrice.length} 只暂缺参考价` : ""
     ].filter(Boolean);
     const msg = parts.length ? `批量流转完成：${parts.join("，")}。` : "未生成新的观察计划。";
     setNotice(msg);

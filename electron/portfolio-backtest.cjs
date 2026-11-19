@@ -124,14 +124,15 @@ function normalizeSample(raw, index, histories, nextMarketDate, cutoffDate, cost
   const entryCostRate = costModel
     ? (costModel.commissionBps + costModel.slippageBps + costModel.transferFeeBps) / 10000
     : flatBps / 20000;
+  const name = String(raw?.name || code);
   let executionRejection = null;
-  if (isOpeningLimitUpEntry(signalRow.close, entryRow, code, code)) executionRejection = "opening_limit_up";
+  if (isOpeningLimitUpEntry(signalRow.close, entryRow, code, name)) executionRejection = "opening_limit_up";
   if (!(Number(entryRow.volume) > 0)) executionRejection = "suspended_or_no_liquidity";
-  while (exitRow && (!(Number(exitRow.volume) > 0) || isClosingLimitDownExit(history.rows[exitRow.index - 1]?.close, exitRow, code, code))) {
+  while (exitRow && (!(Number(exitRow.volume) > 0) || isClosingLimitDownExit(history.rows[exitRow.index - 1]?.close, exitRow, code, name))) {
     const next = history.rows[exitRow.index + 1];
     exitRow = next && next.date <= cutoffDate ? history.byDate.get(next.date) : null;
   }
-  const priceBasisIssue = intervalPriceBasisIssue(history.rows, entryRow.index, exitRow?.index ?? observationEnd, code, code);
+  const priceBasisIssue = intervalPriceBasisIssue(history.rows, entryRow.index, exitRow?.index ?? observationEnd, code, name);
   // Entry eligibility is decided without knowing whether a later exit completes.
   // An unresolved held price basis freezes valuation from that date; it never
   // releases the cash/slot that the position had already reserved.
@@ -146,7 +147,7 @@ function normalizeSample(raw, index, histories, nextMarketDate, cutoffDate, cost
     .filter(value => value !== null && value !== undefined && value !== "").map(Number).find(Number.isFinite) ?? 0;
   const strategyIds = Array.isArray(raw?.strategyIds) ? [...new Set(raw.strategyIds.map(String).filter(Boolean))].sort() : [strategyId];
   return {
-    sampleId, code, name: String(raw?.name || code), strategyId, strategyIds, signalDate, entryDate, requestedExitDate,
+    sampleId, code, name, strategyId, strategyIds, signalDate, entryDate, requestedExitDate,
     exitDate: exitRow?.date || "", executionRejection, priceBasisIssue,
     reason: priceBasisIssue ? "corporate_action_unresolved" : exitRow ? "" : "pending_exit_horizon",
     entryCostRate,

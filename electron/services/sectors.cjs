@@ -1860,43 +1860,61 @@ async function getSectorStrengthBoard(options = {}) {
 async function getIndustrySectorBoard(options = {}) {
   // 榜单缓存：60 秒新鲜期 + 30 分钟陈旧兜底。
   // 「随时能用」的核心要求：外部源全挂时也要有一张可看的榜，而不是空白页。
+  serviceSignal(options?.signal)?.throwIfAborted();
   const boardKey = "sector:board";
-  const now = Date.now();
-  const fresh = sectorBoardCache.get(boardKey);
-  if (fresh?.value && fresh.expiresAt > now && !options.forceRefresh) return fresh.value;
-  try {
-    const rows = await getLimitUpSectorBoardUncached(options);
-    if (Array.isArray(rows) && rows.length) {
-      const cached = sectorBoardCache.get(boardKey);
-      // 新结果明显更少时保留原缓存（避免降级路径把完整榜单覆盖成残缺列表）
-      if (preferRicherBoard(rows, cached?.value)) {
-        return cached.value.map((row) => ({
+  const previous = sectorBoardCache.get(boardKey);
+  const sharedOptions = options?.signal ? { ...options, signal: undefined } : options;
+  let skipCacheWrite = false;
+  const loaded = serviceRuntime.cached(sectorBoardCache, boardKey, 60 * 1000, async () => {
+    try {
+      const rows = await getLimitUpSectorBoardUncached(sharedOptions);
+      serviceRuntime.checkpoint();
+      if (Array.isArray(rows) && rows.length) {
+        // 新结果明显更少时保留原缓存（避免降级路径把完整榜单覆盖成残缺列表）
+        if (preferRicherBoard(rows, previous?.value)) {
+          skipCacheWrite = true;
+          return previous.value.map((row) => ({
+            ...row,
+            partial: true,
+            sourceState: "保留上次完整榜单",
+            warning: "本次实时源只返回了少量板块，已保留上次完整榜单以避免倒退。"
+          }));
+        }
+        return rows;
+      }
+      skipCacheWrite = true;
+      return rows;
+    } catch (error) {
+      serviceRuntime.checkpoint();
+      if (previous?.value?.length && previous.staleUntil > Date.now()) {
+        skipCacheWrite = true;
+        return previous.value.map((row) => ({
           ...row,
           partial: true,
-          sourceState: "保留上次完整榜单",
-          warning: "本次实时源只返回了少量板块，已保留上次完整榜单以避免倒退。"
+          sourceState: "上次有效榜单接力",
+          warning: "实时板块源本次不可用，显示最近一次有效榜单；数据可能不是当日最新。"
         }));
       }
-      sectorBoardCache.set(boardKey, {
-        value: rows,
-        expiresAt: Date.now() + 60 * 1000,
-        staleUntil: Date.now() + 30 * 60 * 1000
-      });
-      return rows;
+      throw error;
     }
-    return rows;
-  } catch (error) {
-    const stale = sectorBoardCache.get(boardKey);
-    if (stale?.value?.length && stale.staleUntil > Date.now()) {
-      return stale.value.map((row) => ({
-        ...row,
-        partial: true,
-        sourceState: "上次有效榜单接力",
-        warning: "实时板块源本次不可用，显示最近一次有效榜单；数据可能不是当日最新。"
-      }));
+  }, {
+    forceRefresh: options.forceRefresh === true,
+    staleTtlMs: 30 * 60 * 1000,
+    shouldCache: (rows) => !skipCacheWrite && Array.isArray(rows) && rows.length > 0
+  });
+  if (!options?.signal) return loaded;
+  return new Promise((resolve, reject) => {
+    if (options.signal.aborted) {
+      reject(options.signal.reason ?? new DOMException("任务已取消", "AbortError"));
+      return;
     }
-    throw error;
-  }
+    const onAbort = () => reject(options.signal.reason ?? new DOMException("任务已取消", "AbortError"));
+    options.signal.addEventListener("abort", onAbort, { once: true });
+    loaded.then(
+      value => { options.signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { options.signal.removeEventListener("abort", onAbort); reject(error); }
+    );
+  });
 }
 
 /**

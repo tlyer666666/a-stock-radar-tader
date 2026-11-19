@@ -17,13 +17,14 @@
 :root .terminal-shell .strategy-result-table tr.strategy-notes-row > td > b { margin-right: 8px; color: var(--ink-3); font-weight: var(--fw-medium); }
 :root .terminal-shell .strategy-result-table tr.strategy-notes-row.clickable { cursor: pointer; }
 .selection-kline-cell { width: 174px; max-width: 100%; }
-.selection-kline-trigger { display: block; width: 100%; min-height: 80px; padding: 5px; border: 1px solid var(--line-1); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--ink-2); cursor: pointer; font: inherit; }
-.selection-kline-trigger:hover { border-color: var(--accent); background: var(--surface-3); }
+.selection-kline-trigger { display: block; width: 100%; min-height: 80px; padding: 5px; border: 1px solid var(--line-1); border-radius: var(--radius-sm); background: var(--surface-2); --kline-bg: var(--surface-2); color: var(--ink-2); cursor: pointer; font: inherit; }
+.selection-kline-trigger:hover { border-color: var(--accent); background: var(--surface-3); --kline-bg: var(--surface-3); }
 .selection-kline-trigger > span { display: grid; min-height: 56px; place-items: center; font-size: var(--fs-xs); }
 .selection-kline-trigger small { display: block; font-size: var(--fs-2xs); color: var(--ink-2); }
 .selection-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
-.selection-chart .candle-up { stroke: var(--up); fill: var(--surface-1); }
-.selection-chart .candle-up rect { stroke: var(--up); stroke-width: 1.15; fill: var(--surface-1); }
+.selection-chart .candle-up { stroke: var(--up); fill: var(--up); }
+.selection-chart .candle-up .candle-body { stroke: var(--up); stroke-width: 1.15; fill: var(--kline-bg, var(--surface-1)); }
+.selection-chart .candle-up .volume-bar { stroke: none; fill: var(--up); }
 .selection-chart .candle-down { stroke: var(--down); fill: var(--down); }
 .selection-chart .candle-down rect { stroke: none; }
 .selection-chart text { fill: var(--ink-2); font-size: 11px; }
@@ -54,12 +55,16 @@
   .selection-kline-dialog .selection-chart svg { min-width: 620px; }
 }
 
-:root .terminal-shell .trend-result-table { min-width: 1260px; }
-:root .terminal-shell .trend-result-table th:first-child,
-:root .terminal-shell .trend-result-table td:first-child { position: sticky; left: 0; z-index: 2; background: var(--surface-1); }
-:root .terminal-shell .trend-result-table th:last-child,
-:root .terminal-shell .trend-result-table td:last-child { position: sticky; right: 0; z-index: 2; background: var(--surface-1); }
-:root .terminal-shell .trend-result-table th:nth-child(8), :root .terminal-shell .trend-result-table td:nth-child(8) { min-width: 194px; width: 194px; }
+:root .terminal-shell .trend-result-table:has(.trend-result-row) { min-width: 1260px; }
+:root .terminal-shell .trend-result-table thead > tr > :is(th:first-child, th:last-child) { position: sticky; z-index: 3; background: var(--surface-2); }
+:root .terminal-shell .trend-result-table thead > tr > th:first-child { left: 0; box-shadow: 1px 0 0 var(--line-1); }
+:root .terminal-shell .trend-result-table thead > tr > th:last-child { right: 0; box-shadow: -1px 0 0 var(--line-1); }
+:root .terminal-shell .trend-result-table tbody > tr.trend-result-row > :is(th:first-child, td:first-child) { position: sticky; left: 0; z-index: 1; background: var(--surface-1); box-shadow: 1px 0 0 var(--line-2); }
+:root .terminal-shell .trend-result-table tbody > tr.trend-result-row > td:last-child { position: sticky; right: 0; z-index: 1; background: var(--surface-1); box-shadow: -1px 0 0 var(--line-2); }
+:root .terminal-shell .trend-result-table tbody > tr.trend-result-row:nth-child(even) > :is(th:first-child, td:first-child, td:last-child) { background: var(--table-stripe); }
+:root .terminal-shell .trend-result-table tbody > tr.trend-result-row:hover > :is(th:first-child, td:first-child, td:last-child) { background: linear-gradient(var(--hover-bg), var(--hover-bg)), var(--surface-1); }
+:root .app-shell.terminal-shell .trend-result-table .trend-result-details > td { position: static; white-space: normal; }
+:root .terminal-shell .trend-result-table:has(.trend-result-row) :is(th:nth-child(8), td:nth-child(8)) { min-width: 194px; width: 194px; }
 
 .selection-chart-ranges { display: flex; gap: 4px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); padding: 3px; }
 .selection-chart-ranges button { min-height: 32px; padding: 4px 12px; border: 0; border-radius: var(--radius-xs); background: var(--surface-2); color: var(--ink-2); cursor: pointer; font: inherit; }

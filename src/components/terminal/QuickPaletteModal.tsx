@@ -11,6 +11,7 @@ type QuickPaletteProps = {
   holdings: HoldingItem[];
   favorites: WatchItem[];
   watchlist: WatchItem[];
+  privacyMask?: boolean | undefined;
   onNavigateView: (viewId: string) => void;
   onOpenStock: (security: Security) => void;
   onRunCommand: (commandId: string) => void;
@@ -24,6 +25,7 @@ export default function QuickPaletteModal({
   holdings,
   favorites,
   watchlist,
+  privacyMask,
   onNavigateView,
   onOpenStock,
   onRunCommand
@@ -41,13 +43,6 @@ export default function QuickPaletteModal({
       setQuery("");
       setRemoteStocks([]);
       setActiveIndex(0);
-      const dialog = dialogRef.current;
-      if (dialog?.open) dialog.close();
-      const prev = previousFocusRef.current;
-      previousFocusRef.current = null;
-      if (prev && typeof prev.focus === "function") {
-        prev.focus({ preventScroll: true });
-      }
       return;
     }
     if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) {
@@ -62,7 +57,15 @@ export default function QuickPaletteModal({
       }
     }
     const timer = window.setTimeout(() => inputRef.current?.focus(), 20);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      if (dialog?.open) dialog.close();
+      const prev = previousFocusRef.current;
+      previousFocusRef.current = null;
+      if (prev && typeof prev.focus === "function" && prev.isConnected !== false) {
+        prev.focus({ preventScroll: true });
+      }
+    };
   }, [open]);
 
   useEffect(() => {
@@ -96,9 +99,10 @@ export default function QuickPaletteModal({
         holdings,
         favorites,
         watchlist,
-        remoteStocks
+        remoteStocks,
+        privacyMask
       }),
-    [query, views, commands, holdings, favorites, watchlist, remoteStocks]
+    [query, views, commands, holdings, favorites, watchlist, remoteStocks, privacyMask]
   );
 
   useEffect(() => {
@@ -134,7 +138,7 @@ export default function QuickPaletteModal({
           onClose();
         }
       }}
-      onClick={event => {
+      onMouseDown={event => {
         if (event.target === event.currentTarget) onClose();
       }}
     >

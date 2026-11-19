@@ -112,7 +112,10 @@ async function main() {
   const target = targetDirectory();
   if (!fs.existsSync(target)) throw new Error(`目标目录不存在：${target}`);
   const installed = path.join(target, APP_NAME);
-  const built = path.join(repo, "release-builder", "mac-arm64", APP_NAME);
+  const isX64 = process.arch === "x64";
+  const archFlag = isX64 ? "--x64" : "--arm64";
+  const primaryMacDir = isX64 ? "mac" : "mac-arm64";
+  const fallbackMacDir = isX64 ? "mac-arm64" : "mac";
   const stamp = `${new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)}-${crypto.randomUUID()}`;
   const stage = path.join(target, `.${PRODUCT}.${stamp}.staging.app`);
   const previous = path.join(target, `.${APP_NAME}.${stamp}.previous`);
@@ -121,6 +124,7 @@ async function main() {
 
   try {
 
+  let built = path.join(repo, "release-builder", primaryMacDir, APP_NAME);
   if (!process.argv.includes("--from-build")) {
     log("构建主应用界面");
     node([path.join(repo, "node_modules", "vite", "bin", "vite.js"), "build"]);
@@ -129,13 +133,17 @@ async function main() {
     log("打包为唯一软件");
     node([
       path.join(repo, "node_modules", "electron-builder", "cli.js"),
-      "--dir", "--mac", "--arm64",
+      "--dir", "--mac", archFlag,
       `-c.productName=${PRODUCT}`,
       "-c.appId=com.codex.astocktrend",
       "-c.extraMetadata.name=a-stock-trend-radar"
     ]);
   } else {
     log("使用已构建产物");
+    if (!fs.existsSync(built)) {
+      const candidate = path.join(repo, "release-builder", fallbackMacDir, APP_NAME);
+      if (fs.existsSync(candidate)) built = candidate;
+    }
   }
   if (!fs.existsSync(built)) throw new Error("构建产物缺失：请先运行构建");
 
