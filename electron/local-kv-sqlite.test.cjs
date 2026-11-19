@@ -14,14 +14,29 @@ const {
 
 function tempDir(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-kv-sqlite-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
+  const closers = [];
+  // node:test t.after runs in FIFO registration order: close SQLite handles
+  // explicitly before removing the directory so Windows never sees EBUSY.
+  t.after(() => {
+    for (const close of closers.splice(0).reverse()) {
+      try { close(); } catch { /* ignore */ }
+    }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  });
+  return {
+    dir,
+    track(store) {
+      closers.push(() => store.close());
+      return store;
+    }
+  };
 }
 
 test("creates radar-store.sqlite under userDataDir with strict permissions and persists values across reopen", (t) => {
-  const root = path.join(tempDir(t), "nested-user-data");
+  const { dir, track } = tempDir(t);
+  const root = path.join(dir, "nested-user-data");
   let clock = 1_700_000_000_000;
-  const store = createLocalKvStore({ userDataDir: root, now: () => clock });
+  const store = track(createLocalKvStore({ userDataDir: root, now: () => clock }));
   const expectedPath = path.join(root, DEFAULT_DB_FILENAME);
 
   assert.equal(fs.existsSync(expectedPath), true);
@@ -53,8 +68,7 @@ test("creates radar-store.sqlite under userDataDir with strict permissions and p
 
   store.close();
   // Reopen using explicit filePath
-  const reopened = createLocalKvStore({ filePath: expectedPath });
-  t.after(() => reopened.close());
+  const reopened = track(createLocalKvStore({ filePath: expectedPath }));
   assert.equal(reopened.get("a-stock-radar:notes:v1"), JSON.stringify({ notes: ["茅台复盘"] }));
   assert.deepEqual(reopened.keys(), ["a-stock-radar:notes:v1"]);
 });
@@ -62,9 +76,9 @@ test("creates radar-store.sqlite under userDataDir with strict permissions and p
 test("fails closed on invalid keys, non-string values, oversized payloads and missing path", (t) => {
   assert.throws(() => createLocalKvStore({}), { code: "INVALID_KV_PATH" });
 
-  const filePath = path.join(tempDir(t), "kv.sqlite");
-  const store = createLocalKvStore({ filePath });
-  t.after(() => store.close());
+  const { dir, track } = tempDir(t);
+  const filePath = path.join(dir, "kv.sqlite");
+  const store = track(createLocalKvStore({ filePath }));
 
   for (const badKey of ["", "   ", "has space", "a/b", "a\\b", "key;DROP TABLE kv_store", "k".repeat(MAX_KEY_LENGTH + 1), null, 123]) {
     assert.throws(() => store.get(badKey), { code: "INVALID_KV_KEY" });
@@ -82,8 +96,9 @@ test("fails closed on invalid keys, non-string values, oversized payloads and mi
 });
 
 test("close is idempotent, never leaks exceptions, and blocks subsequent calls", (t) => {
-  const filePath = path.join(tempDir(t), "close-test.sqlite");
-  const store = createLocalKvStore({ filePath });
+  const { dir, track } = tempDir(t);
+  const filePath = path.join(dir, "close-test.sqlite");
+  const store = track(createLocalKvStore({ filePath }));
   store.set("k1", "v1");
   assert.doesNotThrow(() => store.close());
   assert.doesNotThrow(() => store.close());
