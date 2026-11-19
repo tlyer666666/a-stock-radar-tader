@@ -247,11 +247,18 @@ async function main() {
     codeSignature: process.platform === "darwin" ? "adhoc-resealed" : "not-applicable",
     observedAt: meta.generatedAt
   };
+  if (meta.knownDataLimitations && typeof meta.knownDataLimitations["涨停趋势"] === "string") {
+    meta.knownDataLimitations["涨停趋势"] = meta.knownDataLimitations["涨停趋势"].replace("交易日历覆盖2025–2026", "交易日历覆盖2025–2027");
+  }
+  if (!meta.notes || typeof meta.notes !== "object") meta.notes = {};
+  meta.notes[VERSION] = `${shanghaiDay} 完整构建、${process.platform === "darwin" ? "ad-hoc 签名并" : ""}安装${gitCommit ? `（commit ${gitCommit}）` : ""}；${receipt.recordedInputs} 项构建输入与产物一致。`;
   let readme = oldReadme;
   if (readme !== null) {
     readme = readme
       .replace(/^当前版本：[^\r\n]*/m, `当前版本：${VERSION}`)
+      .replace(/^(- A股雷达趋势版\.app：当前正式桌面软件（)[^）\r\n]*(）)/m, `$1${VERSION}$2`)
       .replace(/^(- 源码\/a-stock-radar-tader：最新源码（)[^）\r\n]*(）)/m, `$1${VERSION}$2`)
+      .replace(/^\d+\.\d+\.\d+( 核心功能导览)/m, `${VERSION}$1`)
       .replace(/^(发布核验：)\d+(项输入)/m, `$1${receipt.recordedInputs}$2`)
       .replace(/^- .*\.zip：最新安装包。\n/m, "")
       .replace(/^- 同名 \.zip\.sha256：安装包校验码。\n/m, "");

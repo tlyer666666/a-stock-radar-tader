@@ -79,7 +79,7 @@ test("packaged E2E measures headings from the active research workspace", () => 
   const runner = fs.readFileSync(path.join(projectRoot, "qa", "packaged-app.cjs"), "utf8");
   assert.match(
     runner,
-    /document\.querySelector\("\.page-heading h1, \.trend-header h1"\)/
+    /document\.querySelector\("\.page-heading h1, \.trend-header h1, \.cockpit-hero-title h1"\)/
   );
 });
 

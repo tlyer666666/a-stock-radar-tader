@@ -315,6 +315,59 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     return clean ? read(clean) : Promise.resolve(null);
   };
 
+  const DEFAULT_UNIVERSE_ESTIMATE = 5400;
+
+  function extractUniverseCodes(parsed) {
+    if (!parsed || typeof parsed !== "object") return null;
+    const codes = new Set();
+    if (Array.isArray(parsed.rows)) {
+      for (const item of parsed.rows) {
+        const code = safeCode(typeof item === "string" ? item : item?.code);
+        if (code) codes.add(code);
+      }
+    } else if (parsed.v === 1 && parsed.boards && typeof parsed.boards === "object" && !Array.isArray(parsed.boards)) {
+      for (const rows of Object.values(parsed.boards)) {
+        if (!Array.isArray(rows)) continue;
+        for (const item of rows) {
+          const code = safeCode(typeof item === "string" ? item : item?.code);
+          if (code) codes.add(code);
+        }
+      }
+    }
+    return codes.size > 4000 ? codes : null;
+  }
+
+  async function readUniverseCodes(base) {
+    try {
+      const raw = await fs.promises.readFile(path.join(base, "selection-universe.json"), "utf8");
+      return extractUniverseCodes(JSON.parse(raw));
+    } catch {
+      return null;
+    }
+  }
+
+  function readUniverseCountSync(base) {
+    try {
+      const raw = fs.readFileSync(path.join(base, "selection-universe.json"), "utf8");
+      const codes = extractUniverseCodes(JSON.parse(raw));
+      return codes ? codes.size : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  async function readStoredLastBarDate(fullPath) {
+    try {
+      const parsed = JSON.parse(await fs.promises.readFile(fullPath, "utf8"));
+      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.rows) || !parsed.rows.length) return null;
+      const lastRow = parsed.rows.at(-1);
+      const date = Array.isArray(lastRow) ? String(lastRow[0] || "") : String(lastRow?.date || "");
+      return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+    } catch {
+      return null;
+    }
+  }
+
   async function cleanupStaleBars({ activeCodes, maxAgeDays = 180 } = {}) {
     const base = dir();
     if (!base) return { removedTmp: 0, removedOrphans: 0 };
@@ -324,6 +377,7 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     } catch {
       return { removedTmp: 0, removedOrphans: 0 };
     }
+    const explicitActiveCodes = activeCodes !== undefined;
     let codeSet = null;
     if (activeCodes instanceof Set) {
       codeSet = activeCodes;
@@ -333,10 +387,14 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
           .map(item => (typeof item === "string" ? item.trim() : String(item?.code || "").trim()))
           .filter(Boolean)
       );
+    } else if (!explicitActiveCodes) {
+      codeSet = await readUniverseCodes(base);
     }
-    const pruneOrphans = Boolean(codeSet && codeSet.size > 4000);
+    const pruneByUniverse = Boolean(codeSet && codeSet.size > 4000);
+    const pruneByBarDate = !explicitActiveCodes && !pruneByUniverse;
     const maxAgeMs = Math.max(1, Number(maxAgeDays) || 180) * 24 * 3600 * 1000;
     const currentMs = now();
+    const cutoffDate = shanghaiText(currentMs - maxAgeMs).slice(0, 10);
     let removedTmp = 0;
     let removedOrphans = 0;
     for (const entry of entries) {
@@ -360,22 +418,61 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
         }
         continue;
       }
-      if (!pruneOrphans) continue;
+      if (!pruneByUniverse && !pruneByBarDate) continue;
       const match = /^(\d{6})\.json$/.exec(entry.name);
-      if (!match || codeSet.has(match[1])) continue;
+      if (!match) continue;
+      if (pruneByUniverse && codeSet.has(match[1])) continue;
       try {
         const stat = await fs.promises.stat(fullPath);
-        if (currentMs - stat.mtimeMs > maxAgeMs) {
-          memory.delete(match[1]);
-          verified.delete(match[1]);
-          await fs.promises.rm(fullPath, { force: true });
-          removedOrphans += 1;
+        if (currentMs - stat.mtimeMs <= maxAgeMs) continue;
+        if (pruneByBarDate) {
+          const lastBarDate = await readStoredLastBarDate(fullPath);
+          if (!lastBarDate || lastBarDate >= cutoffDate) continue;
         }
+        memory.delete(match[1]);
+        verified.delete(match[1]);
+        await fs.promises.rm(fullPath, { force: true });
+        removedOrphans += 1;
       } catch {
         // Ignore concurrently removed or inaccessible files.
       }
     }
     return { removedTmp, removedOrphans };
+  }
+
+  async function clearAllBars() {
+    memory.clear();
+    verified.clear();
+    prepared = { asOf: "", quotes: new Map() };
+    stats.hits = 0;
+    stats.appended = 0;
+    stats.downloads = 0;
+    stats.writeFailures = 0;
+    const base = dir();
+    if (!base) return { removedFiles: 0, freedBytes: 0 };
+    let entries;
+    try {
+      entries = await fs.promises.readdir(base, { withFileTypes: true });
+    } catch {
+      return { removedFiles: 0, freedBytes: 0 };
+    }
+    let removedFiles = 0;
+    let freedBytes = 0;
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^\d{6}\.json$/.test(entry.name)) continue;
+      const fullPath = path.join(base, entry.name);
+      try {
+        const stat = await fs.promises.lstat(fullPath);
+        if (stat.isSymbolicLink() || !stat.isFile()) continue;
+        const size = Number(stat.size) || 0;
+        await fs.promises.rm(fullPath, { force: true });
+        removedFiles += 1;
+        freedBytes += size;
+      } catch {
+        // Ignore concurrently removed or inaccessible files.
+      }
+    }
+    return { removedFiles, freedBytes };
   }
 
   function getStorageStats() {
@@ -401,6 +498,17 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     }
   }
 
+  function getCoverageSummary() {
+    const { fileCount, totalBytes } = getStorageStats();
+    const base = dir();
+    const universeCount = base ? readUniverseCountSync(base) : 0;
+    const denominator = universeCount > 0 ? universeCount : DEFAULT_UNIVERSE_ESTIMATE;
+    const estimatedRatio = fileCount > 0
+      ? Math.min(1, Math.round((fileCount / denominator) * 1000) / 1000)
+      : 0;
+    return { fileCount, totalBytes, estimatedRatio };
+  }
+
   let startupCleanupTimer = setTimeout(() => {
     startupCleanupTimer = null;
     void cleanupStaleBars().catch(() => {});
@@ -414,7 +522,7 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     }
   }
 
-  return { prepareDay, history, peek, cleanupStaleBars, getStorageStats, shutdown, stats: () => ({ ...stats }) };
+  return { prepareDay, history, peek, cleanupStaleBars, clearAllBars, getStorageStats, getCoverageSummary, shutdown, stats: () => ({ ...stats }) };
 }
 
 module.exports = { createDailyBarStore, STORE_VERSION, lotsConsistent };

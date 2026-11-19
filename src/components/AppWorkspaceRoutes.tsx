@@ -67,7 +67,8 @@ type AppWorkspaceRoutesProps = {
   observationReturnLabel: (node: string) => string;
   originForView: (sourceView?: View) => AnalysisOrigin;
   navigateTo: (next: View) => void;
-  openAnalysis: (security: Security | string, origin?: AnalysisOrigin | null) => void;
+  openAnalysis: (security: Security | string, origin?: AnalysisOrigin | null, queue?: Security[]) => void;
+  analysisQueue?: Security[] | undefined;
   returnFromAnalysis: () => void;
   loadSecurity: (security: Security | string, silent?: boolean, forceRefresh?: boolean) => Promise<void>;
   latestAnalysis: MutableRefObject<AnalysisPayload | null>;
@@ -93,6 +94,9 @@ type AppWorkspaceRoutesProps = {
   removeObservation: ReturnType<typeof useWorkspaceCollections>["removeObservation"];
   saveHoldings: ReturnType<typeof useWorkspaceCollections>["saveHoldings"];
   addFavoriteSecurity: (security: Security) => Promise<void>;
+  addFavoriteSecurities?: ((securities: Security[]) => Promise<void>) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
+  onBatchCompare?: ((securities: Security[]) => void) | undefined;
   handleQuickHoldingTrade: ReturnType<typeof useWorkspaceCollections>["handleQuickHoldingTrade"];
   showToast: (message: string) => void;
   notes: NotesApi;
@@ -186,6 +190,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
     originForView,
     navigateTo,
     openAnalysis,
+    analysisQueue,
     returnFromAnalysis,
     loadSecurity,
     latestAnalysis,
@@ -211,6 +216,9 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
     removeObservation,
     saveHoldings,
     addFavoriteSecurity,
+    addFavoriteSecurities,
+    onOpenMonitor,
+    onBatchCompare,
     handleQuickHoldingTrade,
     showToast,
     notes,
@@ -286,9 +294,15 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
   } = props;
 
   const currentAnalysisCode = payload?.security?.code || (typeof analysisTarget === "string" ? analysisTarget : analysisTarget?.code) || "";
-  const seqIndex = currentAnalysisCode ? compareCandidates.findIndex(item => item.code === currentAnalysisCode) : -1;
-  const prevStock = seqIndex > 0 ? compareCandidates[seqIndex - 1] : undefined;
-  const nextStock = seqIndex >= 0 && seqIndex + 1 < compareCandidates.length ? compareCandidates[seqIndex + 1] : undefined;
+  const activeNavQueue = analysisQueue && analysisQueue.length > 0 ? analysisQueue : compareCandidates;
+  const seqIndex = currentAnalysisCode ? activeNavQueue.findIndex(item => item.code === currentAnalysisCode) : -1;
+  const prevStock = seqIndex > 0 ? activeNavQueue[seqIndex - 1] : undefined;
+  const nextStock = seqIndex >= 0 && seqIndex + 1 < activeNavQueue.length ? activeNavQueue[seqIndex + 1] : undefined;
+  const limitUpQueue: Security[] = limitUps.map(row => ({
+    code: String(row.code || ""),
+    name: String(row.name || row.code || ""),
+    secid: String(row.secid || "")
+  })).filter(item => /^\d{6}$/.test(item.code));
   const handleToggleFavoriteSecurity = (stock: Security) => { void toggleFavorite(stock); };
   const handleOpenAiSettings = () => (openSettings ? openSettings("ai") : navigateTo("settings"));
   const returnToSignals = () => navigateTo("signals");
@@ -314,6 +328,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               privacyMask={privacyMask}
               onShowToast={showToast}
               onToggleDefaultView={toggleDefaultCockpit}
+              onOpenSettings={openSettings}
               onOpenStock={(stock: Security, label = "返回今日驾驶舱") => openAnalysis(stock, { view: "cockpit", label })}
               onNavigate={(next: View) => next === "backtest" ? openBacktest() : navigateTo(next)}
             />
@@ -337,13 +352,14 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               onTransferToT={addNoteToT}
               onShowToast={showToast}
               onOpenSettings={openSettings}
-              onPrevStock={prevStock ? () => openAnalysis(prevStock, analysisOrigin) : undefined}
-              onNextStock={nextStock ? () => openAnalysis(nextStock, analysisOrigin) : undefined}
+              onOpenMonitor={onOpenMonitor}
+              onPrevStock={prevStock ? () => openAnalysis(prevStock, analysisOrigin, activeNavQueue) : undefined}
+              onNextStock={nextStock ? () => openAnalysis(nextStock, analysisOrigin, activeNavQueue) : undefined}
               onDiscover={discover}
               discovering={discovering}
               limitUps={limitUps}
               limitPoolMeta={limitPoolMeta}
-              onOpen={(security: Security) => openAnalysis(security, { view: "dashboard", label: "返回涨停池" })}
+              onOpen={(security: Security) => openAnalysis(security, { view: "dashboard", label: "返回涨停池" }, limitUpQueue)}
               onAdd={(stock: Security) => {
                 // 涨停池里的「监控」只加入自选，已在自选的不会被取消。
                 if (!favoriteItems.some((item) => item.code === stock.code)) void toggleFavorite(stock);
@@ -389,20 +405,24 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               onAdd={(stock) => {
                 if (!favoriteItems.some((item) => item.code === stock.code)) void toggleFavorite(stock);
               }}
+              onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
+              onShowToast={showToast}
               isFavorite={(code) => favoriteItems.some((item) => item.code === code)}
             />
           </Suspense>
         </WorkspaceErrorBoundary>
       )}
       {view === "favorites" && (
-        <WorkspaceErrorBoundary key={view} label="自选板块" onReturnHome={() => navigateTo("signals")}>
+        <WorkspaceErrorBoundary key={view} label="自选监控" onReturnHome={() => navigateTo("signals")}>
           <Suspense fallback={<LoadingState />}>
             <LazyFavoritesView
               items={favoriteItems}
               monitors={stockMonitors}
               live={live}
-              onOpen={(item: WatchItem) => openAnalysis(item, { view: "favorites", label: "返回自选板块" })}
+              onOpen={(item: WatchItem) => openAnalysis(item, { view: "favorites", label: "返回自选监控" }, favoriteItems)}
               onRemove={toggleFavorite}
+              onNavigate={navigateTo}
             />
           </Suspense>
         </WorkspaceErrorBoundary>
@@ -436,7 +456,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               }
               onSave={saveHoldings}
               onOpen={(item: HoldingItem) =>
-                openAnalysis(item, { view: "holdings", label: "返回持仓股" })
+                openAnalysis(item, { view: "holdings", label: "返回持仓股" }, holdings)
               }
             />
           </Suspense>
@@ -452,13 +472,18 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               quotes={Object.fromEntries(
                 Object.entries(newsLiveQuotes).map(([code, q]) => [code, { latest: q.price, changePct: q.changePct }])
               )}
+              live={live}
               favoriteCodes={favoriteCodes}
               onAddFavorite={(item) => { void addFavoriteSecurity(item); }}
+              onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
+              onShowToast={showToast}
+              onNavigate={navigateTo}
               onOpen={(item: WatchItem) => openAnalysis(item, {
                 view: "watchlist",
                 node: watchlistNode,
                 label: observationReturnLabel(watchlistNode)
-              })}
+              }, observationItems)}
               onRemove={removeObservation}
             />
           </Suspense>
@@ -474,6 +499,8 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               loadError=""
               favoriteCodes={favoriteCodes}
               onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
+              onShowToast={showToast}
               onRefresh={() => true}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "beijing", label: "返回北交所" })}
             />
@@ -494,6 +521,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               onOpenSecurity={(security: Security) => openAnalysis(security, { view: "bonds", label: "返回可转债" })}
               favoriteCodes={favoriteCodes}
               onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
               onShowToast={showToast}
               live={live}
             />
@@ -513,6 +541,8 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               loadError={sectorBoardError}
               favoriteCodes={favoriteCodes}
               onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
+              onShowToast={showToast}
               aiPanel={<AiInterpretPanel kind="sectors" disabled={!sectorBoard.length && !sectorExtra?.concepts.length} getData={() => sectorsForAi(sectorBoard, sectorExtra)} />}
               onRefresh={() => loadSectorBoard(true)}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "sectors", label: "返回板块强度" })}
@@ -559,8 +589,11 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               initialFocus={view === "trend-screener" ? "trend" : undefined}
               favoriteCodes={favoriteCodes}
               onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
+              onBatchAddFavorites={addFavoriteSecurities ? (secs) => { void addFavoriteSecurities(secs); } : undefined}
+              onBatchCompare={onBatchCompare}
               onShowToast={showToast}
-              onOpen={(stock: Security) => openAnalysis(stock, { view: "signals", label: "返回策略选股" })}
+              onOpen={(stock: Security, queue?: Security[]) => openAnalysis(stock, { view: "signals", label: "返回策略选股" }, queue)}
               onOpenAiPicks={() => navigateTo("ai-picks")}
             />
           </Suspense>

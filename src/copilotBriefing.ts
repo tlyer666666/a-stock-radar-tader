@@ -127,7 +127,7 @@ export function buildCopilotAlerts(input: {
       tag: "做T信号",
       title: `${tItem.name}（${tItem.code}）· ${sig.title}`,
       detail: sig.reasons[0] || runtime?.signalNote || `参考价 ${sig.price.toFixed(2)}`,
-      targetView: "t-assistant",
+      targetView: "dashboard",
       stock: { code: tItem.code, name: tItem.name, ...(tItem.secid ? { secid: tItem.secid } : {}) }
     });
   }

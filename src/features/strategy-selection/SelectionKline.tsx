@@ -45,10 +45,11 @@ function Chart({ data, compact = false, signalDate, sessions = 120 }: { data: Se
   const pct = previous ? (selected.close / previous.close - 1) * 100 : null;
   const signalIndex = rows.findIndex(row => row.date === signalDate);
   const candleTitle = (row: SelectionCandle) => `${row.date} 开${number(row.open)} 高${number(row.high)} 低${number(row.low)} 收${number(row.close)}`;
+  const isCvdPalette = typeof document !== 'undefined' && document.documentElement?.getAttribute('data-color-vision') === 'cvd';
   return <div className={`selection-chart ${compact ? 'is-mini' : ''}`}>
     {!compact && <>
       <div className="selection-chart-quote" aria-live="polite"><b>{selected.date}</b><span>开 {number(selected.open)}</span><span>高 {number(selected.high)}</span><span>低 {number(selected.low)}</span><span>收 {number(selected.close)}</span><span>涨跌 {pct === null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}</span><span>量 {volume(selected.volume)}（{selected.volumeUnit}）</span></div>
-      <div className="selection-chart-legend">{[5, 10, 20].map((period, i) => <span key={period} className={`ma-${period}`}>MA{period} {number(maSeries[i]?.[offset + selectedIndex])}</span>)}<span>红涨 / 绿跌（收盘与开盘比较）</span></div>
+      <div className="selection-chart-legend">{[5, 10, 20].map((period, i) => <span key={period} className={`ma-${period}`}>MA{period} {number(maSeries[i]?.[offset + selectedIndex])}</span>)}<span>{isCvdPalette ? '红涨 / 蓝跌（收盘与开盘比较）' : '红涨 / 绿跌（收盘与开盘比较）'}</span></div>
     </>}
     <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={compact ? `近${rows.length}个交易日日K线，${rows[0]?.date}至${rows.at(-1)?.date}` : '日K线与成交量，使用左右方向键逐日查看，Home和End跳到首尾'} tabIndex={compact ? undefined : 0}
       onPointerMove={compact ? undefined : event => { const box = event.currentTarget.getBoundingClientRect(); selectIndex(Math.floor(((event.clientX - box.left) / box.width * width - left) / step)); }}

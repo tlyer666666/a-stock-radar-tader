@@ -6,7 +6,7 @@ const path = require('node:path');
 const views = [
   // 「涨停趋势」与「策略信号」已合并为「策略选股」；趋势模型在其策略库内打开（见 frontend-v150.test.cjs）。
   ['signals', '策略选股'], ['sectors', '板块强度'],
-  ['dashboard', '涨停监控'], ['beijing', '北交所'], ['watchlist', '观察池'], ['favorites', '自选板块'],
+  ['dashboard', '涨停监控'], ['beijing', '北交所'], ['watchlist', '观察池'], ['favorites', '自选监控'],
   ['holdings', '持仓股'], ['review', '专业复盘'], ['compare', '多股同列'],
   ['backtest', '回测中心'], ['news', '资讯中心'], ['settings', '数据源设置']
 ];
@@ -56,7 +56,14 @@ async function createPreview() {
 }
 
 async function openView(page,id,label) {
-  await page.getByRole('button',{ name: label, exact: true }).first().click();
+  const targetBtn = page.getByRole('button',{ name: label, exact: true });
+  if (!(await targetBtn.count())) {
+    const expandBtn = page.getByRole('button', { name: '显示全部模块', exact: true });
+    if (await expandBtn.count() && await expandBtn.first().isVisible()) {
+      await expandBtn.first().click();
+    }
+  }
+  await targetBtn.first().click();
   await page.locator(`.app-shell[data-workspace="${id}"]`).waitFor();
   await page.locator('.main > .page').waitFor();
   // `data-workspace` flips and the `.page` container exists before the lazy-loaded view

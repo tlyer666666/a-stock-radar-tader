@@ -22,9 +22,19 @@ const SECRET_SETTING_KEYS = Object.freeze(["refreshToken", "tushareToken", "fuya
 /** 浏览器本地存储里属于本软件的键。 */
 const isAppLocalKey = key => typeof key === "string" && (key.startsWith("a-stock-radar") || key === "ai-picks-excluded");
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
+const MIN_PASSWORD_LENGTH = 8;
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const fail = (code, message) => Object.assign(new Error(message), { code });
+
+function deriveKeyAsync(password, salt) {
+  return new Promise((resolve, reject) => {
+    crypto.scrypt(String(password), salt, 32, SCRYPT, (error, derivedKey) => {
+      if (error) reject(error);
+      else resolve(derivedKey);
+    });
+  });
+}
 
 /** 去掉密钥：设置里的令牌/Key，模型配置里的 apiKey。 */
 function sanitizeStore(name, value) {
@@ -86,18 +96,24 @@ function buildBackup({ stores, local, appVersion, now = Date.now() }) {
   return { format: FORMAT, version: VERSION, createdAt: new Date(now).toISOString(), appVersion: String(appVersion || ""), stores: cleanStores, local: cleanLocal };
 }
 
-function encryptText(text, password) {
+async function encryptPayload(text, password) {
+  const pwd = typeof password === "string" ? password : String(password || "");
+  if (pwd.length < MIN_PASSWORD_LENGTH) {
+    throw fail("BACKUP_PASSWORD_SHORT", "备份加密密码至少需要 8 位字符");
+  }
   const salt = crypto.randomBytes(16), iv = crypto.randomBytes(12);
-  const key = crypto.scryptSync(String(password), salt, 32, SCRYPT);
+  const key = await deriveKeyAsync(pwd, salt);
   const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
   const data = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
   return { format: FORMAT, version: VERSION, encrypted: true, kdf: "scrypt", salt: salt.toString("base64"), iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), data: data.toString("base64") };
 }
 
 /** 编码成文件内容：有密码就加密整个备份。 */
-function encodeBackup(backup, password) {
+async function encodeBackup(backup, password) {
   const text = JSON.stringify(backup);
-  return JSON.stringify(password ? { ...encryptText(text, password), createdAt: backup.createdAt, appVersion: backup.appVersion } : backup);
+  if (!password) return text;
+  const encrypted = await encryptPayload(text, password);
+  return JSON.stringify({ ...encrypted, createdAt: backup.createdAt, appVersion: backup.appVersion });
 }
 
 function decodeEncryptedField(value, expectedBytes) {
@@ -107,25 +123,30 @@ function decodeEncryptedField(value, expectedBytes) {
   return buffer;
 }
 
-function decodeBackup(text, password) {
+async function decryptPayload(parsed, password) {
+  const salt = decodeEncryptedField(parsed?.salt, 16);
+  const iv = decodeEncryptedField(parsed?.iv, 12);
+  const tag = decodeEncryptedField(parsed?.tag, 16);
+  const data = decodeEncryptedField(parsed?.data);
+  if (!salt || !iv || !tag || !data) throw fail("BACKUP_INVALID", "备份加密字段损坏");
+  if (!password) throw fail("BACKUP_PASSWORD_REQUIRED", "这个备份有密码，请输入备份密码");
+  try {
+    const key = await deriveKeyAsync(String(password), salt);
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
+  } catch {
+    throw fail("BACKUP_WRONG_PASSWORD", "备份密码不对");
+  }
+}
+
+async function decodeBackup(text, password) {
   let parsed;
   try { parsed = JSON.parse(text); } catch { throw fail("BACKUP_INVALID", "这不是有效的备份文件"); }
   if (!isRecord(parsed) || parsed.format !== FORMAT) throw fail("BACKUP_INVALID", "这不是 A股雷达 的备份文件");
   if (Number(parsed.version) > VERSION) throw fail("BACKUP_TOO_NEW", "备份来自更新版本的软件，请先升级再恢复");
   if (parsed.encrypted) {
-    const salt = decodeEncryptedField(parsed.salt, 16);
-    const iv = decodeEncryptedField(parsed.iv, 12);
-    const tag = decodeEncryptedField(parsed.tag, 16);
-    const data = decodeEncryptedField(parsed.data);
-    if (!salt || !iv || !tag || !data) throw fail("BACKUP_INVALID", "备份加密字段损坏");
-    if (!password) throw fail("BACKUP_PASSWORD_REQUIRED", "这个备份有密码，请输入备份密码");
-    let plain;
-    try {
-      const key = crypto.scryptSync(String(password), salt, 32, SCRYPT);
-      const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-      decipher.setAuthTag(tag);
-      plain = Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
-    } catch { throw fail("BACKUP_WRONG_PASSWORD", "备份密码不对"); }
+    const plain = await decryptPayload(parsed, password);
     try { parsed = JSON.parse(plain); } catch { throw fail("BACKUP_INVALID", "备份内容损坏"); }
     if (!isRecord(parsed) || parsed.format !== FORMAT) throw fail("BACKUP_INVALID", "备份内容损坏");
   }
@@ -270,16 +291,16 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     return plan;
   }
 
-  function prepareRestore(name, password) {
+  async function prepareRestore(name, password) {
     const current = config();
     const file = safeFile(current.folder, name);
-    const backup = decodeBackup(readBackupFile(file), password || (current.password ? decryptSecret(current.password) : ""));
+    const backup = await decodeBackup(readBackupFile(file), password || (current.password ? decryptSecret(current.password) : ""));
     planStores(backup);
     const local = Object.fromEntries(Object.entries(backup.local).filter(([key, value]) => isAppLocalKey(key) && typeof value === "string"));
     return { ...backup, local };
   }
 
-  function applyRestore(backup) {
+  async function applyRestore(backup) {
     const plan = planStores(backup);
     const written = [];
     try {
@@ -316,8 +337,8 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
       if (typeof patch?.auto === "boolean") next.auto = patch.auto;
       if (Number.isFinite(Number(patch?.keep)) && patch?.keep !== undefined) next.keep = Math.max(3, Math.min(365, Math.floor(Number(patch.keep))));
       if (typeof patch?.password === "string") {
-        if (patch.password.length > 0 && patch.password.length < 6) {
-          throw fail("BACKUP_PASSWORD_TOO_SHORT", "备份密码至少需要 6 个字符");
+        if (patch.password.length > 0 && patch.password.length < MIN_PASSWORD_LENGTH) {
+          throw fail("BACKUP_PASSWORD_SHORT", "备份加密密码至少需要 8 位字符");
         }
         if (patch.password.length > 200) throw fail("BACKUP_PASSWORD_TOO_LONG", "备份密码最多 200 个字符，请缩短后再试");
         next.password = patch.password ? encryptSecret(patch.password) : "";
@@ -326,7 +347,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
       return status();
     },
     /** local：渲染进程本地存储里本软件的键值。 */
-    run(local, { reason = "manual" } = {}) {
+    async run(local, { reason = "manual" } = {}) {
       const current = config();
       if (!current.folder) throw fail("BACKUP_FOLDER", "还没有选择备份文件夹");
       try {
@@ -339,7 +360,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
           password = decryptSecret(current.password);
           if (!password) throw fail("BACKUP_PASSWORD_UNREADABLE", "无法读取已保存的备份密码，请重新设置备份密码后再试");
         }
-        const content = encodeBackup(backup, password);
+        const content = await encodeBackup(backup, password);
         if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw fail("BACKUP_TOO_LARGE", "备份超过 64MB，请先清理 AI 对话或回测历史");
         const name = backupFileName(now());
         const file = path.join(current.folder, name);
@@ -368,17 +389,17 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
       }
     },
     /** 读出备份内容（不写入），用于恢复前预览。 */
-    inspect(name, password) {
+    async inspect(name, password) {
       const current = config();
       const file = safeFile(current.folder, name);
       const text = readBackupFile(file);
-      const backup = decodeBackup(text, password || (current.password ? decryptSecret(current.password) : ""));
+      const backup = await decodeBackup(text, password || (current.password ? decryptSecret(current.password) : ""));
       return { createdAt: backup.createdAt, appVersion: backup.appVersion, stores: Object.keys(backup.stores), localKeys: Object.keys(backup.local).length };
     },
     prepareRestore,
     applyRestore,
-    restore: (name, password) => applyRestore(prepareRestore(name, password))
+    restore: async (name, password) => applyRestore(await prepareRestore(name, password))
   };
 }
 
-module.exports = { BACKUP_STORES, FILE_PATTERN, buildBackup, encodeBackup, decodeBackup, sanitizeStore, mergeForRestore, backupFileName, suggestFolders, createBackupService, isAppLocalKey };
+module.exports = { BACKUP_STORES, FILE_PATTERN, MIN_PASSWORD_LENGTH, buildBackup, encryptPayload, decryptPayload, encodeBackup, decodeBackup, sanitizeStore, mergeForRestore, backupFileName, suggestFolders, createBackupService, isAppLocalKey };

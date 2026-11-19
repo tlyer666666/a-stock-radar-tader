@@ -78,7 +78,7 @@
 .sector-explorer-member-heading { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 20px 0 12px; }
 .sector-explorer-member-heading h4 { margin: 0; }
 .sector-explorer-member-heading input { width: 170px; min-width: 0; border: 1px solid var(--sector-line); border-radius: var(--radius-sm); padding: 7px 10px; background: var(--sector-bg); font-size: var(--fs-base); }
-.sector-explorer-table-wrap { overflow: auto; max-height: 500px; border: 1px solid var(--sector-line); border-radius: var(--radius-sm); }
+.sector-explorer-table-wrap { overflow-x: auto; overflow-y: visible; max-height: none; border: 1px solid var(--sector-line); border-radius: var(--radius-sm); }
 .sector-explorer table { border-collapse: collapse; width: 100%; font-size: var(--fs-base); white-space: nowrap; }
 .sector-explorer th { color: var(--sector-text); font-weight: 500; font-size: var(--fs-base); background: var(--sector-raised); position: sticky; top: 0; }
 .sector-explorer th, .sector-explorer td { padding: 12px 10px; text-align: right; border-bottom: 1px solid var(--sector-line); }

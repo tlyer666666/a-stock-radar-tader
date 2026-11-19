@@ -125,21 +125,24 @@ describe('v1.4.6 compact watch workspace and quick combinations in the actual re
     } finally { await page.close(); }
   }
 
-  test('398 stocks render as one scrollable list without pagination', async () => pageTest(async page => {
-    assert.equal(await page.locator('.watch-stock-table tbody tr').count(), 398);
+  test('398 stocks render as one scrollable virtualized list without pagination', async () => pageTest(async page => {
+    const initialCount = await page.locator('.watch-stock-table tbody tr:not([aria-hidden="true"])').count();
+    assert.ok(initialCount >= 15 && initialCount < 100, `expected virtualized row count, got ${initialCount}`);
+    assert.match(await page.locator('#watch-observation-guide').innerText(), /当前显示 398 \/ 398 只/);
     assert.equal(await page.locator('.watch-pagination').count(), 0);
     assert.equal(await page.getByRole('button', { name: /观察池[上下]一页/ }).count(), 0);
-    assert.match(await page.locator('.watch-stock-table tbody tr').first().innerText(), /600001/);
-    const lastRow = page.locator('.watch-stock-table tbody tr').last();
-    assert.match(await lastRow.innerText(), /600398/);
-    assert.equal((await lastRow.locator('td').first().innerText()).trim(), '398');
+    assert.match(await page.locator('.watch-stock-table tbody tr:not([aria-hidden="true"])').first().innerText(), /600001/);
     const scroll = page.locator('.watch-table-scroll');
     await scroll.hover({ position: { x: 180, y: 65 } });
     await page.mouse.wheel(0, 100000);
     await page.waitForFunction(() => {
       const el = document.querySelector('.watch-table-scroll');
-      return el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      return el && el.scrollTop > 0 && el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
     });
+    const lastRow = page.locator('.watch-stock-table tbody tr:not([aria-hidden="true"])').last();
+    await lastRow.waitFor();
+    assert.match(await lastRow.innerText(), /600398/);
+    assert.equal((await lastRow.locator('td').first().innerText()).trim(), '398');
     const last = await lastRow.boundingBox(), area = await scroll.boundingBox();
     assert.ok(last.y >= area.y && last.y + last.height <= area.y + area.height + 1);
   }));
@@ -173,16 +176,16 @@ describe('v1.4.6 compact watch workspace and quick combinations in the actual re
     await page.getByRole('heading', { name: '没有匹配的股票' }).waitFor();
     assert.equal(await page.locator('.watch-stock-table tbody tr').count(), 0);
     await page.getByRole('button', { name: '清空观察池筛选' }).click();
-    await page.waitForFunction(() => document.querySelectorAll('.watch-stock-table tbody tr').length === 398);
+    await page.waitForFunction(() => /当前显示 398 \/ 398 只/.test(document.querySelector('#watch-observation-guide')?.textContent || ''));
     assert.equal(await input.inputValue(), '');
-    assert.equal(await page.locator('.watch-stock-table tbody tr').count(), 398);
+    assert.ok(await page.locator('.watch-stock-table tbody tr:not([aria-hidden="true"])').count() >= 15);
   }));
 
   test('stock opening, row analysis and removing dispatch only their intended callback (ladder moved to the limit-up monitor)', async () => pageTest(async page => {
     await page.locator('.watch-stock-open').first().click();
     await page.getByRole('button', { name: '分析观察样本002', exact: true }).click();
     await page.getByRole('button', { name: '移出观察池观察样本003', exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll('.watch-stock-table tbody tr').length === 397);
+    await page.waitForFunction(() => /当前显示 397 \/ 397 只/.test(document.querySelector('#watch-observation-guide')?.textContent || ''));
     assert.equal(await page.locator('.watch-stock-open').filter({ hasText: '观察样本003' }).count(), 0);
     assert.equal(await page.locator('.board-ladder').count(), 0, '连板梯队已移到涨停监控');
     assert.deepEqual(await page.evaluate(() => window.callbacks), {
@@ -200,7 +203,7 @@ describe('v1.4.6 compact watch workspace and quick combinations in the actual re
         const page = document.querySelector('.main > .page');
         const workspace = document.querySelector('.ten-day-workspace');
         const list = bounds('.watch-stock-panel');
-        const rowBounds = [...document.querySelectorAll('.watch-stock-table tbody tr')].map(row => row.getBoundingClientRect());
+        const rowBounds = [...document.querySelectorAll('.watch-stock-table tbody tr:not([aria-hidden="true"])')].map(row => row.getBoundingClientRect());
         const tableBounds = bounds('.watch-table-scroll');
         const tableHeaderBounds = bounds('.watch-stock-table thead');
         return {
@@ -213,7 +216,7 @@ describe('v1.4.6 compact watch workspace and quick combinations in the actual re
           firstRowTop: rowBounds[0].top, rowHeight: rowBounds[0].height,
           visibleRowCount: rowBounds.filter(row => row.top >= tableHeaderBounds.bottom - 1 && row.bottom <= tableBounds.bottom + 1).length,
           tabHeight: bounds('.watch-node-tabs button').height,
-          visibleRows: document.querySelectorAll('.watch-stock-table tbody tr').length
+          visibleRows: document.querySelectorAll('.watch-stock-table tbody tr:not([aria-hidden="true"])').length
         };
       });
       const context = `${theme} ${width}: ${JSON.stringify(layout)}`;
@@ -225,7 +228,7 @@ describe('v1.4.6 compact watch workspace and quick combinations in the actual re
       // 观察池整行留给观察表（连板梯队在涨停监控）。
       assert.ok(layout.listWidth >= layout.workspaceWidth - 4, context);
       if (width >= 1280) assert.ok(layout.tableBottom <= layout.statusbarTop, context);
-      assert.equal(layout.visibleRows, 398, context);
+      assert.ok(layout.visibleRows >= 15 && layout.visibleRows < 100, context);
       await page.screenshot({ path: path.join(screenshotDir, `watch-workspace-${theme}-${width}.png`), animations: 'disabled' });
     }
   }));

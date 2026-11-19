@@ -162,6 +162,20 @@ export default function MultiStockCompareView({
     setSelected(candidateList.slice(0, Math.min(4, candidateList.length)));
   }, [candidateList, selected.length]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onExternalUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<Security[]>).detail;
+      if (!Array.isArray(detail) || !detail.length) return;
+      const next = uniqueSecurities(detail).slice(0, 6);
+      compareSelectionInitialized = true;
+      compareSelectionCache = next;
+      setSelected(next);
+    };
+    window.addEventListener("a-stock-radar:compare-selection-updated", onExternalUpdate);
+    return () => window.removeEventListener("a-stock-radar:compare-selection-updated", onExternalUpdate);
+  }, []);
+
   const signature = selected.map((item) => item.code).join(",");
   const savedSelectionSignature = useRef(signature);
 

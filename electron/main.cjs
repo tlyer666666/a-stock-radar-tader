@@ -19,8 +19,10 @@ const fs = require("fs");
 const { createRuntimeLogger } = require("./runtime-diagnostics.cjs");
 const { pathToFileURL } = require("node:url");
 const { createCustomStrategyStore } = require("./custom-strategy-store.cjs");
+const { createLocalKvStore } = require("./local-kv-sqlite.cjs");
 const { createLocalSecretStorage, createLocalFirstSecretStorage, hasSystemCiphertext } = require("./local-secret-storage.cjs");
 const { migrateLegacyUserData } = require("./user-data-migration.cjs");
+const { resetMarketSourceHealth } = require("./market-source-health.cjs");
 const {
   capItemsPreservingFavorites,
   readJsonWithBackup,
@@ -149,7 +151,19 @@ const { validateIpcPayload } = require("./ipc/contract.cjs");
 const { registerAllIpc } = require("./ipc/register-all.cjs");
 const { buildNewsImpactPromptInput } = require("./news-service.cjs");
 const trendScreener = createTrendScreenerService(createTrendMarketData({ ths: trendThsLane, dailyStore: dailyBarStore, asOf: dailyBarAsOf }));
-const reviewWindows = createReviewWindowManager({ BrowserWindow, screen, root: path.join(__dirname, '..'), packaged: app.isPackaged, devUrl: process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173', hidden: process.env.A_STOCK_E2E_HIDDEN === '1', openExternal: url => shell.openExternal(url), onError: error => debugLog(`review external ${error.message}`) });
+let restoreInProgress = false;
+const reviewWindows = createReviewWindowManager({
+  BrowserWindow,
+  screen,
+  root: path.join(__dirname, ".."),
+  packaged: app.isPackaged,
+  devUrl: process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173",
+  hidden: process.env.A_STOCK_E2E_HIDDEN === "1",
+  boundsPath: path.join(app.getPath("userData"), "review-window-bounds.json"),
+  canOpen: () => !restoredProfilePendingRestart && !restoreInProgress,
+  openExternal: url => shell.openExternal(url),
+  onError: error => debugLog(`review external ${error.message}`)
+});
 
 let mainWindow;
 let tray;
@@ -333,6 +347,8 @@ function normalizeHoldings(value) {
     if (!Number.isFinite(costPrice) || costPrice <= 0) continue;
     const createdAt = Number.isFinite(Date.parse(row?.createdAt)) ? row.createdAt : now;
     const updatedAt = Number.isFinite(Date.parse(row?.updatedAt)) ? row.updatedAt : createdAt;
+    const rawSellable = Number(row?.sellableShares);
+    const maxShares = Math.min(shares, 1_000_000_000);
     const holding = {
       ...normalizeSecurityIdentity(row, code),
       assetType: row?.assetType === "etf"
@@ -340,7 +356,8 @@ function normalizeHoldings(value) {
         : row?.assetType === "convertibleBond" || row?.assetType === "bond"
           ? "convertibleBond"
           : "stock",
-      shares: Math.min(shares, 1_000_000_000),
+      shares: maxShares,
+      ...(Number.isFinite(rawSellable) && rawSellable >= 0 ? { sellableShares: Math.min(Math.floor(rawSellable), maxShares) } : {}),
       costPrice: Math.min(costPrice, 10_000_000),
       createdAt,
       updatedAt,
@@ -669,6 +686,11 @@ function showSystemNotification(input) {
   const value = input && typeof input === "object" && !Array.isArray(input) ? input : {};
   const title = String(value.title || "").trim().slice(0, 60);
   const body = String(value.body || "").trim().slice(0, 240);
+  const rawCode = String(value.code || "").trim();
+  const code = /^\d{6}$/.test(rawCode) ? rawCode : "";
+  const name = code ? String(value.name || code).trim().slice(0, 40) : "";
+  const secid = code ? String(value.secid || "").trim().slice(0, 32) : "";
+  const targetView = typeof value.targetView === "string" ? value.targetView.trim().slice(0, 32) : "";
   if (!title) throw new Error("通知标题为空");
   if (isQuitting || process.env.A_STOCK_E2E_HIDDEN === "1") return { shown: false };
   if (
@@ -687,6 +709,25 @@ function showSystemNotification(input) {
   }
   activeNotifications.add(notification);
   notification.on("click", () => showOrCreateMainWindow());
+  if (code || targetView) {
+    const payload = {
+      ...(code ? { code, name, ...(secid ? { secid } : {}) } : {}),
+      ...(targetView ? { targetView } : {})
+    };
+    notification.on("click", () => {
+      const targetWindow = mainWindow;
+      if (!targetWindow || targetWindow.isDestroyed()) return;
+      const contents = targetWindow.webContents;
+      if (!contents || contents.isDestroyed()) return;
+      if (contents.isLoadingMainFrame?.() || contents.isLoading?.()) {
+        contents.once("did-finish-load", () => {
+          if (!contents.isDestroyed()) contents.send("app:notification-clicked", payload);
+        });
+      } else {
+        contents.send("app:notification-clicked", payload);
+      }
+    });
+  }
   notification.once("click", releaseNotification);
   notification.once("close", releaseNotification);
   notification.once("failed", releaseNotification);
@@ -903,10 +944,48 @@ function createWindow() {
   }
   const workWidth = Number(primaryWorkArea?.width) > 0 ? Number(primaryWorkArea.width) : 1480;
   const workHeight = Number(primaryWorkArea?.height) > 0 ? Number(primaryWorkArea.height) : 940;
+  let initialWidth = Math.min(1480, workWidth);
+  let initialHeight = Math.min(940, workHeight);
+  let initialX;
+  let initialY;
+  let boundsFile = "";
+  try {
+    if (typeof fs !== "undefined" && typeof app?.getPath === "function") {
+      boundsFile = path.join(app.getPath("userData"), "window-bounds.json");
+      if (fs.existsSync(boundsFile)) {
+        const saved = JSON.parse(fs.readFileSync(boundsFile, "utf8"));
+        const rawW = Number(saved?.width);
+        const rawH = Number(saved?.height);
+        const rawX = Number(saved?.x);
+        const rawY = Number(saved?.y);
+        const area = Number.isFinite(rawX) && Number.isFinite(rawY) && typeof screen?.getDisplayMatching === "function"
+          ? screen.getDisplayMatching({ x: Math.round(rawX), y: Math.round(rawY), width: Math.max(1024, Math.round(rawW || initialWidth)), height: Math.max(640, Math.round(rawH || initialHeight)) })?.workArea
+          : screen?.getPrimaryDisplay?.()?.workArea;
+        const maxW = Number(area?.width) > 0 ? Number(area.width) : workWidth;
+        const maxH = Number(area?.height) > 0 ? Number(area.height) : workHeight;
+        const minX = Number.isFinite(Number(area?.x)) ? Number(area.x) : 0;
+        const minY = Number.isFinite(Number(area?.y)) ? Number(area.y) : 0;
+        if (Number.isFinite(rawW) && Number.isFinite(rawH)) {
+          initialWidth = Math.max(Math.min(1024, maxW), Math.min(Math.round(rawW), maxW));
+          initialHeight = Math.max(Math.min(640, maxH), Math.min(Math.round(rawH), maxH));
+        }
+        if (Number.isFinite(rawX) && Number.isFinite(rawY)) {
+          initialX = Math.max(minX, Math.min(Math.round(rawX), minX + Math.max(0, maxW - initialWidth)));
+          initialY = Math.max(minY, Math.min(Math.round(rawY), minY + Math.max(0, maxH - initialHeight)));
+        }
+      }
+    }
+  } catch {
+    initialWidth = Math.min(1480, workWidth);
+    initialHeight = Math.min(940, workHeight);
+    initialX = undefined;
+    initialY = undefined;
+  }
   const createdWindow = new BrowserWindow({
     show: !hiddenE2E,
-    width: Math.min(1480, workWidth),
-    height: Math.min(940, workHeight),
+    width: initialWidth,
+    height: initialHeight,
+    ...(Number.isFinite(initialX) && Number.isFinite(initialY) ? { x: initialX, y: initialY } : {}),
     minWidth: 1024,
     minHeight: 640,
     backgroundColor: dark ? "#070b14" : "#f4f6fb",
@@ -918,8 +997,30 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webSecurity: true,
+      backgroundThrottling: false,
       devTools: !app.isPackaged
     }
+  });
+  let boundsTimer = null;
+  const saveMainBounds = () => {
+    if (!boundsFile || createdWindow.isDestroyed() || createdWindow.isMinimized?.() || createdWindow.isMaximized?.()) return;
+    try {
+      const next = createdWindow.getBounds?.();
+      if (!next || !(next.width >= 600 && next.height >= 400)) return;
+      fs.writeFileSync(boundsFile, JSON.stringify({ x: next.x, y: next.y, width: next.width, height: next.height }), { mode: 0o600 });
+    } catch { /* best-effort window bounds persistence */ }
+  };
+  const scheduleSaveMainBounds = () => {
+    if (!boundsFile || createdWindow.isDestroyed()) return;
+    if (boundsTimer) clearTimeout(boundsTimer);
+    boundsTimer = setTimeout(() => { boundsTimer = null; saveMainBounds(); }, 250);
+    boundsTimer.unref?.();
+  };
+  createdWindow.on?.("resize", scheduleSaveMainBounds);
+  createdWindow.on?.("move", scheduleSaveMainBounds);
+  createdWindow.once?.("closed", () => {
+    if (boundsTimer) { clearTimeout(boundsTimer); boundsTimer = null; }
+    saveMainBounds();
   });
   if (hiddenE2E) {
     createdWindow.on("show", () => {
@@ -1096,6 +1197,82 @@ function computeStorageSummary() {
   };
   cachedStorageSummary = { userDataDir, computedAt: nowMs, value };
   return { ...value };
+}
+
+let localKvStoreInstance = null;
+function localKvStore() {
+  if (!localKvStoreInstance) {
+    localKvStoreInstance = createLocalKvStore({ userDataDir: app.getPath("userData") });
+  }
+  return localKvStoreInstance;
+}
+
+async function cleanupStorageCache(input) {
+  const target = String(input?.target || "").trim();
+  const userDataDir = app.getPath("userData");
+  cachedStorageSummary = null;
+  if (target === "web-cache") {
+    try { await session?.defaultSession?.clearCache?.(); } catch { /* ignore */ }
+    try { await session?.fromPartition?.("persist:ths-web")?.clearCache?.(); } catch { /* ignore */ }
+    cachedStorageSummary = null;
+    return { ok: true, message: "已清理内置浏览器与资源缓存", summary: computeStorageSummary() };
+  }
+  if (target === "stale-bars") {
+    const res = typeof dailyBarStore?.cleanupStaleBars === "function"
+      ? await dailyBarStore.cleanupStaleBars()
+      : { removedTmp: 0, removedStale: 0 };
+    cachedStorageSummary = null;
+    return {
+      ok: true,
+      message: `已清理 ${res.removedTmp} 个临时文件与 ${res.removedStale} 份过期/退市日线`,
+      summary: computeStorageSummary()
+    };
+  }
+  if (target === "daily-bars") {
+    const res = typeof dailyBarStore?.clearAllBars === "function"
+      ? await dailyBarStore.clearAllBars()
+      : { removedFiles: 0, freedBytes: 0 };
+    cachedStorageSummary = null;
+    return {
+      ok: true,
+      message: `已重建日线库：清理 ${res.removedFiles} 只标的缓存，下次选股按需恢复`,
+      summary: computeStorageSummary()
+    };
+  }
+  if (target === "legacy-profile") {
+    const currentResolved = path.resolve(userDataDir);
+    const parentDir = path.dirname(currentResolved);
+    let removedCount = 0;
+    for (const candidateName of ["a-stock-monitor", "A股雷达"]) {
+      const candidatePath = path.join(parentDir, candidateName);
+      if (path.resolve(candidatePath) === currentResolved) continue;
+      try {
+        const stat = fs.lstatSync(candidatePath);
+        if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+        fs.rmSync(candidatePath, { recursive: true, force: true });
+        removedCount += 1;
+      } catch { /* absent or inaccessible */ }
+    }
+    cachedStorageSummary = null;
+    return {
+      ok: true,
+      message: removedCount > 0 ? `已清理 ${removedCount} 个旧版本残余配置目录` : "未检测到旧版本配置残留",
+      summary: computeStorageSummary()
+    };
+  }
+  throw Object.assign(new TypeError("不支持的清理类型"), { code: "INVALID_IPC_PAYLOAD" });
+}
+
+function setAppZoomFactor(factor) {
+  const numeric = Number(factor);
+  const clamped = Number.isFinite(numeric) ? Math.max(0.8, Math.min(1.5, Math.round(numeric * 100) / 100)) : 1;
+  try {
+    const contents = trustedMainWebContents();
+    if (contents && !contents.isDestroyed()) contents.setZoomFactor(clamped);
+  } catch { /* ignore */ }
+  try { reviewWindows.setZoomFactor?.(clamped); } catch { /* ignore */ }
+  try { thsWebViewManager?.setZoomFactor?.(clamped); } catch { /* ignore */ }
+  return { factor: clamped };
 }
 
 function readMigratedBackupConfig() {
@@ -1397,14 +1574,32 @@ if (!hasSingleInstanceLock) {
     createBackupService,
     readMigratedBackupConfig,
     getStorageSummary: computeStorageSummary,
+    cleanupStorageCache,
     customStrategiesForScan,
     customStrategyStore,
+    kvGet: key => localKvStore().get(key),
+    kvSet: (key, value) => localKvStore().set(key, value),
+    getMasterPasswordStatus: () => secretStorage().status(),
+    setMasterPassword: input => secretStorage().setMasterPassword(String(input?.newPassword || ""), String(input?.currentPassword || "")),
+    unlockMasterPassword: async input => {
+      const password = typeof input === "string" ? input : String(input?.password || "");
+      const status = await secretStorage().unlockMasterPassword(password);
+      loadStoredSettings.cached = undefined;
+      settingsForService.cached = undefined;
+      return status;
+    },
+    clearMasterPassword: input => {
+      const currentPassword = typeof input === "string" ? input : String(input?.currentPassword || "");
+      return secretStorage().clearMasterPassword(currentPassword);
+    },
+    setAppZoomFactor,
     resetNewsCache,
     resetProfessionalReviewCache,
     applyWindowTheme,
     getThemeMode: () => themeMode,
     reviewWindows,
     closeReviewWindow: () => reviewWindows.closeWindow(),
+    setRestoreInProgress: active => { restoreInProgress = Boolean(active); },
     showSystemNotification,
     intervalReminders,
     noteWatcher,
@@ -1419,6 +1614,7 @@ if (!hasSingleInstanceLock) {
     analyzeSecurity,
     getQuoteSnapshot,
     getMarketSourceHealth,
+    resetMarketSourceHealth,
     getConvertibleBonds,
     getFuyaoReviewData,
     getDataFederation,
@@ -1439,6 +1635,7 @@ if (!hasSingleInstanceLock) {
     getConceptChain,
     analyzeSector,
     scanStrategySignals,
+    getDailyBarCoverage: () => dailyBarStore?.getCoverageSummary?.() || null,
     cancelServiceJob,
     getStrategyDefinitions,
     evaluateTrendResearch,
@@ -1485,7 +1682,8 @@ const finishShutdown = createShutdownGate({
       Promise.resolve().then(shutdownServiceResources),
       Promise.resolve().then(shutdownThsTokenManager),
       Promise.resolve().then(() => aiServiceInstance?.shutdown()),
-      Promise.resolve().then(() => stockAgentInstance?.shutdown())
+      Promise.resolve().then(() => stockAgentInstance?.shutdown()),
+      Promise.resolve().then(() => localKvStoreInstance?.close?.())
     ]);
     for (const result of results) if (result.status === "rejected") runtimeErrorLog("shutdown-resource", result.reason);
   },

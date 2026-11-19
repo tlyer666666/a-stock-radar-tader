@@ -25,6 +25,14 @@ const PAGES = Object.freeze({
 });
 const ALLOWED_HOST_SUFFIXES = ["10jqka.com.cn", "thsi.cn", "10jqka.com", "hexin.cn"];
 const MAX_CRASH_COUNT = 3;
+const MIN_ZOOM_FACTOR = 0.5;
+const MAX_ZOOM_FACTOR = 2.5;
+
+function normalizeZoomFactor(factor) {
+  const numeric = Number(factor);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.max(MIN_ZOOM_FACTOR, Math.min(MAX_ZOOM_FACTOR, Math.round(numeric * 100) / 100));
+}
 
 function allowedThsUrl(value) {
   try {
@@ -74,6 +82,7 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
   let crashCount = 0;
   let lastBounds = null;
   let desiredOpen = false;
+  let zoomFactor = null;
 
   const windowReady = () => {
     const win = getWindow();
@@ -189,9 +198,10 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
   function place(bounds) {
     const win = windowReady();
     if (!win || !view) return false;
-    const zoom = Number(win.webContents.getZoomFactor?.()) || 1;
+    const winZoom = Number(win.webContents.getZoomFactor?.()) || 1;
+    const targetZoom = zoomFactor ?? winZoom;
     const [width, height] = win.getContentSize();
-    const scaled = bounds && normalizeBounds({ x: bounds.x * zoom, y: bounds.y * zoom, width: bounds.width * zoom, height: bounds.height * zoom }, { width, height });
+    const scaled = bounds && normalizeBounds({ x: bounds.x * winZoom, y: bounds.y * winZoom, width: bounds.width * winZoom, height: bounds.height * winZoom }, { width, height });
     if (!scaled) return false;
     lastBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
     if (attachedTo !== win) {
@@ -200,7 +210,7 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       attachedTo = win;
     }
     if (typeof view.webContents.setZoomFactor === "function") {
-      try { view.webContents.setZoomFactor(zoom); } catch { /* ignore */ }
+      try { view.webContents.setZoomFactor(targetZoom); } catch { /* ignore */ }
     }
     view.setBounds(scaled);
     return true;
@@ -255,6 +265,15 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       // 区域被缩放/滚动裁剪到放不下（或无效）时移除原生视图，避免留在旧位置挡住界面。
       if (view && attachedTo && !place(bounds)) detach();
       return state();
+    },
+    setZoomFactor(factor) {
+      const normalized = normalizeZoomFactor(factor);
+      if (normalized === null) return false;
+      zoomFactor = normalized;
+      if (view && !view.webContents.isDestroyed() && typeof view.webContents.setZoomFactor === "function") {
+        try { view.webContents.setZoomFactor(zoomFactor); } catch { /* ignore */ }
+      }
+      return true;
     },
     hide() {
       desiredOpen = false;

@@ -1,9 +1,11 @@
 import { useSelectionQuotes } from "./useSelectionQuotes";
 import { SelectionQuotePrice, SelectionQuoteLiquidity, SelectionQuoteControls } from "./SelectionQuoteCells";
 import { SelectionKline } from "./SelectionKline";
-import { Activity, Bot, Check, ChevronRight, CircleAlert, Clock3, Copy, Layers, LoaderCircle, Pencil, Plus, RefreshCw, Target, Trash2 } from "lucide-react";
+import { Activity, Bot, Check, ChevronRight, CircleAlert, Clock3, Copy, Database, Layers, LoaderCircle, Pencil, Plus, RefreshCw, Target, Trash2 } from "lucide-react";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
+import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
+import StockRowActions from "../../components/StockRowActions";
 import { CustomStrategyEditor } from "./CustomStrategyEditor";
 import { CUSTOM_CATALOG, copyCustomStrategy, describeCustomStrategy, emptyCustomStrategy, ipcMessage, type CustomStrategy, type PatternOption } from "./customStrategyModel";
 import { TREND_STRATEGY_CHOICES } from "../../trendStrategyConfig";
@@ -15,7 +17,7 @@ import { formatShanghaiDateTime } from "../../dateUtils";
 import { aiScoreMap, buildAiPicks, ratingTone, sortByAiScore } from "./aiSelectionModel";
 import { getSelectionReport, setSelectionReport, takePendingStrategyText } from "./selectionReportStore";
 import { inferSecid } from "../../domain/securityIdentifiers";
-import { TREND_PLAN_STORAGE_KEY, readTrendPlans, saveQuickObservationPlan } from "../../trendWorkspace";
+import { TREND_PLAN_STORAGE_KEY, readTrendPlans, saveQuickObservationPlansBatch } from "../../trendWorkspace";
 import {
   normalizeSignalReport,
   defaultStrategyId,
@@ -183,12 +185,78 @@ function StrategyTableHead({ columns }: { columns: string[] }) {
   return <><colgroup>{columns.map((label, index) => <col key={label} className={`strategy-result-col-${index}`} />)}</colgroup><thead><tr>{columns.map(label => <th key={label} scope="col">{label}</th>)}</tr></thead></>;
 }
 
+function StrategyBatchBar({
+  pageStocks,
+  allStocks,
+  selectedCodes,
+  livePrices,
+  onToggleSelectPage,
+  onBatchAddFavorites,
+  onBatchAddPlans,
+  onBatchCompare,
+  onClearSelection
+}: {
+  pageStocks: StrategySignalStock[];
+  allStocks: StrategySignalStock[];
+  selectedCodes?: ReadonlySet<string> | undefined;
+  livePrices: Record<string, number | null>;
+  onToggleSelectPage?: ((codes: string[], selectAll: boolean) => void) | undefined;
+  onBatchAddFavorites?: ((stocks: StrategySignalStock[]) => void) | undefined;
+  onBatchAddPlans?: ((stocks: StrategySignalStock[], livePrices: Record<string, number | null>) => void) | undefined;
+  onBatchCompare?: ((securities: Security[]) => void) | undefined;
+  onClearSelection?: (() => void) | undefined;
+}) {
+  if (!selectedCodes || !onToggleSelectPage || !pageStocks.length) return null;
+  const pageCodes = pageStocks.map(stock => stock.code);
+  const allPageSelected = pageCodes.length > 0 && pageCodes.every(code => selectedCodes.has(code));
+  const selectedStocks = allStocks.filter(stock => selectedCodes.has(stock.code));
+  return (
+    <div className="strategy-batch-toolbar" role="region" aria-label="批量操作" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", padding: "6px 10px" }}>
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
+        <input
+          type="checkbox"
+          checked={allPageSelected}
+          aria-label="全选本页股票"
+          onChange={() => onToggleSelectPage(pageCodes, !allPageSelected)}
+        />
+        <span>全选本页</span>
+      </label>
+      {selectedStocks.length > 0 && (
+        <>
+          <small>已选 <b>{selectedStocks.length}</b> 只</small>
+          {onBatchAddFavorites && (
+            <button type="button" className="table-action" onClick={() => onBatchAddFavorites(selectedStocks)}>
+              批量+自选
+            </button>
+          )}
+          {onBatchAddPlans && (
+            <button type="button" className="table-action" onClick={() => onBatchAddPlans(selectedStocks, livePrices)}>
+              批量+次日计划
+            </button>
+          )}
+          {onBatchCompare && (
+            <button type="button" className="table-action" onClick={() => onBatchCompare(selectedStocks.map(toSecurity))}>
+              批量+多股同列
+            </button>
+          )}
+          {onClearSelection && (
+            <button type="button" className="link-btn" onClick={onClearSelection}>
+              清空
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function StrategyRowQuickActions({
   stock,
   livePrice,
   isFav,
   isPlanned,
   onToggleFavorite,
+  onOpenMonitor,
   onAddQuickPlan
 }: {
   stock: StrategySignalStock;
@@ -196,33 +264,22 @@ function StrategyRowQuickActions({
   isFav: boolean;
   isPlanned: boolean;
   onToggleFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
   onAddQuickPlan?: ((stock: StrategySignalStock, livePrice?: number | null) => void) | undefined;
 }) {
-  if (!onToggleFavorite && !onAddQuickPlan) return null;
+  if (!onToggleFavorite && !onOpenMonitor && !onAddQuickPlan) return null;
   const sec = toSecurity(stock);
   return (
-    <div className="ai-picks-quick-actions" onClick={event => event.stopPropagation()}>
-      {onToggleFavorite && (
-        <button
-          type="button"
-          className={`table-action${isFav ? " active" : ""}`}
-          onClick={() => onToggleFavorite(sec)}
-          title={isFav ? "移出自选板块" : "加入自选板块"}
-        >
-          {isFav ? "已自选" : "+自选"}
-        </button>
-      )}
-      {onAddQuickPlan && (
-        <button
-          type="button"
-          className={`table-action${isPlanned ? " active" : ""}`}
-          onClick={() => onAddQuickPlan(stock, livePrice ?? null)}
-          title={isPlanned ? "已在次日观察计划中" : "一键加入次日观察计划"}
-        >
-          {isPlanned ? "已在计划" : "+计划"}
-        </button>
-      )}
-    </div>
+    <StockRowActions
+      security={sec}
+      isFavorite={isFav}
+      isPlanned={isPlanned}
+      onToggleFavorite={onToggleFavorite}
+      onOpenMonitor={onOpenMonitor}
+      onAddPlan={onAddQuickPlan ? () => onAddQuickPlan(stock, livePrice ?? null) : undefined}
+      compact
+      className="ai-picks-quick-actions"
+    />
   );
 }
 
@@ -235,38 +292,88 @@ export const StrategyStockPanel = memo(function StrategyStockPanel({
   aiScores,
   favoriteCodes,
   onToggleFavorite,
+  onOpenMonitor,
   plannedCodes,
-  onAddQuickPlan
+  onAddQuickPlan,
+  selectedCodes,
+  onToggleSelect,
+  onToggleSelectPage,
+  onBatchAddFavorites,
+  onBatchAddPlans,
+  onBatchCompare,
+  onClearSelection
 }: {
   live?: boolean;
   quoteRefreshSeconds?: number;
   group: StrategySignalGroup;
-  onOpen?: ((security: Security) => void) | undefined;
+  onOpen?: ((security: Security, queue?: Security[]) => void) | undefined;
   dataState?: SelectionDataState | undefined;
   aiScores?: Map<string, AiRankItem> | undefined;
   favoriteCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
   plannedCodes?: ReadonlySet<string> | undefined;
   onAddQuickPlan?: ((stock: StrategySignalStock, livePrice?: number | null) => void) | undefined;
+  selectedCodes?: ReadonlySet<string> | undefined;
+  onToggleSelect?: ((code: string) => void) | undefined;
+  onToggleSelectPage?: ((codes: string[], selectAll: boolean) => void) | undefined;
+  onBatchAddFavorites?: ((stocks: StrategySignalStock[]) => void) | undefined;
+  onBatchAddPlans?: ((stocks: StrategySignalStock[], livePrices: Record<string, number | null>) => void) | undefined;
+  onBatchCompare?: ((securities: Security[]) => void) | undefined;
+  onClearSelection?: (() => void) | undefined;
 }) {
   const stocks = group.stocks;
   const { page, totalPages, go } = usePage(`strategy:${group.id}`, stocks.length);
   const pageStocks = stocks.slice((page - 1) * 20, page * 20);
   const quotes = useSelectionQuotes(pageStocks.map(toSecurity), live, quoteRefreshSeconds);
+  const stockQueue = useMemo(() => stocks.map(toSecurity), [stocks]);
+  const livePrices = useMemo(() => {
+    const map: Record<string, number | null> = {};
+    for (const s of pageStocks) {
+      const p = Number(quotes.entries[s.code]?.quote?.latest);
+      map[s.code] = Number.isFinite(p) && p > 0 ? p : (s.latest ?? null);
+    }
+    return map;
+  }, [pageStocks, quotes.entries]);
   const display = strategyStockDisplayModel(group);
   const blocked = !stocks.length && (dataState?.state === "unavailable" || dataState?.state === "empty-universe");
   return <section className="panel strategy-stock-panel" aria-label="策略股票候选">
     <div className="strategy-stock-panel-title"><div><Target size={18} /><span><b>{blocked ? dataState.title : display.title}</b><small>{!stocks.length && dataState ? dataState.description : display.subtitle}{onOpen && stocks.length ? "；点击股票查看个股分析" : ""}</small></span></div><span className="strategy-stock-panel-tools"><CopyCodesButton codes={stocks.map(stock => stock.code)} /><em>{blocked ? "待完成" : `${stocks.length} 只`}</em></span></div>
     <SelectionQuoteControls total={pageStocks.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />
+    <StrategyBatchBar
+      pageStocks={pageStocks}
+      allStocks={stocks}
+      selectedCodes={selectedCodes}
+      livePrices={livePrices}
+      onToggleSelectPage={onToggleSelectPage}
+      onBatchAddFavorites={onBatchAddFavorites}
+      onBatchAddPlans={onBatchAddPlans}
+      onBatchCompare={onBatchCompare}
+      onClearSelection={onClearSelection}
+    />
     <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="策略候选表格，可横向滚动">
       <table className="strategy-result-table" aria-label={`${group.name}选股结果`}>
         <StrategyTableHead columns={group.custom ? signalTableColumns.map(label => label === "排序分" ? "匹配度" : label) : signalTableColumns} />
         {pageStocks.map(stock => {
           const notes = stockNotes(stock);
-          const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined;
+          const openWithQueue = onOpen ? (sec: Security) => onOpen(sec, stockQueue) : undefined;
+          const openStock = openWithQueue ? () => openWithQueue(toSecurity(stock)) : undefined;
           const livePrice = Number(quotes.entries[stock.code]?.quote?.latest);
+          const isSelected = Boolean(selectedCodes?.has(stock.code));
           return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
-            <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}{!!stock.reasons?.length && <small className="strategy-stock-reasons">{stock.reasons.join(" · ")}</small>}</th>
+            <th scope="row" className="strategy-stock-name">
+              {onToggleSelect && (
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  aria-label={`选择 ${stock.name} ${stock.code}`}
+                  style={{ marginRight: 6, verticalAlign: "middle" }}
+                  onClick={event => event.stopPropagation()}
+                  onChange={() => onToggleSelect(stock.code)}
+                />
+              )}
+              {stockIdentity(stock, openWithQueue)}{aiBadge(aiScores?.get(stock.code))}{!!stock.reasons?.length && <small className="strategy-stock-reasons">{stock.reasons.join(" · ")}</small>}
+            </th>
             <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
             <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
             <td className="strategy-stock-limit">{limitAge(stock)}{invalidation(stock) && <small className="strategy-stock-reasons" title="依据本策略的支撑规则计算；具体失效条件见右侧“次日注意”">{invalidation(stock)}</small>}</td>
@@ -278,6 +385,7 @@ export const StrategyStockPanel = memo(function StrategyStockPanel({
                 isFav={Boolean(favoriteCodes?.has(stock.code))}
                 isPlanned={Boolean(plannedCodes?.has(stock.code))}
                 onToggleFavorite={onToggleFavorite}
+                onOpenMonitor={onOpenMonitor}
                 onAddQuickPlan={onAddQuickPlan}
               />
             </td>
@@ -301,20 +409,36 @@ export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel
   aiScores,
   favoriteCodes,
   onToggleFavorite,
+  onOpenMonitor,
   plannedCodes,
-  onAddQuickPlan
+  onAddQuickPlan,
+  selectedCodes,
+  onToggleSelect,
+  onToggleSelectPage,
+  onBatchAddFavorites,
+  onBatchAddPlans,
+  onBatchCompare,
+  onClearSelection
 }: {
   live?: boolean;
   quoteRefreshSeconds?: number;
   groups: StrategySignalGroup[];
-  onOpen?: ((security: Security) => void) | undefined;
+  onOpen?: ((security: Security, queue?: Security[]) => void) | undefined;
   onStrategy?: ((id: string) => void) | undefined;
   dataState?: SelectionDataState | undefined;
   aiScores?: Map<string, AiRankItem> | undefined;
   favoriteCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
   plannedCodes?: ReadonlySet<string> | undefined;
   onAddQuickPlan?: ((stock: StrategySignalStock, livePrice?: number | null) => void) | undefined;
+  selectedCodes?: ReadonlySet<string> | undefined;
+  onToggleSelect?: ((code: string) => void) | undefined;
+  onToggleSelectPage?: ((codes: string[], selectAll: boolean) => void) | undefined;
+  onBatchAddFavorites?: ((stocks: StrategySignalStock[]) => void) | undefined;
+  onBatchAddPlans?: ((stocks: StrategySignalStock[], livePrices: Record<string, number | null>) => void) | undefined;
+  onBatchCompare?: ((securities: Security[]) => void) | undefined;
+  onClearSelection?: (() => void) | undefined;
 }) {
   const [aiSort, setAiSort] = useState(rememberedAiSort);
   const [featuredOnly, setFeaturedOnly] = useState(rememberedFeaturedOnly);
@@ -327,18 +451,52 @@ export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel
   const { page, totalPages, go } = usePage("summary", rows.length);
   const pageStocks = rows.slice((page - 1) * 20, page * 20);
   const quotes = useSelectionQuotes(pageStocks.map(toSecurity), live, quoteRefreshSeconds);
+  const rowQueue = useMemo(() => rows.map(toSecurity), [rows]);
+  const livePrices = useMemo(() => {
+    const map: Record<string, number | null> = {};
+    for (const s of pageStocks) {
+      const p = Number(quotes.entries[s.code]?.quote?.latest);
+      map[s.code] = Number.isFinite(p) && p > 0 ? p : (s.latest ?? null);
+    }
+    return map;
+  }, [pageStocks, quotes.entries]);
   return <section className="panel strategy-stock-panel strategy-stock-summary" aria-label="按股票汇总">
     <div className="strategy-stock-panel-title"><div><Layers size={18} /><span><b>按股票汇总</b><small>{hasAi && aiSort ? "按 AI 分降序（未评估的股票排在后面）" : "命中精选策略的在前；同一形态家族的多条策略只算一类，再按命中家族数、策略数、排序分降序"}</small></span></div><span className="strategy-stock-panel-tools">{hasFeatured && <span className="strategy-scope-switch" role="group" aria-label="汇总范围"><button type="button" aria-pressed={featuredOnly} onClick={() => { rememberedFeaturedOnly = true; setFeaturedOnly(true); }}>精选策略</button><button type="button" aria-pressed={!featuredOnly} onClick={() => { rememberedFeaturedOnly = false; setFeaturedOnly(false); }}>全部策略</button></span>}{hasAi && <button type="button" className="secondary-btn ai-sort-toggle" aria-pressed={aiSort} onClick={() => { rememberedAiSort = !aiSort; setAiSort(!aiSort); }}>{aiSort ? "改按命中数排序" : "按 AI 分排序"}</button>}<CopyCodesButton codes={rows.map(stock => stock.code)} /><em>{!rows.length && dataState?.state === "unavailable" ? "待完成" : `${rows.length} 只`}</em></span></div>
     <SelectionQuoteControls total={pageStocks.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />
+    <StrategyBatchBar
+      pageStocks={pageStocks}
+      allStocks={rows}
+      selectedCodes={selectedCodes}
+      livePrices={livePrices}
+      onToggleSelectPage={onToggleSelectPage}
+      onBatchAddFavorites={onBatchAddFavorites}
+      onBatchAddPlans={onBatchAddPlans}
+      onBatchCompare={onBatchCompare}
+      onClearSelection={onClearSelection}
+    />
     <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="股票汇总表格，可横向滚动">
       <table className="strategy-result-table strategy-summary-table" aria-label="各策略选股按股票汇总">
         <StrategyTableHead columns={summaryTableColumns} />
         {pageStocks.map(stock => {
           const notes = stockNotes(stock);
-          const openStock = onOpen ? () => onOpen(toSecurity(stock)) : undefined;
+          const openWithQueue = onOpen ? (sec: Security) => onOpen(sec, rowQueue) : undefined;
+          const openStock = openWithQueue ? () => openWithQueue(toSecurity(stock)) : undefined;
           const livePrice = Number(quotes.entries[stock.code]?.quote?.latest);
+          const isSelected = Boolean(selectedCodes?.has(stock.code));
           return <tbody key={stock.code} className="strategy-stock-group"><tr className={`${onOpen ? "clickable" : ""}${notes.length ? " has-notes" : ""}`} onClick={openStock}>
-            <th scope="row" className="strategy-stock-name">{stockIdentity(stock, onOpen)}{aiBadge(aiScores?.get(stock.code))}</th>
+            <th scope="row" className="strategy-stock-name">
+              {onToggleSelect && (
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  aria-label={`选择 ${stock.name} ${stock.code}`}
+                  style={{ marginRight: 6, verticalAlign: "middle" }}
+                  onClick={event => event.stopPropagation()}
+                  onChange={() => onToggleSelect(stock.code)}
+                />
+              )}
+              {stockIdentity(stock, openWithQueue)}{aiBadge(aiScores?.get(stock.code))}
+            </th>
             <td><SelectionKline security={toSecurity(stock)} signalDate={stock.signalDate} /></td>
             <td className="strategy-stock-quote"><SelectionQuotePrice entry={quotes.entries[stock.code]} selectionClose={stock.latest} /><div className="strategy-stock-liquidity"><SelectionQuoteLiquidity entry={quotes.entries[stock.code]} /></div></td>
             <td>{limitAge(stock)}</td>
@@ -351,6 +509,7 @@ export const StrategyStockSummaryPanel = memo(function StrategyStockSummaryPanel
                 isFav={Boolean(favoriteCodes?.has(stock.code))}
                 isPlanned={Boolean(plannedCodes?.has(stock.code))}
                 onToggleFavorite={onToggleFavorite}
+                onOpenMonitor={onOpenMonitor}
                 onAddQuickPlan={onAddQuickPlan}
               />
             </td>
@@ -390,7 +549,10 @@ export default function StrategySignalsView({
   onOpenAiPicks,
   favoriteCodes,
   onToggleFavorite,
+  onOpenMonitor,
   onAddQuickPlan,
+  onBatchAddFavorites,
+  onBatchCompare,
   onShowToast,
   initialFocus,
   live = true,
@@ -398,11 +560,14 @@ export default function StrategySignalsView({
 }: {
   live?: boolean;
   quoteRefreshSeconds?: number;
-  onOpen?: ((security: Security) => void) | undefined;
+  onOpen?: ((security: Security, queue?: Security[]) => void) | undefined;
   onOpenAiPicks?: (() => void) | undefined;
   favoriteCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
   onAddQuickPlan?: ((security: Security, latestPrice?: number | null) => void) | undefined;
+  onBatchAddFavorites?: ((securities: Security[]) => void) | undefined;
+  onBatchCompare?: ((securities: Security[]) => void) | undefined;
   onShowToast?: ((message: string) => void) | undefined;
   initialFocus?: "trend" | undefined;
 } = {}) {
@@ -420,6 +585,7 @@ export default function StrategySignalsView({
   const [hideEmpty, setHideEmptyState] = useState(rememberedHideEmpty);
   const setHideEmpty = (value: boolean) => { rememberedHideEmpty = value; setHideEmptyState(value); };
   const [loading, setLoading] = useState(true);
+  const [initialBuildGuard, setInitialBuildGuard] = useState<{ dailyBarsCount: number } | null>(null);
   const [loadStartedAt, setLoadStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [scanProgress, setScanProgress] = useState<{ processed: number; total: number; etaSeconds: number | null } | null>(null);
@@ -434,7 +600,11 @@ export default function StrategySignalsView({
   const [notice, setNotice] = useState("");
   const [aiRanking, setAiRanking] = useState<AiRanking | null>(null);
   const [editorAiText, setEditorAiText] = useState("");
-  const workspaceQuickEnabled = Boolean(onToggleFavorite || onAddQuickPlan || onShowToast || onOpenAiPicks);
+  const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [selectedCodes, setSelectedCodes] = useState<Set<string>>(() => new Set());
+  const workspaceQuickEnabled = Boolean(
+    onToggleFavorite || onOpenMonitor || onAddQuickPlan || onBatchAddFavorites || onBatchCompare || onShowToast || onOpenAiPicks
+  );
   const [localFavCodes, setLocalFavCodes] = useState<Set<string>>(() => new Set());
   const [plannedCodes, setPlannedCodes] = useState<Set<string>>(() => {
     try {
@@ -479,6 +649,10 @@ export default function StrategySignalsView({
     };
   }, [workspaceQuickEnabled]);
   const effectiveFavoriteCodes = favoriteCodes ?? localFavCodes;
+  const emitFeedback = useCallback((message: string) => {
+    if (onShowToast) onShowToast(message);
+    else setNotice(message);
+  }, [onShowToast]);
   const handleQuickFavorite = useCallback((sec: Security) => {
     if (onToggleFavorite) {
       onToggleFavorite(sec);
@@ -504,14 +678,11 @@ export default function StrategySignalsView({
           : [...list, { ...sec, createdAt: now, favoriteAddedAt: now, favorite: true, autoAdded: false, note: "" }];
       const saved = await window.stockApi.saveWatchlist(next);
       setLocalFavCodes(new Set(saved.filter(item => item.favorite || !item.autoAdded).map(item => item.code)));
-      const msg = isFav ? `已将 ${sec.name} 移出自选板块` : `已将 ${sec.name} 加入自选板块`;
-      if (onShowToast) onShowToast(msg);
-      else setNotice(msg);
+      emitFeedback(isFav ? `已将 ${sec.name} 移出自选监控` : `已将 ${sec.name} 加入自选监控`);
     }).catch(() => {
-      if (onShowToast) onShowToast("自选保存失败");
-      else setNotice("自选保存失败");
+      emitFeedback("自选保存失败");
     });
-  }, [onToggleFavorite, onShowToast]);
+  }, [onToggleFavorite, emitFeedback]);
   const handleQuickPlan = useCallback((stock: StrategySignalStock, livePrice?: number | null) => {
     const sec = toSecurity(stock);
     const refPrice = typeof livePrice === "number" && Number.isFinite(livePrice) && livePrice > 0 ? livePrice : stock.latest;
@@ -519,29 +690,83 @@ export default function StrategySignalsView({
       onAddQuickPlan(sec, refPrice ?? null);
       return;
     }
-    if (typeof window === "undefined" || !window.localStorage) return;
-    const result = saveQuickObservationPlan(window.localStorage, {
+    setPlanTarget({
       code: stock.code,
       name: stock.name,
       secid: sec.secid,
       referencePrice: refPrice ?? null,
       asOf: report?.asOfDate || stock.signalDate,
-      reason: stock.reasons?.[0] || "策略选股快捷入池"
+      defaultNote: stock.reasons?.[0] || "策略选股观察计划"
     });
-    if (!result.ok) {
-      if (onShowToast) onShowToast(result.error);
-      else setNotice(result.error);
-      return;
-    }
-    setPlannedCodes(prev => {
+  }, [onAddQuickPlan, report?.asOfDate]);
+  const toggleSelectCode = useCallback((code: string) => {
+    setSelectedCodes(prev => {
       const next = new Set(prev);
-      next.add(stock.code);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
       return next;
     });
-    const msg = result.created ? `${stock.name} 已加入次日观察计划` : `${stock.name} 已在活跃观察计划中`;
-    if (onShowToast) onShowToast(msg);
-    else setNotice(msg);
-  }, [onAddQuickPlan, onShowToast, report?.asOfDate]);
+  }, []);
+  const toggleSelectPage = useCallback((codes: string[], selectAll: boolean) => {
+    setSelectedCodes(prev => {
+      const next = new Set(prev);
+      for (const code of codes) {
+        if (selectAll) next.add(code);
+        else next.delete(code);
+      }
+      return next;
+    });
+  }, []);
+  const clearSelection = useCallback(() => setSelectedCodes(new Set()), []);
+  const handleBatchAddFavorites = useCallback((stocks: StrategySignalStock[]) => {
+    if (!stocks.length) return;
+    const securities = stocks.map(toSecurity);
+    if (onBatchAddFavorites) {
+      onBatchAddFavorites(securities);
+      setSelectedCodes(new Set());
+      return;
+    }
+    const toAdd = securities.filter(sec => !effectiveFavoriteCodes.has(sec.code));
+    if (!toAdd.length) {
+      emitFeedback("所选股票均已在自选监控中");
+      return;
+    }
+    toAdd.forEach(sec => handleQuickFavorite(sec));
+    emitFeedback(`已批量加入自选 ${toAdd.length} 只`);
+    setSelectedCodes(new Set());
+  }, [onBatchAddFavorites, effectiveFavoriteCodes, handleQuickFavorite, emitFeedback]);
+  const handleBatchAddPlans = useCallback((stocks: StrategySignalStock[], livePrices: Record<string, number | null>) => {
+    if (!stocks.length || typeof window === "undefined" || !window.localStorage) return;
+    const result = saveQuickObservationPlansBatch(
+      window.localStorage,
+      stocks.map(stock => ({
+        code: stock.code,
+        name: stock.name,
+        secid: stock.secid || inferSecid(stock.code),
+        referencePrice: livePrices[stock.code] ?? stock.latest ?? null,
+        asOf: report?.asOfDate || stock.signalDate,
+        reason: stock.reasons?.[0] || "策略选股批量加入次日观察计划"
+      }))
+    );
+    if (result.storageError) {
+      emitFeedback(result.storageError);
+      return;
+    }
+    if (result.created.length > 0) {
+      setPlannedCodes(prev => {
+        const next = new Set(prev);
+        result.created.forEach(c => next.add(c));
+        return next;
+      });
+    }
+    const parts = [
+      result.created.length ? `新增 ${result.created.length} 只` : "",
+      result.existing.length ? `已在计划 ${result.existing.length} 只` : "",
+      result.missingPrice.length ? `缺少参考价跳过 ${result.missingPrice.length} 只` : ""
+    ].filter(Boolean);
+    emitFeedback(parts.length ? `批量次日计划：${parts.join("，")}` : "未新增次日计划");
+    setSelectedCodes(new Set());
+  }, [emitFeedback, report?.asOfDate]);
   const jobs = useRef(createServiceJobScope());
   const revision = useRef(0);
   const customApi = typeof window.stockApi.listCustomStrategies === "function";
@@ -569,6 +794,7 @@ export default function StrategySignalsView({
   const load = useCallback(async (refresh = false) => {
     void jobs.current.cancelAll();
     const current = ++revision.current;
+    setInitialBuildGuard(null);
     setLoading(true); setLoadStartedAt(Date.now()); setElapsedSeconds(0); setScanProgress(null); setError("");
     try {
       const raw = await jobs.current.run(requestId => window.stockApi.scanStrategySignals({ requestId, strategyIds: [], maxUniverse: 300, refresh }));
@@ -581,8 +807,64 @@ export default function StrategySignalsView({
     } finally { if (revision.current === current) { setLoading(false); setScanProgress(null); } }
   }, []);
   useEffect(() => {
-    void load();
-    return () => { revision.current += 1; void jobs.current.cancelAll(); };
+    let cancelled = false;
+    const cached = getSelectionReport<StrategySignalReport>();
+    const hasCoverageProbe =
+      typeof window !== "undefined" &&
+      (typeof window.stockApi?.backup?.status === "function" || typeof window.stockApi?.getRuntimeInfo === "function");
+    if (cached || !hasCoverageProbe) {
+      void load();
+      return () => { cancelled = true; revision.current += 1; void jobs.current.cancelAll(); };
+    }
+    const probeCoverage = async () => {
+      try {
+        const [statusRes, backupRes] = await Promise.all([
+          typeof window.stockApi?.scanStrategySignals === "function"
+            ? Promise.resolve(window.stockApi.scanStrategySignals({ statusOnly: true } as never)).catch(() => null)
+            : Promise.resolve(null),
+          typeof window.stockApi?.backup?.status === "function"
+            ? Promise.resolve(window.stockApi.backup.status()).catch(() => null)
+            : Promise.resolve(null)
+        ]);
+        if (cancelled || !mounted.current) return;
+        const statusObj = statusRes && typeof statusRes === "object" && !Array.isArray(statusRes)
+          ? (statusRes as Record<string, unknown>)
+          : null;
+        const progObj = statusObj?.progress && typeof statusObj.progress === "object" && !Array.isArray(statusObj.progress)
+          ? (statusObj.progress as Record<string, unknown>)
+          : null;
+        const active = Boolean(progObj?.active);
+        const rawCounts = [
+          statusObj?.dailyBarsCount,
+          progObj?.dailyBarsCount,
+          backupRes?.storageSummary?.dailyBarsCount
+        ];
+        let dailyBarsCount: number | undefined;
+        for (const candidate of rawCounts) {
+          if (typeof candidate === "number" && Number.isFinite(candidate)) {
+            dailyBarsCount = candidate;
+            break;
+          }
+        }
+        if (
+          typeof dailyBarsCount === "number" &&
+          dailyBarsCount < 2500 &&
+          !active &&
+          !getSelectionReport<StrategySignalReport>()
+        ) {
+          setInitialBuildGuard({ dailyBarsCount });
+          setLoading(false);
+          return;
+        }
+      } catch {
+        // Fallback to normal auto-load when status probe is unavailable.
+      }
+      if (!cancelled && mounted.current) {
+        void load();
+      }
+    };
+    void probeCoverage();
+    return () => { cancelled = true; revision.current += 1; void jobs.current.cancelAll(); };
   }, [load]);
   useEffect(() => {
     if (!loading || loadStartedAt === null) return;
@@ -659,13 +941,13 @@ export default function StrategySignalsView({
   const overallUnavailable = summaryDataState.state === "unavailable";
   const focused: Focus = focus && (focus.kind !== "custom" || customStrategies.some(item => item.id === focus.id)) ? focus : { kind: "pattern", id: active?.id || "" };
   const focusedCustom = focused.kind === "custom" ? customStrategies.find(item => item.id === focused.id) : undefined;
-  const choose = (next: Focus) => { rememberedFocus = next; setFocus(next); rememberedMode = "strategy"; setMode("strategy"); setEditor(null); setNotice(""); };
+  const choose = (next: Focus) => { rememberedFocus = next; setFocus(next); rememberedMode = "strategy"; setMode("strategy"); setEditor(null); setNotice(""); setSelectedCodes(new Set()); };
   const activate = (id: string) => {
     if (customStrategies.some(item => item.id === id)) { choose({ kind: "custom", id }); return; }
     rememberedStrategyId = id; setActiveId(id); choose({ kind: "pattern", id });
     if (!filtered.some(group => group.id === id)) { setQuery(""); setFamily("all"); setHideEmpty(false); }
   };
-  const switchMode = (next: "strategy" | "stock") => { rememberedMode = next; setMode(next); setEditor(null); };
+  const switchMode = (next: "strategy" | "stock") => { rememberedMode = next; setMode(next); setEditor(null); setSelectedCodes(new Set()); };
   const openEditor = (strategy: CustomStrategy, aiText = "") => { if (saving) return; setEditorSession(current => current + 1); setEditorError(""); setEditorAiText(aiText); setEditor(strategy); setNotice(""); };
   // 从「AI 选股」页带过来的大白话描述：打开新建策略编辑器，由 AI 配好条件后用户确认保存。
   useEffect(() => {
@@ -747,10 +1029,26 @@ export default function StrategySignalsView({
       <span><span className="strategy-signal-tab-name"><b>{item.name}</b></span><small className="strategy-signal-tab-audit">全市场扫描 · 分钟级</small></span><ChevronRight size={15} /></button>;
   };
   const customGroupFor = (strategy: CustomStrategy): StrategySignalGroup => customGroups.get(strategy.id || "") || { id: strategy.id || "", name: strategy.name, custom: true, family: "custom", stocks: [] };
+  const quickActionProps = workspaceQuickEnabled
+    ? {
+        favoriteCodes: effectiveFavoriteCodes,
+        onToggleFavorite: handleQuickFavorite,
+        onOpenMonitor,
+        plannedCodes,
+        onAddQuickPlan: handleQuickPlan,
+        selectedCodes,
+        onToggleSelect: toggleSelectCode,
+        onToggleSelectPage: toggleSelectPage,
+        onBatchAddFavorites: handleBatchAddFavorites,
+        onBatchAddPlans: handleBatchAddPlans,
+        onBatchCompare,
+        onClearSelection: clearSelection
+      }
+    : {};
   const renderMain = () => {
     if (editor) return <CustomStrategyEditor key={`${editor.id || "new"}:${editorSession}`} initial={editor} initialAiText={editorAiText} patterns={patterns} others={customStrategies} saving={saving} error={editorError}
       onSave={strategy => void saveStrategy(strategy)} onCancel={() => { setEditor(null); setEditorError(""); }} onImportSettings={editor.id ? undefined : () => void importSettings()} />;
-    if (mode === "stock" && report) return <StrategyStockSummaryPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} groups={strategies} onOpen={onOpen} onStrategy={activate} dataState={summaryDataState} aiScores={aiScores} {...(workspaceQuickEnabled ? { favoriteCodes: effectiveFavoriteCodes, onToggleFavorite: handleQuickFavorite, plannedCodes, onAddQuickPlan: handleQuickPlan } : {})} />;
+    if (mode === "stock" && report) return <StrategyStockSummaryPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} groups={strategies} onOpen={onOpen} onStrategy={activate} dataState={summaryDataState} aiScores={aiScores} {...quickActionProps} />;
     if (focused.kind === "trend") return <Suspense fallback={<div className="panel strategy-stock-empty"><LoaderCircle className="spin" size={24} /><b>正在载入趋势模型…</b></div>}>
       <TrendScreenerView embedded focusStrategyId={focused.id as TrendStrategyId} onOpen={security => onOpen?.(security)} /></Suspense>;
     if (focusedCustom) {
@@ -764,14 +1062,14 @@ export default function StrategySignalsView({
             <button type="button" className="secondary-btn danger-btn" onClick={() => setDeleteRequest({ strategy: focusedCustom, request: { title: `删除「${focusedCustom.name}」？`, message: "删除后不可恢复；设置页的自主策略组合不受影响。", confirmLabel: "删除", tone: "danger" } })}><Trash2 size={15} />删除</button></div></section>
         {group.error && <div className="warning-banner" role="alert"><CircleAlert size={17} />本策略未参与本轮选股：{group.error}</div>}
         {summary.external.length > 0 && <div className="strategy-pending-note" role="note"><CircleAlert size={16} />含 {summary.external.join("、")} 等需个股数据的条件：批量选股时按“待确认”处理，列表中标出依赖它们的股票，点开个股分析即可核对。</div>}
-        {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={`custom:${group.id}`} group={group} onOpen={onOpen} aiScores={aiScores} dataState={focusedCustom.universe === "watchlist" ? personalDataState : poolDataState} {...(workspaceQuickEnabled ? { favoriteCodes: effectiveFavoriteCodes, onToggleFavorite: handleQuickFavorite, plannedCodes, onAddQuickPlan: handleQuickPlan } : {})} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
+        {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={`custom:${group.id}`} group={group} onOpen={onOpen} aiScores={aiScores} dataState={focusedCustom.universe === "watchlist" ? personalDataState : poolDataState} {...quickActionProps} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
         <CustomStrategyRules strategy={focusedCustom} group={group} patterns={patterns} />
       </>;
     }
     if (!active) return null;
     return <><section className="panel strategy-signal-group-head"><div className="strategy-signal-group-copy"><div className="strategy-signal-title-line"><h2>{active.name}</h2><i className={`strategy-type-badge ${composite(active) ? "composite" : "base"}`}>{composite(active) ? "组合共振" : "基础策略"}</i>{active.featured && <i className="strategy-type-badge featured" title="按 2021–2026 全A日线回放挑出的较强策略">精选</i>}</div><p>{active.detail}</p></div>
       {customApi && <div className="custom-strategy-actions"><button type="button" className="secondary-btn" onClick={() => openEditor({ ...emptyCustomStrategy(), name: `${active.name.slice(0, 24)}·我的版本`, conditions: [{ ref: `pattern:${active.id}`, required: true }] })}><Plus size={15} />以此为基础新建</button></div>}</section>
-      {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={active.id} group={active} onOpen={onOpen} aiScores={aiScores} dataState={poolDataState} {...(workspaceQuickEnabled ? { favoriteCodes: effectiveFavoriteCodes, onToggleFavorite: handleQuickFavorite, plannedCodes, onAddQuickPlan: handleQuickPlan } : {})} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
+      {report ? <StrategyStockPanel live={live} quoteRefreshSeconds={quoteRefreshSeconds} key={active.id} group={active} onOpen={onOpen} aiScores={aiScores} dataState={poolDataState} {...quickActionProps} /> : <div className="panel strategy-stock-empty"><Target size={28} /><b>{loading ? "正在选股…" : "尚无选股结果"}</b></div>}
       <StrategySelectionRules key={`${active.id}:rules`} group={active} /></>;
   };
   return <div className="strategy-signals-view strategy-selection-only strategy-selection-workspace">
@@ -780,6 +1078,22 @@ export default function StrategySignalsView({
       {loading && <button className="secondary-btn" onClick={() => { revision.current += 1; void jobs.current.cancelAll(); setLoading(false); setScanProgress(null); setError("本轮选股已取消，点击重新选股可重试。"); }}>取消</button>}
       <button className="primary-btn" disabled={loading} onClick={() => void load(true)}>{loading ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}{loading ? "正在选股" : "重新选股"}</button>
     </div></div>
+    {initialBuildGuard && !report && !loading && (
+      <section className="panel strategy-initial-build-card" role="region" aria-label="首次建立全市场日线库确认" style={{ padding: 18, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <Database size={22} style={{ marginTop: 2 }} />
+          <div>
+            <h3 style={{ margin: "0 0 4px" }}>首次建立全 A 本地日线库（预计需数分钟，后续每日增量仅需数秒）</h3>
+            <p style={{ margin: 0, opacity: 0.8 }}>
+              当前本机已缓存 {initialBuildGuard.dailyBarsCount} 只股票日线；建库期间可随时取消，已缓存的日线会在下次选股直接复用。
+            </p>
+          </div>
+        </div>
+        <button type="button" className="primary-btn" onClick={() => void load(false)}>
+          <RefreshCw size={15} />立即开始全市场建库
+        </button>
+      </section>
+    )}
     {loading && <div className="signal-test-status"><span role="status">{strategies.length ? `正在按 ${patternGroups.length + customStrategies.length} 套策略规则选股` : "正在获取策略规则并选股"}{report ? `，列表为上轮结果，数据日 ${report.asOfDate || "未提供"}` : ""}。</span>{" "}<span role="timer" aria-live="off">已耗时 {elapsedSeconds < 60 ? `${elapsedSeconds} 秒` : `${Math.floor(elapsedSeconds / 60)} 分 ${elapsedSeconds % 60} 秒`}。</span>{" "}<span>全市场逐只读取日线，首次建库可能需要数分钟，最长等待25分钟；可随时取消，已缓存日线会供下次选股复用。</span>{scanProgress && scanProgress.total > 0 && (() => {
       const pct = Math.min(100, Math.round((scanProgress.processed / scanProgress.total) * 100));
       const etaText = scanProgress.etaSeconds !== null ? ` · 预计剩余 ${Math.floor(scanProgress.etaSeconds / 60)} 分 ${scanProgress.etaSeconds % 60} 秒` : "";
@@ -811,5 +1125,18 @@ export default function StrategySignalsView({
     </section></div></div>
     {report && focused.kind !== "trend" && <StrategySelectionCoverage report={report} previous={previous} />}
     <ConfirmDialog request={deleteRequest?.request || null} onResolve={confirmed => void resolveDelete(confirmed)} />
+    <QuickPlanModal
+      target={planTarget}
+      onClose={() => setPlanTarget(null)}
+      onSaved={res => {
+        setPlannedCodes(prev => {
+          const next = new Set(prev);
+          next.add(res.code);
+          return next;
+        });
+        emitFeedback(res.message);
+      }}
+      onError={emitFeedback}
+    />
   </div>;
 }

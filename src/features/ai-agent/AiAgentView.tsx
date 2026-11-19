@@ -255,7 +255,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
           {running && run && <RunCard run={run} onStop={() => void stop()} />}
         </div>
 
-        {error && <div className="warning-banner ai-agent-error" role="alert"><CircleAlert size={16} /><span>{error}</span>{openAiSettings && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={14} />前往 AI 设置</button>}<button type="button" className="link-btn" onClick={() => setError("")}>关闭</button></div>}
+        {error && <div className="warning-banner ai-agent-error" role="alert"><CircleAlert size={16} /><span>{error}</span>{openAiSettings && /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i.test(error) && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={14} />前往 AI 设置</button>}<button type="button" className="link-btn" onClick={() => setError("")}>关闭</button></div>}
         {messages.length > 0 && !running && <div className="ai-agent-quick" aria-label="快捷问题">
           {QUICK_TASKS.filter(task => task.id !== "full" || !lastAnswer || lastAnswer.focus?.code !== focus?.code).slice(0, 6).map(task => <button type="button" key={task.id} className="ai-agent-chip"
             disabled={(task.needsStock && !focus) || !state?.configured || sending} title={task.hint} onClick={() => useTask(task)}>{task.label}</button>)}

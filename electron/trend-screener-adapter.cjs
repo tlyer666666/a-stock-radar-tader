@@ -3,6 +3,7 @@
 const { fetchJsonWithPolicy } = require("./http-client.cjs");
 const { validateDailyBarRows } = require("./daily-bar-validation.cjs");
 const { isBseAshareCode } = require("./price-limit-rules.cjs");
+const { sharedMarketSourceHealth, registerMarketSourceResetHook } = require("./market-source-health.cjs");
 
 // This scanner needs amount and a confirmed adjustment basis. Do not silently
 // substitute feeds whose daily bars omit those fields or change that basis.
@@ -72,6 +73,8 @@ function resetSharedTrendBreakerState() {
   }
 }
 
+registerMarketSourceResetHook(resetSharedTrendBreakerState);
+
 function isThsProviderFault(error) {
   // 数据不完整/字段缺失只影响这一只证券，不代表同花顺整体不可用。
   return !/^THS_FREE_(?:INCOMPLETE_HISTORY|EMPTY_HISTORY|MISMATCH|NO_PRICE|UNSUPPORTED)$/.test(String(error?.code || "")) && error?.code !== "TREND_DATA_UNAVAILABLE";
@@ -79,7 +82,7 @@ function isThsProviderFault(error) {
 
 function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetchJson = fetchJsonWithPolicy, now = () => new Date(), historyBars = 320, ths = fetchJson === fetchJsonWithPolicy ? defaultThs() : null, clock = () => Date.now(),
   // 本地日线库（daily-bar-store）与“最近完整交易日”：都提供时，不复权日线先查本机，缺了才下载。
-  dailyStore = null, asOf = null, sharedBreakerState = null } = {}) {
+  dailyStore = null, asOf = null, sharedBreakerState = null, marketSourceHealth = sharedMarketSourceHealth } = {}) {
   if (!Number.isInteger(historyBars) || historyBars < 20 || historyBars > 1500) throw new Error("historyBars必须为20至1500的整数");
   const sharedFailedHosts = resolveSharedFailedHosts(fetchJson, sharedBreakerState?.failedHosts);
   const sharedThs = resolveSharedThsState(ths, sharedBreakerState?.ths);
@@ -131,12 +134,20 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
     }
   }
   async function withFallback(ctx, stage, host, signal, primary, fallback) {
+    const eastHealthId = stage === "universe" ? "eastmoney" : "eastmoney_history";
     const failure = ctx.failedHosts.get(host), age = failure ? clock() - failure.at : Infinity;
     let primaryError = age >= 0 && age < HISTORY_RETRY_MS ? failure.error : null;
     if (!primaryError) ctx.failedHosts.delete(host);
     if (!primaryError) {
-      try { return await tracked(ctx, stage, "eastmoney", signal, primary); }
-      catch (error) {
+      const startedAt = clock();
+      try {
+        const value = await tracked(ctx, stage, "eastmoney", signal, primary);
+        marketSourceHealth?.recordSuccess?.(eastHealthId, Math.max(0, clock() - startedAt));
+        return value;
+      } catch (error) {
+        if (!signal?.aborted && !localCapacityError(error)) {
+          marketSourceHealth?.recordFailure?.(eastHealthId, error, Math.max(0, clock() - startedAt), signal);
+        }
         if (signal?.aborted || error.code !== "MARKET_DATA_SOURCE_UNAVAILABLE" || error.providerRc !== undefined || [401, 403, 429].includes(error.status)) throw error;
         primaryError = error;
         const failedAt = clock();
@@ -401,6 +412,7 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
     if (ctx.ths.pausedUntil > nowMs) return null;
     let rows;
     let source;
+    const thsStartedAt = clock();
     try {
       signal?.throwIfAborted();
       const quote = await sharedThsQuote(ctx, security, signal);
@@ -416,12 +428,17 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
       ctx.ths.pausedUntil = 0;
       ctx.ths.lastFaultAt = 0;
       source = String(fetched?.dataSource || "").startsWith("fuyao") ? "ths-fuyao" : "ths-free";
+      marketSourceHealth?.recordSuccess?.(
+        source === "ths-fuyao" ? "fuyao_history" : "ths_free_history",
+        Math.max(0, clock() - thsStartedAt)
+      );
     } catch (error) {
       if (signal?.aborted || localCapacityError(error)) throw error;
       if (isThsProviderFault(error)) {
         const faultAt = clock();
         ctx.ths.lastFaultAt = faultAt;
         if (++ctx.ths.faults >= THS_FAULT_LIMIT) ctx.ths.pausedUntil = faultAt + THS_PAUSE_MS;
+        marketSourceHealth?.recordFailure?.("ths_free_history", error, Math.max(0, faultAt - thsStartedAt), signal);
       }
       record(ctx, stage, "ths-free", false, null, new Error(`同花顺未取到，已改用应急源：${error?.message || error}`));
       return null;

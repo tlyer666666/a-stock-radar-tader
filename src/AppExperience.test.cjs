@@ -56,7 +56,7 @@ test('a delayed Enter result cannot navigate after the user edits the search', a
     h.edit('贵州'); const pending = h.submit(); h.edit('招商'); resolve([stock]); await pending; h.render();
     assert.deepEqual(h.analyses, []);
     assert.equal(h.field().props.value, '招商');
-    assert.equal(h.tree.props['data-workspace'], 'signals', 'the app opens on the unified 策略选股 workspace');
+    assert.equal(h.tree.props['data-workspace'], 'cockpit', 'the app opens on the cockpit workspace by default');
   } finally { h.dispose(); }
 });
 

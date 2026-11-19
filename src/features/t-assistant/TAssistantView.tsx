@@ -10,6 +10,7 @@ import type { TAssistantApi, TRuntime } from "./useTAssistant";
 
 import TToolbox, { type TToolboxDisplay } from "./TToolbox";
 import { DEFAULT_CHART_PREFERENCES, isTChartPreferences } from "./tToolboxModel";
+import type { HoldingItemWithSellable } from "../collections/holdingsLedger";
 
 const CHART_PREFERENCES_KEY = "a-stock-radar:t-toolbox-display:v1";
 const InlineAiAgent = lazy(() => import("../ai-agent/AiAgentView"));
@@ -48,21 +49,23 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
   const session = inTradingSession();
 
   const add = (security: Security) => {
-    const holding = holdings.find(entry => entry.code === security.code);
-    const message = api.addStock(security, holding ? { baseShares: holding.shares, sellableShares: store.items.find(item => item.code === holding.code)?.config.sellableShares ?? 0, costPrice: holding.costPrice } : undefined);
+    const holding = holdings.find(entry => entry.code === security.code) as HoldingItemWithSellable | undefined;
+    const defaultSellable = holding ? (holding.sellableShares ?? 0) : 0;
+    const message = api.addStock(security, holding ? { baseShares: holding.shares, sellableShares: store.items.find(item => item.code === holding.code)?.config.sellableShares ?? defaultSellable, costPrice: holding.costPrice } : undefined);
     if (message) onToast(message);
     else setSelected(security.code);
   };
   const importHoldings = () => {
-    const candidates = holdings.filter(entry => /^\d{6}$/.test(entry.code) && entry.shares > 0 && (!entry.assetType || entry.assetType === "stock"));
+    const candidates = holdings.filter(entry => /^\d{6}$/.test(entry.code) && entry.shares > 0 && (!entry.assetType || entry.assetType === "stock")) as HoldingItemWithSellable[];
     if (!candidates.length) { onToast("持仓股里还没有填了股数的 A 股"); return; }
     let added = 0;
     for (const entry of candidates) {
       if (store.items.length + added >= MAX_T_ITEMS && !store.items.some(itemEntry => itemEntry.code === entry.code)) break;
-      const message = api.addStock(entry, { baseShares: entry.shares, sellableShares: store.items.find(item => item.code === entry.code)?.config.sellableShares ?? 0, costPrice: entry.costPrice });
+      const defaultSellable = entry.sellableShares ?? 0;
+      const message = api.addStock(entry, { baseShares: entry.shares, sellableShares: store.items.find(item => item.code === entry.code)?.config.sellableShares ?? defaultSellable, costPrice: entry.costPrice });
       if (!message) added += 1;
     }
-    onToast(`已从持仓导入 ${added} 只，底仓和成本按持仓股填写，请按券商核对今日开盘可卖股数后填写（不能把今日买入算作可卖）`);
+    onToast(`已从持仓导入 ${added} 只，底仓、可卖和成本已按持仓股填写（若含今日新买请按券商核对今日开盘可卖股数）`);
     if (!selected && candidates[0]) setSelected(candidates[0].code);
   };
 

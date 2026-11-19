@@ -30,7 +30,8 @@ html .terminal-shell .workspace-navigation .nav-item.active { background:var(--t
 html .terminal-shell .workspace-navigation .nav-item.active::before { width:2px; height:16px; background:var(--terminal-accent); left:0; }
 html .terminal-shell .workspace-nav-bottom { padding-top:8px; margin-top:12px; border-top:1px solid var(--terminal-line); }
 html .terminal-shell .sidebar-collapse { display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius: var(--radius-xs); background:none; color:var(--terminal-muted); cursor:pointer; }
-html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption,.nav-item span,.nav-item em,.workspace-nav-top>span) { display:none; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption,.nav-item span,.nav-item em,.workspace-nav-top>span,.sidebar-focus-toggle small) { display:none; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation .sidebar-focus-toggle { width:24px; padding:0; }
 html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation .nav-item { justify-content:center; padding:6px; }
 html .terminal-shell[data-nav-collapsed="true"] .workspace-nav-top { justify-content:center; padding:0 0 7px; }
 html .terminal-shell[data-nav-collapsed="true"] .workspace-nav-group + .workspace-nav-group { border-top:1px solid var(--terminal-line); padding-top:10px; }
@@ -84,7 +85,8 @@ html .terminal-shell :is(.toast,.strategy-quick-menu,.suggestions) { border-radi
 }
 @media(max-width:900px) {
   html .app-shell.terminal-shell[data-nav-collapsed="true"] { grid-template-columns:56px minmax(0,1fr); }
-  html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption,.nav-item span,.nav-item em,.workspace-nav-top>span) { display:none; }
+  html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption,.nav-item span,.nav-item em,.workspace-nav-top>span,.sidebar-focus-toggle small) { display:none; }
+html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation .sidebar-focus-toggle { width:24px; padding:0; }
   html .terminal-shell[data-nav-collapsed="true"] .workspace-navigation .nav-item { justify-content:center; padding:6px; }
   html .terminal-shell[data-nav-collapsed="true"] .workspace-nav-top { justify-content:center; padding:0 0 7px; }
   html .terminal-shell[data-nav-collapsed="true"] .workspace-nav-group + .workspace-nav-group { border-top:1px solid var(--terminal-line); padding-top:10px; }

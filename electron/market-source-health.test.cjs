@@ -2,7 +2,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { createMarketSourceHealth, isProviderFault, BASE_OPEN_MS, MAX_OPEN_MS } = require("./market-source-health.cjs");
+const { createMarketSourceHealth, sharedMarketSourceHealth, resetMarketSourceHealth, isProviderFault, BASE_OPEN_MS, MAX_OPEN_MS } = require("./market-source-health.cjs");
 
 function clock(start = Date.parse("2026-10-22T02:00:00Z")) {
   let value = start;
@@ -78,7 +78,7 @@ test("a stop request aborts the chain immediately, and total failure lists every
   await assert.rejects(health.runChain([
     { id: "ths_free", run: async () => { throw httpError(502); } },
     { id: "tencent", run: async () => { throw new Error("fetch failed"); } }
-  ]), (error) => /同花顺免费行情：HTTP 502/.test(error.message) && /腾讯行情：fetch failed/.test(error.message) && error.attempts.length === 2);
+  ]), (error) => /同花顺免费行情：HTTP 502/.test(error.message) && /腾讯行情：网络连接异常/.test(error.message) && error.attempts.length === 2);
 });
 
 
@@ -92,4 +92,37 @@ test('caller cancellation preserves source health and stops fallback even when a
     health.recordFailure('ths_free', new Error('timeout'),20,ctrl.signal);
     const state=health.snapshot(['ths_free'])[0]; assert.equal(state.failureCount,0); assert.equal(state.successCount,0);assert.equal(fallback,0);
   }
+});
+
+test("resetMarketSourceHealth clears cooldowns/failures across sources and resets trend-screener breaker state", async () => {
+  const { createTrendMarketData } = require("./trend-screener-adapter.cjs");
+  resetMarketSourceHealth();
+  let thsCalls = 0;
+  const adapter = createTrendMarketData({
+    historyBars: 20,
+    fetchJson: async () => { throw Object.assign(new Error("fetch failed"), { code: "ECONNRESET" }); },
+    ths: {
+      quote: async () => null,
+      history: async () => { thsCalls += 1; throw Object.assign(new Error("HTTP 503"), { status: 503 }); }
+    }
+  });
+  for (let i = 0; i < 3; i += 1) {
+    await assert.rejects(() => adapter.fetchHistory({ code: "600519", secid: "1.600519" }, "none"));
+  }
+  assert.equal(thsCalls, 3);
+  const before = sharedMarketSourceHealth.snapshot(["ths_free_history", "eastmoney_history"]);
+  assert.ok(before.find((s) => s.id === "ths_free_history").failureCount >= 2);
+  assert.equal(sharedMarketSourceHealth.isOpen("ths_free_history"), true);
+
+  // Next call skips paused THS
+  await assert.rejects(() => adapter.fetchHistory({ code: "600519", secid: "1.600519" }, "none"));
+  assert.equal(thsCalls, 3);
+
+  // Reset clears both marketSourceHealth and trend-screener breaker state
+  resetMarketSourceHealth();
+  assert.equal(sharedMarketSourceHealth.isOpen("ths_free_history"), false);
+  assert.equal(sharedMarketSourceHealth.snapshot(["ths_free_history"])[0].failureCount, 0);
+  await assert.rejects(() => adapter.fetchHistory({ code: "600519", secid: "1.600519" }, "none"));
+  assert.equal(thsCalls, 4, "after resetMarketSourceHealth, THS breaker is cleared and retried");
+  resetMarketSourceHealth();
 });

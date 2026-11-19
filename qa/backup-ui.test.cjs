@@ -37,7 +37,7 @@ describe('数据备份 card in the actual renderer', () => {
           return snapshot();
         },
         run: async local => { window.calls.runs.push(local); state.files.unshift({ name: 'A股雷达备份-20261112-160509.json', size: 20480 }); state.lastBackupAt = '2026-11-12T08:05:09.000Z'; return { name: state.files[0].name, size: 20480, status: snapshot() }; },
-        inspect: async (name, password) => { if (state.hasPassword && password !== 'abc123') throw new Error('[BACKUP_WRONG_PASSWORD] 备份密码不对'); return { createdAt: '', appVersion: '1.6.64', stores: ['holdings'], localKeys: 1 }; },
+        inspect: async (name, password) => { if (state.hasPassword && password !== 'abc12345') throw new Error('[BACKUP_WRONG_PASSWORD] 备份密码不对'); return { createdAt: '', appVersion: '1.6.64', stores: ['holdings'], localKeys: 1 }; },
         prepareRestore: async (name, password) => { window.prepared = [name, password]; return { token: 'staged', local: { 'a-stock-radar:notes:v1': '{"notes":["备份里的"]}' } }; },
         restore: async token => {
           if (token !== 'staged' || localStorage.getItem('a-stock-radar:notes:v1') !== '{"notes":["备份里的"]}') throw new Error('local restore must precede main commit');
@@ -97,10 +97,13 @@ describe('数据备份 card in the actual renderer', () => {
       assert.equal(await card.getByRole('button', { name: '立即备份' }).isDisabled(), true);
       await card.getByRole('button', { name: '用iCloud 云盘' }).click();
       await card.getByText('iCloud 云盘 ·').waitFor();
+      assert.equal(await card.locator('.backup-privacy-banner').isVisible(), true);
       await card.getByRole('button', { name: '设置密码' }).click();
       await card.getByLabel('备份密码').fill('abc');
-      assert.equal(await card.getByRole('button', { name: '保存' }).isDisabled(), true, '少于 6 位不能保存');
+      assert.equal(await card.getByRole('button', { name: '保存' }).isDisabled(), true, '少于 8 位不能保存');
       await card.getByLabel('备份密码').fill('abc123');
+      assert.equal(await card.getByRole('button', { name: '保存' }).isDisabled(), true, '6 位仍少于 8 位不能保存');
+      await card.getByLabel('备份密码').fill('abc12345');
       await card.getByRole('button', { name: '保存' }).click();
       await card.getByText('已设置，备份会加密').waitFor();
       await card.getByRole('button', { name: '立即备份' }).click();
@@ -113,12 +116,12 @@ describe('数据备份 card in the actual renderer', () => {
       await card.getByLabel('备份密码（恢复）').fill('wrong');
       await card.getByRole('button', { name: '下一步' }).click();
       await card.getByText('备份密码不对').waitFor();
-      await card.getByLabel('备份密码（恢复）').fill('abc123');
+      await card.getByLabel('备份密码（恢复）').fill('abc12345');
       await card.getByRole('button', { name: '下一步' }).click();
       const dialog = page.getByRole('dialog');
       await dialog.getByRole('button', { name: '恢复并重启' }).click();
       await page.waitForFunction(() => window.calls.relaunch === 1);
-      assert.deepEqual(await page.evaluate(() => window.calls.restored), [['A股雷达备份-20261112-160509.json', 'abc123']]);
+      assert.deepEqual(await page.evaluate(() => window.calls.restored), [['A股雷达备份-20261112-160509.json', 'abc12345']]);
       assert.equal(await page.evaluate(() => localStorage.getItem('a-stock-radar:notes:v1')), '{"notes":["备份里的"]}');
       assert.equal(await page.evaluate(() => localStorage.getItem('other:key')), 'keep');
     });

@@ -7,7 +7,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 1120px; min-height: 720px; overflow: hidden; }
+body { margin: 0; min-width: 1120px; min-height: 0; overflow: hidden; }
 button, input { font: inherit; }
 button { color: inherit; }
 .app-shell { height: 100vh; background: var(--bg); display: grid; grid-template-columns: 232px 1fr; grid-template-rows: 40px 1fr; }

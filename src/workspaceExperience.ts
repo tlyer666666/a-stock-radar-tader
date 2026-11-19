@@ -5,7 +5,7 @@ export function simpleAnalysisOrigin(view: WorkspaceView): { view: WorkspaceView
   const labels: Partial<Record<WorkspaceView, string>> = {
     "trend-screener": "返回策略选股",
     "previous-limit-up-failed": "返回炸板观察",
-    favorites: "返回自选板块",
+    favorites: "返回自选监控",
     holdings: "返回持仓股",
     sectors: "返回板块强度",
     beijing: "返回北交所",

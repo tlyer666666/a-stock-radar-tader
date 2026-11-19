@@ -62,3 +62,80 @@ test('independent review preload exposes only the review read capabilities', asy
   assert.deepEqual(themes, ['dark']);
   assert.equal(listeners.has('review-window:theme-changed'), false);
 });
+
+test('review window persists/restores clamped bounds, applies zoom factor, and enforces canOpen guard', async (t) => {
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'review-bounds-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const boundsPath = path.join(dir, 'review-bounds.json');
+
+  // Pre-seed out-of-range bounds to verify clamping on restore
+  fs.writeFileSync(boundsPath, JSON.stringify({ x: 9999, y: -200, width: 3000, height: 2000 }));
+
+  let allowed = false;
+  const zooms = [];
+  const windows = [];
+  class BoundsWindow extends EventEmitter {
+    constructor(config) {
+      super();
+      this.config = config;
+      this.bounds = { x: config.x ?? 0, y: config.y ?? 0, width: config.width, height: config.height };
+      this.webContents = new EventEmitter();
+      this.webContents.isDestroyed = () => this.destroyed;
+      this.webContents.setWindowOpenHandler = () => {};
+      this.webContents.setZoomFactor = (factor) => zooms.push(factor);
+      windows.push(this);
+    }
+    isDestroyed() { return !!this.destroyed; }
+    isMinimized() { return false; }
+    isMaximized() { return false; }
+    getBounds() { return this.bounds; }
+    show() {}
+    focus() {}
+    destroy() { this.destroyed = true; this.emit('closed'); }
+    loadFile() { return Promise.resolve(); }
+  }
+
+  const fakeScreen = {
+    getPrimaryDisplay: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 }, workAreaSize: { width: 1440, height: 900 } }),
+    getDisplayMatching: () => ({ workArea: { x: 0, y: 0, width: 1440, height: 900 }, workAreaSize: { width: 1440, height: 900 } })
+  };
+  const manager = createReviewWindowManager({
+    BrowserWindow: BoundsWindow,
+    screen: fakeScreen,
+    root: '/tmp/review-fixture',
+    packaged: true,
+    devUrl: 'http://127.0.0.1:5173',
+    openExternal: () => Promise.resolve(),
+    boundsPath,
+    canOpen: () => allowed
+  });
+
+  // canOpen() === false rejects open()
+  await assert.rejects(() => manager.open(), { code: 'REVIEW_WINDOW_BLOCKED' });
+  assert.equal(windows.length, 0);
+
+  // Set zoom before open, then allow open and verify clamped restore + zoom
+  assert.equal(manager.setZoomFactor(1.25), true);
+  assert.equal(manager.setZoomFactor(Number.NaN), false);
+  allowed = true;
+  await manager.open();
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].config.width, 1440);
+  assert.equal(windows[0].config.height, 900);
+  assert.equal(windows[0].config.x, 0);
+  assert.equal(windows[0].config.y, 0);
+  assert.ok(zooms.includes(1.25));
+
+  // Runtime setZoomFactor applies immediately
+  manager.setZoomFactor(1.5);
+  assert.equal(zooms.at(-1), 1.5);
+
+  // Debounced resize/move persists clamped bounds
+  windows[0].bounds = { x: 100, y: 80, width: 1000, height: 700 };
+  windows[0].emit('resize');
+  windows[0].emit('move');
+  await new Promise((resolve) => setTimeout(resolve, 320));
+  assert.deepEqual(JSON.parse(fs.readFileSync(boundsPath, 'utf8')), { x: 100, y: 80, width: 1000, height: 700 });
+  manager.closeWindow();
+});

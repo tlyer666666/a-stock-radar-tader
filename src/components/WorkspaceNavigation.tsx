@@ -20,7 +20,7 @@ export default function WorkspaceNavigation({
     <div className="workspace-nav-top">
       <span>工作台</span>
       <div className="workspace-nav-top-actions">
-        {!collapsed && onToggleCoreOnly && (
+        {onToggleCoreOnly && (
           <button
             type="button"
             className={`sidebar-collapse sidebar-focus-toggle${coreOnly ? ' active' : ''}`}
@@ -30,7 +30,7 @@ export default function WorkspaceNavigation({
             onClick={onToggleCoreOnly}
           >
             <Star size={13} />
-            <small>{coreOnly ? '全部' : '精简'}</small>
+            <small>{coreOnly ? '展开全部 19 个工具' : '精简'}</small>
           </button>
         )}
         <button className="sidebar-collapse" aria-label={collapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!collapsed} title={collapsed ? '展开导航栏' : '收起导航栏'} onClick={onCollapse}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>

@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { builtinModules } = require("node:module");
+const { builtinModules, isBuiltin } = require("node:module");
 const root = path.resolve(__dirname, "..");
 
 test("DEP-3: the strategy catalog in config/ matches the engine definitions (rerun qa/update-strategy-catalog.cjs after changing a strategy)", () => {
@@ -62,7 +62,7 @@ test("DEP-4: the main process requires only electron, Node built-ins and its own
     const source = fs.readFileSync(path.join(root, "electron", file), "utf8");
     for (const match of source.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g)) {
       const id = match[1];
-      if (id === "electron" || builtins.has(id)) continue;
+      if (id === "electron" || builtins.has(id) || (typeof isBuiltin === "function" && isBuiltin(id))) continue;
       if (id.startsWith(".")) {
         // 相对路径只能指向 electron/ 或 config/ 里的文件（随安装包一起打包）。
         const target = path.resolve(root, "electron", id);

@@ -142,6 +142,7 @@ function aiClock(now: number) {
   return { now: `${date} ${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")} ${WEEKDAYS[weekday]}`, tradingDays: days };
 }
 const errorText = (reason: unknown) => aiErrorMessage(reason).replace(/^\[[A-Z_]+\]\s*/, "").replace(/（可重试）$/, "");
+const AI_SETTINGS_ERROR_RE = /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i;
 
 function RepeatFields({ repeat, interval, onRepeat, onInterval }: {
   repeat: NoteRepeat;
@@ -328,6 +329,9 @@ function Composer({ api, now, knownStocks }: {
       {Boolean(timeProblem || past || stockUnclear || conditionUnclear || (mode === "custom" && remindAt === null)) && <span className="notes-warn"><CircleAlert size={13} />
         {timeProblem || (past ? "这个时间已经过了" : stockUnclear ? "识别到多只股票，请选择一只" : conditionUnclear ? "识别到多个价格条件，请选择一项" : "请填写有效的自选提醒时间")}</span>}
       <span className="notes-hint" role="status">{message ? `${message}${ai && plan.length ? `｜将${plan.join("；")}` : ""}` : plan.length ? `将${plan.join("；")}` : timeProblem || stockUnclear || conditionUnclear ? "提醒设置待确认" : "只记录，不提醒"}{!message && ai?.note ? `｜AI：${ai.note}` : ""}</span>
+      {message && AI_SETTINGS_ERROR_RE.test(message) && typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function" && (
+        <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>
+      )}
       {ai && <button type="button" className="link-btn" onClick={() => { changeDraft(); ai.undo(); setAi(null); setMessage("已恢复原文和提醒设置"); }}>撤销 AI 整理</button>}
       {canAi && <button type="button" className="secondary-btn" disabled={!text.trim() || aiBusy} title="让 AI 识别时间、股票和价格条件，并整理成一句待办" onClick={() => void tidy()}>
         {aiBusy ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}{aiBusy ? "AI 整理中…" : "AI 整理"}</button>}
@@ -407,7 +411,7 @@ function NoteCard({
               </button>
             )}
             {onAddFavorite && !isFav && (
-              <button type="button" className="link-btn" title="一键加入自选板块" onClick={() => onAddFavorite(actionStock)}>
+              <button type="button" className="link-btn" title="一键加入自选监控" onClick={() => onAddFavorite(actionStock)}>
                 <Star size={13} />加自选
               </button>
             )}

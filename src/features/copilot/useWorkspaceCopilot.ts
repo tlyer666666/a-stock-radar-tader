@@ -88,7 +88,11 @@ export function useWorkspaceCopilot({
       if (isBackground && typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
         void window.stockApi.notify({
           title: `盯盘预警 · ${alert.name}（${alert.code}）`,
-          body: alert.detail
+          body: alert.detail,
+          code: alert.code,
+          name: alert.name,
+          secid: monitorItems.find(item => item.code === alert.code)?.secid || "",
+          targetView: "dashboard"
         }).catch(() => undefined);
       }
     }
@@ -323,7 +327,8 @@ export function useWorkspaceCopilot({
   }, []);
   const sourceNotice = settingsLoadState === "ready" ? describeSourceHealth(sourceHealth) : null;
   const copilotPhase = useMemo(() => resolveMarketSessionPhase(sessionClock), [sessionClock]);
-  const copilotAlerts = useMemo(
+  const [ackedAlertIds, setAckedAlertIds] = useState<Set<string>>(() => new Set());
+  const rawCopilotAlerts = useMemo(
     () => buildCopilotAlerts({
       notes: notes.store.notes,
       monitorAlerts: stockMonitors.alerts,
@@ -333,6 +338,10 @@ export function useWorkspaceCopilot({
       sourceNotice
     }),
     [notes.store.notes, stockMonitors.alerts, tAssistant.store.items, tAssistant.runtimes, paperSummary, sourceNotice]
+  );
+  const copilotAlerts = useMemo(
+    () => rawCopilotAlerts.filter(item => !ackedAlertIds.has(item.id)),
+    [rawCopilotAlerts, ackedAlertIds]
   );
 
   const newsLiveQuotes = useMemo(() => {
@@ -363,12 +372,27 @@ export function useWorkspaceCopilot({
 
   const handleCopilotSelect = (item: CopilotAlertItem) => {
     setCopilotOpen(false);
+    if (item.id.startsWith("monitor:")) {
+      stockMonitors.ackAlert(item.id.slice("monitor:".length));
+    } else {
+      setAckedAlertIds(current => {
+        if (current.has(item.id)) return current;
+        const next = new Set(current);
+        next.add(item.id);
+        return next;
+      });
+    }
     if (item.stock && item.targetView === "dashboard") {
       onOpenStock({ code: item.stock.code, name: item.stock.name, secid: item.stock.secid || "" }, view);
       return;
     }
     onNavigateView(item.targetView);
   };
+
+  const clearAllCopilotAlerts = useCallback(() => {
+    stockMonitors.clearAlerts();
+    setAckedAlertIds(new Set(rawCopilotAlerts.map(item => item.id)));
+  }, [rawCopilotAlerts, stockMonitors]);
 
   return {
     stockMonitors,
@@ -384,6 +408,7 @@ export function useWorkspaceCopilot({
     copilotRef,
     copilotPhase,
     copilotAlerts,
+    clearAllCopilotAlerts,
     newsLiveQuotes,
     addNoteToT,
     addNoteToMonitor,

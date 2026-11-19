@@ -59,7 +59,7 @@ test('gainers ranking sorts by returns; row expands its own stocks, filters, ope
   assert.equal(await page.locator('.sector-inline-detail').count(), 0, 'no blank stock table before click');
   await page.getByRole('button', { name: '半导体，展开个股', exact: true }).click();
   const region = page.getByRole('region', { name: '半导体 成分股', exact: true });
-  await region.getByRole('button', { name: /恒玄科技/ }).waitFor();
+  await region.getByRole('button', { name: /恒玄科技/ }).first().waitFor();
   assert.match(await region.innerText(), /已加载 2 只 \/ 板块 142 只/);
   // B-09：板块榜改成原生 <table> 语义后，展开的明细是「展开行的兄弟 <tr>」，
   // 明细本身被 <tr><td id="sector-gainers-detail-N"> 包住 —— 于是
@@ -75,7 +75,7 @@ test('gainers ranking sorts by returns; row expands its own stocks, filters, ope
   assert.equal(await region.evaluate((element, id) => Boolean(element.closest('#' + id)), controls), true,
     `明细区域必须位于 aria-controls 指向的容器内（${controls}）`);
   assert.equal(await page.locator('tr', { has: toggle }).getAttribute('aria-label'), '半导体，收起个股');
-  const bounds = await region.getByRole('button', { name: /恒玄科技/ }).boundingBox();
+  const bounds = await region.getByRole('button', { name: /恒玄科技/ }).first().boundingBox();
   assert.ok(bounds.y >= 0 && bounds.y + bounds.height < 960, JSON.stringify(bounds));
   const calls = await page.evaluate(() => window.__sectorCalls);
   assert.equal(calls.length, 1);
@@ -83,7 +83,7 @@ test('gainers ranking sorts by returns; row expands its own stocks, filters, ope
   await region.getByLabel('筛选当前板块个股').fill('中芯');
   assert.equal(await region.locator('.member-row:not(.member-head)').count(), 1);
   await region.getByLabel('筛选当前板块个股').fill('');
-  await region.getByRole('button', { name: /恒玄科技/ }).click();
+  await region.getByRole('button', { name: /恒玄科技/ }).first().click();
   await page.getByRole('button', { name: '返回板块强度', exact: true }).waitFor();
 }));
 
@@ -118,7 +118,7 @@ test('row loading and retry stay inline; switching and late responses never show
   assert.match(await region.evaluate(element => element.textContent), /行情暂不可用/);
   await page.evaluate(() => { window.__failSector = ''; });
   await region.getByRole('button', { name: '重试加载个股' }).click();
-  await region.getByRole('button', { name: /格利尔/ }).waitFor();
+  await region.getByRole('button', { name: /格利尔/ }).first().waitFor();
   await page.getByRole('button', { name: '元件，收起个股', exact: true }).click();
   assert.equal(await page.locator('.sector-inline-detail').count(), 0);
   await page.evaluate(() => { window.__slowSector = '半导体'; });
@@ -126,7 +126,7 @@ test('row loading and retry stay inline; switching and late responses never show
   await page.getByRole('status').filter({ hasText: '正在加载 半导体' }).waitFor();
   await page.getByRole('button', { name: '银行，展开个股', exact: true }).click();
   const bank = page.getByRole('region', { name: '银行 成分股', exact: true });
-  await bank.getByRole('button', { name: /中国银行/ }).waitFor();
+  await bank.getByRole('button', { name: /中国银行/ }).first().waitFor();
   await page.waitForTimeout(600);
   assert.doesNotMatch(await bank.innerText(), /恒玄科技/);
   assert.equal(await page.locator('.sector-inline-detail').count(), 1);
@@ -140,7 +140,7 @@ test('sector strength excludes the Beijing shortcut and legacy ranking row; the 
   const nav = page.locator('.workspace-navigation').getByRole('button', { name: '北交所', exact: true });
   await nav.click();
   await page.locator('.app-shell[data-workspace="beijing"]').waitFor();
-  await page.getByRole('region', { name: '北交所 成分股', exact: true }).getByRole('button', { name: /嘉晨智能/ }).waitFor();
+  await page.getByRole('region', { name: '北交所 成分股', exact: true }).getByRole('button', { name: /嘉晨智能/ }).first().waitFor();
   assert.equal((await page.evaluate(() => window.__sectorCalls.at(-1))).code, 'THS:BJ');
 }));
 

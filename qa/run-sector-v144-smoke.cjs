@@ -145,6 +145,8 @@ async function main() {
         };
         window.stockApi.openExternal = async url => { qa.lastExternal = url; };
       }, { f: fixture, flat });
+      const expandNav = page.getByRole('button', { name: '显示全部模块', exact: true });
+      if (await expandNav.count() && await expandNav.first().isVisible()) await expandNav.first().click();
       await page.getByRole('button', { name: '板块强度', exact: true }).click();
       await page.locator('.sector-explorer').waitFor();
       await page.waitForFunction(() => window.__sectorQA.calls.some(x => x.method === 'catalog'));

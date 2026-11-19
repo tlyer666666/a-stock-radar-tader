@@ -53,6 +53,37 @@ type UsePaperTradingOptions = {
   showToast: (message: string) => void;
 };
 
+const PAPER_QUOTE_PERSIST_THROTTLE_MS = 30_000;
+
+const isStructuralPaperMutation = (prev: PaperSimulationState, next: PaperSimulationState): boolean => {
+  if (
+    prev.cash !== next.cash ||
+    prev.initialCapital !== next.initialCapital ||
+    prev.dailyRealizedPnl !== next.dailyRealizedPnl ||
+    prev.lastTradeDate !== next.lastTradeDate ||
+    prev.totalTradeCount !== next.totalTradeCount ||
+    prev.openPositions.length !== next.openPositions.length ||
+    prev.closedPositions.length !== next.closedPositions.length ||
+    prev.closedArchive?.total.count !== next.closedArchive?.total.count
+  ) {
+    return true;
+  }
+  for (let i = 0; i < prev.openPositions.length; i += 1) {
+    const a = prev.openPositions[i]!;
+    const b = next.openPositions[i]!;
+    if (
+      a.id !== b.id ||
+      a.code !== b.code ||
+      a.shares !== b.shares ||
+      a.entryPrice !== b.entryPrice ||
+      a.settlementBlockedReason !== b.settlementBlockedReason
+    ) {
+      return true;
+    }
+  }
+  return false;
+};
+
 export function usePaperTrading({
   payload,
   latestAnalysis,
@@ -78,18 +109,92 @@ export function usePaperTrading({
     paper: JSON.stringify(normalizePaperState(paperState)),
     log: JSON.stringify(executionDecisionLog)
   };
+  const paperMountedRef = useRef(true);
+  const lastPersistedStateRef = useRef<PaperSimulationState>(normalizePaperState(paperState));
+  const pendingQuoteFlushRef = useRef<{ state: PaperSimulationState; signature: string } | null>(null);
+  const quotePersistTimerRef = useRef<number | null>(null);
+  const lastQuotePersistAtRef = useRef<number>(0);
+
+  const clearQuotePersistTimer = useCallback(() => {
+    if (quotePersistTimerRef.current !== null && typeof window !== "undefined" && typeof window.clearTimeout === "function") {
+      window.clearTimeout(quotePersistTimerRef.current);
+    }
+    quotePersistTimerRef.current = null;
+  }, []);
+
+  const persistPaperSnapshot = useCallback((next: PaperSimulationState, signature: string): boolean => {
+    lastQuotePersistAtRef.current = Date.now();
+    const ok = saveSafeLocalJson(PAPER_SIM_STATE_KEY, next, isPaperState);
+    if (ok) {
+      signatures.paper = signature;
+      lastPersistedStateRef.current = next;
+      pendingQuoteFlushRef.current = null;
+      if (paperMountedRef.current) setPaperSnapshotSaveError(false);
+    } else if (paperMountedRef.current) {
+      setPaperSnapshotSaveError(true);
+    }
+    return ok;
+  }, [signatures]);
 
   useEffect(() => {
     const next = normalizePaperState(paperState);
     const signature = JSON.stringify(next);
-    if (signature === signatures.paper) return;
-    if (saveSafeLocalJson(PAPER_SIM_STATE_KEY, next, isPaperState)) {
-      signatures.paper = signature;
-      setPaperSnapshotSaveError(false);
-    } else {
-      setPaperSnapshotSaveError(true);
+    if (signature === signatures.paper) {
+      clearQuotePersistTimer();
+      pendingQuoteFlushRef.current = null;
+      return;
     }
-  }, [paperState, paperSaveRetry, signatures]);
+    const elapsedSincePersist = Date.now() - lastQuotePersistAtRef.current;
+    const immediate =
+      paperSnapshotSaveError ||
+      paperSaveRetry > 0 ||
+      lastQuotePersistAtRef.current === 0 ||
+      elapsedSincePersist >= PAPER_QUOTE_PERSIST_THROTTLE_MS ||
+      isStructuralPaperMutation(lastPersistedStateRef.current, next);
+    if (immediate) {
+      clearQuotePersistTimer();
+      pendingQuoteFlushRef.current = null;
+      persistPaperSnapshot(next, signature);
+      return;
+    }
+    pendingQuoteFlushRef.current = { state: next, signature };
+    if (quotePersistTimerRef.current !== null) return;
+    if (typeof window !== "undefined" && typeof window.setTimeout === "function") {
+      const waitMs = Math.max(50, PAPER_QUOTE_PERSIST_THROTTLE_MS - elapsedSincePersist);
+      quotePersistTimerRef.current = window.setTimeout(() => {
+        quotePersistTimerRef.current = null;
+        const pending = pendingQuoteFlushRef.current;
+        if (!pending || pending.signature === signatures.paper) {
+          pendingQuoteFlushRef.current = null;
+          return;
+        }
+        persistPaperSnapshot(pending.state, pending.signature);
+      }, waitMs);
+    } else {
+      persistPaperSnapshot(next, signature);
+    }
+  }, [paperState, paperSaveRetry, paperSnapshotSaveError, signatures, clearQuotePersistTimer, persistPaperSnapshot]);
+
+  useEffect(() => {
+    paperMountedRef.current = true;
+    const flushPending = () => {
+      clearQuotePersistTimer();
+      const pending = pendingQuoteFlushRef.current;
+      if (pending && pending.signature !== signatures.paper) {
+        persistPaperSnapshot(pending.state, pending.signature);
+      }
+    };
+    const canListen =
+      typeof window !== "undefined" &&
+      typeof window.addEventListener === "function" &&
+      typeof window.removeEventListener === "function";
+    if (canListen) window.addEventListener("pagehide", flushPending);
+    return () => {
+      paperMountedRef.current = false;
+      if (canListen) window.removeEventListener("pagehide", flushPending);
+      flushPending();
+    };
+  }, [signatures, clearQuotePersistTimer, persistPaperSnapshot]);
 
   useEffect(() => {
     const signature = JSON.stringify(executionDecisionLog);
@@ -111,7 +216,10 @@ export function usePaperTrading({
       return false;
     }
     // Commit the signature before rendering, so the effect never repeats this write.
+    clearQuotePersistTimer();
+    pendingQuoteFlushRef.current = null;
     signatures.paper = JSON.stringify(normalized);
+    lastPersistedStateRef.current = normalized;
     setPaperActionSaveError(false);
     setPaperSnapshotSaveError(false);
     paperStateRef.current = normalized;
@@ -370,15 +478,9 @@ export function usePaperTrading({
 
   const openPositionsSignature = paperSummary.normalized.openPositions.map(p => p.code).sort().join(",");
   const paperPollBusyRef = useRef(false);
-  const paperMountedRef = useRef(true);
-  useEffect(() => {
-    paperMountedRef.current = true;
-    return () => {
-      paperMountedRef.current = false;
-    };
-  }, []);
 
   const refreshPaperPositions = useCallback(async () => {
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     if (paperPollBusyRef.current || !openPositionsSignature || typeof window === "undefined" || typeof window.stockApi?.getQuoteSnapshot !== "function") return;
     paperPollBusyRef.current = true;
     try {

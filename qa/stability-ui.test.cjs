@@ -52,7 +52,7 @@ test('changing compare selection keeps a remaining loading stock able to complet
 }));
 test('failed favorite persistence keeps the existing item and reports the failure', async () => withPage('', async page => {
   const errors = []; page.on('pageerror', e => errors.push(e.message));
-  await page.getByRole('button', { name: '自选板块', exact: true }).click();
+  await page.getByRole('button', { name: '自选监控', exact: true }).click();
   const item = page.locator('.personal-monitor-card').filter({ hasText: '甲银行' });
   await item.locator('[title="移出自选"]').click();
   await page.waitForTimeout(200);
@@ -142,7 +142,7 @@ test('editing a backtest target without selecting a suggestion invalidates the p
 }));
 test('repeated favorite removal stays removed when persistence is delayed', async () => withPage('', async page => {
   await page.evaluate(() => { window.stockApi.saveWatchlist = items => new Promise(resolve => { window.calls.push({kind:'saveFavorite',items}); window.finishFavoriteSave = () => resolve(items); }); });
-  await page.getByRole('button', {name:'自选板块',exact:true}).click();
+  await page.getByRole('button', {name:'自选监控',exact:true}).click();
   await page.locator('.personal-monitor-card').filter({hasText:'甲银行'}).locator('[title="移出自选"]').evaluate(element => { element.click(); element.click(); });
   await page.waitForFunction(() => window.calls.filter(x=>x.kind==='saveFavorite').length===1);
   await page.evaluate(() => window.finishFavoriteSave());

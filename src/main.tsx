@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { HsgtOverlayProvider } from "./features/hsgt/overlayContext";
 import AppErrorBoundary from "./components/AppErrorBoundary";
 import "./styles/index.css";
 import { DataBridgeFailure, initializeStockApi } from "./runtimeBridge";
@@ -14,7 +15,9 @@ const renderRoot = (apiAvailable: boolean) => {
     <React.StrictMode>
       {apiAvailable ? (
         <AppErrorBoundary>
-          <App />
+          <HsgtOverlayProvider>
+            <App />
+          </HsgtOverlayProvider>
         </AppErrorBoundary>
       ) : <DataBridgeFailure />}
     </React.StrictMode>

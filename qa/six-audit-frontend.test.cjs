@@ -33,7 +33,12 @@ test('P1-35 standalone review error fallback is styled without introducing a sid
 test("failed-board history refreshes the selected date and keeps its last good rows and filters", async () => {
   const { page, errors } = await fixture("failed-refresh");
   try {
-    await page.getByRole("button", { name: "炸板观察", exact: true }).click();
+    const failedNav = page.getByRole("button", { name: "炸板观察", exact: true });
+    if (!(await failedNav.count())) {
+      const expand = page.getByRole("button", { name: "显示全部模块", exact: true });
+      if (await expand.count() && await expand.first().isVisible()) await expand.first().click();
+    }
+    await failedNav.click();
     const board = page.getByRole("region", { name: "炸板股票数据，可横向滚动" });
     const refresh = page.getByRole("button", { name: "刷新", exact: true });
     await board.getByRole("row").nth(1).waitFor();

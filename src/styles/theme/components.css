@@ -3388,7 +3388,7 @@ html .terminal-shell .member-row.no-funds {
   gap: 4px;
 }
 
-.cockpit-hero-title h2 {
+.cockpit-hero-title :is(h1, h2) {
   margin: 0;
   font-size: var(--fs-xl);
   color: var(--ink-1);
@@ -5183,9 +5183,15 @@ html .terminal-shell .member-row.no-funds {
 
 .ui-scale-presets {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
   margin-top: 6px;
+}
+
+@media (max-width: 900px) {
+  .ui-scale-presets {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  }
 }
 
 .ui-scale-presets button {
@@ -5213,4 +5219,235 @@ html .terminal-shell .member-row.no-funds {
 .ui-scale-presets button[aria-pressed="true"] {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+[data-view="hsgt"] .toast-stack {
+  top: calc(var(--titlebar-h, 0px) + var(--topbar-h, 52px) + 8px);
+  bottom: auto;
+}
+
+.cockpit-onboarding {
+  padding: 16px 18px;
+  border: 1px solid var(--accent-border, var(--line-2));
+  background: var(--surface-1);
+}
+
+.cockpit-onboarding-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.cockpit-onboarding-head h3 {
+  margin: 6px 0 4px;
+  font-size: var(--fs-md);
+  color: var(--ink-1);
+}
+
+.cockpit-onboarding-head p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+}
+
+.cockpit-onboarding-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+@media (max-width: 1100px) {
+  .cockpit-onboarding-steps {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cockpit-onboarding-step {
+  display: flex;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.cockpit-onboarding-num {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+}
+
+.cockpit-onboarding-step > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cockpit-onboarding-step b {
+  font-size: var(--fs-sm);
+  color: var(--ink-1);
+}
+
+.cockpit-onboarding-step small {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+.cockpit-onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.security-master-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.security-master-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.security-master-head strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  color: var(--ink-1);
+}
+
+.security-master-head small {
+  display: block;
+  margin-top: 4px;
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+
+.security-master-badge {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-full);
+  font-size: var(--fs-2xs);
+  color: var(--ink-2);
+  background: var(--surface-1);
+}
+
+.security-master-badge.enabled {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.security-master-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.security-master-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-quick-plan-dialog {
+  width: min(440px, 92vw);
+  max-width: 92vw;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
+  background: var(--surface-1);
+  color: var(--ink-1);
+  box-shadow: var(--shadow-3);
+}
+
+.review-quick-plan-dialog::backdrop {
+  background: var(--overlay);
+}
+
+.review-quick-plan-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+}
+
+.review-quick-plan-form > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.review-quick-plan-form > header h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--ink-1);
+}
+
+.review-quick-plan-form > header small {
+  color: var(--ink-3);
+  font-weight: var(--fw-normal);
+}
+
+.review-quick-plan-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.review-quick-plan-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+
+.review-quick-plan-fields input {
+  min-height: var(--control-h);
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm);
+  background: var(--page);
+  color: var(--ink-1);
+  font-size: var(--fs-sm);
+}
+
+.review-quick-plan-note {
+  grid-column: 1 / -1;
+}
+
+.review-quick-plan-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: var(--fs-xs);
+}
+
+.review-quick-plan-form > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }

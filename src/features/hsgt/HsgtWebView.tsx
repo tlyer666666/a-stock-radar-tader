@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { ArrowLeft, ExternalLink, Home, LogIn, LogOut, RefreshCw } from "lucide-react";
 
 import { startVisibleInterval } from "../../visiblePolling";
+import { useHsgtOverlayCount } from "./overlayContext";
 
 type Bounds = { x: number; y: number; width: number; height: number };
 type Action = "home" | "login" | "reload" | "back" | "external" | "logout";
@@ -41,6 +42,9 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
   const revision = useRef(0);
   const [state, setState] = useState<ThsWebState | null>(null);
   const [busy, setBusy] = useState(false);
+  const overlayCount = useHsgtOverlayCount();
+  const overlayCountRef = useRef(overlayCount);
+  overlayCountRef.current = overlayCount;
 
   const measure = useCallback((): Bounds | null => {
     const element = frame.current;
@@ -52,7 +56,8 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
   const sync = useCallback(() => {
     if (!api) return;
     // Native child surfaces sit above HTML regardless of their CSS z-index.
-    const overlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .copilot-popover, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
+    const domOverlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .copilot-popover, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
+    const overlay = overlayCountRef.current > 0 || Boolean(domOverlay);
     const bounds = document.hidden || overlay ? null : measure();
     const key = bounds ? JSON.stringify(bounds) : "";
     if (lastBounds.current === key && shown.current === Boolean(bounds)) return;
@@ -83,7 +88,7 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
     const observer = new ResizeObserver(schedule);
     if (frame.current) observer.observe(frame.current);
     const overlays = new MutationObserver(schedule);
-    overlays.observe(document.body, {childList:true,subtree:true,attributes:true,attributeFilter:["open","hidden","aria-modal","data-overlay","class"]});
+    overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "hidden", "aria-modal", "data-overlay"] });
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);
@@ -100,6 +105,11 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
       void api.hide().catch(() => {});
     };
   }, [api, sync]);
+
+  useLayoutEffect(() => {
+    if (!api) return;
+    sync();
+  }, [api, overlayCount, sync]);
 
   useEffect(() => {
     if (!api) return;

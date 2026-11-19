@@ -310,3 +310,50 @@ test('prepareDay + history avoids double full validation in the same scan even p
   }
   assert.equal(validateCalls, 70, 'evicted entries reuse verified file stamps instead of double-validating');
 });
+
+test('cleanupStaleBars without activeCodes uses selection-universe.json when > 4000, or falls back to mtime + last bar date', async t => {
+  const dir = tempDir(t);
+  const nowMs = Date.parse('2026-10-21T16:00:00+08:00');
+  const day = store(dir, { now: () => nowMs });
+  // Seed 2 stocks: one with old bars (2025-12-01), one with recent bars (2026-10-20)
+  await day.history({ code: '600001', secid: '1.600001' }, '2025-12-01', async () => download('2025-12-01', { count: 20 }), { bars: 20 });
+  await day.history({ code: '600002', secid: '1.600002' }, '2026-10-20', async () => download('2026-10-20', { count: 20 }), { bars: 20 });
+
+  // Backdate mtime for both > 200 days
+  const oldDate = new Date(nowMs - 210 * 24 * 3600 * 1000);
+  fs.utimesSync(path.join(dir, '600001.json'), oldDate, oldDate);
+  fs.utimesSync(path.join(dir, '600002.json'), oldDate, oldDate);
+
+  // Without selection-universe.json: only 600001 (both mtime AND last bar date > 180d) is pruned; 600002 kept!
+  const res1 = await day.cleanupStaleBars({ maxAgeDays: 180 });
+  assert.equal(res1.removedOrphans, 1);
+  assert.equal(fs.existsSync(path.join(dir, '600001.json')), false);
+  assert.equal(fs.existsSync(path.join(dir, '600002.json')), true);
+
+  // Now add selection-universe.json (> 4000 codes, NOT containing 600002)
+  const rows = Array.from({ length: 4005 }, (_, i) => ({ code: String(300000 + i) }));
+  fs.writeFileSync(path.join(dir, 'selection-universe.json'), JSON.stringify({ v: 1, savedAt: nowMs, boards: { all: rows } }));
+  const res2 = await day.cleanupStaleBars({ maxAgeDays: 180 });
+  assert.equal(res2.removedOrphans, 1);
+  assert.equal(fs.existsSync(path.join(dir, '600002.json')), false);
+});
+
+test('clearAllBars removes only 6-digit bar files, resets stats, and getCoverageSummary reports coverage', async t => {
+  const dir = tempDir(t);
+  const day = store(dir);
+  await day.history({ code: '600001', secid: '1.600001' }, '2026-10-20', async () => download('2026-10-20', { count: 30 }), { bars: 30 });
+  await day.history({ code: '600002', secid: '1.600002' }, '2026-10-20', async () => download('2026-10-20', { count: 30 }), { bars: 30 });
+  fs.writeFileSync(path.join(dir, 'selection-universe.json'), JSON.stringify({ v: 1, savedAt: Date.now(), boards: { all: [] } }));
+
+  const before = day.getCoverageSummary();
+  assert.equal(before.fileCount, 2);
+  assert.ok(before.totalBytes > 0);
+  assert.ok(before.estimatedRatio >= 0 && before.estimatedRatio <= 1);
+
+  const cleared = await day.clearAllBars();
+  assert.equal(cleared.removedFiles, 2);
+  assert.equal(cleared.freedBytes, before.totalBytes);
+  assert.equal(fs.existsSync(path.join(dir, 'selection-universe.json')), true, 'universe cache file must remain intact');
+  assert.deepEqual(day.stats(), { hits: 0, appended: 0, downloads: 0, writeFailures: 0 });
+  assert.deepEqual(day.getCoverageSummary(), { fileCount: 0, totalBytes: 0, estimatedRatio: 0 });
+});

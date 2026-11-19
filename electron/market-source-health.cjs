@@ -68,6 +68,21 @@ function humanizeSourceError(rawMessage) {
   return text.slice(0, 160);
 }
 
+const trackedHealthInstances = new Set();
+const resetHooks = new Set();
+
+function registerMarketSourceResetHook(listener) {
+  if (typeof listener !== "function") return () => {};
+  resetHooks.add(listener);
+  return () => { resetHooks.delete(listener); };
+}
+
+function invokeResetHooks() {
+  for (const hook of resetHooks) {
+    try { hook(); } catch { /* Best-effort reset hooks must not break callers. */ }
+  }
+}
+
 function createMarketSourceHealth({ now = () => Date.now() } = {}) {
   const states = new Map();
 
@@ -136,7 +151,7 @@ function createMarketSourceHealth({ now = () => Date.now() } = {}) {
         signal?.throwIfAborted();
         if (shouldStop(error)) throw error;
         recordFailure(step.id, error, now() - startedAt);
-        attempts.push({ id: step.id, ok: false, error: String(error?.message || error) });
+        attempts.push({ id: step.id, ok: false, error: humanizeSourceError(error) });
         return null;
       }
     };
@@ -187,9 +202,43 @@ function createMarketSourceHealth({ now = () => Date.now() } = {}) {
     });
   }
 
-  function reset() { states.clear(); }
+  function clearStates() { states.clear(); }
+  function reset() { clearStates(); }
 
-  return { isOpen, recordSuccess, recordFailure, runChain, snapshot, reset };
+  const instance = { isOpen, recordSuccess, recordFailure, runChain, snapshot, reset };
+  trackedHealthInstances.add(new WeakRef(instance));
+  return instance;
 }
 
-module.exports = { SOURCES, BASE_OPEN_MS, MAX_OPEN_MS, FAILURES_TO_OPEN, isProviderFault, humanizeSourceError, createMarketSourceHealth };
+const sharedMarketSourceHealth = createMarketSourceHealth();
+const clearSharedStates = sharedMarketSourceHealth.reset;
+sharedMarketSourceHealth.reset = () => {
+  clearSharedStates();
+  invokeResetHooks();
+};
+
+function resetMarketSourceHealth() {
+  for (const ref of trackedHealthInstances) {
+    const instance = ref.deref();
+    if (!instance) {
+      trackedHealthInstances.delete(ref);
+      continue;
+    }
+    if (instance === sharedMarketSourceHealth) clearSharedStates();
+    else instance.reset();
+  }
+  invokeResetHooks();
+}
+
+module.exports = {
+  SOURCES,
+  BASE_OPEN_MS,
+  MAX_OPEN_MS,
+  FAILURES_TO_OPEN,
+  isProviderFault,
+  humanizeSourceError,
+  createMarketSourceHealth,
+  sharedMarketSourceHealth,
+  registerMarketSourceResetHook,
+  resetMarketSourceHealth
+};

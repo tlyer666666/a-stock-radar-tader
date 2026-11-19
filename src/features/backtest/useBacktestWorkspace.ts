@@ -11,8 +11,6 @@ import {
   riskProfileLabel,
   riskProfilePresets
 } from "../../domain/settings";
-import { isBacktestHistoryCollection } from "../../researchStorage";
-import { saveSafeLocalJson } from "../../safeStorage";
 import { createServiceJobScope } from "../../serviceJobClient";
 import type { WorkspaceView as View } from "../../workspaceView";
 import type { InformationTab } from "../information/informationModel";
@@ -28,10 +26,11 @@ import {
   normalizeBacktestStrategyIds
 } from "./backtestModel";
 import {
-  BACKTEST_HISTORY_KEY,
   BACKTEST_HISTORY_LIMIT,
   buildBacktestHistoryRecord,
-  loadBacktestHistory
+  hydrateBacktestHistory,
+  loadBacktestHistory,
+  saveBacktestHistory
 } from "./backtestStorage";
 import type {
   BacktestDraft,
@@ -78,7 +77,7 @@ const csvEscape = (value: unknown) => {
 
 const backtestSourceLabel = (sourceView: View, dashboardMode: "pool" | "analysis") => {
   if (sourceView === "signals" || sourceView === "trend-screener") return "策略选股";
-  if (sourceView === "favorites") return "自选板块";
+  if (sourceView === "favorites") return "自选监控";
   if (sourceView === "holdings") return "持仓板块";
   if (sourceView === "watchlist") return "十日观察池";
   if (sourceView === "compare") return "多股同列";
@@ -146,17 +145,23 @@ export function useBacktestWorkspace({
   }, [portfolioActive]);
 
   useEffect(() => {
+    let active = true;
+    if (backtestHistory.length > 0) return undefined;
+    void hydrateBacktestHistory(initialSettings).then((records) => {
+      if (!active || !records.length) return;
+      setBacktestHistory(current => current.length ? current : records);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
     const signature = JSON.stringify(backtestHistory);
     if (historySignatureRef.current === null) {
       historySignatureRef.current = signature;
       return;
     }
     if (signature === historySignatureRef.current) return;
-    if (saveSafeLocalJson(
-      BACKTEST_HISTORY_KEY,
-      backtestHistory.slice(0, BACKTEST_HISTORY_LIMIT),
-      isBacktestHistoryCollection
-    )) {
+    if (saveBacktestHistory(backtestHistory.slice(0, BACKTEST_HISTORY_LIMIT))) {
       historySignatureRef.current = signature;
     }
   }, [backtestHistory]);

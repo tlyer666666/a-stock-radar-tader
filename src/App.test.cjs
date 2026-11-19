@@ -156,11 +156,25 @@ test("renderer initial shell exposes navigation, window controls and risk notice
   assert.equal((html.match(/data-information-center-nav="true"/g) || []).length, 1);
   assert.doesNotMatch(html, /data-announcements-nav/);
   assert.doesNotMatch(html, /aria-label="(?:资讯雷达|A股公告)"/);
-  assert.match(html, /data-backtest-nav="true"/);
+  assert.match(html, /aria-label="显示全部模块"/);
   assert.match(html, /专业复盘/);
   assert.match(html, /仅供研究，不构成投资建议/);
   assert.ok((html.match(/class="nav-item/g) || []).length >= 10);
   assert.match(html, /aria-label="AI 选股"/);
+
+  const prevLs = global.window.localStorage;
+  try {
+    global.window.localStorage = {
+      getItem: (key) => (key === "a-stock-radar:sidebar-core-only:v1" ? "false" : null),
+      setItem() {},
+      removeItem() {}
+    };
+    const expandedHtml = renderToStaticMarkup(React.createElement(App));
+    assert.match(expandedHtml, /data-backtest-nav="true"/);
+  } finally {
+    if (prevLs === undefined) delete global.window.localStorage;
+    else global.window.localStorage = prevLs;
+  }
 });
 
 test("App retains the named NewsView compatibility export", () => {
@@ -229,14 +243,29 @@ test("information center exposes three tabs and keeps disclosure-specific filter
 });
 
 test("opens the unified strategy selection workspace and does not advertise unrelated strategy controls", () => {
-  const html = renderToStaticMarkup(React.createElement(App));
-  assert.match(html, /data-workspace="signals"/);
-  assert.match(html, /aria-current="page"[^>]*>[\s\S]*?策略选股/);
-  assert.doesNotMatch(html, />涨停趋势</, "the former trend entry is merged into 策略选股");
-  assert.doesNotMatch(html, /近期涨停 · 趋势向上|2–6 周 · A股波段工作台/);
-  assert.doesNotMatch(html, /class="brand"/);
-  assert.doesNotMatch(html, /strategy-quick-trigger/);
-  assert.doesNotMatch(html, /行情监控运行中/);
+  const defaultHtml = renderToStaticMarkup(React.createElement(App));
+  assert.match(defaultHtml, /data-workspace="cockpit"/);
+  assert.match(defaultHtml, /aria-current="page"[^>]*>[\s\S]*?今日驾驶舱/);
+  assert.doesNotMatch(defaultHtml, /class="brand"/);
+  assert.doesNotMatch(defaultHtml, /strategy-quick-trigger/);
+
+  const prevLs = global.window.localStorage;
+  try {
+    global.window.localStorage = {
+      getItem: (key) => (key === "a-stock-radar:default-view" ? "signals" : null),
+      setItem() {},
+      removeItem() {}
+    };
+    const html = renderToStaticMarkup(React.createElement(App));
+    assert.match(html, /data-workspace="signals"/);
+    assert.match(html, /aria-current="page"[^>]*>[\s\S]*?策略选股/);
+    assert.doesNotMatch(html, />涨停趋势</, "the former trend entry is merged into 策略选股");
+    assert.doesNotMatch(html, /近期涨停 · 趋势向上|2–6 周 · A股波段工作台/);
+    assert.doesNotMatch(html, /行情监控运行中/);
+  } finally {
+    if (prevLs === undefined) delete global.window.localStorage;
+    else global.window.localStorage = prevLs;
+  }
 });
 
 test("one-click close-all moves every open position into closed (B2-01)", () => {

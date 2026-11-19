@@ -61,9 +61,6 @@ jobs:
           $browser = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $browser) { throw "Chrome is required for release browser tests" }
           "QA_CHROMIUM_PATH=$browser" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      # D-07（第二轮审核）：这 4 组浏览器套件既不在 qa.yml，也不在 package.json 的
-      # verify:release 里，长期只能靠人工发现回归。发布门禁补回这 4 步，
-      # 与 qa.yml 的 browser 作业保持一致（Chrome 路径已由上一步写入 QA_CHROMIUM_PATH）。
       - name: Stability browser suite
         run: pnpm qa:stability:ui
       - name: UI remediation browser suite

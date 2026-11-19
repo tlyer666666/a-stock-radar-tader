@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("stockApi", {
   getQuoteSnapshot: (security) => invoke("market:quote", security),
   getDataFederation: (security) => invoke("market:federation", security),
   getMarketSourceHealth: () => invoke("market:source-health"),
+  resetMarketSourceHealth: () => invoke("market:source-reset"),
   getConvertibleBonds: (options = {}) => invoke("bond:list", options),
   getLimitEcology: (options = {}) => invoke("market:limit-ecology", options),
   ai: {
@@ -137,8 +138,22 @@ contextBridge.exposeInMainWorld("stockApi", {
   saveSettings: (settings) => invoke("settings:save", settings),
   testProvider: (settings) => invoke("settings:test-provider", settings),
   setTheme: (theme) => invoke("app:set-theme", theme),
+  setZoomFactor: (factor) => invoke("app:set-zoom", factor),
   controlWindow: (action) => invoke("app:window-control", action),
   notify: (message) => invoke("app:notify", message),
+  onNotificationClick: (listener) => {
+    if (typeof listener !== "function") return () => {};
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("app:notification-clicked", handler);
+    return () => ipcRenderer.removeListener("app:notification-clicked", handler);
+  },
+  kvGet: (key) => invoke("storage:kv-get", key),
+  kvSet: (key, value) => invoke("storage:kv-set", { key, value }),
+  cleanupStorageCache: (input) => invoke("storage:cleanup", input),
+  getMasterPasswordStatus: () => invoke("security:master-status"),
+  setMasterPassword: (input) => invoke("security:master-set", input),
+  unlockMasterPassword: (input) => invoke("security:master-unlock", input),
+  clearMasterPassword: (input) => invoke("security:master-clear", input),
   syncNoteIntervals: (input) => invoke("notes:interval-sync", input),
   notesWatch: (input) => invoke("notes:watch-sync", input),
   backup: {

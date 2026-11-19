@@ -203,7 +203,7 @@
 .t-toolbox-chart text { fill: var(--ink-3); font-size: 12px; font-variant-numeric: tabular-nums; pointer-events: none; }
 .toolbox-grid { stroke: var(--line-1); stroke-width: 1; }
 .toolbox-candle.is-up { fill: var(--surface-1); stroke: var(--up); stroke-width: 1.25; }
-.toolbox-bar.is-up { fill: var(--up); stroke: var(--up); }
+.toolbox-bar.is-up { fill: var(--surface-1); stroke: var(--up); stroke-width: 1; }
 .toolbox-candle.is-down, .toolbox-bar.is-down { fill: var(--down); stroke: var(--down); }
 .toolbox-series { fill: none; stroke-width: 1.4; pointer-events: none; }
 .toolbox-line-5 { color: var(--warn); stroke: var(--warn); }

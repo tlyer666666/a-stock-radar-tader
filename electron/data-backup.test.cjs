@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -28,39 +29,76 @@ const STORES = {
   "stock-agent": { conversations: [{ id: "c1" }] }
 };
 
-test("备份文件不含令牌和 API Key，含本地存储里本软件的数据，按北京时间命名", () => {
+test("备份文件不含令牌和 API Key，含本地存储里本软件的数据，按北京时间命名", async () => {
   const dir = tempDir();
   const { api } = service(STORES, { folder: dir });
-  const result = api.run({ "a-stock-radar:notes:v1": "{\"notes\":[]}", "other-site": "x", "ai-picks-excluded": "[]" });
+  const result = await api.run({ "a-stock-radar:notes:v1": "{\"notes\":[]}", "other-site": "x", "ai-picks-excluded": "[]" });
   assert.equal(result.name, "A股雷达备份-20261112-160509.json");
   const text = fs.readFileSync(path.join(dir, result.name), "utf8");
   assert.doesNotMatch(text, /REFRESH|safe:AI|safe:KEY/);
-  const parsed = backup.decodeBackup(text);
+  const parsed = await backup.decodeBackup(text);
   assert.equal(parsed.stores.settings.theme, "dark");
   assert.equal(parsed.stores.holdings[0].code, "600519");
   assert.deepEqual(Object.keys(parsed.local).sort(), ["a-stock-radar:notes:v1", "ai-picks-excluded"]);
   assert.equal(api.status().files.length, 1);
 });
 
-test("设了密码就整份加密；密码不对或没给密码时拒绝，给对了能读", () => {
+test("设了密码就整份加密；密码不对或没给密码时拒绝，给对了能读", async () => {
   const dir = tempDir();
   const { api } = service(STORES, { folder: dir });
-  api.configure({ password: "我的密码123" });
-  const { name } = api.run({});
+  api.configure({ password: "我的密码1234" });
+  const { name } = await api.run({});
   const text = fs.readFileSync(path.join(dir, name), "utf8");
   assert.doesNotMatch(text, /600519|deepseek/);
-  assert.throws(() => backup.decodeBackup(text), { code: "BACKUP_PASSWORD_REQUIRED" });
-  assert.throws(() => backup.decodeBackup(text, "错的"), { code: "BACKUP_WRONG_PASSWORD" });
-  assert.equal(backup.decodeBackup(text, "我的密码123").stores.holdings[0].code, "600519");
-  assert.equal(api.inspect(name).stores.includes("holdings"), true, "本机记着密码，预览不用再输");
+  await assert.rejects(() => backup.decodeBackup(text), { code: "BACKUP_PASSWORD_REQUIRED" });
+  await assert.rejects(() => backup.decodeBackup(text, "错的密码1234"), { code: "BACKUP_WRONG_PASSWORD" });
+  assert.equal((await backup.decodeBackup(text, "我的密码1234")).stores.holdings[0].code, "600519");
+  assert.equal((await api.inspect(name)).stores.includes("holdings"), true, "本机记着密码，预览不用再输");
 });
 
-test("恢复：写回数据但保留本机现有的密钥；返回本地存储键值", () => {
+test("新备份强制至少 8 位密码，但历史 6-7 位密码的旧备份仍可正常解密恢复", async () => {
+  const dir = tempDir();
+  const { api } = service(STORES, { folder: dir });
+  assert.throws(
+    () => api.configure({ password: "1234567" }),
+    (err) => err.code === "BACKUP_PASSWORD_SHORT" && err.message === "备份加密密码至少需要 8 位字符"
+  );
+  const rawBackup = backup.buildBackup({ stores: STORES, local: { "a-stock-radar:notes:v1": "legacy" }, appVersion: "1.6.64", now: NOW });
+  await assert.rejects(
+    () => backup.encodeBackup(rawBackup, "123456"),
+    (err) => err.code === "BACKUP_PASSWORD_SHORT" && err.message === "备份加密密码至少需要 8 位字符"
+  );
+
+  // 构造一份旧版 6 位密码加密的历史备份，确认 decodeBackup / decryptPayload 仍能解开
+  const legacyPassword = "old6pw";
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const key = crypto.scryptSync(legacyPassword, salt, 32, { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([cipher.update(JSON.stringify(rawBackup), "utf8"), cipher.final()]);
+  const legacyEnvelope = JSON.stringify({
+    format: "a-stock-radar-backup",
+    version: 1,
+    encrypted: true,
+    kdf: "scrypt",
+    salt: salt.toString("base64"),
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    data: data.toString("base64"),
+    createdAt: rawBackup.createdAt,
+    appVersion: rawBackup.appVersion
+  });
+  const decoded = await backup.decodeBackup(legacyEnvelope, legacyPassword);
+  assert.equal(decoded.stores.holdings[0].code, "600519");
+  assert.equal(decoded.local["a-stock-radar:notes:v1"], "legacy");
+});
+
+test("恢复：写回数据但保留本机现有的密钥；返回本地存储键值", async () => {
   const dir = tempDir();
   const source = service(STORES, { folder: dir });
-  const { name } = source.api.run({ "a-stock-radar:notes:v1": "{\"notes\":[1]}" });
+  const { name } = await source.api.run({ "a-stock-radar:notes:v1": "{\"notes\":[1]}" });
   const target = service({ settings: { provider: "eastmoney", refreshToken: "safe:NEW-MACHINE" }, "ai-profiles": { profiles: [{ id: "p1", baseUrl: "https://api.deepseek.example/v2", apiKey: "safe:LOCAL" }] } }, { folder: dir });
-  const result = target.api.restore(name);
+  const result = await target.api.restore(name);
   assert.deepEqual(result.local, { "a-stock-radar:notes:v1": "{\"notes\":[1]}" });
   assert.equal(target.data.settings.provider, "ths");
   assert.equal(target.data.settings.refreshToken, "safe:NEW-MACHINE", "本机令牌不被覆盖");
@@ -69,26 +107,26 @@ test("恢复：写回数据但保留本机现有的密钥；返回本地存储�
   assert.equal(target.data.holdings[0].shares, 100);
 });
 
-test("只保留最近 N 份，只删本软件命名的备份；不认识的文件名拒绝恢复", () => {
+test("只保留最近 N 份，只删本软件命名的备份；不认识的文件名拒绝恢复", async () => {
   const dir = tempDir();
   fs.writeFileSync(path.join(dir, "我的其他文件.json"), "{}");
   for (let i = 0; i < 5; i += 1) fs.writeFileSync(path.join(dir, `A股雷达备份-2026110${i}-090000.json`), "{}");
   const { api } = service(STORES, { folder: dir, config: { keep: 3 } });
-  api.run({});
+  await api.run({});
   const names = fs.readdirSync(dir).sort();
   assert.equal(names.filter(name => backup.FILE_PATTERN.test(name)).length, 3);
   assert.ok(names.includes("我的其他文件.json"));
-  assert.throws(() => api.restore("../settings.json"), { code: "BACKUP_INVALID" });
-  assert.throws(() => backup.decodeBackup("{\"format\":\"x\"}"), { code: "BACKUP_INVALID" });
+  await assert.rejects(() => api.restore("../settings.json"), { code: "BACKUP_INVALID" });
+  await assert.rejects(() => backup.decodeBackup("{\"format\":\"x\"}"), { code: "BACKUP_INVALID" });
 });
 
-test("没选文件夹时不能备份，并记下失败原因", () => {
+test("没选文件夹时不能备份，并记下失败原因", async () => {
   const { api, config } = service(STORES, { folder: "" });
-  assert.throws(() => api.run({}), { code: "BACKUP_FOLDER" });
+  await assert.rejects(() => api.run({}), { code: "BACKUP_FOLDER" });
   assert.throws(() => api.configure({ folder: "relative/dir" }), { code: "BACKUP_FOLDER" });
   const dir = path.join(tempDir(), "不存在的子目录");
   api.configure({ folder: dir });
-  api.run({});
+  await api.run({});
   assert.ok(fs.existsSync(dir), "文件夹不存在时自动创建");
   assert.equal(config().lastError, "");
 });
@@ -101,7 +139,7 @@ test("常见网盘文件夹：iCloud、Google 云端硬盘", () => {
   assert.match(list[1].path, /我的云端硬盘\/A股雷达备份$/);
 });
 
-test("配置了备份密码但解密失败时立即报错，绝不降级写明文；rename 失败时清理 .part 临时文件", () => {
+test("配置了备份密码但解密失败时立即报错，绝不降级写明文；rename 失败时清理 .part 临时文件", async () => {
   const dir = tempDir();
   let saved = { folder: dir, password: "safe:CORRUPT_OR_LOCKED", auto: true, keep: 30, lastBackupAt: "", lastError: "" };
   const api = backup.createBackupService({
@@ -114,7 +152,7 @@ test("配置了备份密码但解密失败时立即报错，绝不降级写明�
     appVersion: "1.6.64",
     now: () => NOW
   });
-  assert.throws(() => api.run({}), { code: "BACKUP_PASSWORD_UNREADABLE" });
+  await assert.rejects(() => api.run({}), { code: "BACKUP_PASSWORD_UNREADABLE" });
   assert.deepEqual(fs.readdirSync(dir), []);
   assert.match(saved.lastError, /密码/);
 
@@ -138,13 +176,13 @@ test("配置了备份密码但解密失败时立即报错，绝不降级写明�
     now: () => NOW,
     fsApi: fsFailRename
   });
-  assert.throws(() => api2.run({}), { code: "EIO" });
+  await assert.rejects(() => api2.run({}), { code: "EIO" });
   assert.equal(renameFailed, true);
   assert.deepEqual(fs.readdirSync(dir), [], ".part 临时文件必须在 finally 中被清理");
 });
 
-test("损坏的加密字段报 BACKUP_INVALID 而非 BACKUP_WRONG_PASSWORD；超大备份文件在读取前拦截", () => {
-  const valid = JSON.parse(backup.encodeBackup(backup.buildBackup({ stores: STORES, local: {}, appVersion: "1.6.64", now: NOW }), "pw123"));
+test("损坏的加密字段报 BACKUP_INVALID 而非 BACKUP_WRONG_PASSWORD；超大备份文件在读取前拦截", async () => {
+  const valid = JSON.parse(await backup.encodeBackup(backup.buildBackup({ stores: STORES, local: {}, appVersion: "1.6.64", now: NOW }), "pw123456"));
   const badCases = [
     { ...valid, salt: "" },
     { ...valid, salt: "not-valid-base64!" },
@@ -155,10 +193,10 @@ test("损坏的加密字段报 BACKUP_INVALID 而非 BACKUP_WRONG_PASSWORD；超
     { ...valid, data: 12345 }
   ];
   for (const broken of badCases) {
-    assert.throws(() => backup.decodeBackup(JSON.stringify(broken), "pw123"), { code: "BACKUP_INVALID" });
-    assert.throws(() => backup.decodeBackup(JSON.stringify(broken)), { code: "BACKUP_INVALID" });
+    await assert.rejects(() => backup.decodeBackup(JSON.stringify(broken), "pw123456"), { code: "BACKUP_INVALID" });
+    await assert.rejects(() => backup.decodeBackup(JSON.stringify(broken)), { code: "BACKUP_INVALID" });
   }
-  assert.throws(() => backup.decodeBackup(JSON.stringify(valid), "wrong"), { code: "BACKUP_WRONG_PASSWORD" });
+  await assert.rejects(() => backup.decodeBackup(JSON.stringify(valid), "wrongpass"), { code: "BACKUP_WRONG_PASSWORD" });
 
   const dir = tempDir();
   const fileName = "A股雷达备份-20261112-160509.json";
@@ -178,15 +216,15 @@ test("损坏的加密字段报 BACKUP_INVALID 而非 BACKUP_WRONG_PASSWORD；超
       readFileSync: () => { readCalled = true; return "{}"; }
     }
   });
-  assert.throws(() => api.inspect(fileName), { code: "BACKUP_TOO_LARGE" });
-  assert.throws(() => api.restore(fileName), { code: "BACKUP_TOO_LARGE" });
+  await assert.rejects(() => api.inspect(fileName), { code: "BACKUP_TOO_LARGE" });
+  await assert.rejects(() => api.restore(fileName), { code: "BACKUP_TOO_LARGE" });
   assert.equal(readCalled, false, "超过大小上限时不应该调用 readFileSync");
 });
 
-test("多文件恢复前全量预校验，写入中途失败时自动回滚已写过的 store", () => {
+test("多文件恢复前全量预校验，写入中途失败时自动回滚已写过的 store", async () => {
   const dir = tempDir();
   const source = service(STORES, { folder: dir });
-  const { name } = source.api.run({});
+  const { name } = await source.api.run({});
 
   // 1) 预校验失败：在任何 store 写入之前拦截
   const initial = {
@@ -206,7 +244,7 @@ test("多文件恢复前全量预校验，写入中途失败时自动回滚已�
     decryptSecret: v => v,
     appVersion: "1.6.64"
   });
-  assert.throws(() => precheckApi.restore(name), { code: "BACKUP_INVALID" });
+  await assert.rejects(() => precheckApi.restore(name), { code: "BACKUP_INVALID" });
   assert.deepEqual(writes, [], "预校验未通过前不能写入任何 store");
   assert.deepEqual(precheckData, initial);
 
@@ -227,7 +265,7 @@ test("多文件恢复前全量预校验，写入中途失败时自动回滚已�
     decryptSecret: v => v,
     appVersion: "1.6.64"
   });
-  assert.throws(() => failWriteApi.restore(name), { code: "ENOSPC" });
+  await assert.rejects(() => failWriteApi.restore(name), { code: "ENOSPC" });
   assert.deepEqual(rollbackData, initial, "已写过的 settings/holdings 必须回滚到恢复前状态");
   assert.deepEqual(removed, ["ai-profiles"], "原本不存在且已被写入的 store 在回滚时被移除");
 });
@@ -245,24 +283,24 @@ test("备份恢复只给相同接口来源的 AI 配置沿用本机密钥", () =
   assert.equal(backup.mergeForRestore("settings", { theme: "light" }, currentSettings).aiApiKey, "local-key");
 });
 
-test("备份恢复准备不写主进程数据；确认后才写入已验证的内容", () => {
+test("备份恢复准备不写主进程数据；确认后才写入已验证的内容", async () => {
   const dir = tempDir();
   const source = service(STORES, { folder: dir });
-  const { name } = source.api.run({ "a-stock-radar:notes:v1": "from-backup" });
+  const { name } = await source.api.run({ "a-stock-radar:notes:v1": "from-backup" });
   const target = service({ settings: { theme: "light" } }, { folder: dir });
-  const plan = target.api.prepareRestore(name);
+  const plan = await target.api.prepareRestore(name);
   assert.deepEqual(target.data, { settings: { theme: "light" } });
   assert.deepEqual(plan.local, { "a-stock-radar:notes:v1": "from-backup" });
   fs.writeFileSync(path.join(dir, name), "备份文件此时已被替换");
-  target.api.applyRestore(plan);
+  await target.api.applyRestore(plan);
   assert.equal(target.data.settings.theme, "dark");
 });
 
-test("缺失或损坏的本地数据段不会被恢复为空快照", () => {
+test("缺失或损坏的本地数据段不会被恢复为空快照", async () => {
   const valid = backup.buildBackup({ stores: {}, local: {}, appVersion: "1.6.71" });
-  assert.deepEqual(backup.decodeBackup(JSON.stringify(valid)).local, {});
+  assert.deepEqual((await backup.decodeBackup(JSON.stringify(valid))).local, {});
   for (const local of [undefined, null, [], { "a-stock-radar:notes:v1": null }]) {
-    assert.throws(() => backup.decodeBackup(JSON.stringify({ ...valid, local })), { code: "BACKUP_INVALID" });
+    await assert.rejects(() => backup.decodeBackup(JSON.stringify({ ...valid, local })), { code: "BACKUP_INVALID" });
   }
 });
 

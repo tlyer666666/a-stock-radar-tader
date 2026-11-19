@@ -49,10 +49,11 @@ flowchart TB
 
 - `electron/main.cjs`：应用生命周期入口、单实例锁、旧目录数据自动迁移、`tightenUserDataPermissions` 启动早期权限收紧（目录 `0700`、`.json`/`.key` `0600`）、按主显示器 `workAreaSize` 自适应钳制窗口尺寸、渲染进程异常恢复与 `shutdown-gate.cjs` 资源排空。
 - `electron/security-policy.cjs`：受控 IPC 主窗口/主 frame 来源校验、返回错误统一包装与敏感令牌脱敏、HTTPS 无凭据外链白名单校验。
-- `electron/persistence.cjs`：`0600` 权限原子写入（临时文件 `fsync` → `.last-good` 备份轮转 → 原子 `rename`）、主备双损坏隔离留档（`.corrupted-*` 限额保留）与目录权限加固。
-- `electron/local-secret-storage.cjs`：本机随机密钥文件（`local-secret.key`，`0600`）驱动的 AES-256-GCM 凭据加密存储；仅在检测到旧版系统钥匙串密文时执行一次性迁移，日常运行与升级重签不再触发 macOS 钥匙串弹窗。
-- `electron/daily-bar-store.cjs`：全市场不复权日线本地增量库（`userData/daily-bars`），支持收盘快照连续性核验补单根、文件印记免重复全量校验、启动空闲 `.tmp` 自动清扫、退市孤儿日线按阈值清理（`cleanupStaleBars`）与存储体积统计（`getStorageStats`）。
-- `electron/data-backup.cjs`：面向网盘同步目录的本机数据打包备份（自动剥离 API Key/令牌，支持 `>= 6` 位密码的 `scrypt` + `AES-256-GCM` 整包加密、两阶段恢复预检与写入失败回滚、本机存储空间统计摘要 `storageSummary`）。
+- `electron/persistence.cjs`：`0600` 权限原子写入（临时文件 `fsync` → `.last-good` 备份轮转 → 原子 `rename`）、按路径串行异步写入队列（`writeJsonAtomicAsync`）、主备双损坏隔离留档（`.corrupted-*` 限额保留）与目录权限加固。
+- `electron/local-kv-sqlite.cjs`：基于 Node 24 内置 `node:sqlite`（`DatabaseSync` + WAL 模式，零第三方依赖、`0600` 权限）的大容量本地键值存储，用于随心记、复盘归档与回测历史持久化。
+- `electron/local-secret-storage.cjs`：本机随机密钥文件（`local-secret.key`，`0600`）驱动的 AES-256-GCM 凭据加密存储，支持可选「启动主密码保护」（`AS2` 封包 + 异步 `scrypt` 二次包裹主密钥）；日常运行与升级重签不再触发 macOS 钥匙串弹窗。
+- `electron/daily-bar-store.cjs`：全市场不复权日线本地增量库（`userData/daily-bars`），支持收盘快照连续性核验补单根、文件印记免重复全量校验、启动空闲 `.tmp` 与过期退市孤儿日线清扫（`cleanupStaleBars`）、覆盖率估算（`getCoverageSummary`）、重建清空（`clearAllBars`）与存储体积统计（`getStorageStats`）。
+- `electron/data-backup.cjs`：面向网盘同步目录的本机数据打包备份（自动剥离 API Key/令牌，支持 `>= 8` 位密码的异步 `scrypt` + `AES-256-GCM` 整包加密并兼容旧版解密、两阶段恢复预检与写入失败回滚、本机存储空间统计摘要 `storageSummary` 与一键清理）。
 - `electron/review-window.cjs` & `electron/ths-web-view.cjs`：
   - `review-window.cjs`：独立专业复盘窗口管理，支持 `workAreaSize` 尺寸钳制、主题广播与恢复备份前 `closeWindow()` 强制销毁防本地存储竞争。
   - `ths-web-view.cjs`：沪深港通内嵌网页管理，独立会话 `persist:ths-web`、沙箱无 preload、主帧与子帧（`will-frame-navigate`）同花顺域名白名单拦截、主窗口缩放同步、连续崩溃 `>= 3` 次熔断保护、退出登录连带清理缓存，以及同花顺 6 位个股页代码自动识别（`detectedStockCode`）。
@@ -95,7 +96,7 @@ flowchart TB
 ### 2.5 前端功能模块层（`src/`）
 
 - `src/domain/` & `src/dateUtils.ts`：不依赖 React 的领域模型、数值格式化与固定 `Asia/Shanghai` 交易日计算（严禁用本地/UTC 时区替代北京时间）。
-- `src/features/`：按业务域完全模块化——`cockpit`（今日驾驶舱）、`dashboard`（涨停监控与炸板观察）、`market`（个股分析与多股同列）、`sectors`（板块强度与北交所）、`bonds`（可转债）、`hsgt`（沪深港通与个股桥接）、`strategy-selection`（全市场策略选股与我的策略）、`trend`（趋势筛选、冻结计划与趋势研究）、`t-assistant`（做T助手、多周期画线工具箱与做T AI 追问）、`ai-picks`（AI 选股与我的股票）、`ai-agent`（AI 问股与打法管理）、`ai-review`（AI 复盘与解读面板）、`notes`（随心记与价格条件盯盘）、`paper-simulation`（模拟交易）、`backtest`（单股与组合回测中心）、`collections`（自选与持仓）、`information`（资讯与公告中心）、`review`（专业复盘协同组件）、`settings` & `backup`（系统设置与网盘加密备份）。
+- `src/features/`：按业务域完全模块化——`cockpit`（今日驾驶舱）、`copilot`（全局副驾驶提醒、状态协调与随心记转做T/盯盘）、`dashboard`（涨停监控与炸板观察）、`market`（个股分析与多股同列）、`sectors`（板块强度与北交所）、`bonds`（可转债）、`hsgt`（沪深港通与个股桥接）、`strategy-selection`（全市场策略选股与我的策略）、`trend`（趋势筛选、冻结计划与趋势研究）、`t-assistant`（做T助手、多周期画线工具箱与做T AI 追问）、`ai-picks`（AI 选股与我的股票）、`ai-agent`（AI 问股与打法管理）、`ai-review`（AI 复盘与解读面板）、`notes`（随心记与价格条件盯盘）、`paper-simulation`（模拟交易）、`backtest`（单股与组合回测中心）、`collections`（自选监控、观察池与持仓账本）、`information`（资讯与公告中心）、`review`（专业复盘协同组件）、`settings` & `backup`（系统设置、安全主密码与网盘加密备份）。
 
 ---
 

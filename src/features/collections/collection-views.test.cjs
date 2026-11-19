@@ -26,7 +26,7 @@ test("favorites feature retains monitor status, stock actions, and alert content
     onRemove: noop
   }));
 
-  for (const marker of ["自选板块", "贵州茅台", "设置条件", "最近提醒"]) {
+  for (const marker of ["自选监控", "贵州茅台", "设置条件", "最近提醒"]) {
     assert.ok(markup.includes(marker), `missing favorites marker: ${marker}`);
   }
 });

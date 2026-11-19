@@ -186,3 +186,52 @@ test('1.6.52: a failed in-page navigation is reported even before the address co
   listeners['did-fail-load']({}, -105, 'ERR_NAME_NOT_RESOLVED', 'https://data.10jqka.com.cn/hgt/sgtb/', true);
   assert.match(manager.state().error || '', /ERR_NAME_NOT_RESOLVED/);
 });
+
+test('setZoomFactor stores zoomFactor and applies it immediately and in place()', () => {
+  const zoomCalls = [];
+  const { manager } = harness();
+  // Patch fake view via a custom harness with setZoomFactor spy
+  const listeners = {};
+  const contents = {
+    isDestroyed: () => false,
+    loadURL: async () => {},
+    getURL: () => PAGES.hsgt,
+    getTitle: () => '沪股通',
+    isLoading: () => false,
+    navigationHistory: { canGoBack: () => false, goBack: () => {} },
+    reload: () => {},
+    setWindowOpenHandler: (handler) => { listeners.open = handler; },
+    on: (name, handler) => { listeners[name] = handler; },
+    setZoomFactor: (factor) => zoomCalls.push(factor),
+    close: () => {}
+  };
+  class ZoomFakeView {
+    constructor() { this.webContents = contents; }
+    setBounds() {}
+  }
+  const win = {
+    isDestroyed: () => false,
+    getContentSize: () => [1400, 900],
+    webContents: { getZoomFactor: () => 1 },
+    contentView: { addChildView() {}, removeChildView() {} }
+  };
+  const zoomed = createThsWebViewManager({
+    WebContentsView: ZoomFakeView,
+    session: { fromPartition: () => ({ on() {}, setPermissionCheckHandler() {}, setPermissionRequestHandler() {} }) },
+    getWindow: () => win
+  });
+
+  // Setting zoom before show persists and applies in place()
+  assert.equal(zoomed.setZoomFactor(1.2), true);
+  assert.equal(zoomed.setZoomFactor(Number.NaN), false);
+  zoomed.show({ bounds: { x: 0, y: 0, width: 900, height: 600 } });
+  assert.equal(zoomCalls.at(-1), 1.2);
+
+  // Updating zoom while open applies immediately and persists across subsequent setBounds/place
+  zoomed.setZoomFactor(1.35);
+  assert.equal(zoomCalls.at(-1), 1.35);
+  zoomed.setBounds({ bounds: { x: 10, y: 10, width: 880, height: 580 } });
+  assert.equal(zoomCalls.at(-1), 1.35);
+  zoomed.destroy();
+  manager.destroy();
+});

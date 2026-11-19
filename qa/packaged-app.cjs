@@ -76,7 +76,7 @@ async function run() {
     const chrome = await page.evaluate(() => {
       const nav = document.querySelector(".sidebar nav");
       const navItem = document.querySelector(".sidebar .nav-item");
-      const heading = document.querySelector(".page-heading h1, .trend-header h1");
+      const heading = document.querySelector(".page-heading h1, .trend-header h1, .cockpit-hero-title h1");
       const controls = document.querySelector("[data-window-controls]");
       const controlRect = controls?.getBoundingClientRect();
       return {
@@ -172,7 +172,12 @@ async function run() {
     await page.screenshot({ path: path.join(screenshotDirectory, `packaged-${expectedVersion}-professional-review-light.png`), fullPage: true });
 
     mark("failed-board-today");
-    await page.getByRole("button", { name: "炸板观察", exact: true }).click();
+    const failedNav = page.getByRole("button", { name: "炸板观察", exact: true });
+    if (!(await failedNav.count())) {
+      const expandNav = page.getByRole("button", { name: "显示全部模块", exact: true });
+      if (await expandNav.count() && await expandNav.first().isVisible()) await expandNav.first().click();
+    }
+    await failedNav.click();
     await page.waitForFunction(
       () => document.querySelector(".app-shell")?.getAttribute("data-workspace") === "previous-limit-up-failed",
       undefined,
@@ -416,6 +421,20 @@ async function run() {
     await page.locator(".strategy-signals-view").waitFor({ timeout: 20_000 });
     await page.locator(".strategy-signal-tab-list > button").first().waitFor({ timeout: 30_000 });
     await page.locator(".strategy-signal-tab-list > button").first().click();
+    // 1.6.71：首次运行本机日线不足 2500 只时先显示建库确认卡；等到确认卡、扫描状态或结果面板出现后再推进。
+    await page.waitForFunction(
+      () => Boolean(
+        document.querySelector(".strategy-initial-build-card button") ||
+        document.querySelector(".signal-test-status") ||
+        document.querySelector(".strategy-stock-panel")
+      ),
+      undefined,
+      { timeout: 15_000 }
+    );
+    const initialBuildButton = page.locator(".strategy-initial-build-card button");
+    if (await initialBuildButton.count()) {
+      await initialBuildButton.first().click();
+    }
     // 进入该页会自动开始扫描，扫描期间按钮文案是「正在选股」（StrategySignalsView.tsx:560），
     // 所以这里只等"扫描按钮出现"，空闲/可用状态交给下面的 180s 等待判定。
     await page.waitForFunction(

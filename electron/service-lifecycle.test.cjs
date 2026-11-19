@@ -14,7 +14,38 @@ function load(name, append = '', globals = {}, requires = {}) {
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-test('curl fallback shares physical HTTP admission and drains every callback', async () => {
+test('curl fallback is disabled by default unless ASTOCK_ENABLE_CURL=1 is explicitly set', async (t) => {
+  const prevEnable = process.env.ASTOCK_ENABLE_CURL;
+  const prevDisable = process.env.ASTOCK_DISABLE_CURL;
+  delete process.env.ASTOCK_ENABLE_CURL;
+  delete process.env.ASTOCK_DISABLE_CURL;
+  t.after(() => {
+    if (prevEnable === undefined) delete process.env.ASTOCK_ENABLE_CURL; else process.env.ASTOCK_ENABLE_CURL = prevEnable;
+    if (prevDisable === undefined) delete process.env.ASTOCK_DISABLE_CURL; else process.env.ASTOCK_DISABLE_CURL = prevDisable;
+  });
+  let spawned = 0;
+  const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson, curlFallbackEnabled: _runtime.curlFallbackEnabled };', {}, {
+    './http-client.cjs': { fetchJsonWithPolicy: async () => { throw new Error('provider unavailable'); } },
+    'node:child_process': { execFile(_file, _args, _options, done) { spawned++; done(null, '{}', ''); } }
+  });
+  assert.equal(s.probe.curlFallbackEnabled(), false);
+  await assert.rejects(s.probe.fetchJson('https://push2.eastmoney.com/api/qt'), /provider unavailable/);
+  assert.equal(spawned, 0);
+  process.env.ASTOCK_ENABLE_CURL = '1';
+  assert.equal(s.probe.curlFallbackEnabled(), true);
+  process.env.ASTOCK_DISABLE_CURL = '1';
+  assert.equal(s.probe.curlFallbackEnabled(), false);
+});
+
+test('curl fallback shares physical HTTP admission and drains every callback', async (t) => {
+  const prevEnable = process.env.ASTOCK_ENABLE_CURL;
+  const prevDisable = process.env.ASTOCK_DISABLE_CURL;
+  process.env.ASTOCK_ENABLE_CURL = '1';
+  delete process.env.ASTOCK_DISABLE_CURL;
+  t.after(() => {
+    if (prevEnable === undefined) delete process.env.ASTOCK_ENABLE_CURL; else process.env.ASTOCK_ENABLE_CURL = prevEnable;
+    if (prevDisable === undefined) delete process.env.ASTOCK_DISABLE_CURL; else process.env.ASTOCK_DISABLE_CURL = prevDisable;
+  });
   const http = require('./http-client.cjs');
   const callbacks = [];
   let active = 0, peak = 0;
@@ -38,7 +69,15 @@ test('curl fallback shares physical HTTP admission and drains every callback', a
   assert.equal(http.getHttpDiagnostics().active, 0);
 });
 
-test('local queue overload cannot amplify provider traffic through curl fallback', async () => {
+test('local queue overload cannot amplify provider traffic through curl fallback', async (t) => {
+  const prevEnable = process.env.ASTOCK_ENABLE_CURL;
+  const prevDisable = process.env.ASTOCK_DISABLE_CURL;
+  process.env.ASTOCK_ENABLE_CURL = '1';
+  delete process.env.ASTOCK_DISABLE_CURL;
+  t.after(() => {
+    if (prevEnable === undefined) delete process.env.ASTOCK_ENABLE_CURL; else process.env.ASTOCK_ENABLE_CURL = prevEnable;
+    if (prevDisable === undefined) delete process.env.ASTOCK_DISABLE_CURL; else process.env.ASTOCK_DISABLE_CURL = prevDisable;
+  });
   let spawned = 0;
   const s = load('services.cjs', 'module.exports.probe = { fetchJson: _runtime.fetchJson };', {}, {
     './http-client.cjs': { fetchJsonWithPolicy: async () => { throw Object.assign(new Error('full'), { code: 'QUEUE_FULL' }); } },

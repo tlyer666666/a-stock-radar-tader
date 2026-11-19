@@ -36,11 +36,12 @@ function readJsonFile(filePath, validator) {
 // 现按「同一源文件只保留最近 CORRUPTED_COPY_LIMIT 份」清理更早的副本；
 // 时间戳由 ISO 派生且定长，按文件名升序即按时间升序。
 const CORRUPTED_COPY_LIMIT = 3;
-const SENSITIVE_USER_DATA_FILE_RE = /\.(?:json|key|log)(?:\.\d+|\.corrupt(?:ed)?-.*)?$/;
+const SENSITIVE_USER_DATA_FILE_RE = /\.(?:json|key|log|sqlite(?:-wal|-shm)?)(?:\.\d+|\.corrupt(?:ed)?-.*)?$/;
 const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 const RENAME_WAIT_BUFFER = typeof globalThis.SharedArrayBuffer === "function"
   ? new Int32Array(new globalThis.SharedArrayBuffer(4))
   : null;
+const asyncWriteQueues = new Map();
 
 function safeChmod(targetPath, mode) {
   if (process.platform === "win32" || !targetPath) return false;
@@ -291,10 +292,177 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
   }
 }
 
+async function safeChmodAsync(targetPath, mode) {
+  if (process.platform === "win32" || !targetPath) return false;
+  try {
+    const stat = await fs.promises.lstat(targetPath);
+    if (stat.isSymbolicLink()) return false;
+    await fs.promises.chmod(targetPath, mode);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readJsonFileAsync(filePath, validator) {
+  try {
+    const value = JSON.parse(await fs.promises.readFile(filePath, "utf8"));
+    if (typeof validator === "function" && !validator(value)) throw jsonSchemaError();
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error };
+  }
+}
+
+async function existsAsync(targetPath) {
+  try {
+    await fs.promises.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fsyncFileAsync(targetPath) {
+  const handle = await fs.promises.open(targetPath, "r+");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function renameWithRetryAsync(sourcePath, targetPath, maxRetries = 3) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await fs.promises.rename(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      if (!RETRYABLE_RENAME_CODES.has(error?.code) || attempt >= maxRetries) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 10));
+    }
+  }
+}
+
+async function performWriteJsonAtomicAsync(filePath, backupPath, value, serialized, validator, onBackupError, options = {}) {
+  const directory = path.dirname(filePath);
+  await fs.promises.mkdir(directory, { recursive: true, mode: 0o700 });
+  const backupDirectory = path.dirname(backupPath);
+  if (backupDirectory !== directory) {
+    await fs.promises.mkdir(backupDirectory, { recursive: true, mode: 0o700 });
+  }
+  const temporaryPath = path.join(
+    directory,
+    `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
+  );
+  const previousBackupPath = path.join(
+    backupDirectory,
+    `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.rollback.tmp`
+  );
+  let backupWasReplaced = false;
+  let backupPreviouslyExisted = false;
+  let preservePreviousBackup = false;
+  const replaceBackupAsync = async (sourcePath = filePath) => {
+    const backupTemporaryPath = path.join(
+      backupDirectory,
+      `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.tmp`
+    );
+    try {
+      await fs.promises.copyFile(sourcePath, backupTemporaryPath);
+      await safeChmodAsync(backupTemporaryPath, 0o600);
+      await fsyncFileAsync(backupTemporaryPath);
+      await renameWithRetryAsync(backupTemporaryPath, backupPath);
+      await safeChmodAsync(backupPath, 0o600);
+    } finally {
+      await fs.promises.unlink(backupTemporaryPath).catch(() => {});
+    }
+  };
+  try {
+    await fs.promises.writeFile(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
+    await safeChmodAsync(temporaryPath, 0o600);
+    await fsyncFileAsync(temporaryPath);
+    const primaryWasValid = (await readJsonFileAsync(filePath, validator)).ok;
+    const backupWasValid = (await readJsonFileAsync(backupPath, validator)).ok;
+    if (options.synchronizeBackup === true) {
+      backupPreviouslyExisted = await existsAsync(backupPath);
+      if (backupPreviouslyExisted) {
+        await fs.promises.copyFile(backupPath, previousBackupPath);
+        await safeChmodAsync(previousBackupPath, 0o600);
+      }
+      await replaceBackupAsync(temporaryPath);
+      backupWasReplaced = true;
+    } else if (primaryWasValid) {
+      try {
+        await replaceBackupAsync();
+      } catch (error) {
+        try { if (typeof onBackupError === "function") onBackupError(error); }
+        catch { /* Optional diagnostics cannot prevent the primary commit. */ }
+      }
+    }
+    try {
+      await renameWithRetryAsync(temporaryPath, filePath);
+      await safeChmodAsync(filePath, 0o600);
+    } catch (error) {
+      if (backupWasReplaced) {
+        try {
+          if (backupPreviouslyExisted) await renameWithRetryAsync(previousBackupPath, backupPath);
+          else await fs.promises.unlink(backupPath);
+        } catch (rollbackError) {
+          preservePreviousBackup = backupPreviouslyExisted;
+          try { if (typeof onBackupError === "function") onBackupError(rollbackError); }
+          catch { /* Preserve the primary commit failure. */ }
+        }
+      }
+      throw error;
+    }
+    if (options.synchronizeBackup !== true && !primaryWasValid && !backupWasValid) {
+      try {
+        await replaceBackupAsync();
+      } catch (error) {
+        try { if (typeof onBackupError === "function") onBackupError(error); }
+        catch { /* Diagnostic failures cannot change the committed result. */ }
+      }
+    }
+    return value;
+  } finally {
+    if (!preservePreviousBackup) {
+      await fs.promises.unlink(previousBackupPath).catch(() => {});
+    }
+    await fs.promises.unlink(temporaryPath).catch(() => {});
+  }
+}
+
+function writeJsonAtomicAsync(filePath, backupPath, value, validator, onBackupError, options = {}) {
+  if (typeof validator === "function" && !validator(value)) {
+    return Promise.reject(jsonSchemaError());
+  }
+  let serialized;
+  try {
+    serialized = JSON.stringify(value, null, 2);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  const queueKey = path.resolve(filePath);
+  const previous = asyncWriteQueues.get(queueKey) || Promise.resolve();
+  const run = previous.catch(() => {}).then(() =>
+    performWriteJsonAtomicAsync(filePath, backupPath, value, serialized, validator, onBackupError, options)
+  );
+  const settled = run.finally(() => {
+    if (asyncWriteQueues.get(queueKey) === settled) {
+      asyncWriteQueues.delete(queueKey);
+    }
+  });
+  asyncWriteQueues.set(queueKey, settled);
+  return run;
+}
+
 module.exports = {
   CORRUPTED_COPY_LIMIT,
   capItemsPreservingFavorites,
   readJsonWithBackup,
   tightenUserDataPermissions,
-  writeJsonAtomic
+  writeJsonAtomic,
+  writeJsonAtomicAsync
 };

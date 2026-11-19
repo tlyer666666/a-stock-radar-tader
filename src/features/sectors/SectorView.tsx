@@ -1,7 +1,11 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Activity, CircleAlert, Database, Flame, Layers3, LayoutDashboard, LoaderCircle, Radar, RefreshCw, Search, Target } from "lucide-react";
+import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
+import StockRowActions from "../../components/StockRowActions";
+import { useVirtualWindow } from "../../components/useVirtualWindow";
 import { EmptyInline, Metric, PageHeading, PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { fmt, fmtMoney, nullableNumber, subtractNullable } from "../../domain/formatters";
+import { inferSecid } from "../../domain/securityIdentifiers";
 import { safeNumber } from "../../domain/settings";
 import { formatShanghaiDateTime } from "../../dateUtils";
 import { startVisibleInterval } from "../../visiblePolling";
@@ -412,7 +416,7 @@ const MEMBER_COLUMNS: Array<{ key: string; label: string; sortKey?: MemberSortKe
 ];
 const DEFAULT_MEMBER_SORT: ColumnSort<MemberSortKey> = { key: "changePct", direction: "desc" };
 
-/** B-09：成分股明细表（原生 table；首屏 limit 行 + “加载更多”）。 */
+/** B-09：成分股明细表（原生 table；首屏 limit 行 + “加载更多”；>80 行自动虚拟滚动）。 */
 export function SectorMemberTable({
   members,
   limit,
@@ -421,7 +425,11 @@ export function SectorMemberTable({
   onOpenStock,
   onLoadMore,
   favoriteCodes,
-  onToggleFavorite
+  plannedCodes,
+  onToggleFavorite,
+  onAddFavorite,
+  onOpenMonitor,
+  onAddPlan
 }: {
   members: SectorMemberItem[];
   limit: number;
@@ -430,14 +438,30 @@ export function SectorMemberTable({
   onOpenStock: (stock: Security) => void;
   onLoadMore: () => void;
   favoriteCodes?: ReadonlySet<string> | undefined;
+  plannedCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((stock: Security) => void) | undefined;
+  onAddFavorite?: ((stock: Security) => void) | undefined;
+  onOpenMonitor?: ((stock: Security) => void) | undefined;
+  onAddPlan?: ((member: SectorMemberItem) => void) | undefined;
 }) {
   const [sort, setSort] = useState<ColumnSort<MemberSortKey>>(DEFAULT_MEMBER_SORT);
+  const tbodyRef = useRef<HTMLTableSectionElement>(null);
   const sorted = useMemo(() => sortRowsBy(members, (item: SectorMemberItem) => item?.[sort.key], sort.direction), [members, sort]);
   const visible = sorted.slice(0, limit);
+  const virtual = useVirtualWindow({
+    itemCount: visible.length,
+    rowHeight: 54,
+    overscan: 8,
+    threshold: 80,
+    containerRef: tbodyRef
+  });
+  const windowed = virtual.enabled ? visible.slice(virtual.startIndex, virtual.endIndex) : visible;
   // 资金源整体不可用（一只都没取到）时不显示整列「暂缺」。
   const showFunds = members.some((item: SectorMemberItem) => item?.mainNetInflow != null);
   const columns = showFunds ? MEMBER_COLUMNS : MEMBER_COLUMNS.filter(column => column.key !== "mainNetInflow");
+  const handleFav = onToggleFavorite ?? (onAddFavorite ? (sec: Security) => {
+    if (!favoriteCodes?.has(sec.code)) onAddFavorite(sec);
+  } : undefined);
   return (
     <>
       <table style={TABLE_BLOCK}>
@@ -453,48 +477,64 @@ export function SectorMemberTable({
             ))}
           </tr>
         </thead>
-        <tbody style={TABLE_SECTION}>
-          {visible.map((item: SectorMemberItem) => (
-            <tr className={`member-row${showFunds ? "" : " no-funds"}`} key={item.code}>
-              <th scope="row" style={MEMBER_CELL}>
-                <button type="button" style={ROW_OPEN_BUTTON} onClick={() => onOpenStock(item)}>
-                  <span style={STACKED}><b>{item.name}</b><small>{item.code}</small></span>
-                </button>
-              </th>
-              <td style={MEMBER_CELL}><span>{fmt(item.latest)}</span></td>
-              <td style={MEMBER_CELL}>
-                <span className={item.changePct == null ? "" : item.changePct > 0 ? "red" : item.changePct < 0 ? "green" : ""}>
-                  {item.changePct != null && item.changePct > 0 ? "+" : ""}{fmt(item.changePct)}%
-                </span>
-              </td>
-              <td style={MEMBER_CELL}><span>{fmt(item.turnover)}%</span></td>
-              <td style={MEMBER_CELL}><span>{fmtMoney(item.amount)}</span></td>
-              {showFunds && <td style={MEMBER_CELL}>
-                <span
-                  className={item.mainNetInflow == null || item.mainNetInflow === 0 ? "" : item.mainNetInflow > 0 ? "red" : "green"}
-                  title={item.mainNetInflow == null ? "资金源暂未返回该股票的有效主力净流入，可刷新重试" : `${item.fundFlowSource || "来源待确认"} · 源数据 ${formatFundFlowTime(item.fundFlowAsOf)} · 本地获取 ${formatFundFlowTime(item.fundFlowCheckedAt)}`}
-                >
-                  {item.mainNetInflow == null ? "暂缺" : `${item.mainNetInflow > 0 ? "+" : ""}${fmtMoney(item.mainNetInflow)}`}
-                </span>
-              </td>}
-              <td style={MEMBER_CELL}>
-                <span>
-                  {item.quoteStatus === "unavailable" ? "行情暂缺" : item.quoteStatus === "stale" ? "较早行情" : exchangeBoard && !item.limitStatusKnown ? "--" : item.isLimitUp ? <em className="limit-status">涨停</em> : "正常"}
-                </span>
-                {onToggleFavorite && (
-                  <button
-                    type="button"
-                    className={`table-action${favoriteCodes?.has(item.code) ? " active" : ""}`}
-                    aria-label={`${favoriteCodes?.has(item.code) ? "移出自选" : "加入自选"} ${item.code}`}
-                    title={favoriteCodes?.has(item.code) ? "移出自选板块" : "加入自选板块"}
-                    onClick={() => onToggleFavorite({ code: item.code, name: item.name, secid: item.secid, assetType: "stock" })}
-                  >
-                    {favoriteCodes?.has(item.code) ? "已自选" : "+自选"}
+        <tbody
+          ref={tbodyRef}
+          style={virtual.enabled ? { ...TABLE_SECTION, maxHeight: 560, overflowY: "auto" } : TABLE_SECTION}
+          onScroll={virtual.enabled ? virtual.onScroll : undefined}
+        >
+          {virtual.enabled && virtual.topSpacerHeight > 0 && (
+            <tr aria-hidden="true"><td colSpan={columns.length} style={{ height: virtual.topSpacerHeight, padding: 0, border: 0 }} /></tr>
+          )}
+          {windowed.map((item: SectorMemberItem) => {
+            const sec: Security = {
+              code: item.code,
+              name: item.name,
+              secid: item.secid || inferSecid(item.code),
+              assetType: "stock"
+            };
+            return (
+              <tr className={`member-row${showFunds ? "" : " no-funds"}`} key={item.code}>
+                <th scope="row" style={MEMBER_CELL}>
+                  <button type="button" style={ROW_OPEN_BUTTON} onClick={() => onOpenStock(item)}>
+                    <span style={STACKED}><b>{item.name}</b><small>{item.code}</small></span>
                   </button>
-                )}
-              </td>
-            </tr>
-          ))}
+                </th>
+                <td style={MEMBER_CELL}><span>{fmt(item.latest)}</span></td>
+                <td style={MEMBER_CELL}>
+                  <span className={item.changePct == null ? "" : item.changePct > 0 ? "red" : item.changePct < 0 ? "green" : ""}>
+                    {item.changePct != null && item.changePct > 0 ? "+" : ""}{fmt(item.changePct)}%
+                  </span>
+                </td>
+                <td style={MEMBER_CELL}><span>{fmt(item.turnover)}%</span></td>
+                <td style={MEMBER_CELL}><span>{fmtMoney(item.amount)}</span></td>
+                {showFunds && <td style={MEMBER_CELL}>
+                  <span
+                    className={item.mainNetInflow == null || item.mainNetInflow === 0 ? "" : item.mainNetInflow > 0 ? "red" : "green"}
+                    title={item.mainNetInflow == null ? "资金源暂未返回该股票的有效主力净流入，可刷新重试" : `${item.fundFlowSource || "来源待确认"} · 源数据 ${formatFundFlowTime(item.fundFlowAsOf)} · 本地获取 ${formatFundFlowTime(item.fundFlowCheckedAt)}`}
+                  >
+                    {item.mainNetInflow == null ? "暂缺" : `${item.mainNetInflow > 0 ? "+" : ""}${fmtMoney(item.mainNetInflow)}`}
+                  </span>
+                </td>}
+                <td style={MEMBER_CELL}>
+                  <span>
+                    {item.quoteStatus === "unavailable" ? "行情暂缺" : item.quoteStatus === "stale" ? "较早行情" : exchangeBoard && !item.limitStatusKnown ? "--" : item.isLimitUp ? <em className="limit-status">涨停</em> : "正常"}
+                  </span>
+                  <StockRowActions
+                    security={sec}
+                    isFavorite={Boolean(favoriteCodes?.has(item.code))}
+                    isPlanned={Boolean(plannedCodes?.has(item.code))}
+                    onToggleFavorite={handleFav}
+                    onOpenMonitor={onOpenMonitor}
+                    onAddPlan={onAddPlan ? () => onAddPlan(item) : undefined}
+                    compact
+                  />
+                </td>
+              </tr>
+            );
+          })}
+          {virtual.enabled && virtual.bottomSpacerHeight > 0 && (
+            <tr aria-hidden="true"><td colSpan={columns.length} style={{ height: virtual.bottomSpacerHeight, padding: 0, border: 0 }} /></tr>
+          )}
         </tbody>
       </table>
       {!members.length && <EmptyInline text={emptyText} />}
@@ -685,7 +725,7 @@ type DetailCountEntry = {
   limitCount?: SectorLimitCount | null | undefined;
 };
 
-function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, favoriteCodes, onToggleFavorite, dedicatedSector, aiPanel }: {
+function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, favoriteCodes, onToggleFavorite, onAddFavorite, onOpenMonitor, onShowToast, dedicatedSector, aiPanel }: {
   /** 板块强度页标题下方的「AI 解读」。 */
   aiPanel?: ReactNode;
   /** 概念榜、今日涨停主线（1.6.43 起与行业榜一起取回）。 */
@@ -698,7 +738,12 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
   onOpenStock: (stock: Security) => void;
   favoriteCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((stock: Security) => void) | undefined;
+  onAddFavorite?: ((stock: Security) => void) | undefined;
+  onOpenMonitor?: ((stock: Security) => void) | undefined;
+  onShowToast?: ((message: string) => void) | undefined;
 }) {
+  const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [plannedCodes, setPlannedCodes] = usePlannedCodes();
   const [selectedName, setSelectedName] = useState(dedicatedSector || "");
   const [expandedName, setExpandedName] = useState("");
   const expandedRow = useRef<HTMLButtonElement | null>(null);
@@ -1058,7 +1103,17 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
                   onOpenStock={onOpenStock}
                   onLoadMore={() => setMemberLimit((current) => current + MEMBER_PAGE_SIZE)}
                   favoriteCodes={favoriteCodes}
+                  plannedCodes={plannedCodes}
                   onToggleFavorite={onToggleFavorite}
+                  onAddFavorite={onAddFavorite}
+                  onOpenMonitor={onOpenMonitor}
+                  onAddPlan={(member) => setPlanTarget({
+                    code: member.code,
+                    name: member.name,
+                    secid: member.secid || inferSecid(member.code),
+                    referencePrice: member.latest ?? null,
+                    defaultNote: `${sector.name} 成分股观察`
+                  })}
                 />
               </div>
             </div>
@@ -1109,12 +1164,29 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
     </section>
   );
 
+  const quickPlanModal = (
+    <QuickPlanModal
+      target={planTarget}
+      onClose={() => setPlanTarget(null)}
+      onSaved={res => {
+        setPlannedCodes(prev => {
+          const next = new Set(prev);
+          next.add(res.code);
+          return next;
+        });
+        onShowToast?.(res.message);
+      }}
+      onError={msg => onShowToast?.(msg)}
+    />
+  );
+
   if (dedicatedSector) {
     return (
       <>
         <PageHeading eyebrow="BEIJING STOCKS" title="北交所"
           actions={<button className="primary-btn" onClick={() => void openSector({ name: dedicatedSector, code: "THS:BJ", forceRefresh: true })} disabled={sectorAnalyzing}><RefreshCw size={17} className={sectorAnalyzing ? "spin" : ""} />刷新北交所行情</button>} />
         {detailPanel}
+        {quickPlanModal}
       </>
     );
   }
@@ -1355,6 +1427,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
           </div>
         </details>
       )}
+      {quickPlanModal}
     </>
   );
 }

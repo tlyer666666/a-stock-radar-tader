@@ -221,6 +221,11 @@ function curlExecutable(platform = process.platform) {
   return platform === "win32" ? "curl.exe" : "curl";
 }
 
+function curlFallbackEnabled() {
+  return String(process.env.ASTOCK_ENABLE_CURL || "") === "1"
+    && String(process.env.ASTOCK_DISABLE_CURL || "") !== "1";
+}
+
 function fetchJson(url, options = {}, timeoutMs = 12000) {
   return Promise.resolve().then(() => serviceRuntime.track(() => trackServiceRequest(performFetchJson(url, options, timeoutMs))));
 }
@@ -252,10 +257,9 @@ async function performFetchJson(url, options = {}, timeoutMs = 12000) {
     // would create another request for a workload we have already rejected.
     if (["QUEUE_FULL", "QUEUE_TIMEOUT"].includes(error?.code)) throw error;
     // E-02：curl 逃生通道是 curl 子进程，绕过了 fetch 层的一切策略（响应体上限、
-    // 重试、重定向语义、错误分类），也让所有 fetch 替身失效。测试与排障需要一条
-    // "只用 fetch" 的确定性路径：置 ASTOCK_DISABLE_CURL=1 时直接暴露原始错误。
-    // 默认行为保持不变（未设置该变量时仍启用 curl 兜底）。
-    if (String(process.env.ASTOCK_DISABLE_CURL || "") === "1") throw error;
+    // 重试、重定向语义、错误分类），生产环境默认关闭；仅显式设置 ASTOCK_ENABLE_CURL=1
+    // 且未设置 ASTOCK_DISABLE_CURL=1 时才按需启用。
+    if (!curlFallbackEnabled()) throw error;
     if (!isEastmoney) throw error;
     const upstreamStatus = Number(error?.status || error?.cause?.status || 0);
     if (upstreamStatus === 429 || upstreamStatus === 403 || /\bHTTP\s+(?:429|403)\b/i.test(String(error?.message || ""))) {
@@ -457,6 +461,7 @@ module.exports = {
   fetchJsonWithCurl,
   executeJsonWithCurl,
   curlExecutable,
+  curlFallbackEnabled,
   fetchJson,
   performFetchJson,
   isConvertibleBondCode,
