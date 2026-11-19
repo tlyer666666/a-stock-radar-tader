@@ -12,6 +12,7 @@ const { isExpectedRendererEntry } = require("./security-policy.cjs");
 const { tightenUserDataPermissions } = require("./persistence.cjs");
 const { createStrategySelectionService, getStrategyScanProgress } = require("./strategy-selection-service.cjs");
 const { humanizeSourceError } = require("./market-source-health.cjs");
+const { planBuildSteps, buildElectronTarget } = require("./build-platform.cjs");
 
 test("fuyao-quote resolves live *ST and N/C IPO names over code-placeholder security.name", async () => {
   const quoteSource = createFuyaoQuoteSource({
@@ -70,9 +71,11 @@ test("tightenUserDataPermissions creates missing first-run userData at 0o700 and
   fs.writeFileSync(outsideFile, "secret", { mode: 0o644 });
   const freshUserData = path.join(root, "fresh-profile");
   try {
-    tightenUserDataPermissions(freshUserData);
-    assert.equal(fs.existsSync(freshUserData), true);
-    if (process.platform !== "win32") {
+    const result = tightenUserDataPermissions(freshUserData);
+    if (process.platform === "win32") {
+      assert.deepEqual(result, { directoryTightened: false, tightenedFiles: 0 });
+    } else {
+      assert.equal(fs.existsSync(freshUserData), true);
       assert.equal(fs.statSync(freshUserData).mode & 0o777, 0o700);
       const symlinkPath = path.join(freshUserData, "evil.json");
       fs.symlinkSync(outsideFile, symlinkPath);
@@ -123,4 +126,46 @@ test("strategy-selection-service keeps active=false after late worker unwinds on
 test("humanizeSourceError prioritizes timeout over numeric counts containing 403 or 429", () => {
   assert.match(humanizeSourceError("读取 403/500 条日线 timeout"), /超时/);
   assert.match(humanizeSourceError("HTTP 429 Too Many Requests"), /频率|限制|备用/);
+});
+
+test("build-platform plans macOS codesign+ditto reseal before archive verification", async () => {
+  assert.deepEqual(planBuildSteps("darwin", "arm64", "1.6.71"), {
+    verifyPlatform: "mac",
+    builderArgs: ["electron-builder", "--mac", "--arm64", "--dir", "--publish", "never"],
+    macDirName: "mac-arm64",
+    steps: ["build:web", "build:review", "electron-builder --dir", "codesign", "verifyMacDelivery", "verifyRuntimeFuses", "ditto"],
+    artifactName: "A-Share-Quant-Radar-v1.6.71-macOS-arm64.zip"
+  });
+  assert.equal(planBuildSteps("win32", "x64", "1.6.71").verifyPlatform, "win");
+  assert.equal(planBuildSteps("linux", "x64", "1.6.71").artifactName, "A-Share-Quant-Radar-v1.6.71-Linux-x86_64.AppImage");
+  assert.throws(() => planBuildSteps("darwin", "ia32", "1.6.71"), /Unsupported release architecture/);
+
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-build-plan-"));
+  const calls = [];
+  try {
+    fs.mkdirSync(path.join(rootDir, "qa"), { recursive: true });
+    fs.writeFileSync(path.join(rootDir, "qa", "verify-mac-delivery.cjs"), "");
+    await buildElectronTarget("darwin", "arm64", {
+      rootDir,
+      version: "1.6.71",
+      productName: "A股雷达",
+      runPnpm: args => {
+        calls.push(["pnpm", ...args]);
+        if (args.includes("electron-builder")) {
+          fs.mkdirSync(path.join(rootDir, "release-builder", "mac-arm64", "A股雷达.app", "Contents", "MacOS"), { recursive: true });
+          fs.writeFileSync(path.join(rootDir, "release-builder", "stale.blockmap"), "");
+        }
+      },
+      run: (cmd, args) => calls.push([cmd, ...args]),
+      verifyMacDelivery: appPath => calls.push(["verifyMac", path.basename(appPath)]),
+      verifyRuntimeFuses: exePath => {
+        calls.push(["verifyFuses", path.basename(exePath)]);
+        return Promise.resolve();
+      }
+    });
+    assert.deepEqual(calls.map(c => c[0]), ["pnpm", "pnpm", "pnpm", "codesign", "verifyMac", "verifyFuses", "/usr/bin/ditto"]);
+    assert.equal(fs.existsSync(path.join(rootDir, "release-builder", "stale.blockmap")), false);
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
 });
