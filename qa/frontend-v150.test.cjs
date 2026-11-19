@@ -95,6 +95,8 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
   }));
 
   test('compact navigation preserves all destinations and theme selection',async()=>withPage(1024,async page=>{
+    const expand=page.getByRole('button',{name:'显示全部模块',exact:true});
+    if(await expand.count()&&await expand.first().isVisible()) await expand.first().click();
     const collapse=page.getByRole('button',{name:/收起导航|展开导航/});
     await collapse.click();
     for(const [id,label]of views) await openView(page,id,label);
@@ -126,7 +128,7 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
     assert.equal(await page.locator('.sector-explorer-detail tbody tr').count(),1);
     await page.getByLabel('筛选成分股').fill('');
     assert.equal(await page.locator('.sector-explorer-detail tbody tr').count(),36);
-    await openView(page,'favorites','自选板块');
+    await openView(page,'favorites','自选监控');
     await page.getByRole('button',{name:'设置条件',exact:true}).first().click();
     await page.locator('.stock-monitor-editor').waitFor();
     await page.getByRole('button',{name:/添加条件/}).click();

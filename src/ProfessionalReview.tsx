@@ -32,7 +32,7 @@ import type {
 } from "./features/market/analysisTypes";
 import { buildStockReviewDecision, legacyReviewDecision, type ReviewDecision } from "./reviewDecision";
 export { buildStockReviewDecision } from "./reviewDecision";
-import { loadSafeLocalJson, saveSafeLocalJson } from "./safeStorage";
+import { loadSafeLocalJson, saveSafeLocalJson, hydrateFromNativeKv, mirrorToNativeKv } from "./safeStorage";
 import { nullableNumber } from "./numericValue";
 import { formatShanghaiDateTime, shanghaiDateTag, shanghaiDateTagFrom } from "./dateUtils";
 import { isReviewRecord, type ReviewRecord } from "./reviewArchive";
@@ -40,10 +40,13 @@ import { createNumberFormatters } from "./domain/formatters";
 import { isPreviewStockApi } from "./runtimeBridge";
 import { AiMarketReviewPanel } from "./features/ai-review/AiMarketReviewPanel";
 import { AiStockReviewPanel } from "./features/ai-picks/AiStockReviewPanel";
-import { readTrendPlans, saveQuickObservationPlan, TREND_PLAN_STORAGE_KEY } from "./trendWorkspace";
+import { readTrendPlans, saveQuickObservationPlan, TREND_PLAN_STORAGE_KEY, writeTrendPlans } from "./trendWorkspace";
 import { strategyName } from "./trendStrategyConfig";
 import { reconcilePlansAfterClose, type PlanReconciliationRow } from "./features/cockpit/cockpitModel";
 import { canOpenAgent, openAgentFor, openAgentPage } from "./features/ai-agent/agentModel";
+import StockMonitorEditor from "./components/StockMonitorEditor";
+import { STOCK_MONITOR_STORAGE_KEY, isUsableMonitorStorage, loadMonitors } from "./useStockMonitors";
+import { normalizeStockMonitorConfig, type StockMonitorConfig } from "./stockMonitorRules";
 
 type ReviewTab = "market" | "stock" | "archive";
 type ReviewSecurityRef = {
@@ -322,6 +325,9 @@ function tradeSignalLabel(value: unknown) {
  * 非法时间戳兜底 “--”。原来这里用裸 toLocaleString，跨时区机器会显示系统本地时间。 */
 
 
+
+const isReviewArchiveList = (value: unknown): value is ReviewRecord[] =>
+  Array.isArray(value) && value.every(isReviewRecord);
 
 function loadArchive(key = REVIEW_ARCHIVE_KEY): ReviewRecord[] {
   // Keep usable primary rows: an older backup must not hide newer valid data.
@@ -1212,6 +1218,15 @@ export default function ProfessionalReview({
   };
 
   useEffect(() => {
+    let active = true;
+    void hydrateFromNativeKv(archiveKey, isReviewArchiveList).then(hydrated => {
+      if (!active || !hydrated || hydrated.length === 0) return;
+      setArchive(loadCurrentArchive(previewMode));
+    });
+    return () => { active = false; };
+  }, [archiveKey, previewMode]);
+
+  useEffect(() => {
     const sync = (event: StorageEvent) => {
       if (event.key === REVIEW_ARCHIVE_KEY || event.key === archiveKey || event.key === null) {
         setArchive(loadCurrentArchive(previewMode));
@@ -1234,6 +1249,7 @@ export default function ProfessionalReview({
     const commit = () => {
       const safe = [record, ...loadArchive(targetKey).filter(item => item.id !== record.id)].slice(0, MAX_REVIEW_RECORDS);
       if (saveSafeLocalJson(targetKey, safe, input => Array.isArray(input) && input.every(isReviewRecord))) {
+        mirrorToNativeKv(targetKey, JSON.stringify(safe));
         setArchive(loadCurrentArchive(previewMode));
         return true;
       }
@@ -1570,7 +1586,9 @@ export default function ProfessionalReview({
           onBack={() => changeTab("market")}
           onOpenStock={onOpenStock}
           onAddToT={onAddToT}
-          onAddQuickPlan={handleAddQuickPlan}
+          onAddQuickPlan={onAddQuickPlan ? handleAddQuickPlan : undefined}
+          onPlanSaved={(msg: string) => { setPlanVersion(v => v + 1); notify(msg); }}
+          onNotify={notify}
           planVersion={planVersion}
           onOpenBacktest={onOpenBacktest}
           onAskAgent={canOpenAgent() ? (sec: { code: string; name: string }, costPrice?: number | null) =>
@@ -1587,7 +1605,16 @@ export default function ProfessionalReview({
           onExport={() => downloadJson(archive, `A股雷达-${previewMode ? "预览" : "专业"}复盘-${shanghaiDateTag()}.json`)}
         />
       )}
-      {toast && <div className="review-toast" role="status" aria-live="polite">{/失败|错误|异常/.test(toast) ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}{toast}</div>}
+      {toast && (
+        <div
+          className="review-toast"
+          role={/失败|错误|异常/.test(toast) ? "alert" : "status"}
+          aria-live={/失败|错误|异常/.test(toast) ? "assertive" : "polite"}
+        >
+          {/失败|错误|异常/.test(toast) ? <AlertTriangle size={17} /> : <CheckCircle2 size={17} />}
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
@@ -1847,6 +1874,8 @@ type StockReviewProps = {
   onOpenStock?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
   onAddToT?: ((stock: { code: string; name: string; secid: string }) => void) | undefined;
   onAddQuickPlan?: ((stock: { code: string; name: string; secid: string }, latestPrice?: number | null) => void) | undefined;
+  onPlanSaved?: ((message: string) => void) | undefined;
+  onNotify?: ((message: string) => void) | undefined;
   planVersion?: number | undefined;
   onOpenBacktest?: ((stock?: { code: string; name: string; secid: string }) => void) | undefined;
   onAskAgent?: ((stock: { code: string; name: string }, costPrice?: number | null) => void) | undefined;
@@ -1870,6 +1899,8 @@ function StockReview({
   onOpenStock,
   onAddToT,
   onAddQuickPlan,
+  onPlanSaved,
+  onNotify,
   planVersion = 0,
   onOpenBacktest,
   onAskAgent,
@@ -1889,7 +1920,131 @@ function StockReview({
   const holdingPnlPct = Number.isFinite(latestPrice) && latestPrice > 0 && Number.isFinite(holdingCost) && holdingCost > 0
     ? ((latestPrice - holdingCost) / holdingCost) * 100
     : null;
-  const canQuickPlan = Boolean(onAddQuickPlan && /^\d{6}$/.test(stockCode) && !data?.analysis?.isSearchOnlyAsset && (!data?.security?.assetType || data.security.assetType === "stock"));
+  const isActionableStock = Boolean(/^\d{6}$/.test(stockCode) && !data?.analysis?.isSearchOnlyAsset && (!data?.security?.assetType || data.security.assetType === "stock"));
+  const canQuickPlan = isActionableStock;
+  const canCustomMonitor = /^\d{6}$/.test(stockCode);
+
+  const [editingMonitor, setEditingMonitor] = useState(false);
+  const [monitorConfigs, setMonitorConfigs] = useState<Record<string, StockMonitorConfig>>(() => {
+    try {
+      return typeof window !== "undefined" ? loadMonitors().configs : {};
+    } catch {
+      return {};
+    }
+  });
+  const [quickPlanOpen, setQuickPlanOpen] = useState(false);
+  const [planEntryInput, setPlanEntryInput] = useState("");
+  const [planStopInput, setPlanStopInput] = useState("");
+  const [planNoteInput, setPlanNoteInput] = useState("");
+  const [planDialogError, setPlanDialogError] = useState("");
+  const quickPlanDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    setEditingMonitor(false);
+    setQuickPlanOpen(false);
+  }, [stockCode]);
+
+  useEffect(() => {
+    const dialog = quickPlanDialogRef.current;
+    if (!dialog) return undefined;
+    if (quickPlanOpen) {
+      if (!dialog.open && typeof dialog.showModal === "function") dialog.showModal();
+    } else if (dialog.open && typeof dialog.close === "function") {
+      dialog.close();
+    }
+    return undefined;
+  }, [quickPlanOpen]);
+
+  const openQuickPlanDialog = () => {
+    if (!stockSecurity) return;
+    if (onAddQuickPlan) {
+      onAddQuickPlan(stockSecurity, Number.isFinite(latestPrice) && latestPrice > 0 ? latestPrice : null);
+      return;
+    }
+    const baseEntry = Number.isFinite(Number(data?.plan?.trigger)) && Number(data?.plan?.trigger) > 0
+      ? Number(data?.plan?.trigger)
+      : (Number.isFinite(latestPrice) && latestPrice > 0 ? latestPrice : 0);
+    const baseStop = Number.isFinite(Number(data?.plan?.stop)) && Number(data?.plan?.stop) > 0
+      ? Number(data?.plan?.stop)
+      : (baseEntry > 0 ? Math.max(0.01, Math.round(baseEntry * 0.94 * 100) / 100) : 0);
+    setPlanEntryInput(baseEntry > 0 ? baseEntry.toFixed(2) : "");
+    setPlanStopInput(baseStop > 0 ? baseStop.toFixed(2) : "");
+    setPlanNoteInput(data?.decision?.headline || data?.verdict || "专业复盘转入次日观察");
+    setPlanDialogError("");
+    setQuickPlanOpen(true);
+  };
+
+  const submitQuickPlanDialog = (event: FormEvent) => {
+    event.preventDefault();
+    if (!stockSecurity) return;
+    if (typeof window === "undefined" || !window.localStorage) {
+      setPlanDialogError("当前环境不支持保存本地计划");
+      return;
+    }
+    const entry = Number(planEntryInput);
+    const stop = Number(planStopInput);
+    if (!Number.isFinite(entry) || entry <= 0) {
+      setPlanDialogError("请填写有效的参考入场价");
+      return;
+    }
+    if (!Number.isFinite(stop) || stop <= 0 || stop >= entry) {
+      setPlanDialogError("止损价须大于 0 且低于入场价");
+      return;
+    }
+    const round2 = (v: number) => Math.round(v * 100) / 100;
+    const trimmedNote = planNoteInput.trim().slice(0, 120) || "专业复盘转入次日观察";
+    const stopPercent = Math.max(1.5, Math.min(20, ((entry - stop) / entry) * 100));
+    const res = saveQuickObservationPlan(window.localStorage, {
+      code: stockSecurity.code,
+      name: stockSecurity.name,
+      secid: stockSecurity.secid,
+      referencePrice: round2(entry),
+      asOf: data?.updatedAt?.slice(0, 10),
+      reason: trimmedNote,
+      stopPercent
+    });
+    if (!res.ok) {
+      setPlanDialogError(res.error);
+      return;
+    }
+    const read = readTrendPlans(window.localStorage);
+    if (!read.error && read.plans.length > 0) {
+      const minEntry = round2(Math.max(stop + 0.01, entry * 0.99));
+      const maxEntry = round2(Math.max(minEntry, entry * 1.01));
+      const maxRiskPercent = Math.max(0.5, round2(((maxEntry - stop) / maxEntry) * 100));
+      const updated = read.plans.map(plan => {
+        if (plan.id !== res.plan.id) return plan;
+        return {
+          ...plan,
+          candidate: {
+            ...plan.candidate,
+            evidence: [{
+              label: "次日观察计划",
+              passed: true,
+              value: trimmedNote.slice(0, 60),
+              rule: `参考入场 ${round2(entry).toFixed(2)} · 止损 ${round2(stop).toFixed(2)}`
+            }],
+            plan: {
+              entryType: plan.candidate.plan?.entryType || "close-confirmation",
+              stop: round2(stop),
+              minEntry,
+              maxEntry,
+              maxRiskPercent,
+              holdingDays: plan.candidate.plan?.holdingDays || "3~10 个交易日"
+            }
+          },
+          reviewDraft: {
+            fields: { ...(plan.reviewDraft?.fields || {}), note: trimmedNote },
+            checks: plan.reviewDraft?.checks || {}
+          }
+        };
+      });
+      writeTrendPlans(window.localStorage, updated);
+    }
+    setQuickPlanOpen(false);
+    onPlanSaved?.(res.created ? `已将 ${stockSecurity.name} 加入次日观察计划` : `已更新 ${stockSecurity.name} 次日观察计划`);
+  };
+
   const planTone = (status: string) =>
     status === "stop-hit" ? "down" : status === "in-band" ? "up" : status === "above-band" ? "warn" : "flat";
   return (
@@ -1936,20 +2091,34 @@ function StockReview({
             <div className="review-horizon"><strong>2–6 周</strong><span>趋势观察</span></div>
           </section>
 
-          {(stockSecurity && (onOpenStock || onAddToT || canQuickPlan || onOpenBacktest || onAskAgent)) && (
+          {(stockSecurity && (onOpenStock || onAddToT || canQuickPlan || canCustomMonitor || onOpenBacktest || onAskAgent)) && (
             <div className="review-closed-loop-bar" aria-label="个股复盘闭环操作">
               {onOpenStock && (
                 <button type="button" className="review-link-btn primary" onClick={() => onOpenStock(stockSecurity)}>
                   打开个股深度分析
                 </button>
               )}
-              {canQuickPlan && onAddQuickPlan && (
+              {canQuickPlan && (
                 <button
                   type="button"
                   className="review-link-btn"
-                  onClick={() => onAddQuickPlan(stockSecurity, Number.isFinite(latestPrice) && latestPrice > 0 ? latestPrice : null)}
+                  onClick={openQuickPlanDialog}
                 >
                   {planRows.some(r => !r.plan.archivedAt) ? "已在次日计划" : "+加入次日计划"}
+                </button>
+              )}
+              {canCustomMonitor && (
+                <button
+                  type="button"
+                  className="review-link-btn"
+                  onClick={() => {
+                    try {
+                      if (typeof window !== "undefined") setMonitorConfigs(loadMonitors().configs);
+                    } catch { /* ignore */ }
+                    setEditingMonitor(value => !value);
+                  }}
+                >
+                  {monitorConfigs[stockCode]?.enabled ? "自定义盯盘（已开）" : "自定义盯盘"}
                 </button>
               )}
               {onAddToT && /^\d{6}$/.test(stockCode) && (
@@ -1969,6 +2138,88 @@ function StockReview({
               )}
             </div>
           )}
+
+          {editingMonitor && stockSecurity && (
+            <StockMonitorEditor
+              stock={{ code: stockSecurity.code, name: stockSecurity.name }}
+              config={monitorConfigs[stockCode]}
+              onCancel={() => setEditingMonitor(false)}
+              onSave={(nextConfig) => {
+                const normalized = normalizeStockMonitorConfig(nextConfig);
+                if (!normalized) return false;
+                const current = loadMonitors();
+                const nextStore = {
+                  ...current,
+                  configs: { ...current.configs, [stockCode]: normalized }
+                };
+                const ok = saveSafeLocalJson(STOCK_MONITOR_STORAGE_KEY, nextStore, isUsableMonitorStorage);
+                if (ok) {
+                  setMonitorConfigs(nextStore.configs);
+                  setEditingMonitor(false);
+                  onNotify?.(`已保存 ${stockName} 自定义盯盘规则`);
+                }
+                return ok;
+              }}
+            />
+          )}
+
+          <dialog
+            ref={quickPlanDialogRef}
+            className="review-quick-plan-dialog"
+            aria-label={stockSecurity ? `加入次日计划 · ${stockSecurity.name}` : "加入次日计划"}
+            onCancel={event => { event.preventDefault(); setQuickPlanOpen(false); }}
+          >
+            {stockSecurity && (
+              <form className="review-quick-plan-form" onSubmit={submitQuickPlanDialog}>
+                <header>
+                  <h3>加入次日计划 · {stockSecurity.name} <small>{stockSecurity.code}</small></h3>
+                  <button type="button" className="secondary-btn" onClick={() => setQuickPlanOpen(false)} aria-label="关闭弹窗">
+                    <X size={15} />
+                  </button>
+                </header>
+                <div className="review-quick-plan-fields">
+                  <label>
+                    <span>参考入场价</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      aria-label="入场价"
+                      value={planEntryInput}
+                      onChange={event => { setPlanEntryInput(event.target.value); setPlanDialogError(""); }}
+                    />
+                  </label>
+                  <label>
+                    <span>防守止损价</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      aria-label="止损价"
+                      value={planStopInput}
+                      onChange={event => { setPlanStopInput(event.target.value); setPlanDialogError(""); }}
+                    />
+                  </label>
+                  <label className="review-quick-plan-note">
+                    <span>次日观察备注</span>
+                    <input
+                      type="text"
+                      maxLength={120}
+                      aria-label="计划备注"
+                      value={planNoteInput}
+                      onChange={event => setPlanNoteInput(event.target.value)}
+                      placeholder="开盘承接条件或止损纪律"
+                    />
+                  </label>
+                </div>
+                {planDialogError && <p className="review-quick-plan-error" role="alert">{planDialogError}</p>}
+                <footer>
+                  <button type="button" className="secondary-btn" onClick={() => setQuickPlanOpen(false)}>取消</button>
+                  <button type="submit" className="primary-btn">保存次日计划</button>
+                </footer>
+              </form>
+            )}
+          </dialog>
 
           {(planRows.length > 0 || matchedHolding) && (
             <section className="review-panel review-plan-compare" aria-label="冻结计划与持仓对照">

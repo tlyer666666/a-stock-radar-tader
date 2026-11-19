@@ -1,7 +1,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useId, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { Activity, Bookmark, Search, Sparkles } from 'lucide-react';
+import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from '../../components/QuickPlanModal';
+import StockRowActions from '../../components/StockRowActions';
 import { PanelTitle } from '../../components/terminal/TerminalPrimitives';
 import { fmt, fmtMoney, nullableNumber } from '../../domain/formatters';
+import { inferSecid } from '../../domain/securityIdentifiers';
 import { loadSafeLocalJson, saveSafeLocalJson } from '../../safeStorage';
 import { LIMIT_COLUMNS, limitPoolWindow, limitUpMarketAnalysis, normalizeColumnPreferences, selectLimitUpRows, type LimitPoolSort, type LimitUpStock } from './limitUpPoolModel';
 
@@ -22,17 +25,35 @@ const CONTENT_MIN_WIDTH: Record<string, number> = { name: 84, latest: 60, change
 // 数字列内容短，可再收窄 15%。
 const COMPACT_LIMIT_COLUMNS = new Set(['latest', 'turnover', 'amount', 'firstSealTime', 'lastSealTime', 'openBoardCount', 'consecutiveBoards']);
 
-export default memo(function LimitUpPool({ items, meta, onOpen, onAdd, isFavorite }: {
-  items: LimitUpStock[]; meta?: { dataDate?: string } | null;
-  onOpen: (stock: LimitUpStock) => void; onAdd: (stock: LimitUpStock) => void;
+export default memo(function LimitUpPool({
+  items,
+  meta,
+  onOpen,
+  onAdd,
+  isFavorite,
+  onToggleFavorite,
+  onAddFavorite,
+  onOpenMonitor,
+  onShowToast
+}: {
+  items: LimitUpStock[];
+  meta?: { dataDate?: string } | null;
+  onOpen: (stock: LimitUpStock) => void;
+  onAdd: (stock: LimitUpStock) => void;
   /** 已在自选里的股票显示「已监控」，不会再点一次就取消。 */
   isFavorite?: ((code: string) => boolean) | undefined;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  onAddFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
+  onShowToast?: ((message: string) => void) | undefined;
 }) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<LimitPoolSort>({ key: 'changePct', direction: 'desc' });
   const [preferences, setPreferences] = useState(() => normalizeColumnPreferences(loadSafeLocalJson(STORAGE_KEY, {})));
   const [selectedCode, setSelectedCode] = useState('');
   const [storageError, setStorageError] = useState(false);
+  const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [plannedCodes, setPlannedCodes] = usePlannedCodes();
   const grid = useRef<HTMLDivElement>(null);
   const scroll = useRef<HTMLDivElement>(null);
   const head = useRef<HTMLDivElement>(null);
@@ -95,8 +116,9 @@ export default memo(function LimitUpPool({ items, meta, onOpen, onAdd, isFavorit
   // 数字列保持设定宽度；名称、质量、板块等文字列最窄到 70%（单行，放不下省略），且不小于 CONTENT_MIN_WIDTH。
   const minColumn = (key: string) => Math.max(CONTENT_MIN_WIDTH[key] ?? 0, SHRINKABLE_LIMIT_COLUMNS.has(key) ? Math.max(56, Math.round(widthFor(key) * 0.7))
     : COMPACT_LIMIT_COLUMNS.has(key) ? Math.max(44, Math.round(widthFor(key) * 0.85)) : widthFor(key));
-  const template = [...columns.map(column => `minmax(${minColumn(column.key)}px, ${widthFor(column.key)}fr)`), '122px'].join(' ');
-  const minWidth = columns.reduce((sum, column) => sum + minColumn(column.key), 122);
+  const actionColWidth = onOpenMonitor || onToggleFavorite || onAddFavorite ? 250 : 185;
+  const template = [...columns.map(column => `minmax(${minColumn(column.key)}px, ${widthFor(column.key)}fr)`), `${actionColWidth}px`].join(' ');
+  const minWidth = columns.reduce((sum, column) => sum + minColumn(column.key), actionColWidth);
   const cell = (item: LimitUpStock, key: string) => {
     const insight = insights.get(item.code)!;
     const value = nullableNumber(item[key]);
@@ -151,14 +173,61 @@ export default memo(function LimitUpPool({ items, meta, onOpen, onAdd, isFavorit
           </div>)}<div role="columnheader">操作</div>
         </div>
         {windowRows.start > 0 && <div aria-hidden="true" style={{height: windowRows.start * viewport.rowHeight}} />}
-        {visible.slice(windowRows.start, windowRows.end).map((item, index) => <div key={item.code} id={`${rowPrefix}-${item.code}`} role="row" aria-rowindex={windowRows.start + index + 2} aria-selected={selected?.code === item.code} className="limit-analysis-row" style={{ gridTemplateColumns: template }} onClick={event => { setSelectedCode(item.code); if (!(event.target as HTMLElement).closest('button')) grid.current?.focus({ preventScroll: true }); }} onDoubleClick={event => { if (!(event.target as HTMLElement).closest('button')) onOpen(item); }}>
-          {columns.map(column => <div role="gridcell" key={column.key} className={('numeric' in column) ? 'num' : undefined} title={TITLE_LIMIT_COLUMNS.has(column.key) ? cellTitle(item, column.key) : undefined}>{cell(item, column.key)}</div>)}
-          <div role="gridcell" className="limit-row-actions"><button className="table-action" aria-label={`分析${item.name}`} onClick={() => onOpen(item)}><Activity size={12} />分析</button>{isFavorite?.(item.code) ? <button className="table-action" disabled aria-label={`${item.name}已在监控`}><Bookmark size={12} />已监控</button>
-            : <button className="table-action" aria-label={`监控${item.name}`} onClick={() => onAdd(item)}><Bookmark size={12} />监控</button>}</div>
-        </div>)}
+        {visible.slice(windowRows.start, windowRows.end).map((item, index) => {
+          const fav = Boolean(isFavorite?.(item.code));
+          const sec: Security = {
+            code: item.code,
+            name: item.name,
+            secid: item.secid || inferSecid(item.code),
+            assetType: 'stock'
+          };
+          const handleFav = onToggleFavorite ?? (onAddFavorite ? (s: Security) => {
+            if (!isFavorite?.(s.code)) onAddFavorite(s);
+          } : undefined);
+          return <div key={item.code} id={`${rowPrefix}-${item.code}`} role="row" aria-rowindex={windowRows.start + index + 2} aria-selected={selected?.code === item.code} className="limit-analysis-row" style={{ gridTemplateColumns: template }} onClick={event => { setSelectedCode(item.code); if (!(event.target as HTMLElement).closest('button')) grid.current?.focus({ preventScroll: true }); }} onDoubleClick={event => { if (!(event.target as HTMLElement).closest('button')) onOpen(item); }}>
+            {columns.map(column => <div role="gridcell" key={column.key} className={('numeric' in column) ? 'num' : undefined} title={TITLE_LIMIT_COLUMNS.has(column.key) ? cellTitle(item, column.key) : undefined}>{cell(item, column.key)}</div>)}
+            <div role="gridcell" className="limit-row-actions">
+              <button className="table-action" aria-label={`分析${item.name}`} onClick={() => onOpen(item)}><Activity size={12} />分析</button>
+              {fav ? <button className="table-action" disabled aria-label={`${item.name}已在监控`}><Bookmark size={12} />已监控</button>
+                : <button className="table-action" aria-label={`监控${item.name}`} onClick={() => onAdd(item)}><Bookmark size={12} />监控</button>}
+              <StockRowActions
+                security={sec}
+                isFavorite={fav}
+                isPlanned={plannedCodes.has(item.code)}
+                onToggleFavorite={handleFav}
+                onOpenMonitor={onOpenMonitor}
+                onAddPlan={() => setPlanTarget({
+                  code: item.code,
+                  name: item.name,
+                  secid: sec.secid,
+                  referencePrice: nullableNumber(item.latest),
+                  asOf: meta?.dataDate,
+                  defaultNote: [
+                    typeof item.consecutiveBoards === 'number' && item.consecutiveBoards > 1 ? `${item.consecutiveBoards}连板` : '首板涨停',
+                    item.limitReason ? String(item.limitReason) : ''
+                  ].filter(Boolean).join(' · ')
+                })}
+                compact
+              />
+            </div>
+          </div>;
+        })}
         {windowRows.end < visible.length && <div aria-hidden="true" style={{height: (visible.length - windowRows.end) * viewport.rowHeight}} />}
         {!visible.length && <div className="empty-inline">没有匹配的涨停股。</div>}
       </div>
     </div>
+    <QuickPlanModal
+      target={planTarget}
+      onClose={() => setPlanTarget(null)}
+      onSaved={res => {
+        setPlannedCodes(prev => {
+          const next = new Set(prev);
+          next.add(res.code);
+          return next;
+        });
+        onShowToast?.(res.message);
+      }}
+      onError={msg => onShowToast?.(msg)}
+    />
   </section>;
 });

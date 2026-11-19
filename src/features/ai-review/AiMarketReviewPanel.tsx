@@ -93,7 +93,7 @@ export function AiMarketReviewPanel({ asOfDate, onReview }: { asOfDate: string; 
           {busy === "review" ? <LoaderCircle size={15} className="spin" /> : review ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy === "review" ? "AI 调用技能分析中…" : review ? "重新复盘" : "AI 复盘"}</button>
       </div>
     </header>
-    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
+    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
     {busy === "review" && (liveSteps.length > 0 || liveText) && (
       <div className="ai-stream-preview" aria-live="polite">
         {liveSteps.length > 0 && <SkillSteps steps={liveSteps} live />}

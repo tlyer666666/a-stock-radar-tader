@@ -18,7 +18,8 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
-  TrendingUp
+  TrendingUp,
+  X
 } from "lucide-react";
 import { readTrendPlans, type SavedTrendPlan } from "../../trendWorkspace";
 import type { WorkspaceView } from "../../workspaceView";
@@ -105,6 +106,8 @@ const extractCockpitQuote = (rawInput: unknown, fallbackCode = ""): CockpitQuote
   };
 };
 
+const ONBOARDING_DISMISSED_KEY = "a-stock-radar:onboarding-dismissed:v1";
+
 export interface TodayCockpitProps {
   phase: MarketSessionPhase;
   holdings: HoldingItem[];
@@ -129,6 +132,7 @@ export interface TodayCockpitProps {
   onToggleDefaultView: (enabled: boolean) => void;
   onOpenStock: (security: Security, originLabel?: string) => void;
   onNavigate: (view: WorkspaceView) => void;
+  onOpenSettings?: ((category?: string) => void) | undefined;
 }
 
 export default function TodayCockpitView({
@@ -148,10 +152,41 @@ export default function TodayCockpitView({
   onShowToast,
   onToggleDefaultView,
   onOpenStock,
-  onNavigate
+  onNavigate,
+  onOpenSettings
 }: TodayCockpitProps) {
   const [manualMode, setManualMode] = useState<CockpitSessionMode | null>(null);
+  const [onboardingDismissed, setOnboardingDismissed] = useState<boolean>(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage?.getItem(ONBOARDING_DISMISSED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
   const mode = manualMode || resolveDefaultCockpitMode(phase);
+
+  const dismissOnboarding = () => {
+    setOnboardingDismissed(true);
+    try {
+      window.localStorage?.setItem(ONBOARDING_DISMISSED_KEY, "1");
+    } catch {
+      // ignore storage restrictions
+    }
+  };
+
+  const openSettingsCategory = (category: "ai" | "sources") => {
+    if (onOpenSettings) {
+      onOpenSettings(category);
+      return;
+    }
+    if (typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function") {
+      window.__aStockOpenSettings(category);
+      return;
+    }
+    onNavigate("settings");
+  };
+
+  const showOnboarding = holdings.length === 0 && favorites.length === 0 && !onboardingDismissed;
 
   const [plans, setPlans] = useState<SavedTrendPlan[]>(() => {
     try {
@@ -438,11 +473,64 @@ export default function TodayCockpitView({
 
   return (
     <div className="cockpit-view" data-cockpit-mode={mode}>
+      {showOnboarding && (
+        <section className="panel cockpit-onboarding" aria-label="3 步快速启用引导">
+          <header className="cockpit-onboarding-head">
+            <div>
+              <span className="cockpit-pill-badge"><Sparkles size={13} />快速上手</span>
+              <h3>3 步快速启用引导卡</h3>
+              <p>当前尚未添加持仓或自选股票，按以下三步即可启用全流程盘中哨兵与复盘工作台。</p>
+            </div>
+            <button
+              type="button"
+              className="secondary-btn cockpit-onboarding-dismiss"
+              aria-label="关闭快速启用引导"
+              onClick={dismissOnboarding}
+            >
+              <X size={14} />不再提示
+            </button>
+          </header>
+          <div className="cockpit-onboarding-steps">
+            <article className="cockpit-onboarding-step">
+              <span className="cockpit-onboarding-num">1</span>
+              <div>
+                <b>导入或添加持仓与自选</b>
+                <small>录入持仓成本、股数或添加关注自选，开启止损与异动哨兵。</small>
+                <div className="cockpit-onboarding-actions">
+                  <button type="button" className="primary-btn" onClick={() => onNavigate("holdings")}>去添加持仓</button>
+                  <button type="button" className="secondary-btn" onClick={() => onNavigate("favorites")}>去添加自选</button>
+                </div>
+              </div>
+            </article>
+            <article className="cockpit-onboarding-step">
+              <span className="cockpit-onboarding-num">2</span>
+              <div>
+                <b>1 分钟配置扶摇行情或 AI 助手</b>
+                <small>填入同花顺扶摇 API Key 提升行情速度，或配置 AI 模型解锁问股与复盘。</small>
+                <div className="cockpit-onboarding-actions">
+                  <button type="button" className="secondary-btn" onClick={() => openSettingsCategory("sources")}>配置扶摇行情</button>
+                  <button type="button" className="secondary-btn" onClick={() => openSettingsCategory("ai")}>配置 AI 助手</button>
+                </div>
+              </div>
+            </article>
+            <article className="cockpit-onboarding-step">
+              <span className="cockpit-onboarding-num">3</span>
+              <div>
+                <b>开始盘中盯盘或按需运行策略选股</b>
+                <small>筛选涨停形态与趋势结构候选，一键冻结次日买入与止损计划。</small>
+                <div className="cockpit-onboarding-actions">
+                  <button type="button" className="primary-btn" onClick={() => onNavigate("signals")}>去运行策略选股</button>
+                </div>
+              </div>
+            </article>
+          </div>
+        </section>
+      )}
       <section className="panel cockpit-hero">
         <div className="cockpit-hero-head">
           <div className="cockpit-hero-title">
             <span className="cockpit-pill-badge"><Radar size={14} />{phase.label} · {meta.badge}</span>
-            <h2>今日驾驶舱</h2>
+            <h1>今日驾驶舱</h1>
             <p>{meta.focus}</p>
           </div>
           <div className="cockpit-hero-controls">

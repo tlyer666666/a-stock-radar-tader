@@ -15,6 +15,8 @@ async function verify(appPath) {
   try {
     await page.setViewportSize({ width: 1480, height: 960 });
     await page.locator('.workspace-navigation').waitFor({ timeout: 30000 });
+    const expandNav = page.locator('.workspace-navigation').getByRole('button', { name: '显示全部模块', exact: true });
+    if (await expandNav.count() && await expandNav.first().isVisible()) await expandNav.first().click();
     await page.getByRole('button', { name: '板块强度', exact: true }).first().click();
     const rows = page.locator('.sector-gainers-row[aria-expanded]');
     await rows.first().waitFor({ timeout: 120000 });

@@ -1,4 +1,4 @@
-import { loadSafeLocalJson } from "../../safeStorage";
+import { hydrateFromNativeKv, loadSafeLocalJson, mirrorToNativeKv, saveSafeLocalJson } from "../../safeStorage";
 import { normalizeSettings } from "../../domain/settings";
 import { isBacktestHistoryCollection, isBacktestHistoryRow } from "../../researchStorage";
 import { normalizeBacktestDraft, normalizeBacktestStrategyIds, normalizeBacktestStrategyProfile } from "./backtestModel";
@@ -60,6 +60,21 @@ export const loadBacktestHistory = (fallbackSettings: Settings) => {
   } catch {
     return [];
   }
+};
+
+const isBacktestHistoryArray = (value: unknown): value is unknown[] => isBacktestHistoryCollection(value);
+
+export const saveBacktestHistory = (records: BacktestHistoryRecord[]): boolean => {
+  const capped = records.slice(0, BACKTEST_HISTORY_LIMIT);
+  const ok = saveSafeLocalJson(BACKTEST_HISTORY_KEY, capped, isBacktestHistoryCollection);
+  if (ok) mirrorToNativeKv(BACKTEST_HISTORY_KEY, JSON.stringify(capped));
+  return ok;
+};
+
+export const hydrateBacktestHistory = async (fallbackSettings: Settings): Promise<BacktestHistoryRecord[]> => {
+  const hydrated = await hydrateFromNativeKv(BACKTEST_HISTORY_KEY, isBacktestHistoryArray);
+  if (hydrated) return normalizeBacktestHistory(hydrated, fallbackSettings);
+  return loadBacktestHistory(fallbackSettings);
 };
 
 export const buildBacktestHistoryRecord = (

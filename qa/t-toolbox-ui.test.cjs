@@ -47,7 +47,7 @@ test('full app T toolbox loads history, draws and persists lines independently o
     assert.equal(await box.locator('.toolbox-drawing').count(),0);
     await box.getByRole('button',{name:'日K',exact:true}).click();
     await box.locator('.toolbox-drawing').waitFor();
-    await page.getByRole('button',{name:'板块强度',exact:true}).first().click();
+    await openView(page,'sectors','板块强度');
     await openView(page,'t-assistant','做T助手');
     await box.locator('.toolbox-drawing').waitFor();
     assert.match(await box.locator('.toolbox-drawing-list').innerText(),/12.34/);

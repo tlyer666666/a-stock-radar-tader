@@ -19,7 +19,14 @@ async function fixture(query = '') {
   await page.goto(base + query); await page.getByRole('button', { name: '持仓股', exact: true }).waitFor();
   return { page, errors };
 }
-const nav = (page, name) => page.locator('.workspace-navigation').getByRole('button', { name, exact: true }).click();
+const nav = async (page, name) => {
+  const btn = page.locator('.workspace-navigation').getByRole('button', { name, exact: true });
+  if (!(await btn.count())) {
+    const expand = page.locator('.workspace-navigation').getByRole('button', { name: '显示全部模块', exact: true });
+    if (await expand.count() && await expand.first().isVisible()) await expand.first().click();
+  }
+  await btn.click();
+};
 // 趋势模型位于「策略选股」策略库中：先进入工作台，再打开第一个趋势模型。
 const openTrend = async page => { await nav(page, '策略选股'); await page.locator('.strategy-library-item.trend').first().click(); await page.locator('.trend-screener').waitFor(); };
 const openPattern = async page => { await nav(page, '策略选股'); await page.locator('.strategy-signal-tab-list > button').first().click(); };

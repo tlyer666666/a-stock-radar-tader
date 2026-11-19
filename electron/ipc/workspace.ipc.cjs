@@ -38,6 +38,14 @@ function registerWorkspaceIpc({
   createBackupService,
   readMigratedBackupConfig,
   getStorageSummary,
+  cleanupStorageCache = async () => ({ ok: false, message: "未启用缓存清理" }),
+  kvGet = () => null,
+  kvSet = () => false,
+  getMasterPasswordStatus = () => ({ enabled: false, locked: false }),
+  setMasterPassword = async () => { throw new Error("未启用主密码模块"); },
+  unlockMasterPassword = async () => { throw new Error("未启用主密码模块"); },
+  clearMasterPassword = async () => { throw new Error("未启用主密码模块"); },
+  setAppZoomFactor = factor => ({ factor }),
   resetNewsCache,
   resetProfessionalReviewCache,
   applyWindowTheme,
@@ -50,7 +58,8 @@ function registerWorkspaceIpc({
   testProvider,
   normalizeExternalHttpsUrl,
   getRestoredProfilePendingRestart,
-  setRestoredProfilePendingRestart
+  setRestoredProfilePendingRestart,
+  setRestoreInProgress = () => {}
 }) {
   handleTrustedIpc("watchlist:get", () => normalizeWatchlist(readJson("watchlist", [], usableWatchlist)));
   handleTrustedIpc("watchlist:save", (_, items) => {
@@ -91,6 +100,14 @@ function registerWorkspaceIpc({
   handleTrustedIpc("app:set-theme", (_, theme) => {
     reviewWindows.broadcastTheme(applyWindowTheme(theme));
   });
+  handleTrustedIpc("app:set-zoom", (_, factor) => setAppZoomFactor(factor));
+  handleTrustedIpc("storage:kv-get", (_, key) => kvGet(key));
+  handleTrustedIpc("storage:kv-set", (_, input) => kvSet(input?.key, input?.value));
+  handleTrustedIpc("storage:cleanup", (_, input) => cleanupStorageCache(input));
+  handleTrustedIpc("security:master-status", () => getMasterPasswordStatus());
+  handleTrustedIpc("security:master-set", (_, input) => setMasterPassword(input));
+  handleTrustedIpc("security:master-unlock", (_, input) => unlockMasterPassword(input));
+  handleTrustedIpc("security:master-clear", (_, input) => clearMasterPassword(input));
   handleTrustedIpc("app:window-control", (event, action) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (!window || window.isDestroyed()) return { ok: false, maximized: false };
@@ -168,10 +185,10 @@ function registerWorkspaceIpc({
   let restoreExpiry;
   let restoreCommitting = false;
   const restoreBusy = () => Object.assign(new Error("正在恢复备份，请稍后再试"), { code: "BACKUP_BUSY" });
-  handleTrustedIpc("backup:run", (_, local, options) => {
+  handleTrustedIpc("backup:run", async (_, local, options) => {
     if (stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
     const reason = options && options.reason === "auto" ? "auto" : "manual";
-    const res = backup.run(backupLocal(local), { reason });
+    const res = await backup.run(backupLocal(local), { reason });
     return { ...res, status: { ...res.status, suggestions: backup.suggestions() } };
   });
   handleTrustedIpc("backup:inspect", (_, name, password) => backup.inspect(String(name || ""), typeof password === "string" ? password : ""));
@@ -179,12 +196,15 @@ function registerWorkspaceIpc({
     clearTimeout(restoreExpiry);
     restoreExpiry = undefined;
     stagedRestore = null;
+    setRestoreInProgress(false);
   };
-  handleTrustedIpc("backup:prepare-restore", (event, name, password) => {
+  handleTrustedIpc("backup:prepare-restore", async (event, name, password) => {
     if (stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
-    const snapshot = backup.prepareRestore(String(name || ""), typeof password === "string" ? password : "");
+    closeReviewWindow?.();
+    const snapshot = await backup.prepareRestore(String(name || ""), typeof password === "string" ? password : "");
     const token = require("node:crypto").randomUUID();
     stagedRestore = { token, owner: event.sender.id, snapshot };
+    setRestoreInProgress(true);
     restoreExpiry = setTimeout(clearStagedRestore, 60_000);
     restoreExpiry.unref?.();
     return { token, local: snapshot.local };
@@ -200,12 +220,13 @@ function registerWorkspaceIpc({
     const { snapshot } = stagedRestore;
     clearStagedRestore();
     restoreCommitting = true;
+    setRestoreInProgress(true);
     try {
       closeReviewWindow?.();
       await event.sender.session.flushStorageData();
       if (trustedMainWebContents() !== event.sender) throw restoreBusy();
       closeReviewWindow?.();
-      backup.applyRestore(snapshot);
+      await backup.applyRestore(snapshot);
       loadStoredSettings.cached = undefined;
       settingsForService.cached = undefined;
       setRestoredProfilePendingRestart(true);
@@ -213,6 +234,7 @@ function registerWorkspaceIpc({
       return { ok: true };
     } finally {
       restoreCommitting = false;
+      setRestoreInProgress(getRestoredProfilePendingRestart());
     }
   });
 

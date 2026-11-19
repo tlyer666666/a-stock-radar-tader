@@ -168,7 +168,7 @@ test("R3-02 & R3-03: trend-screener adapter omits absent THS changePct and prese
   );
 });
 
-test("R3-Backup: cross-machine same-origin AI key preservation & absent store cleanup on restore", () => {
+test("R3-Backup: cross-machine same-origin AI key preservation & absent store cleanup on restore", async () => {
   const merged = mergeForRestore(
     "ai-profiles",
     {
@@ -198,10 +198,10 @@ test("R3-Backup: cross-machine same-origin AI key preservation & absent store cl
       decryptSecret: (s) => s,
       appVersion: "1.6.71"
     });
-    const created = svc.run({ local: {} });
+    const created = await svc.run({ local: {} });
     // Post-backup: user adds holdings that did not exist at backup time
     diskStores.set("holdings", [{ code: "000001", name: "平安银行", shares: 100, costPrice: 11 }]);
-    svc.restore(created.name);
+    await svc.restore(created.name);
     assert.equal(diskStores.has("holdings"), false, "post-backup holdings must be removed on restore");
     assert.equal(diskStores.has("watchlist"), true);
   } finally {

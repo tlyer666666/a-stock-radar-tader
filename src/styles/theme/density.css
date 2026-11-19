@@ -126,3 +126,4 @@ body[data-standalone-review] #root { min-height: calc(100dvh - 24px); }
 
 /* 1.6.47：窗口较窄时文字列（名称、质量、板块、涨停原因等）收窄后换行显示，行高随内容增高，不再把「操作」列挤出可视区。 */
 :root .terminal-shell .compact-limit-grid > .limit-analysis-row:not(.limit-analysis-head) { height: auto; }
+:root .terminal-shell :is(.sector-directory-list, .sector-explorer-table-wrap) { max-height: none; overflow-x: auto; overflow-y: visible; }

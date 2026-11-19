@@ -58,8 +58,13 @@ import { useAutoBackup } from "./features/backup/backupClient";
 import { NoteReminderStack } from "./features/notes/NoteReminderStack";
 import { WorkspaceErrorBoundary } from "./components/AppErrorBoundary";
 import WorkspaceNavigation from "./components/WorkspaceNavigation";
-import { applySavedVisualPreferences, normalizeSettingsCategory } from "./domain/visualPreferences";
+import { QuickMonitorModal } from "./components/QuickMonitorModal";
+import { MasterPasswordUnlockModal } from "./components/MasterPasswordUnlockModal";
+import { useReportHsgtOverlay } from "./features/hsgt/overlayContext";
+import { applySavedVisualPreferences, applyUiScale, normalizeSettingsCategory, normalizeUiScale, stepUiScale, UI_SCALE_STORAGE_KEY } from "./domain/visualPreferences";
 import { initialSettings, normalizeSettings } from "./domain/settings";
+import { saveSafeLocalJson } from "./safeStorage";
+import { isUsableSecurityCollection, uniqueSecurities } from "./securitySelection";
 
 export {
   advancePaperSimulationByQuote, buildBacktestHistoryRecord, buildExecutionDecisionLogEntry,
@@ -115,14 +120,18 @@ const PRIVACY_MASK_STORAGE_KEY = "a-stock-radar:privacy-mask:v1";
 const SIDEBAR_CORE_ONLY_KEY = "a-stock-radar:sidebar-core-only:v1";
 
 function App() {
-  const [view, setView] = useState<View>("signals");
   const [defaultCockpit, setDefaultCockpit] = useState<boolean>(() => {
     try {
-      return typeof window !== "undefined" && window.localStorage?.getItem(DEFAULT_VIEW_STORAGE_KEY) === "cockpit";
+      return typeof window === "undefined" || window.localStorage?.getItem(DEFAULT_VIEW_STORAGE_KEY) !== "signals";
     } catch {
-      return false;
+      return true;
     }
   });
+  const [view, setView] = useState<View>(() => (
+    typeof window !== "undefined" && window.localStorage?.getItem(DEFAULT_VIEW_STORAGE_KEY) === "signals"
+      ? "signals"
+      : "cockpit"
+  ));
   const [privacyMask, setPrivacyMask] = useState<boolean>(() => {
     try {
       return typeof window !== "undefined" && window.localStorage?.getItem(PRIVACY_MASK_STORAGE_KEY) === "true";
@@ -134,17 +143,20 @@ function App() {
   privacyMaskRef.current = privacyMask;
   const [sidebarCoreOnly, setSidebarCoreOnly] = useState<boolean>(() => {
     try {
-      return typeof window !== "undefined" && window.localStorage?.getItem(SIDEBAR_CORE_ONLY_KEY) === "true";
+      return typeof window === "undefined" || window.localStorage?.getItem(SIDEBAR_CORE_ONLY_KEY) !== "false";
     } catch {
-      return false;
+      return true;
     }
   });
   const sidebarCoreOnlyRef = useRef(sidebarCoreOnly);
   sidebarCoreOnlyRef.current = sidebarCoreOnly;
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [masterLocked, setMasterLocked] = useState(false);
+  const [quickMonitorTarget, setQuickMonitorTarget] = useState<Security | null>(null);
   const [settingsCategory, setSettingsCategory] = useState("sources");
   const [settingsRequestSeq, setSettingsRequestSeq] = useState(0);
   const [isOffline, setIsOffline] = useState<boolean>(() => typeof navigator !== "undefined" && navigator.onLine === false);
+  const reconnectRefreshRef = useRef<() => void>(() => {});
 
   type ToastEntry = { id: number; text: string; tone: "info" | "warn" | "error"; durationMs: number; expiresAt: number };
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
@@ -219,19 +231,44 @@ function App() {
 
   useEffect(() => {
     applySavedVisualPreferences();
-    if (defaultCockpit) setView("cockpit");
+    if (typeof window !== "undefined" && typeof window.stockApi?.getMasterPasswordStatus === "function") {
+      void window.stockApi.getMasterPasswordStatus().then(status => {
+        if (status?.enabled && status.locked) setMasterLocked(true);
+      }).catch(() => undefined);
+    }
   }, []);
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
     window.__aStockOpenSettings = openSettings;
     const onOffline = () => setIsOffline(true);
-    const onOnline = () => setIsOffline(false);
+    const onOnline = () => {
+      setIsOffline(false);
+      void window.stockApi?.resetMarketSourceHealth?.().catch(() => undefined);
+      reconnectRefreshRef.current();
+    };
     if (typeof window.addEventListener === "function") {
       window.addEventListener("offline", onOffline);
       window.addEventListener("online", onOnline);
     }
+    const disposeNotificationClick = typeof window.stockApi?.onNotificationClick === "function"
+      ? window.stockApi.onNotificationClick((clicked) => {
+          if (clicked?.code && /^\d{6}$/.test(clicked.code)) {
+            openAnalysisRef.current(
+              {
+                code: clicked.code,
+                name: clicked.name || clicked.code,
+                secid: clicked.secid || ""
+              },
+              { view: "cockpit", label: "返回今日驾驶舱" }
+            );
+            return;
+          }
+          if (clicked?.targetView) setView(clicked.targetView as View);
+        })
+      : undefined;
     return () => {
       delete window.__aStockOpenSettings;
+      disposeNotificationClick?.();
       if (typeof window.removeEventListener === "function") {
         window.removeEventListener("offline", onOffline);
         window.removeEventListener("online", onOnline);
@@ -242,9 +279,34 @@ function App() {
     if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
     const onGlobalKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const key = event.key.toLowerCase();
+      if (key === "k") {
         event.preventDefault();
         setPaletteOpen(current => !current);
+        return;
+      }
+      if (key === "=" || key === "+") {
+        event.preventDefault();
+        const currentScale = normalizeUiScale(window.localStorage?.getItem(UI_SCALE_STORAGE_KEY));
+        const nextScale = applyUiScale(stepUiScale(currentScale, 1));
+        try { window.localStorage?.setItem(UI_SCALE_STORAGE_KEY, String(nextScale)); } catch { /* ignore */ }
+        showToast(`界面缩放已调整至 ${nextScale}%`);
+        return;
+      }
+      if (key === "-" || key === "_") {
+        event.preventDefault();
+        const currentScale = normalizeUiScale(window.localStorage?.getItem(UI_SCALE_STORAGE_KEY));
+        const nextScale = applyUiScale(stepUiScale(currentScale, -1));
+        try { window.localStorage?.setItem(UI_SCALE_STORAGE_KEY, String(nextScale)); } catch { /* ignore */ }
+        showToast(`界面缩放已调整至 ${nextScale}%`);
+        return;
+      }
+      if (key === "0") {
+        event.preventDefault();
+        applyUiScale(100);
+        try { window.localStorage?.setItem(UI_SCALE_STORAGE_KEY, "100"); } catch { /* ignore */ }
+        showToast("界面缩放已恢复 100%");
       }
     };
     window.addEventListener("keydown", onGlobalKeyDown);
@@ -253,7 +315,7 @@ function App() {
         window.removeEventListener("keydown", onGlobalKeyDown);
       }
     };
-  }, []);
+  }, [showToast]);
 
   const togglePrivacyMask = useCallback(() => {
     const next = !privacyMaskRef.current;
@@ -284,12 +346,12 @@ function App() {
     try {
       if (typeof window !== "undefined" && window.localStorage) {
         if (enabled) window.localStorage.setItem(DEFAULT_VIEW_STORAGE_KEY, "cockpit");
-        else window.localStorage.removeItem(DEFAULT_VIEW_STORAGE_KEY);
+        else window.localStorage.setItem(DEFAULT_VIEW_STORAGE_KEY, "signals");
       }
     } catch {
       // ignore localStorage restrictions
     }
-    showToast(enabled ? "已将「今日驾驶舱」设为默认启动页" : "已恢复默认进入「策略选股」");
+    showToast(enabled ? "已将「今日驾驶舱」设为默认启动页" : "已切换默认启动页为「策略选股」");
   }, [showToast]);
 
   // 策略选股（含旧「涨停趋势」路由）是研究页：不启动行情轮询与旧版市场工具。
@@ -329,11 +391,12 @@ function App() {
   }, []);
 
   const [live, setLive] = useState(true);
+  const effectiveLive = live && !isOffline;
   // matchMedia is absent in some embedded/test renderers; default to an expanded navigation there.
-  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1100px)").matches);
+  const [navigationCollapsed, setNavigationCollapsed] = useState(() => typeof window.matchMedia === "function" && window.matchMedia("(max-width: 1280px)").matches);
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia("(max-width: 1100px)");
+    const media = window.matchMedia("(max-width: 1280px)");
     const onWidthChange = () => setNavigationCollapsed(media.matches);
     media.addEventListener("change", onWidthChange);
     return () => media.removeEventListener("change", onWidthChange);
@@ -358,6 +421,7 @@ function App() {
     removeObservation,
     saveHoldings,
     addFavoriteSecurity,
+    addFavoriteSecurities,
     handleQuickHoldingTrade
   } = useWorkspaceCollections({
     payload,
@@ -406,19 +470,19 @@ function App() {
     settings,
     settingsRef,
     settingsLoadState,
-    live,
+    live: effectiveLive,
     view,
     dashboardMode,
     askConfirm,
     showToast
   });
 
-  const openAnalysisRef = useRef<(security: Security | string, origin?: AnalysisOrigin | null) => void>(() => {});
+  const openAnalysisRef = useRef<(security: Security | string, origin?: AnalysisOrigin | null, queue?: Security[]) => void>(() => {});
   const marketFeed = useMarketWorkspaceFeed({
     view,
     dashboardMode,
     researchView,
-    live,
+    live: effectiveLive,
     payload,
     setPayload,
     latestAnalysis,
@@ -475,13 +539,27 @@ function App() {
     discover
   } = marketFeed;
 
-  const openAnalysis = (security: Security | string, origin?: AnalysisOrigin | null) => {
+  const [analysisQueue, setAnalysisQueue] = useState<Security[]>([]);
+  const scrollPositionsRef = useRef<Partial<Record<View, number>>>({});
+  const pendingRestoreScrollRef = useRef<{ view: View; top: number } | null>(null);
+
+  const openAnalysis = (security: Security | string, origin?: AnalysisOrigin | null, queue?: Security[]) => {
+    if (typeof document !== "undefined" && view !== "dashboard") {
+      const pageEl = document.querySelector<HTMLElement>(".page");
+      if (pageEl) scrollPositionsRef.current[view] = pageEl.scrollTop;
+    }
+    if (Array.isArray(queue) && queue.length > 0) setAnalysisQueue(queue);
+    else if (view !== "dashboard" || dashboardMode !== "analysis") setAnalysisQueue([]);
     setAnalysisOrigin(origin || (view === "dashboard" && dashboardMode === "analysis" ? analysisOrigin : null) || originForView());
     setDashboardMode("analysis");
     setView("dashboard");
     void loadSecurity(security);
   };
   openAnalysisRef.current = openAnalysis;
+  reconnectRefreshRef.current = () => {
+    void discover();
+    if (latestAnalysis.current?.security) void loadSecurity(latestAnalysis.current.security, true, true);
+  };
 
   const navigateTo = (next: View) => {
     if (next === "sectors" && view !== "sectors") setSectorBoardError("");
@@ -495,10 +573,16 @@ function App() {
       setView(route.view);
     } else setView(next);
     setAnalysisOrigin(null);
+    setAnalysisQueue([]);
     if (next === "dashboard") setDashboardMode("pool");
   };
 
   const returnFromAnalysis = () => {
+    const targetView = analysisOrigin?.view || "dashboard";
+    const savedScroll = scrollPositionsRef.current[targetView];
+    if (typeof savedScroll === "number" && savedScroll > 0) {
+      pendingRestoreScrollRef.current = { view: targetView, top: savedScroll };
+    }
     if (analysisOrigin) {
       if (analysisOrigin.node) setWatchlistNode(analysisOrigin.node);
       if (analysisOrigin.view === "news" || analysisOrigin.view === "announcements") {
@@ -514,6 +598,7 @@ function App() {
       setView("dashboard");
     }
     setAnalysisOrigin(null);
+    setAnalysisQueue([]);
   };
 
   const {
@@ -562,7 +647,7 @@ function App() {
 
   const copilot = useWorkspaceCopilot({
     view,
-    live,
+    live: effectiveLive,
     payload,
     holdings,
     favoriteItems,
@@ -595,11 +680,14 @@ function App() {
     copilotRef,
     copilotPhase,
     copilotAlerts,
+    clearAllCopilotAlerts,
     newsLiveQuotes,
     addNoteToT,
     addNoteToMonitor,
     handleCopilotSelect
   } = copilot;
+
+  useReportHsgtOverlay(paletteOpen || copilotOpen || Boolean(confirmRequest) || Boolean(quickMonitorTarget) || masterLocked);
 
   useAutoBackup(message => showToast(message));
 
@@ -622,7 +710,16 @@ function App() {
   }, [view]);
 
   useEffect(() => {
-    document.querySelector<HTMLElement>(".page")?.scrollTo({ top: 0, behavior: "auto" });
+    const pageEl = document.querySelector<HTMLElement>(".page");
+    if (!pageEl) return;
+    const pending = pendingRestoreScrollRef.current;
+    if (pending && pending.view === view) {
+      pendingRestoreScrollRef.current = null;
+      pageEl.scrollTo({ top: pending.top, behavior: "auto" });
+      return;
+    }
+    pendingRestoreScrollRef.current = null;
+    pageEl.scrollTo({ top: 0, behavior: "auto" });
   }, [view]);
 
   const compareCandidates = useMemo(() => {
@@ -654,7 +751,7 @@ function App() {
     { id: "dashboard" as View, label: "涨停监控", icon: LayoutDashboard },
     { id: "t-assistant" as View, label: "做T助手", icon: ArrowDownUp },
     { id: "previous-limit-up-failed" as View, label: "炸板观察", icon: Activity },
-    { id: "favorites" as View, label: "自选板块", icon: Star },
+    { id: "favorites" as View, label: "自选监控", icon: Star },
     { id: "holdings" as View, label: "持仓股", icon: WalletCards },
     { id: "watchlist" as View, label: "观察池", icon: Bookmark },
     { id: "sectors" as View, label: "板块强度", icon: Layers3 },
@@ -704,8 +801,19 @@ function App() {
   const portfolioOpenSecurity = useCallback((security: Security) =>
     navigationRef.current.openAnalysis(security, { view: "backtest", label: "返回组合回测" }), []);
 
+  const handleBatchCompare = useCallback((securities: Security[]) => {
+    const next = uniqueSecurities(securities).slice(0, 6);
+    if (!next.length) return;
+    saveSafeLocalJson("a-stock-radar:compare-selection", next, isUsableSecurityCollection);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("a-stock-radar:compare-selection-updated", { detail: next }));
+    }
+    navigateTo("compare");
+    showToast(`已将 ${next.length} 只股票送入多股同列`);
+  }, [showToast]);
+
   return (
-    <div className="app-shell terminal-shell" data-workspace={view} data-nav-collapsed={navigationCollapsed}>
+    <div className="app-shell terminal-shell" data-workspace={view} data-view={view} data-nav-collapsed={navigationCollapsed}>
       <WindowTitleBar />
       <WorkspaceNavigation
         items={navItems}
@@ -766,8 +874,8 @@ function App() {
           awaitingNotesCount: notes.awaitingCount,
           tItemsCount: tAssistant.store.items.length,
           onNavigateView: navigateTo,
-          hasMonitorAlerts: stockMonitors.alerts.length > 0,
-          onClearMonitorAlerts: stockMonitors.clearAlerts
+          hasMonitorAlerts: copilotAlerts.length > 0,
+          onClearMonitorAlerts: clearAllCopilotAlerts
         })}
 
         {isOffline && (
@@ -833,6 +941,7 @@ function App() {
           originForView,
           navigateTo,
           openAnalysis,
+          analysisQueue,
           returnFromAnalysis,
           loadSecurity,
           latestAnalysis,
@@ -841,7 +950,7 @@ function App() {
           analysisTarget,
           loading,
           error,
-          live,
+          live: effectiveLive,
           privacyMask,
           defaultCockpit,
           toggleDefaultCockpit,
@@ -858,6 +967,9 @@ function App() {
           removeObservation,
           saveHoldings,
           addFavoriteSecurity,
+          addFavoriteSecurities,
+          onOpenMonitor: setQuickMonitorTarget,
+          onBatchCompare: handleBatchCompare,
           handleQuickHoldingTrade,
           showToast,
           notes,
@@ -967,7 +1079,7 @@ function App() {
             <div
               key={item.id}
               className={`toast is-${item.tone}`}
-              role="status"
+              role={item.tone === "error" || item.tone === "warn" ? "alert" : "status"}
               aria-live={item.tone === "error" ? "assertive" : "polite"}
             >
               {item.tone === "error" || item.tone === "warn" ? <CircleAlert size={17} /> : <ShieldCheck size={17} />}
@@ -989,6 +1101,26 @@ function App() {
         />
       </WorkspaceErrorBoundary>
       <ConfirmDialog request={confirmRequest} onResolve={resolveConfirm} />
+      <QuickMonitorModal
+        stock={quickMonitorTarget}
+        config={quickMonitorTarget ? stockMonitors.configs[quickMonitorTarget.code] : undefined}
+        onSave={async (security, next) => {
+          const ok = stockMonitors.save(security.code, next);
+          if (ok && !favoriteCodes.has(security.code) && !holdings.some(h => h.code === security.code)) {
+            await addFavoriteSecurity(security);
+          }
+          if (ok) showToast(`已更新 ${security.name} 盯盘条件`);
+          return ok;
+        }}
+        onClose={() => setQuickMonitorTarget(null)}
+      />
+      <MasterPasswordUnlockModal
+        open={masterLocked}
+        onUnlocked={() => {
+          setMasterLocked(false);
+          showToast("密钥库已解锁");
+        }}
+      />
       {paletteOpen && (
         <Suspense fallback={null}>
           <QuickPaletteModal

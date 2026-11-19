@@ -1,10 +1,12 @@
 /* 1.6.47：行情与换手/成交额合并一列，次日注意移到股票行下方整行显示，表格在常见窗口宽度下不再横向截断。 */
 :root .terminal-shell .strategy-result-table { min-width: 740px; }
-:root .terminal-shell .strategy-result-col-0 { width: 24%; }
+:root .terminal-shell .strategy-result-col-0 { width: 22%; }
 :root .terminal-shell .strategy-result-col-1 { width: 194px; }
-:root .terminal-shell .strategy-result-col-2 { width: 21%; }
-:root .terminal-shell .strategy-result-col-3 { width: 17%; }
-:root .terminal-shell .strategy-result-col-4 { width: 12%; }
+:root .terminal-shell .strategy-result-col-2 { width: 19%; }
+:root .terminal-shell .strategy-result-col-3 { width: 15%; }
+:root .terminal-shell .strategy-result-col-4 { width: 16%; }
+:root .terminal-shell .strategy-result-table .stock-row-actions { margin-top: 3px; flex-wrap: nowrap; white-space: nowrap; }
+:root .terminal-shell .strategy-result-table .stock-row-actions .table-action { min-height: 20px; height: 20px; padding: 0 5px; font-size: var(--fs-2xs); line-height: 18px; white-space: nowrap; }
 :root .terminal-shell .strategy-summary-table .strategy-result-col-3 { width: 14%; }
 :root .terminal-shell .strategy-summary-table .strategy-result-col-4 { width: auto; }
 :root .terminal-shell .strategy-result-table .strategy-stock-liquidity { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--line-1); }
@@ -24,7 +26,7 @@
 .selection-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
 .selection-chart .candle-up { stroke: var(--up); fill: var(--up); }
 .selection-chart .candle-up .candle-body { stroke: var(--up); stroke-width: 1.15; fill: var(--kline-bg, var(--surface-1)); }
-.selection-chart .candle-up .volume-bar { stroke: none; fill: var(--up); }
+.selection-chart .candle-up .volume-bar { fill: var(--kline-bg, var(--surface-1)); stroke: var(--up); stroke-width: 1; }
 .selection-chart .candle-down { stroke: var(--down); fill: var(--down); }
 .selection-chart .candle-down rect { stroke: none; }
 .selection-chart text { fill: var(--ink-2); font-size: 11px; }

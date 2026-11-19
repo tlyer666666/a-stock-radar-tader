@@ -22,7 +22,7 @@
   }
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
   :root {
     --content-pad: 14px;
     --card-gap: 10px;
@@ -32,7 +32,7 @@
     grid-template-columns: var(--sidebar-w-compact) minmax(0, 1fr);
   }
 
-  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption, .nav-item span, .nav-item em, .workspace-nav-top > span) {
+  :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(.nav-caption, .nav-item span, .nav-item em, .workspace-nav-top > span, .sidebar-focus-toggle small) {
     display: none;
   }
 

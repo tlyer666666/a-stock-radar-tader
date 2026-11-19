@@ -63,7 +63,7 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
           {busy ? <LoaderCircle size={15} className="spin" /> : value ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "解读中…" : value ? "重新解读" : "AI 解读"}</button>
       </div>
     </header>
-    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
+    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
     {busy && liveText && <div className="ai-stream-preview" aria-live="polite"><p className="ai-stream-text">{liveText}</p></div>}
     {value && <article className="ai-summary">
       <h3>{value.headline || `${value.title}解读`}{kind !== "sectors" && <small>{value.asOfDate ? `数据日 ${value.asOfDate} · ` : ""}{value.model} · {new Date(value.generatedAt).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })}{value.cached ? " · 本机已保存" : ""}</small>}</h3>

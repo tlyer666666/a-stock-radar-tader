@@ -2,7 +2,7 @@
 
 本指南面向 `A股雷达`（1.6.71）的日常实盘辅助研究、盘中盯盘、计划执行核对与盘后复盘闭环。软件将客观行情证据、规则选股计划、AI 辅助诊断与个人交易记录分层保存：**所有策略、打分与做T信号仅供研究参考，软件不自动连接券商下单**。
 
-相关架构与复盘口径请参阅：[专业复盘工作台说明](../PROFESSIONAL_REVIEW.md) · [项目架构与维护边界](ARCHITECTURE.md) · [趋势质量策略说明](trend-quality-strategy.md)。
+相关架构与策略说明请参阅：[项目架构与维护边界](ARCHITECTURE.md) · [趋势质量策略说明（归档参考）](trend-quality-strategy.md) · [交易所休市日历更新手册](operations/market-calendar-update.md)。
 
 ---
 

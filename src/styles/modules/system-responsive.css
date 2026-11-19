@@ -94,9 +94,9 @@ body {
   }
 }
 
-/* ≤1100px defaults to collapsed through the application breakpoint state.
+/* ≤1280px defaults to collapsed through the application breakpoint state.
  * Manual expansion must retain the normal sidebar width and visible labels. */
-@media (max-width: 1100px) {
+@media (max-width: 1280px) {
   /* 隐藏装饰性文本：分组标题 / 导航文字 / 计数徽标 / 「工作台」标题 / 遗留品牌副标题
      （导航按钮保留 title 与 aria-label，可访问名称不丢失） */
   :root .app-shell.terminal-shell[data-nav-collapsed="true"] .workspace-navigation :is(
@@ -104,6 +104,7 @@ body {
       .nav-item span,
       .nav-item em,
       .workspace-nav-top > span,
+      .sidebar-focus-toggle small,
       .brand span
     ) {
     display: none;
@@ -120,7 +121,7 @@ body {
     padding: 0 0 var(--space-sm);
   }
 
-  :root .app-shell.terminal-shell .terminal-statusbar :is(.sidebar-status, .quota-text) {
+  :root .app-shell.terminal-shell .terminal-statusbar .quota-text {
     display: none;
   }
 }
@@ -140,7 +141,7 @@ body {
  *      及 terminal-ui:173 的 :is(.table-wrap,.table-scroll,…) 族均已有滚动能力，
  *      仅 .discover-table / .sector-member-table 只有纵向滚动，此处补齐横向。
  * ============================================================ */
-@media (max-width: 920px) {
+@media (max-width: 1180px) {
   :root .app-shell.terminal-shell .content-grid {
     grid-template-columns: minmax(0, 1fr);
   }

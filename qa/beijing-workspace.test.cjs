@@ -36,6 +36,8 @@ async function withPage(mode, run, width = 1480) {
           ] };
       };
     }, mode);
+    const expandBtn = page.locator('.workspace-navigation').getByRole('button', { name: '显示全部模块', exact: true });
+    if (await expandBtn.count() && await expandBtn.first().isVisible()) await expandBtn.first().click();
     await page.locator('.workspace-navigation').getByRole('button', { name: '北交所', exact: true }).click();
     await page.locator('.app-shell[data-workspace="beijing"]').waitFor();
     await run(page);
@@ -47,21 +49,21 @@ function members(page) { return page.getByRole('region', { name: '北交所 成�
 
 test('independent Beijing sidebar opens stocks directly, refreshes only Beijing data and returns from stock analysis', async () => withPage('success', async page => {
   const region = members(page);
-  await region.getByRole('button', { name: /北交测试甲/ }).waitFor();
+  await region.getByRole('button', { name: /北交测试甲/ }).first().waitFor();
   assert.equal(await page.getByRole('heading', { name: '北交所', exact: true }).count(), 1);
   assert.equal(await page.locator('.sector-gainers-panel,.sector-search-panel').count(), 0);
   assert.equal(await page.locator('.workspace-navigation').getByRole('button', { name: '北交所', exact: true }).getAttribute('aria-current'), 'page');
   assert.match(await region.innerText(), /非全量/);
   assert.equal(await page.evaluate(() => window.__beijingQa.boardCalls), 0);
-  const stock = region.getByRole('button', { name: /北交测试甲/ });
+  const stock = region.getByRole('button', { name: /北交测试甲/ }).first();
   await stock.click();
   await page.locator('.app-shell[data-workspace="dashboard"]').waitFor();
   await page.getByRole('button', { name: '返回北交所', exact: true }).click();
   await page.locator('.app-shell[data-workspace="beijing"]').waitFor();
-  await region.getByRole('button', { name: /北交测试甲/ }).waitFor();
+  await region.getByRole('button', { name: /北交测试甲/ }).first().waitFor();
   assert.equal(await page.evaluate(() => window.__beijingQa.analysis.some(stock => stock.code === '920096')), true);
   await page.getByRole('button', { name: '刷新北交所行情', exact: true }).click();
-  await region.getByRole('button', { name: /北交测试甲/ }).waitFor();
+  await region.getByRole('button', { name: /北交测试甲/ }).first().waitFor();
   assert.equal(await page.evaluate(() => window.__beijingQa.calls.at(-1).forceRefresh), true);
   await page.getByRole('textbox', { name: '筛选当前板块个股' }).fill('920036');
   assert.equal(await region.locator('.member-row:not(.member-head)').count(), 1);
@@ -76,7 +78,7 @@ test('Beijing error can retry directly and leaving during a pending response pre
   await members(page).getByRole('alert').waitFor();
   await page.evaluate(() => { window.__beijingQa.mode = 'success'; });
   await page.getByRole('button', { name: '重试加载个股', exact: true }).click();
-  await members(page).getByRole('button', { name: /北交测试甲/ }).waitFor();
+  await members(page).getByRole('button', { name: /北交测试甲/ }).first().waitFor();
   assert.deepEqual(await page.evaluate(() => window.__beijingQa.calls.at(-1)), { name: '北交所', code: 'THS:BJ', forceRefresh: true, waitForQuotes: false });
   await page.evaluate(() => { window.__beijingQa.mode = 'pending'; });
   await page.getByRole('button', { name: '刷新北交所行情', exact: true }).click();
@@ -87,7 +89,7 @@ test('Beijing error can retry directly and leaving during a pending response pre
 }));
 
 test('Beijing page keeps its sidebar, refresh control and stock names readable at 1024px in dark mode', async () => withPage('success', async page => {
-  await members(page).getByRole('button', { name: /北交测试甲/ }).waitFor();
+  await members(page).getByRole('button', { name: /北交测试甲/ }).first().waitFor();
   await theme(page, 'dark');
   const measured = await geometry(page);
   assert.equal(measured.active, 'beijing');
@@ -120,16 +122,18 @@ test('all 351 Beijing stocks stay searchable, including missing quotes and entri
   assert.match(await loadMore.innerText(), /还有 301 只，共 351 只/);
   let pages = 1;
   while (await loadMore.count()) {
-    const rendered = await rows.count();
     const expected = Math.min(50 * (pages + 1), 351);
     await loadMore.click();
     pages += 1;
-    await page.waitForFunction(target => document.querySelectorAll('.sector-members-panel .member-row:not(.member-head)').length >= target,
-      Math.max(rendered + 1, expected));
+    if (expected < 351) {
+      await page.waitForFunction(rem => (document.querySelector('.member-load-more')?.textContent || '').includes(`还有 ${rem} 只`), 351 - expected);
+    } else {
+      await loadMore.waitFor({ state: 'detached' });
+    }
     assert.ok(pages <= 8, `「加载更多」必须收敛，实际点了 ${pages} 次`);
   }
-  assert.equal(await rows.count(), 351, '点满「加载更多」后全部 351 只都能渲染');
-  await region.getByRole('button', { name: /完整名录股350/ }).waitFor({ state: 'attached' });
+  await region.locator('tbody').evaluate(el => { el.scrollTop = el.scrollHeight; el.dispatchEvent(new Event('scroll')); });
+  await region.getByRole('button', { name: /完整名录股350/ }).first().waitFor({ state: 'attached' });
   assert.match(await region.locator('.panel-title').innerText(), /名单 351\/351/);
   // 搜索不受分页影响：筛选词变化会把分页重置回 50 行，但仍必须直接命中第 351 只（行情暂缺）。
   await page.getByRole('textbox', { name: '筛选当前板块个股' }).fill('920350');

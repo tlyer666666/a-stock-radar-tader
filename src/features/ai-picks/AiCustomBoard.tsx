@@ -130,7 +130,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
     try {
       if (kind === "holdings") { add(await window.stockApi.getHoldings(), "持仓"); return; }
       const items: WatchItem[] = await window.stockApi.getWatchlist();
-      add(kind === "favorites" ? items.filter(item => item.favorite || !item.autoAdded) : items, kind === "favorites" ? "自选板块" : "观察池");
+      add(kind === "favorites" ? items.filter(item => item.favorite || !item.autoAdded) : items, kind === "favorites" ? "自选监控" : "观察池");
     } catch (reason) { setError(aiErrorMessage(reason)); }
   };
   const run = async (force: boolean, codes?: string[]) => {
@@ -229,7 +229,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
       <div className="ai-custom-editor-head">
         <span><b>我的股票</b><small>{list.length} / {AI_CUSTOM_MAX} 只 · 任意股票都能加，打分时软件先用日线算体检数据再交给 AI</small></span>
         <div className="ai-selection-actions">
-          <button type="button" className="secondary-btn" onClick={() => void importFrom("favorites")}><Bookmark size={15} />导入自选板块</button>
+          <button type="button" className="secondary-btn" onClick={() => void importFrom("favorites")}><Bookmark size={15} />导入自选监控</button>
           <button type="button" className="secondary-btn" onClick={() => void importFrom("watchlist")}><Eye size={15} />导入观察池</button>
           <button type="button" className="secondary-btn" onClick={() => void importFrom("holdings")}><Briefcase size={15} />导入持仓</button>
           {!!list.length && <button type="button" className="secondary-btn danger-btn" disabled={busy} onClick={() => setConfirmClear({
@@ -262,7 +262,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
         {!!visibleSuggestions.length && <ul role="listbox" aria-label="搜索结果">{visibleSuggestions.map(item => <li key={item.code}>
           <button type="button" role="option" aria-selected={false} onClick={() => selectSuggestion(item)}><Plus size={14} /><b>{item.name}</b><small>{item.code}</small></button></li>)}</ul>}
       </div>
-      {!list.length && <p className="ai-selection-note">清单是空的：搜索添加股票，或一键导入自选板块、观察池、持仓。</p>}
+      {!list.length && <p className="ai-selection-note">清单是空的：搜索添加股票，或一键导入自选监控、观察池、持仓。</p>}
       {notice && <p className="ai-selection-note" role="status">{notice}</p>}
       {(error || readError) && <div className="test-result fail" role="alert"><span />{error || readError}{error && onOpenSettings && <> <button type="button" className="link-btn" onClick={onOpenSettings}>前往 AI 设置</button></>}</div>}
       {failed.length > 0 && <div className="test-result fail" role="alert"><span />{failed.join("、")} 的日线没读到，这次没有参与打分。</div>}

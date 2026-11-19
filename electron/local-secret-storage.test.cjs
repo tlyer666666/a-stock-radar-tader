@@ -112,3 +112,73 @@ test('损坏的本机密钥文件改名留存后再生成新密钥', () => {
   assert.ok(!names.some(name => name.includes('.tmp.')));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test("主密码 AS2 信封：设置、重启锁定、错误密码拒绝、解锁后可读旧密文、改密与清除回退 32 字节裸密钥", async (t) => {
+  const { createLocalFirstSecretStorage } = require("./local-secret-storage.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-master-pw-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const keyPath = path.join(dir, "local-secret.key");
+
+  // 1) 未启用主密码：向后兼容 32 字节裸密钥
+  const first = createLocalSecretStorage({ keyPath });
+  assert.equal(first.isMasterPasswordEnabled(), false);
+  assert.equal(first.isLocked(), false);
+  assert.deepEqual(first.status(), { enabled: false, locked: false });
+  const cipherBefore = first.encryptString("sk-secret-before-master-pw");
+  assert.equal(fs.statSync(keyPath).size, 32);
+
+  // 2) 短密码被拒；设置主密码后写出 80 字节 AS2 信封，且当前进程保持已解锁
+  await assert.rejects(() => first.setMasterPassword("short77"), { code: "MASTER_PASSWORD_SHORT" });
+  const enabledStatus = await first.setMasterPassword("MasterPass#2026");
+  assert.deepEqual(enabledStatus, { enabled: true, locked: false });
+  assert.equal(first.isMasterPasswordEnabled(), true);
+  assert.equal(first.isLocked(), false);
+  const rawEnvelope = fs.readFileSync(keyPath);
+  assert.equal(rawEnvelope.length, 80);
+  assert.equal(rawEnvelope.subarray(0, 3).toString("utf8"), "AS2");
+  assert.equal(rawEnvelope[3], 0x01);
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(keyPath).mode & 0o777, 0o600);
+  }
+  assert.equal(first.decryptString(cipherBefore), "sk-secret-before-master-pw");
+
+  // 3) 重启后新实例默认锁定，读写抛 SECRET_STORAGE_LOCKED
+  const second = createLocalSecretStorage({ keyPath });
+  const wrappedSecond = createLocalFirstSecretStorage(second, null);
+  assert.equal(wrappedSecond.isMasterPasswordEnabled(), true);
+  assert.equal(wrappedSecond.isLocked(), true);
+  assert.deepEqual(wrappedSecond.status(), { enabled: true, locked: true });
+  assert.equal(wrappedSecond.isEncryptionAvailable(), false);
+  assert.throws(() => wrappedSecond.encryptString("blocked"), (err) => err.code === "SECRET_STORAGE_LOCKED" && err.message === "密钥库已锁定，请先输入主密码解锁");
+  assert.throws(() => wrappedSecond.decryptString(cipherBefore), (err) => err.code === "SECRET_STORAGE_LOCKED" && err.message === "密钥库已锁定，请先输入主密码解锁");
+
+  // 4) 错误主密码拒绝且仍保持锁定
+  await assert.rejects(() => wrappedSecond.unlockMasterPassword("WrongPassword!"), (err) => err.message === "主密码错误，请重试");
+  assert.equal(wrappedSecond.isLocked(), true);
+
+  // 5) 正确主密码解锁，原有 AS1 密文可正常解密
+  const unlockedStatus = await wrappedSecond.unlockMasterPassword("MasterPass#2026");
+  assert.deepEqual(unlockedStatus, { enabled: true, locked: false });
+  assert.equal(wrappedSecond.decryptString(cipherBefore), "sk-secret-before-master-pw");
+  const cipherAfter = wrappedSecond.encryptString("sk-secret-after-unlock");
+  assert.equal(wrappedSecond.decryptString(cipherAfter), "sk-secret-after-unlock");
+
+  // 6) 修改主密码需校验旧密码
+  await assert.rejects(() => wrappedSecond.setMasterPassword("NewMaster#2026", "BadCurrentPw"), (err) => err.message === "主密码错误，请重试");
+  await wrappedSecond.setMasterPassword("NewMaster#2026", "MasterPass#2026");
+  const third = createLocalSecretStorage({ keyPath });
+  await assert.rejects(() => third.unlockMasterPassword("MasterPass#2026"), (err) => err.message === "主密码错误，请重试");
+  await third.unlockMasterPassword("NewMaster#2026");
+  assert.equal(third.decryptString(cipherAfter), "sk-secret-after-unlock");
+
+  // 7) 清除主密码：校验当前主密码后写回 32 字节裸密钥
+  await assert.rejects(() => third.clearMasterPassword("WrongPw123"), (err) => err.message === "主密码错误，请重试");
+  const clearedStatus = await third.clearMasterPassword("NewMaster#2026");
+  assert.deepEqual(clearedStatus, { enabled: false, locked: false });
+  assert.equal(fs.statSync(keyPath).size, 32);
+  const fourth = createLocalSecretStorage({ keyPath });
+  assert.equal(fourth.isMasterPasswordEnabled(), false);
+  assert.equal(fourth.isLocked(), false);
+  assert.equal(fourth.decryptString(cipherBefore), "sk-secret-before-master-pw");
+  assert.equal(fourth.decryptString(cipherAfter), "sk-secret-after-unlock");
+});

@@ -10,6 +10,7 @@ test('AI 选股标明基础分及模型缺口，补齐仅提交缺失股票', as
   try {
     await page.goto(app.url);
     await page.locator('.workspace-navigation').waitFor();
+    await page.getByRole('button', { name: '策略选股', exact: true }).click();
     await page.getByRole('button', { name: '重新选股', exact: true }).waitFor();
     await page.evaluate(async () => {
       const { setSelectionReport } = await import('/src/features/strategy-selection/selectionReportStore.ts');
@@ -53,6 +54,7 @@ test('我的股票新增和确认清空保留独立保存的股票', async () =>
   try {
     await page.goto(app.url);
     await page.locator('.workspace-navigation').waitFor();
+    await page.getByRole('button', { name: '策略选股', exact: true }).click();
     await page.getByRole('button', { name: '重新选股', exact: true }).waitFor();
     await page.evaluate(async () => {
       const { setSelectionReport } = await import('/src/features/strategy-selection/selectionReportStore.ts');

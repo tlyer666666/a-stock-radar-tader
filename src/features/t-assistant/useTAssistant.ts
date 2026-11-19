@@ -147,6 +147,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
   useEffect(() => {
     if (!live || !codes) return;
     const stopVisible = startVisibleInterval(() => {
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
       const inSession = inTradingSession();
       if (inSession) {
         inSessionRef.current = true;
@@ -233,6 +234,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
     if (!live || !inTradingSession()) return;
     const nowMs = Date.now(), clock = shanghaiClock();
     const messages: string[] = [];
+    let primaryItem: TItem | null = null;
     for (const item of store.items) {
       const runtime = runtimes[item.code];
       const analysis = runtime?.analysis;
@@ -240,6 +242,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       const { signal } = analysis;
       if (!shouldAlert(alerted.current, item.code, signal.action, analysis.time, nowMs, clock, runtime.share?.date)) continue;
       alerted.current[item.code] = { action: signal.action, at: nowMs, date: runtime.share?.date || "", signalTime: analysis.time };
+      if (!primaryItem) primaryItem = item;
       messages.push(`${item.name}：${signal.title} ${signal.shares} 股，参考价 ${signal.price.toFixed(2)}`);
     }
     if (!messages.length) return;
@@ -249,7 +252,21 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       typeof document !== "undefined" &&
       (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus()));
     if (isBackgrounded && typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
-      void window.stockApi.notify({ title: "做T助手盘中信号", body: alertText }).catch(() => undefined);
+      type NotifyFn = (message: {
+        title: string;
+        body?: string;
+        code?: string;
+        name?: string;
+        secid?: string;
+        targetView?: string;
+      }) => Promise<{ shown: boolean }>;
+      const notify = window.stockApi.notify as unknown as NotifyFn;
+      const target = primaryItem;
+      void notify({
+        title: "做T助手盘中信号",
+        body: alertText,
+        ...(target ? { code: target.code, name: target.name, secid: target.secid, targetView: "dashboard" } : {})
+      }).catch(() => undefined);
     }
     const synthesis = typeof window !== "undefined" ? window.speechSynthesis : undefined;
     if (store.voice && synthesis && typeof SpeechSynthesisUtterance !== "undefined") {

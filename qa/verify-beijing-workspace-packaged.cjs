@@ -14,6 +14,9 @@ async function verify(appPath) {
   await fs.mkdir(output, { recursive: true });
   try {
     await page.setViewportSize({ width: 1480, height: 960 });
+    await page.locator('.workspace-navigation').waitFor();
+    const expandNav = page.locator('.workspace-navigation').getByRole('button', { name: '显示全部模块', exact: true });
+    if (await expandNav.count() && await expandNav.first().isVisible()) await expandNav.first().click();
     const nav = page.locator('.workspace-navigation').getByRole('button', { name: '北交所', exact: true });
     await nav.waitFor();
     await nav.click();

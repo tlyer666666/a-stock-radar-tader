@@ -74,7 +74,12 @@ async function capture(browser, outputRoot, file, { nav, theme, prepare } = {}) 
     await page.goto(BASE_URL, { waitUntil: "networkidle" });
     await page.locator("[data-window-controls]").waitFor({ timeout: 20_000 });
     if (theme) { await page.getByRole("button", { name: theme }).first().click(); await page.waitForTimeout(300); }
-    if (nav) { await page.getByRole("button", { name: nav, exact: true }).first().click(); await page.waitForTimeout(2500); }
+    if (nav) {
+      const expandNav = page.getByRole("button", { name: "显示全部模块", exact: true });
+      if (await expandNav.count() && await expandNav.first().isVisible()) await expandNav.first().click();
+      await page.getByRole("button", { name: nav, exact: true }).first().click();
+      await page.waitForTimeout(2500);
+    }
     if (prepare) await prepare(page);
     await page.screenshot({ path: path.join(outputRoot, file), fullPage: false });
   } finally {

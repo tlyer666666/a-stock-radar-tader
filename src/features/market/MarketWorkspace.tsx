@@ -8,7 +8,7 @@ import LimitEcologyPanel from "../dashboard/LimitEcologyPanel";
 import ConsecutiveBoardLadder from "./ConsecutiveBoardLadder";
 import { WorkspaceErrorBoundary } from "../../components/AppErrorBoundary";
 import StockMonitorEditor from "../../components/StockMonitorEditor";
-import { saveQuickObservationPlan } from "../../trendWorkspace";
+import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
 import { buildStopLossMonitorConfig, computeMonitorStopPrice, maskSensitiveText } from "../collections/holdingsLedger";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import type { ChartCandleRow } from "../../shared/ipc-contract";
@@ -110,6 +110,7 @@ export type DashboardProps = {
   limitPoolMeta: LimitPoolMeta | null;
   onOpen: (security: Security) => void;
   onAdd: (stock: Security) => void;
+  onOpenMonitor?: ((stock: Security) => void) | undefined;
   isFavorite: (code: string) => boolean;
   holdings: HoldingItem[];
   settings: Settings;
@@ -155,6 +156,7 @@ export function Dashboard({
   limitPoolMeta,
   onOpen,
   onAdd,
+  onOpenMonitor,
   isFavorite,
   holdings,
   settings,
@@ -195,11 +197,13 @@ export function Dashboard({
   const [quickTradeShares, setQuickTradeShares] = useState("100");
   const [quickTradePrice, setQuickTradePrice] = useState("");
   const [quickTradeSubmitting, setQuickTradeSubmitting] = useState(false);
+  const [quickPlanTarget, setQuickPlanTarget] = useState<QuickPlanTarget | null>(null);
   const agentTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setQuickTradeOpen(false);
     setMonitorEditorOpen(false);
     setQuickTradePrice("");
+    setQuickPlanTarget(null);
     setAgentDrawerOpen(false);
     let active = true;
     const fetcher = typeof window !== "undefined" ? window.stockApi?.getExternalFactorArchive : undefined;
@@ -299,7 +303,15 @@ export function Dashboard({
             consecutiveBoards: Number(row.consecutiveBoards || 0)
           }));
           return <div className="limit-pool-columns">
-            <LimitUpPool items={normalizedLimitUps} meta={limitPoolMeta} onOpen={onOpen} onAdd={onAdd} isFavorite={isFavorite} />
+            <LimitUpPool
+              items={normalizedLimitUps}
+              meta={limitPoolMeta}
+              onOpen={onOpen}
+              onAdd={onAdd}
+              onOpenMonitor={onOpenMonitor}
+              isFavorite={isFavorite}
+              onShowToast={onShowToast}
+            />
             <aside className="limit-ladder-sidebar"><ConsecutiveBoardLadder rows={normalizedLimitUps} onOpen={(stock) => onOpen({ code: String(stock.code || ""), name: String(stock.name || stock.code || ""), secid: String(stock.secid || "") })} /></aside>
           </div>;
         })() : <p className="limit-pool-empty" role="status">当日涨停池还没有数据：交易日开盘后自动刷新，也可以点右上角「刷新涨停池」。涨停池和连板梯队有数据后显示在这里。</p>}
@@ -751,19 +763,20 @@ export function Dashboard({
                     type="button"
                     className="secondary-btn mw-action-btn"
                     onClick={() => {
-                      if (typeof window === "undefined" || !window.localStorage) return;
                       const refPrice = hasLivePrice ? liveLatestNum : nullableNumber(quote.preClose);
-                      const res = saveQuickObservationPlan(window.localStorage, {
+                      const derivedAtr = typeof tradePlan.stopLossPrice === "number" && refPrice !== null && refPrice > tradePlan.stopLossPrice
+                        ? (refPrice - tradePlan.stopLossPrice) / 1.5
+                        : null;
+                      setQuickPlanTarget({
                         code: activeCode,
                         name: activeName,
                         secid: security.secid,
                         referencePrice: refPrice,
-                        reason: "个股分析工作台一键加入次日观察计划"
+                        atr: derivedAtr,
+                        defaultNote: "个股分析工作台次日观察计划"
                       });
-                      if (!res.ok) onShowToast?.(res.error);
-                      else onShowToast?.(res.created ? `已将 ${activeName} 加入次日观察计划（驾驶舱/趋势计划可查看）` : `${activeName} 已在次日观察计划中`);
                     }}
-                    title="生成参考入场区间与止损位，次日早盘自动进入今日驾驶舱竞价对账"
+                    title="编辑参考入场区间、止损与目标位，保存后次日早盘进入今日驾驶舱竞价对账"
                   >
                     <ClipboardPlus size={14} />
                     +次日计划
@@ -794,6 +807,13 @@ export function Dashboard({
                 )}
               </div>
             </section>
+
+            <QuickPlanModal
+              target={quickPlanTarget}
+              onClose={() => setQuickPlanTarget(null)}
+              onSaved={res => onShowToast?.(res.message)}
+              onError={msg => onShowToast?.(msg)}
+            />
 
             {monitorEditorOpen && monitors?.save && (
               <div className="panel mw-quick-monitor-panel">
@@ -1951,6 +1971,128 @@ function linePoints(values: number[], x: (index: number) => number, y: (value: n
     .join(" ");
 }
 
+const PRICE_CHART_WIDTH = 760;
+const PRICE_CHART_HEIGHT = 270;
+const PRICE_CHART_PAD = 22;
+
+type StaticPriceChartLayersProps = {
+  data: ChartCandleRow[];
+  rawMin: number;
+  min: number;
+  max: number;
+  slot: number;
+  candleWidth: number;
+  support?: number | undefined;
+  supportInScale: boolean;
+  eventIndexes: number[];
+  axisValues: number[];
+  showBoll: boolean;
+  showMa: boolean;
+  bollUpper: number[];
+  bollMid: number[];
+  bollLower: number[];
+  maValues: { ma5: number[]; ma10: number[]; ma20: number[]; ma60: number[] };
+};
+
+const StaticPriceChartLayers = memo(function StaticPriceChartLayers({
+  data,
+  rawMin,
+  min,
+  max,
+  slot,
+  candleWidth,
+  support,
+  supportInScale,
+  eventIndexes,
+  axisValues,
+  showBoll,
+  showMa,
+  bollUpper,
+  bollMid,
+  bollLower,
+  maValues
+}: StaticPriceChartLayersProps) {
+  const x = (i: number) => PRICE_CHART_PAD + slot * i + slot / 2;
+  const y = (value: number) =>
+    PRICE_CHART_PAD + ((max - value) / Math.max(0.01, max - min)) * (PRICE_CHART_HEIGHT - PRICE_CHART_PAD * 2);
+  return (
+    <g className="price-chart-static-layers">
+      {[0, 0.25, 0.5, 0.75, 1].map((ratio, index) => (
+        <g key={ratio}>
+          <line
+            x1={PRICE_CHART_PAD}
+            x2={PRICE_CHART_WIDTH - PRICE_CHART_PAD}
+            y1={PRICE_CHART_PAD + (PRICE_CHART_HEIGHT - PRICE_CHART_PAD * 2) * ratio}
+            y2={PRICE_CHART_PAD + (PRICE_CHART_HEIGHT - PRICE_CHART_PAD * 2) * ratio}
+            className="grid-line"
+          />
+          <text
+            x={PRICE_CHART_WIDTH - PRICE_CHART_PAD + 2}
+            y={PRICE_CHART_PAD + (PRICE_CHART_HEIGHT - PRICE_CHART_PAD * 2) * ratio + 4}
+            className="chart-axis-text"
+          >
+            {fmt(axisValues[index] ?? rawMin)}
+          </text>
+        </g>
+      ))}
+      {supportInScale && (
+        <line
+          x1={PRICE_CHART_PAD}
+          x2={PRICE_CHART_WIDTH - PRICE_CHART_PAD}
+          y1={y(Number(support))}
+          y2={y(Number(support))}
+          className="support-line"
+        />
+      )}
+      {eventIndexes.length > 0 && eventIndexes[0] !== undefined && (
+        <rect
+          x={Math.max(PRICE_CHART_PAD, x(eventIndexes[0]) - slot / 2)}
+          y={PRICE_CHART_PAD}
+          width={Math.max(slot, x(eventIndexes.at(-1)!) - x(eventIndexes[0]) + slot)}
+          height={PRICE_CHART_HEIGHT - PRICE_CHART_PAD * 2}
+          className="event-zone"
+        />
+      )}
+      {data.map((item, index: number) => {
+        const openPrice = Number(item.open ?? item.close ?? 0);
+        const closePrice = Number(item.close ?? openPrice);
+        const highPrice = Number(item.high ?? Math.max(openPrice, closePrice));
+        const lowPrice = Number(item.low ?? Math.min(openPrice, closePrice));
+        const rising = closePrice >= openPrice;
+        const bodyTop = y(Math.max(openPrice, closePrice));
+        const bodyBottom = y(Math.min(openPrice, closePrice));
+        return (
+          <g key={`${item.date}-${index}`} className={rising ? "k-rise" : "k-fall"}>
+            <line x1={x(index)} x2={x(index)} y1={y(highPrice)} y2={y(lowPrice)} className="wick" />
+            <rect
+              x={x(index) - candleWidth / 2}
+              y={bodyTop}
+              width={candleWidth}
+              height={Math.max(1.2, bodyBottom - bodyTop)}
+              className="candle-body"
+            />
+          </g>
+        );
+      })}
+      {showBoll && (
+        <>
+          <polyline points={linePoints(bollUpper, x, y)} className="path boll-upper-path" />
+          <polyline points={linePoints(bollMid, x, y)} className="path boll-mid-path" />
+          <polyline points={linePoints(bollLower, x, y)} className="path boll-lower-path" />
+        </>
+      )}
+      {showMa && (
+        <>
+          <polyline points={linePoints(maValues.ma60, x, y)} className="path ma60-path" />
+          <polyline points={linePoints(maValues.ma20, x, y)} className="path ma20-path" />
+          <polyline points={linePoints(maValues.ma10, x, y)} className="path ma10-path" />
+          <polyline points={linePoints(maValues.ma5, x, y)} className="path ma5-path" />
+        </>
+      )}
+    </g>
+  );
+});
+
 function PriceChart({
   history,
   eventDate,
@@ -1968,7 +2110,7 @@ function PriceChart({
   interval?: string | undefined;
   windowOffset?: number | undefined;
 }) {
-  const fullData = Array.isArray(history) ? history : [];
+  const fullData = useMemo(() => (Array.isArray(history) ? history : []), [history]);
   const windowSize = Math.max(20, Number(visibleCount) || 120);
   const safeOffset = Math.min(
     Math.max(0, fullData.length - windowSize),
@@ -1976,8 +2118,9 @@ function PriceChart({
   );
   const endIndex = Math.max(0, fullData.length - safeOffset);
   const startIndex = Math.max(0, endIndex - windowSize);
-  const data = fullData.slice(startIndex, endIndex);
+  const data = useMemo(() => fullData.slice(startIndex, endIndex), [fullData, startIndex, endIndex]);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
   const chartRectRef = useRef<{ left: number; width: number } | null>(null);
   const hoverRafRef = useRef<number | null>(null);
   const pendingHoverRef = useRef<number | null>(null);
@@ -1991,73 +2134,81 @@ function PriceChart({
     setHoverIndex(null);
   }, [data.length, interval]);
   useEffect(() => {
-    if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
-      return () => {
-        if (hoverRafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(hoverRafRef.current);
-      };
-    }
+    const node = svgRef.current;
     const invalidateRect = () => {
       chartRectRef.current = null;
     };
-    window.addEventListener("resize", invalidateRect);
-    window.addEventListener("scroll", invalidateRect, true);
+    let observer: ResizeObserver | null = null;
+    if (node && typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => {
+        const r = node.getBoundingClientRect();
+        chartRectRef.current = { left: r.left, width: r.width };
+      });
+      observer.observe(node);
+    }
+    if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+      window.addEventListener("resize", invalidateRect);
+      window.addEventListener("scroll", invalidateRect, true);
+    }
     return () => {
-      if (typeof window.removeEventListener === "function") {
+      observer?.disconnect();
+      if (typeof window !== "undefined" && typeof window.removeEventListener === "function") {
         window.removeEventListener("resize", invalidateRect);
         window.removeEventListener("scroll", invalidateRect, true);
       }
-      if (hoverRafRef.current !== null) window.cancelAnimationFrame(hoverRafRef.current);
+      if (hoverRafRef.current !== null && typeof window !== "undefined") {
+        window.cancelAnimationFrame(hoverRafRef.current);
+      }
     };
-  }, []);
+  }, [data.length]);
   const fullMaValues = useMemo(() => calculatePriceMovingAverages(fullData), [fullData]);
   const showBoll = indicators.includes("BOLL");
+  const showMa = indicators.includes("MA");
   const fullBollBands = useMemo(
     () => calculateBollingerBands(fullData, fullMaValues.ma20, showBoll),
     [fullData, fullMaValues.ma20, showBoll]
   );
-  const maValues = {
+  const maValues = useMemo(() => ({
     ma5: fullMaValues.ma5.slice(startIndex, endIndex),
     ma10: fullMaValues.ma10.slice(startIndex, endIndex),
     ma20: fullMaValues.ma20.slice(startIndex, endIndex),
     ma60: fullMaValues.ma60.slice(startIndex, endIndex)
-  };
-  const bollMid = fullMaValues.ma20.slice(startIndex, endIndex);
-  const bollUpper = fullBollBands.upper.slice(startIndex, endIndex);
-  const bollLower = fullBollBands.lower.slice(startIndex, endIndex);
-  if (!data.length) return <div className="empty-inline">暂无K线数据</div>;
-  const width = 760;
-  const height = 270;
-  const pad = 22;
-  let rawMin = Infinity;
-  let rawMax = -Infinity;
-  const includeScaleValue = (value: number) => {
-    if (!Number.isFinite(value)) return;
-    rawMin = Math.min(rawMin, value);
-    rawMax = Math.max(rawMax, value);
-  };
-  data.forEach((item) => { includeScaleValue(Number(item.high)); includeScaleValue(Number(item.low)); });
-  if (showBoll) {
-    bollUpper.forEach(includeScaleValue);
-    bollLower.forEach(includeScaleValue);
-  }
-  const supportInScale = Number.isFinite(Number(support)) &&
-    Number(support) >= rawMin * 0.85 &&
-    Number(support) <= rawMax * 1.15;
-  const min = Math.min(rawMin, supportInScale ? Number(support) : Infinity) * 0.997;
-  const max = Math.max(rawMax, supportInScale ? Number(support) : -Infinity) * 1.003;
-  const slot = (width - pad * 2) / Math.max(1, data.length);
-  const candleWidth = Math.max(1.5, Math.min(7, slot * 0.62));
-  const x = (i: number) => pad + slot * i + slot / 2;
-  const y = (value: number) => pad + ((max - value) / Math.max(0.01, max - min)) * (height - pad * 2);
-  const exactEventIndexes = data
-    .map((item, index: number) =>
-      String(item.date || "").slice(0, 10) === String(eventDate || "").slice(0, 10)
-        ? index
-        : -1
-    )
-    .filter((index: number) => index >= 0);
-  let eventIndexes = exactEventIndexes;
-  if (!eventIndexes.length && ["102", "103"].includes(String(interval)) && eventDate) {
+  }), [fullMaValues, startIndex, endIndex]);
+  const bollMid = maValues.ma20;
+  const bollUpper = useMemo(() => fullBollBands.upper.slice(startIndex, endIndex), [fullBollBands.upper, startIndex, endIndex]);
+  const bollLower = useMemo(() => fullBollBands.lower.slice(startIndex, endIndex), [fullBollBands.lower, startIndex, endIndex]);
+
+  const scale = useMemo(() => {
+    let rawMin = Infinity;
+    let rawMax = -Infinity;
+    const includeScaleValue = (value: number) => {
+      if (!Number.isFinite(value)) return;
+      rawMin = Math.min(rawMin, value);
+      rawMax = Math.max(rawMax, value);
+    };
+    data.forEach((item) => { includeScaleValue(Number(item.high)); includeScaleValue(Number(item.low)); });
+    if (showBoll) {
+      bollUpper.forEach(includeScaleValue);
+      bollLower.forEach(includeScaleValue);
+    }
+    const supportInScale = Number.isFinite(Number(support)) &&
+      Number(support) >= rawMin * 0.85 &&
+      Number(support) <= rawMax * 1.15;
+    const min = Math.min(rawMin, supportInScale ? Number(support) : Infinity) * 0.997;
+    const max = Math.max(rawMax, supportInScale ? Number(support) : -Infinity) * 1.003;
+    const axisValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => max - (max - min) * ratio);
+    return { rawMin, rawMax, supportInScale, min, max, axisValues };
+  }, [data, showBoll, bollUpper, bollLower, support]);
+
+  const eventIndexes = useMemo(() => {
+    const exact = data
+      .map((item, index: number) =>
+        String(item.date || "").slice(0, 10) === String(eventDate || "").slice(0, 10)
+          ? index
+          : -1
+      )
+      .filter((index: number) => index >= 0);
+    if (exact.length || !["102", "103"].includes(String(interval)) || !eventDate) return exact;
     const targetTime = new Date(String(eventDate).slice(0, 10)).getTime();
     const fallbackIndex = data.findIndex(
       (item) => new Date(String(item.date || "").slice(0, 10)).getTime() >= targetTime
@@ -2067,13 +2218,20 @@ function PriceChart({
       const priorEnd = fallbackIndex > 0
         ? new Date(String(data[fallbackIndex - 1]?.date || "").slice(0, 10)).getTime()
         : currentEnd - (String(interval) === "102" ? 8 : 32) * 86400000;
-      if (targetTime > priorEnd && targetTime <= currentEnd) eventIndexes = [fallbackIndex];
+      if (targetTime > priorEnd && targetTime <= currentEnd) return [fallbackIndex];
     }
-  }
+    return exact;
+  }, [data, eventDate, interval]);
+
+  if (!data.length) return <div className="empty-inline">暂无K线数据</div>;
+  const { rawMin, supportInScale, min, max, axisValues } = scale;
+  const slot = (PRICE_CHART_WIDTH - PRICE_CHART_PAD * 2) / Math.max(1, data.length);
+  const candleWidth = Math.max(1.5, Math.min(7, slot * 0.62));
+  const x = (i: number) => PRICE_CHART_PAD + slot * i + slot / 2;
+  const y = (value: number) => PRICE_CHART_PAD + ((max - value) / Math.max(0.01, max - min)) * (PRICE_CHART_HEIGHT - PRICE_CHART_PAD * 2);
   const shortDate = (value: string | undefined) => value && value.length > 10 ? value.slice(5, 16) : (value || "--");
   const selectedIndex = hoverIndex === null ? data.length - 1 : Math.min(hoverIndex, Math.max(0, data.length - 1));
   const selected = data[selectedIndex];
-  const axisValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => max - (max - min) * ratio);
   const dateTickIndexes = [...new Set(
     [0, 0.25, 0.5, 0.75, 1].map((ratio) =>
       Math.min(data.length - 1, Math.round((data.length - 1) * ratio))
@@ -2101,7 +2259,6 @@ function PriceChart({
     });
   };
   const handleLeave = () => {
-    chartRectRef.current = null;
     pendingHoverRef.current = null;
     if (hoverRafRef.current !== null && typeof window !== "undefined") {
       window.cancelAnimationFrame(hoverRafRef.current);
@@ -2123,7 +2280,8 @@ function PriceChart({
         <span>换手 <em>{fmt(Number(selected?.turnover || 0))}%</em></span>
       </div>
       <svg
-        viewBox={`0 0 ${width} ${height}`}
+        ref={svgRef}
+        viewBox={`0 0 ${PRICE_CHART_WIDTH} ${PRICE_CHART_HEIGHT}`}
         preserveAspectRatio="none"
         role="img"
         aria-label="股票K线行情"
@@ -2131,77 +2289,33 @@ function PriceChart({
         onMouseMove={handleMove}
         onMouseLeave={handleLeave}
       >
-        {[0, 0.25, 0.5, 0.75, 1].map((ratio, index) => (
-          <g key={ratio}>
-            <line
-              x1={pad}
-              x2={width - pad}
-              y1={pad + (height - pad * 2) * ratio}
-              y2={pad + (height - pad * 2) * ratio}
-              className="grid-line"
-            />
-            <text
-              x={width - pad + 2}
-              y={pad + (height - pad * 2) * ratio + 4}
-              className="chart-axis-text"
-            >
-              {fmt(axisValues[index] ?? rawMin)}
-            </text>
-          </g>
-        ))}
-        {supportInScale && <line x1={pad} x2={width - pad} y1={y(Number(support))} y2={y(Number(support))} className="support-line" />}
-        {eventIndexes.length > 0 && eventIndexes[0] !== undefined && (
-          <rect
-            x={Math.max(pad, x(eventIndexes[0]) - slot / 2)}
-            y={pad}
-            width={Math.max(slot, x(eventIndexes.at(-1)!) - x(eventIndexes[0]) + slot)}
-            height={height - pad * 2}
-            className="event-zone"
-          />
-        )}
-        {data.map((item, index: number) => {
-          const openPrice = Number(item.open ?? item.close ?? 0);
-          const closePrice = Number(item.close ?? openPrice);
-          const highPrice = Number(item.high ?? Math.max(openPrice, closePrice));
-          const lowPrice = Number(item.low ?? Math.min(openPrice, closePrice));
-          const rising = closePrice >= openPrice;
-          const bodyTop = y(Math.max(openPrice, closePrice));
-          const bodyBottom = y(Math.min(openPrice, closePrice));
-          return (
-            <g key={`${item.date}-${index}`} className={rising ? "k-rise" : "k-fall"}>
-              <line x1={x(index)} x2={x(index)} y1={y(highPrice)} y2={y(lowPrice)} className="wick" />
-              <rect
-                x={x(index) - candleWidth / 2}
-                y={bodyTop}
-                width={candleWidth}
-                height={Math.max(1.2, bodyBottom - bodyTop)}
-                className="candle-body"
-              />
-            </g>
-          );
-        })}
-        {indicators.includes("BOLL") && (
-          <>
-            <polyline points={linePoints(bollUpper, x, y)} className="path boll-upper-path" />
-            <polyline points={linePoints(bollMid, x, y)} className="path boll-mid-path" />
-            <polyline points={linePoints(bollLower, x, y)} className="path boll-lower-path" />
-          </>
-        )}
-        {indicators.includes("MA") && (
-          <>
-            <polyline points={linePoints(maValues.ma60, x, y)} className="path ma60-path" />
-            <polyline points={linePoints(maValues.ma20, x, y)} className="path ma20-path" />
-            <polyline points={linePoints(maValues.ma10, x, y)} className="path ma10-path" />
-            <polyline points={linePoints(maValues.ma5, x, y)} className="path ma5-path" />
-          </>
-        )}
-        {hoverIndex !== null && selected && (
-          <>
-            <line x1={x(selectedIndex)} x2={x(selectedIndex)} y1={pad} y2={height - pad} className="chart-crosshair" />
-            <line x1={pad} x2={width - pad} y1={y(Number(selected.close))} y2={y(Number(selected.close))} className="chart-crosshair" />
-            <circle cx={x(selectedIndex)} cy={y(Number(selected.close))} r="3" className="chart-crosshair-dot" />
-          </>
-        )}
+        <StaticPriceChartLayers
+          data={data}
+          rawMin={rawMin}
+          min={min}
+          max={max}
+          slot={slot}
+          candleWidth={candleWidth}
+          support={support}
+          supportInScale={supportInScale}
+          eventIndexes={eventIndexes}
+          axisValues={axisValues}
+          showBoll={showBoll}
+          showMa={showMa}
+          bollUpper={bollUpper}
+          bollMid={bollMid}
+          bollLower={bollLower}
+          maValues={maValues}
+        />
+        <g className="chart-crosshair-layer">
+          {hoverIndex !== null && selected && (
+            <>
+              <line x1={x(selectedIndex)} x2={x(selectedIndex)} y1={PRICE_CHART_PAD} y2={PRICE_CHART_HEIGHT - PRICE_CHART_PAD} className="chart-crosshair" />
+              <line x1={PRICE_CHART_PAD} x2={PRICE_CHART_WIDTH - PRICE_CHART_PAD} y1={y(Number(selected.close))} y2={y(Number(selected.close))} className="chart-crosshair" />
+              <circle cx={x(selectedIndex)} cy={y(Number(selected.close))} r="3" className="chart-crosshair-dot" />
+            </>
+          )}
+        </g>
       </svg>
       {!supportInScale && Number.isFinite(Number(support)) && (
         <div className={`support-offscale ${Number(support) < rawMin ? "below" : "above"}`}>

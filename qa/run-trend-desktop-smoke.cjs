@@ -14,6 +14,8 @@ async function run() {
     const page = session.page;
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
+    await page.locator(".workspace-navigation").waitFor();
+    await page.getByRole("button", { name: "策略选股", exact: true }).click();
     await page.getByRole("heading", { name: "策略选股", exact: true }).waitFor();
     await page.locator(".strategy-library-item.trend").first().click();
     await page.getByRole("heading", { name: /^趋势模型/ }).waitFor();

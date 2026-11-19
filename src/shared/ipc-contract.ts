@@ -58,6 +58,7 @@ export const MAIN_IPC_CHANNELS = [
   "ai:test",
   "app:notify",
   "app:set-theme",
+  "app:set-zoom",
   "app:version",
   "app:window-control",
   "backtest:run",
@@ -90,6 +91,7 @@ export const MAIN_IPC_CHANNELS = [
   "market:sector-limit-count",
   "market:sector-strength",
   "market:source-health",
+  "market:source-reset",
   "news:analyze-impact",
   "news:get-feed",
   "news:refresh",
@@ -102,11 +104,18 @@ export const MAIN_IPC_CHANNELS = [
   "sector:classifications",
   "sector:detail",
   "sector:quotes",
+  "security:master-clear",
+  "security:master-set",
+  "security:master-status",
+  "security:master-unlock",
   "service:cancel",
   "settings:get",
   "settings:save",
   "settings:test-provider",
   "shell:open-external",
+  "storage:cleanup",
+  "storage:kv-get",
+  "storage:kv-set",
   "strategy:custom:delete",
   "strategy:custom:import-settings",
   "strategy:custom:list",
@@ -137,6 +146,7 @@ export const REVIEW_IPC_CHANNELS = [
 
 export const IPC_EVENT_CHANNELS = [
   "ai:stream",
+  "app:notification-clicked",
   "review-window:theme-changed"
 ] as const;
 
@@ -233,6 +243,7 @@ export type StockApi = SectorExplorerApi & {
   getQuoteSnapshot(security: Security | string): Promise<QuoteSnapshotPayload>;
   getDataFederation(security: Security | string): Promise<Record<string, unknown>>;
   getMarketSourceHealth?(): Promise<MarketSourceHealth>;
+  resetMarketSourceHealth?(): Promise<{ ok: boolean }>;
   getConvertibleBonds?(options?: { forceRefresh?: boolean; waitForQuotes?: boolean }): Promise<ConvertibleBondSnapshot>;
   getLimitEcology?(options?: { forceRefresh?: boolean }): Promise<Record<string, unknown>>;
   ai?: {
@@ -459,8 +470,28 @@ export type StockApi = SectorExplorerApi & {
   saveSettings(settings: Settings): Promise<Settings>;
   testProvider(settings: Settings): Promise<{ ok: boolean; provider?: string; latency?: number; message?: string; error?: string; [key: string]: unknown }>;
   setTheme(theme: Settings["theme"]): Promise<void>;
+  setZoomFactor?(factor: number): Promise<{ factor: number }>;
   controlWindow(action: "minimize" | "toggle-maximize" | "close"): Promise<{ ok: boolean; maximized: boolean }>;
-  notify?(message: { title: string; body?: string }): Promise<{ shown: boolean }>;
+  notify?(message: {
+    title: string;
+    body?: string;
+    code?: string;
+    name?: string;
+    secid?: string;
+    targetView?: string;
+  }): Promise<{ shown: boolean }>;
+  onNotificationClick?(listener: (payload: { code?: string; name?: string; secid?: string; targetView?: string }) => void): () => void;
+  kvGet?(key: string): Promise<string | null>;
+  kvSet?(key: string, value: string): Promise<boolean>;
+  cleanupStorageCache?(input: { target: "web-cache" | "stale-bars" | "daily-bars" | "legacy-profile" }): Promise<{
+    ok: boolean;
+    message: string;
+    summary?: { userDataBytes: number; dailyBarsBytes: number; dailyBarsCount: number; webCacheBytes: number };
+  }>;
+  getMasterPasswordStatus?(): Promise<{ enabled: boolean; locked: boolean }>;
+  setMasterPassword?(input: { newPassword: string; currentPassword?: string }): Promise<{ enabled: boolean; locked: boolean }>;
+  unlockMasterPassword?(input: { password: string } | string): Promise<{ enabled: boolean; locked: boolean }>;
+  clearMasterPassword?(input: { currentPassword: string } | string): Promise<{ enabled: boolean; locked: boolean }>;
   syncNoteIntervals?(input: {
     items: Array<{ id: string; text: string; at: number; intervalMinutes: number }>;
     systemNotify: boolean;

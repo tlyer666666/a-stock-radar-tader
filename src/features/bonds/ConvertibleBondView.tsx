@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, BookmarkCheck, Check, ChevronRight, Coins, Copy, RefreshCw, Search, X } from "lucide-react";
+import { Check, ChevronRight, Coins, Copy, RefreshCw, Search, X } from "lucide-react";
+import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
+import StockRowActions from "../../components/StockRowActions";
+import { useVirtualWindow } from "../../components/useVirtualWindow";
 import { PageHeading, PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { whenVisible } from "../../visiblePolling";
 import { bondSortState, selectBonds, toggleBondSort, type BondMarketFilter, type BondPriceFilter, type BondSort, type BondSortColumn, type ConvertibleBond, type ConvertibleBondSnapshot } from "./bondTypes";
@@ -40,7 +43,11 @@ export function ConvertibleBondTable({
   sort,
   onSort,
   favoriteCodes,
-  onToggleFavorite
+  plannedCodes,
+  onToggleFavorite,
+  onAddFavorite,
+  onOpenMonitor,
+  onAddPlan
 }: {
   bonds: ConvertibleBond[];
   onOpenBond: (security: Security) => void;
@@ -48,61 +55,102 @@ export function ConvertibleBondTable({
   sort?: BondSort;
   onSort?: (column: BondSortColumn) => void;
   favoriteCodes?: ReadonlySet<string> | undefined;
+  plannedCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
+  onAddFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
+  onAddPlan?: ((bond: ConvertibleBond) => void) | undefined;
 }) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtual = useVirtualWindow({
+    itemCount: bonds.length,
+    rowHeight: 44,
+    overscan: 8,
+    threshold: 80,
+    containerRef: scrollRef
+  });
+  const visibleBonds = virtual.enabled ? bonds.slice(virtual.startIndex, virtual.endIndex) : bonds;
+  const handleFav = onToggleFavorite ?? (onAddFavorite ? (sec: Security) => {
+    if (!favoriteCodes?.has(sec.code)) onAddFavorite(sec);
+  } : undefined);
+  const showActions = Boolean(handleFav || onOpenMonitor || onAddPlan);
+  const colCount = showActions ? 8 : 7;
   const head = (column: BondSortColumn, label: string) => {
     if (!sort || !onSort) return <th scope="col">{label}</th>;
     const state = bondSortState(sort, column);
     return <th scope="col" aria-sort={state}><button type="button" className={`column-sort-button${state === "none" ? "" : " active"}`} onClick={() => onSort(column)}
       aria-label={state === "none" ? `按${label}从大到小排序` : `按${label}排序，当前${state === "descending" ? "从大到小" : "从小到大"}，点击切换`}>{label}{state === "descending" ? " ▾" : state === "ascending" ? " ▴" : ""}</button></th>;
   };
-  return <div className="bond-table-wrap" tabIndex={0} role="region" aria-label="可转债行情表格，可横向滚动">
-    <table className="bond-table">
-      <thead><tr><th scope="col">转债</th>{head("price", "现价")}{head("change", "涨跌幅")}{head("amount", "成交额")}{head("turnover", "换手率")}<th scope="col">正股</th>{head("years", "剩余年限")}{onToggleFavorite && <th scope="col">操作</th>}</tr></thead>
-      <tbody>{bonds.map((bond) => {
-        const bSec = bondSecurity(bond);
-        const isFav = Boolean(favoriteCodes?.has(bond.code));
-        return <tr key={bond.code}>
-          <th scope="row"><button type="button" className="bond-identity" onClick={() => onOpenBond(bSec)} aria-label={`查看 ${bond.name} ${bond.code}`}><b>{bond.name}</b><code>{bond.code}</code><ChevronRight size={12} /></button></th>
-          <td>{fixed(bond.latest)}</td>
-          <td className={tone(bond.changePct)}>{signed(bond.changePct)}</td>
-          <td>{amountText(bond.amount)}</td>
-          <td>{bond.turnover === null ? "--" : `${bond.turnover.toFixed(2)}%`}</td>
-          <td>{bond.stockCode ? <button type="button" className="bond-stock-link" onClick={() => onOpenStock(stockSecurity(bond))}>{bond.stockName || bond.stockCode} <code>{bond.stockCode}</code></button> : <span className="bond-muted">--</span>}</td>
-          <td>{bond.remainingYears === null ? "--" : `${bond.remainingYears.toFixed(2)} 年`}</td>
-          {onToggleFavorite && (
-            <td>
-              <button
-                type="button"
-                className={`table-action${isFav ? " active" : ""}`}
-                aria-label={`${isFav ? "移出自选" : "加入自选"} ${bond.code}`}
-                title={isFav ? "移出自选板块" : "将转债加入自选板块"}
-                onClick={() => onToggleFavorite(bSec)}
-              >
-                {isFav ? <BookmarkCheck size={12} /> : <Bookmark size={12} />}
-                {isFav ? "已自选" : "+自选"}
-              </button>
-            </td>
+  return (
+    <div
+      ref={scrollRef}
+      className="bond-table-wrap"
+      tabIndex={0}
+      role="region"
+      aria-label="可转债行情表格，可横向滚动"
+      onScroll={virtual.enabled ? virtual.onScroll : undefined}
+      style={virtual.enabled ? { maxHeight: 580, overflowY: "auto" } : undefined}
+    >
+      <table className="bond-table">
+        <thead><tr><th scope="col">转债</th>{head("price", "现价")}{head("change", "涨跌幅")}{head("amount", "成交额")}{head("turnover", "换手率")}<th scope="col">正股</th>{head("years", "剩余年限")}{showActions && <th scope="col">操作</th>}</tr></thead>
+        <tbody>
+          {virtual.enabled && virtual.topSpacerHeight > 0 && (
+            <tr aria-hidden="true"><td colSpan={colCount} style={{ height: virtual.topSpacerHeight, padding: 0, border: 0 }} /></tr>
           )}
-        </tr>;
-      })}</tbody>
-    </table>
-  </div>;
+          {visibleBonds.map((bond) => {
+            const bSec = bondSecurity(bond);
+            const isFav = Boolean(favoriteCodes?.has(bond.code));
+            return <tr key={bond.code}>
+              <th scope="row"><button type="button" className="bond-identity" onClick={() => onOpenBond(bSec)} aria-label={`查看 ${bond.name} ${bond.code}`}><b>{bond.name}</b><code>{bond.code}</code><ChevronRight size={12} /></button></th>
+              <td>{fixed(bond.latest)}</td>
+              <td className={tone(bond.changePct)}>{signed(bond.changePct)}</td>
+              <td>{amountText(bond.amount)}</td>
+              <td>{bond.turnover === null ? "--" : `${bond.turnover.toFixed(2)}%`}</td>
+              <td>{bond.stockCode ? <button type="button" className="bond-stock-link" onClick={() => onOpenStock(stockSecurity(bond))}>{bond.stockName || bond.stockCode} <code>{bond.stockCode}</code></button> : <span className="bond-muted">--</span>}</td>
+              <td>{bond.remainingYears === null ? "--" : `${bond.remainingYears.toFixed(2)} 年`}</td>
+              {showActions && (
+                <td>
+                  <StockRowActions
+                    security={bSec}
+                    isFavorite={isFav}
+                    isPlanned={Boolean(plannedCodes?.has(bond.code))}
+                    onToggleFavorite={handleFav}
+                    onOpenMonitor={onOpenMonitor}
+                    onAddPlan={onAddPlan ? () => onAddPlan(bond) : undefined}
+                    compact
+                  />
+                </td>
+              )}
+            </tr>;
+          })}
+          {virtual.enabled && virtual.bottomSpacerHeight > 0 && (
+            <tr aria-hidden="true"><td colSpan={colCount} style={{ height: virtual.bottomSpacerHeight, padding: 0, border: 0 }} /></tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export default function ConvertibleBondView({
   onOpenSecurity,
   favoriteCodes,
   onToggleFavorite,
+  onAddFavorite,
+  onOpenMonitor,
   onShowToast,
   live = true
 }: {
   onOpenSecurity: (security: Security) => void;
   favoriteCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
+  onAddFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
   onShowToast?: ((message: string) => void) | undefined;
   live?: boolean;
 }) {
+  const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [plannedCodes, setPlannedCodes] = usePlannedCodes();
   const [snapshot, setSnapshot] = useState<ConvertibleBondSnapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -138,10 +186,14 @@ export default function ConvertibleBondView({
   }, [api, favoriteCodes]);
 
   const effectiveFavCodes = favoriteCodes ?? localFavCodes;
-  const canToggleFav = Boolean(onToggleFavorite || (typeof api?.getWatchlist === "function" && typeof api?.saveWatchlist === "function"));
+  const canToggleFav = Boolean(onToggleFavorite || onAddFavorite || (typeof api?.getWatchlist === "function" && typeof api?.saveWatchlist === "function"));
   const handleToggleFav = useCallback((sec: Security) => {
     if (onToggleFavorite) {
       onToggleFavorite(sec);
+      return;
+    }
+    if (onAddFavorite) {
+      if (!effectiveFavCodes.has(sec.code)) onAddFavorite(sec);
       return;
     }
     if (typeof api?.getWatchlist !== "function" || typeof api?.saveWatchlist !== "function") return;
@@ -168,7 +220,7 @@ export default function ConvertibleBondView({
     }).catch(() => {
       onShowToast?.("自选保存失败");
     });
-  }, [api, onToggleFavorite, onShowToast]);
+  }, [api, effectiveFavCodes, onAddFavorite, onToggleFavorite, onShowToast]);
 
   const load = useCallback(async (forceRefresh = false) => {
     if (typeof api?.getConvertibleBonds !== "function") {
@@ -257,7 +309,25 @@ export default function ConvertibleBondView({
           </button>
         )}
       </div>
-      {rows.length ? <ConvertibleBondTable bonds={rows.slice(0, limit)} onOpenBond={onOpenSecurity} onOpenStock={onOpenSecurity} sort={sort} onSort={(column) => { setSort((current) => toggleBondSort(current, column)); setLimit(PAGE); }} favoriteCodes={effectiveFavCodes} onToggleFavorite={canToggleFav ? handleToggleFav : undefined} />
+      {rows.length ? <ConvertibleBondTable
+        bonds={rows.slice(0, limit)}
+        onOpenBond={onOpenSecurity}
+        onOpenStock={onOpenSecurity}
+        sort={sort}
+        onSort={(column) => { setSort((current) => toggleBondSort(current, column)); setLimit(PAGE); }}
+        favoriteCodes={effectiveFavCodes}
+        plannedCodes={plannedCodes}
+        onToggleFavorite={canToggleFav ? handleToggleFav : undefined}
+        onOpenMonitor={onOpenMonitor}
+        onAddPlan={(bond) => setPlanTarget({
+          code: bond.code,
+          name: bond.name,
+          secid: bond.secid,
+          referencePrice: bond.latest ?? null,
+          asOf: snapshot?.asOf,
+          defaultNote: bond.stockName ? `正股 ${bond.stockName} ${bond.stockCode}` : "可转债观察计划"
+        })}
+      />
         : <div className="bond-empty" role={snapshot ? undefined : "status"} aria-live={snapshot ? undefined : "polite"}>{snapshot ? "没有符合条件的可转债。" : "正在读取同花顺可转债名单…"}</div>}
       {rows.length > limit && <button type="button" className="secondary-btn bond-more" onClick={() => setLimit((value) => value + PAGE)}>再显示 {Math.min(PAGE, rows.length - limit)} 只（共 {rows.length} 只）</button>}
     </section>
@@ -266,5 +336,18 @@ export default function ConvertibleBondView({
       <ul>{snapshot.upcoming.map((bond) => <li key={bond.code}><b>{bond.name}</b> <code>{bond.code}</code><span>正股 {bond.stockName || "--"} {bond.stockCode}</span><span>{bond.listingDate ? `上市 ${bond.listingDate}` : "上市日期待定"}</span></li>)}</ul>
     </details>}
     <p className="bond-source">数据：{snapshot?.source || "同花顺"} · 更新 {timeText(snapshot?.fetchedAt)}{snapshot?.roster.discoveredAt ? ` · 在市名单核对于 ${timeText(snapshot.roster.discoveredAt)}` : ""}</p>
+    <QuickPlanModal
+      target={planTarget}
+      onClose={() => setPlanTarget(null)}
+      onSaved={res => {
+        setPlannedCodes(prev => {
+          const next = new Set(prev);
+          next.add(res.code);
+          return next;
+        });
+        onShowToast?.(res.message);
+      }}
+      onError={msg => onShowToast?.(msg)}
+    />
   </div>;
 }

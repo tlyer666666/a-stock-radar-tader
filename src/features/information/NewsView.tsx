@@ -403,7 +403,7 @@ export function NewsView({
         <div className="news-filters">
           <label><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={announcementOnly ? "搜索股票、公告标题、事件关键词" : "搜索股票、板块、事件关键词"} /></label>
           {favorites.length > 0 && <div>
-            <button type="button" className={onlyFavorites ? "active" : ""} aria-pressed={onlyFavorites} onClick={() => setOnlyFavorites(!onlyFavorites)}>仅看自选板块 ({favorites.length})</button>
+            <button type="button" className={onlyFavorites ? "active" : ""} aria-pressed={onlyFavorites} onClick={() => setOnlyFavorites(!onlyFavorites)}>仅看自选监控 ({favorites.length})</button>
           </div>}
           <div><Filter size={15} />
             {[
@@ -530,7 +530,7 @@ export function NewsView({
 
         <div className="panel realtime-news-list">
           <PanelTitle
-            title={`${informationTabs.find(tab => tab.id === contentType)?.label} · ${onlyFavorites ? "自选板块" : scopes.find((item) => item.id === scope)?.label || "全市场"}`}
+            title={`${informationTabs.find(tab => tab.id === contentType)?.label} · ${onlyFavorites ? "自选监控" : scopes.find((item) => item.id === scope)?.label || "全市场"}`}
             subtitle={announcementOnly ? "按披露时间倒序；同一公告的聚合转载自动合并" : "按原始发布时间倒序；重复转载自动合并"}
             icon={announcementOnly ? FileText : Activity}
             badge={`${countsAvailable ? visibleItems.length : "--"} 条`}
@@ -554,7 +554,7 @@ export function NewsView({
                   {duplicates > 1 && <em>合并 {duplicates} 条</em>}
                   {item.portfolioImpact === "holding" && <em className="direction negative">持仓关联</em>}
                   {item.portfolioImpact === "watchlist" && <em className="direction positive">自选关注</em>}
-                  {item.portfolioImpact === "favorite" && <em className="direction positive">自选板块</em>}
+                  {item.portfolioImpact === "favorite" && <em className="direction positive">自选监控</em>}
                   {item.portfolioImpact === "limitUp" && <em className="direction positive">涨停标的</em>}
                 </div>
                 <h3>{item.title}</h3>

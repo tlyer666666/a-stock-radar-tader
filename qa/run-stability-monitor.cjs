@@ -25,6 +25,8 @@ async function run() {
     const page = await app.firstWindow();
     page.on("pageerror", (error) => result.rendererErrors.push(error.message));
     const openTrendWorkspace = async () => {
+      await page.locator(".workspace-navigation").waitFor();
+      await page.getByRole("button", { name: "策略选股", exact: true }).click();
       await page.getByRole("heading", { name: "策略选股", exact: true }).waitFor();
       await page.locator(".strategy-library-item.trend").first().click();
       await page.getByRole("heading", { name: /^趋势模型/ }).waitFor();

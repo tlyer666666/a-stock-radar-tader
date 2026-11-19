@@ -15,12 +15,15 @@ export function AiButton({ note, api, primary = false }: { note: Note; api: Note
     onClick={() => void api.askAi(note.id)}>{running ? <Loader2 size={13} className="spin" /> : <Bot size={13} />}{running ? "AI 在看…" : note.ai ? "再问一次 AI" : "让 AI 看看"}</button>;
 }
 
+const AI_SETTINGS_ERROR_RE = /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i;
+
 /** AI 的判断：结论、时间，正文默认收起一部分；可以去 AI 问股接着追问或查看个股。 */
 export function AiResult({ note, api, now, compact = false, onOpenStock }: { note: Note; api: NotesApi; now: number; compact?: boolean; onOpenStock?: ((security: Security) => void) | undefined }) {
   const ai = note.ai!;
   const [open, setOpen] = useState(!compact);
   const tone = stanceTone((ai.stance || undefined) as AgentStance | undefined);
   const canContinue = ai.status !== "running" && !["pending", "none"].includes(ai.conversationId);
+  const canJumpAi = typeof window !== "undefined" && typeof window.__aStockOpenSettings === "function";
   return <div className={`notes-ai ${ai.status}`} aria-label="AI 的看法">
     <div className="notes-ai-head">
       <Bot size={14} /><b>{ai.status === "running" ? "AI 正在读行情、想办法…" : ai.status === "error" ? "AI 没看成" : "AI 的看法"}</b>
@@ -33,7 +36,14 @@ export function AiResult({ note, api, now, compact = false, onOpenStock }: { not
         {ai.status !== "running" && !compact && <button type="button" className="link-btn" aria-label="清除 AI 的看法" onClick={() => api.clearAi(note.id)}><X size={13} /></button>}
       </span>
     </div>
-    {ai.status === "error" && <p className="notes-ai-error">{ai.answer}</p>}
+    {ai.status === "error" && (
+      <p className="notes-ai-error">
+        {ai.answer}
+        {canJumpAi && AI_SETTINGS_ERROR_RE.test(ai.answer) && (
+          <> <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button></>
+        )}
+      </p>
+    )}
     {ai.status === "done" && <div className={open ? "notes-ai-body" : "notes-ai-body clipped"}><AgentMarkdown text={ai.answer} /></div>}
   </div>;
 }

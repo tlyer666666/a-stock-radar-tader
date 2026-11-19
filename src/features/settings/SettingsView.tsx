@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleAlert, Database, Gauge, LoaderCircle, ShieldAlert, ShieldCheck, SlidersHorizontal, Target, Wifi } from "lucide-react";
+import { CircleAlert, Database, Gauge, KeyRound, LoaderCircle, Lock, ShieldAlert, ShieldCheck, SlidersHorizontal, Target, Wifi } from "lucide-react";
 import { PageHeading, PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { AiSettingsCard } from "./AiSettingsCard";
 import { BackupSettingsCard } from "../backup/BackupSettingsCard";
@@ -11,13 +11,30 @@ import { startVisibleInterval } from "../../visiblePolling";
 import { formatShanghaiTime } from "../../dateUtils";
 import {
   applySavedVisualPreferences,
+  applyUiScale,
   COLOR_VISION_STORAGE_KEY,
   normalizeSettingsCategory,
+  normalizeUiScale,
   type SettingsCategoryId,
+  type UiScale,
+  UI_SCALE_PRESETS,
   UI_SCALE_STORAGE_KEY
 } from "../../domain/visualPreferences";
 
 export { applySavedVisualPreferences, COLOR_VISION_STORAGE_KEY, UI_SCALE_STORAGE_KEY };
+
+const cleanSecurityError = (error: unknown) =>
+  (error instanceof Error ? error.message : String(error))
+    .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "")
+    .replace(/^\[[A-Z_]+\]\s*/, "");
+
+const UI_SCALE_LABELS: Record<UiScale, string> = {
+  90: "紧凑高密",
+  100: "标准默认",
+  110: "大屏舒适",
+  120: "高倍清晰",
+  125: "远视距大字"
+};
 
 export function SettingsView({
   value,
@@ -34,14 +51,42 @@ export function SettingsView({
 }) {
   const [draft, setDraft] = useState<Settings>({ ...value, provider: "ths" });
   const [category, setCategory] = useState(() => normalizeSettingsCategory(initialCategory));
-  const [uiScale, setUiScale] = useState<number>(() => {
+  const [uiScale, setUiScale] = useState<UiScale>(() => {
     try {
       const n = Number(typeof window !== "undefined" ? window.localStorage?.getItem(UI_SCALE_STORAGE_KEY) : 100);
-      return [90, 100, 110, 120].includes(n) ? n : 100;
+      return normalizeUiScale(n);
     } catch {
       return 100;
     }
   });
+  const [masterStatus, setMasterStatus] = useState<{ enabled: boolean; locked: boolean } | null>(null);
+  const [masterMode, setMasterMode] = useState<"idle" | "set" | "change" | "clear">("idle");
+  const [currentMasterPw, setCurrentMasterPw] = useState("");
+  const [newMasterPw, setNewMasterPw] = useState("");
+  const [confirmMasterPw, setConfirmMasterPw] = useState("");
+  const [masterBusy, setMasterBusy] = useState(false);
+  const [masterFeedback, setMasterFeedback] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  useEffect(() => {
+    const canReadStatus = typeof window !== "undefined" && typeof window.stockApi?.getMasterPasswordStatus === "function";
+    if (!canReadStatus) return undefined;
+    let active = true;
+    void window.stockApi.getMasterPasswordStatus!()
+      .then(status => {
+        if (active && settingsMounted.current) setMasterStatus(status);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === UI_SCALE_STORAGE_KEY) {
+        setUiScale(normalizeUiScale(event.newValue));
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   const [colorVision, setColorVision] = useState<"standard" | "cvd">(() => {
     try {
       return typeof window !== "undefined" && window.localStorage?.getItem(COLOR_VISION_STORAGE_KEY) === "cvd" ? "cvd" : "standard";
@@ -240,6 +285,75 @@ export function SettingsView({
       if (settingsMounted.current) setSaving(false);
     }
   };
+  const resetMasterForm = () => {
+    setMasterMode("idle");
+    setCurrentMasterPw("");
+    setNewMasterPw("");
+    setConfirmMasterPw("");
+  };
+  const submitMasterPassword = async () => {
+    if (masterBusy) return;
+    setMasterFeedback(null);
+    if (masterMode === "clear") {
+      const clearFn = typeof window !== "undefined" ? window.stockApi?.clearMasterPassword : undefined;
+      if (typeof clearFn !== "function") return;
+      if (!currentMasterPw) {
+        setMasterFeedback({ tone: "error", text: "请输入当前主密码" });
+        return;
+      }
+      setMasterBusy(true);
+      try {
+        const next = await clearFn({ currentPassword: currentMasterPw });
+        if (settingsMounted.current) {
+          setMasterStatus(next);
+          resetMasterForm();
+          setMasterFeedback({ tone: "ok", text: "已关闭启动主密码保护" });
+        }
+      } catch (error) {
+        if (settingsMounted.current) setMasterFeedback({ tone: "error", text: cleanSecurityError(error) });
+      } finally {
+        if (settingsMounted.current) setMasterBusy(false);
+      }
+      return;
+    }
+    const setFn = typeof window !== "undefined" ? window.stockApi?.setMasterPassword : undefined;
+    if (typeof setFn !== "function") return;
+    if (masterStatus?.enabled && !currentMasterPw) {
+      setMasterFeedback({ tone: "error", text: "请输入当前主密码" });
+      return;
+    }
+    if (newMasterPw.length < 8) {
+      setMasterFeedback({ tone: "error", text: "主密码至少需要 8 位字符" });
+      return;
+    }
+    if (newMasterPw !== confirmMasterPw) {
+      setMasterFeedback({ tone: "error", text: "两次输入的新主密码不一致" });
+      return;
+    }
+    setMasterBusy(true);
+    try {
+      const payload = masterStatus?.enabled
+        ? { newPassword: newMasterPw, currentPassword: currentMasterPw }
+        : { newPassword: newMasterPw };
+      const next = await setFn(payload);
+      if (settingsMounted.current) {
+        setMasterStatus(next);
+        resetMasterForm();
+        setMasterFeedback({
+          tone: "ok",
+          text: masterStatus?.enabled ? "主密码已更新" : "已开启启动主密码保护"
+        });
+      }
+    } catch (error) {
+      if (settingsMounted.current) setMasterFeedback({ tone: "error", text: cleanSecurityError(error) });
+    } finally {
+      if (settingsMounted.current) setMasterBusy(false);
+    }
+  };
+  const masterApiAvailable =
+    typeof window !== "undefined" &&
+    typeof window.stockApi?.getMasterPasswordStatus === "function";
+
   return (
     <div className="settings-workspace">
       <PageHeading eyebrow="THREE-LINE MARKET DATA" title="数据源设置" description="同花顺免费行情为主源，无需 Token；东方财富与腾讯并行校验和故障接力。QuantAPI Refresh Token 为可选项，只加密保存在本机。" />
@@ -367,7 +481,7 @@ export function SettingsView({
           <div className="field">
             <span>界面字号缩放 <b>{uiScale}%</b></span>
             <div className="ui-scale-presets" role="group" aria-label="界面字号缩放">
-              {[90, 100, 110, 120].map(scale => (
+              {UI_SCALE_PRESETS.map(scale => (
                 <button
                   type="button"
                   key={scale}
@@ -375,14 +489,15 @@ export function SettingsView({
                   onClick={() => {
                     setUiScale(scale);
                     try { window.localStorage?.setItem(UI_SCALE_STORAGE_KEY, String(scale)); } catch { /* ignore */ }
-                    applySavedVisualPreferences();
+                    applyUiScale(scale);
                   }}
                 >
                   <b>{scale}%</b>
-                  <small>{scale === 90 ? "紧凑高密" : scale === 100 ? "标准默认" : scale === 110 ? "大屏舒适" : "远视距大字"}</small>
+                  <small>{UI_SCALE_LABELS[scale]}</small>
                 </button>
               ))}
             </div>
+            <small>支持快捷键 ⌘+ / ⌘- / ⌘0（Windows/Linux 为 Ctrl+ / Ctrl- / Ctrl0）调整缩放并一键恢复 100%。</small>
           </div>
           <label className="switch-row">
             <span><b>色觉友好色板（红涨蓝跌）</b><small>将下跌绿色切换为高对比蓝色，配合 K 线空心阳线方便红绿色弱投资者一眼分辨阴阳。</small></span>
@@ -398,6 +513,127 @@ export function SettingsView({
             />
             <i />
           </label>
+          <section className="security-master-card" aria-label="启动主密码保护">
+            <div className="security-master-head">
+              <div>
+                <strong><Lock size={15} />启动主密码保护</strong>
+                <small>开启后每次打开软件需输入主密码解锁，保护持仓、成本、笔记与本地凭据隐私。</small>
+              </div>
+              <span className={`security-master-badge ${masterStatus?.enabled ? "enabled" : ""}`}>
+                {masterApiAvailable ? (masterStatus?.enabled ? "已开启" : "未开启") : "桌面版可用"}
+              </span>
+            </div>
+            {masterApiAvailable ? (
+              masterMode === "idle" ? (
+                <div className="security-master-actions">
+                  {masterStatus?.enabled ? (
+                    <>
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        disabled={masterBusy}
+                        onClick={() => { setMasterFeedback(null); setMasterMode("change"); }}
+                      >
+                        <KeyRound size={14} />修改主密码
+                      </button>
+                      <button
+                        type="button"
+                        className="secondary-btn danger-btn"
+                        disabled={masterBusy}
+                        onClick={() => { setMasterFeedback(null); setMasterMode("clear"); }}
+                      >
+                        关闭主密码
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      disabled={masterBusy}
+                      onClick={() => { setMasterFeedback(null); setMasterMode("set"); }}
+                    >
+                      <KeyRound size={14} />设置主密码
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="security-master-form">
+                  {masterStatus?.enabled && (
+                    <label className="field">
+                      <span>当前主密码</span>
+                      <input
+                        type="password"
+                        value={currentMasterPw}
+                        aria-label="当前主密码"
+                        placeholder="输入当前主密码"
+                        autoComplete="current-password"
+                        disabled={masterBusy}
+                        onChange={e => setCurrentMasterPw(e.target.value)}
+                      />
+                    </label>
+                  )}
+                  {masterMode !== "clear" && (
+                    <>
+                      <label className="field">
+                        <span>{masterStatus?.enabled ? "新主密码" : "设置主密码"}</span>
+                        <input
+                          type="password"
+                          value={newMasterPw}
+                          aria-label="新主密码"
+                          placeholder="至少 8 位字符"
+                          autoComplete="new-password"
+                          disabled={masterBusy}
+                          onChange={e => setNewMasterPw(e.target.value)}
+                        />
+                      </label>
+                      <label className="field">
+                        <span>确认新主密码</span>
+                        <input
+                          type="password"
+                          value={confirmMasterPw}
+                          aria-label="确认新主密码"
+                          placeholder="再次输入新主密码"
+                          autoComplete="new-password"
+                          disabled={masterBusy}
+                          onChange={e => setConfirmMasterPw(e.target.value)}
+                        />
+                      </label>
+                    </>
+                  )}
+                  <div className="security-master-actions">
+                    <button
+                      type="button"
+                      className={masterMode === "clear" ? "secondary-btn danger-btn" : "primary-btn"}
+                      disabled={masterBusy}
+                      onClick={() => void submitMasterPassword()}
+                    >
+                      {masterBusy && <LoaderCircle size={14} className="spin" />}
+                      {masterMode === "clear" ? "确认关闭主密码" : masterStatus?.enabled ? "保存新主密码" : "开启主密码"}
+                    </button>
+                    <button
+                      type="button"
+                      className="secondary-btn"
+                      disabled={masterBusy}
+                      onClick={() => { resetMasterForm(); setMasterFeedback(null); }}
+                    >
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )
+            ) : (
+              <p className="source-health-note">浏览器预览不支持主密码加密，请在桌面版设置。</p>
+            )}
+            {masterFeedback && (
+              <div
+                className={`test-result ${masterFeedback.tone === "ok" ? "ok" : "fail"}`}
+                role={masterFeedback.tone === "error" ? "alert" : "status"}
+              >
+                <span />
+                {masterFeedback.text}
+              </div>
+            )}
+          </section>
           <div className="api-note">
             <CircleAlert size={18} />
             <p><b>免费模式边界</b>不抓客户端隐藏接口，不提供 Level-2、逐笔委托或自动交易。所有信号用于研究与监控。</p>

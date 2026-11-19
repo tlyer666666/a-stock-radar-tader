@@ -113,6 +113,14 @@ test('cancellation during incomplete history does not start a new verified raw f
 });
 
 test('cancellation of Tencent fetch cannot start curl under a service-only signal', { timeout: 5000 }, async t => {
+  const prevEnable = process.env.ASTOCK_ENABLE_CURL;
+  const prevDisable = process.env.ASTOCK_DISABLE_CURL;
+  process.env.ASTOCK_ENABLE_CURL = '1';
+  delete process.env.ASTOCK_DISABLE_CURL;
+  t.after(() => {
+    if (prevEnable === undefined) delete process.env.ASTOCK_ENABLE_CURL; else process.env.ASTOCK_ENABLE_CURL = prevEnable;
+    if (prevDisable === undefined) delete process.env.ASTOCK_DISABLE_CURL; else process.env.ASTOCK_DISABLE_CURL = prevDisable;
+  });
   const entered = deferred(); let curl = 0;
   const s = service({ fetch: async (_, options) => { entered.resolve(); return new Promise((_, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })); },
     requires: { 'node:child_process': { execFile() { curl++; throw new Error('post-cancel curl'); } } } });

@@ -6,6 +6,8 @@ import {initialSettings} from '/src/domain/settings.ts';
 import StrategySignalsView from '/src/features/strategy-selection/StrategySignalsView.tsx';
 import MultiStockCompareView from '/src/features/market/MultiStockCompareView.tsx';
 import { createPreviewApi } from '/src/previewApi.ts';
+localStorage.setItem('a-stock-radar:default-view', 'signals');
+localStorage.setItem('a-stock-radar:sidebar-core-only:v1', 'false');
 window.fixtureSecurities = [
   { code: '600000', secid:'1.600000', name:'甲银行', assetType:'stock' },
   { code: '000001', secid:'0.000001', name:'乙银行', assetType:'stock' }

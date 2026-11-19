@@ -207,13 +207,13 @@ test("persistence and daily-bar-store tighten permissions, sweep tmp files, and 
   }
 });
 
-test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews render new UX controls cleanly", () => {
+test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews render new UX controls cleanly", async () => {
   const QuickPaletteModal = require("./components/terminal/QuickPaletteModal.tsx").default;
   const AppErrorBoundaryMod = require("./components/AppErrorBoundary.tsx");
   const AppErrorBoundary = AppErrorBoundaryMod.default || AppErrorBoundaryMod.AppErrorBoundary;
   const { WorkspaceErrorBoundary } = AppErrorBoundaryMod;
   const { SettingsView } = require("./features/settings/SettingsView.tsx");
-  const { HoldingsView, WatchlistView } = require("./features/collections/CollectionViews.tsx");
+  const { FavoritesView, HoldingsView, WatchlistView } = require("./features/collections/CollectionViews.tsx");
   const { initialSettings } = require("./domain/settings.ts");
 
   const prevWindow = global.window;
@@ -273,8 +273,15 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
     settingsHarness.render();
     assert.match(text(settingsHarness.tree), /界面字号缩放/);
     assert.match(text(settingsHarness.tree), /色觉友好色板/);
-    const scaleButtons = walk(settingsHarness.tree).filter(n => n.type === "button" && typeof text(n) === "string" && /110%|红涨蓝跌/.test(text(n)));
+    const scaleButtons = walk(settingsHarness.tree).filter(n => n.type === "button" && typeof text(n) === "string" && /110%|125%|红涨蓝跌|默认配色|紧凑/.test(text(n)));
     for (const btn of scaleButtons) btn.props.onClick?.();
+    const catTabs = walk(settingsHarness.tree).filter(n => n.type === "button" && n.props?.role === "tab");
+    for (const tab of catTabs) {
+      tab.props.onClick?.();
+      settingsHarness.render();
+    }
+    const svForm = walk(settingsHarness.tree).find(n => n.type === "form");
+    svForm?.props.onSubmit?.({ preventDefault() {} });
     settingsHarness.dispose();
 
     const holdingsHarness = createHookHarness(() => HoldingsView({
@@ -319,7 +326,37 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
     const sortBtns = walk(holdingsHarness.tree).filter(n => n.type === "button" && n.props?.className?.includes("column-sort-button"));
     for (const btn of sortBtns) btn.props.onClick();
     holdingsHarness.render();
+    for (const inp of walk(holdingsHarness.tree).filter(n => n.type === "textarea")) {
+      inp.props.onChange?.({ target: { value: "600519 100 1500 100" } });
+    }
+    holdingsHarness.render();
+    for (const btn of walk(holdingsHarness.tree).filter(n => n.type === "button" && /批量启用|预览导入|确认导入|移除/.test(text(n)))) {
+      btn.props.onClick?.({ stopPropagation() {}, preventDefault() {} });
+    }
     holdingsHarness.dispose();
+
+    const favHarness = createHookHarness(() => FavoritesView({
+      items: [{ code: "600519", name: "贵州茅台", secid: "1.600519", createdAt: "2026-01-01T00:00:00.000Z" }],
+      monitors: {
+        configs: {},
+        runtimes: {},
+        latestQuotes: {},
+        refreshing: false,
+        alerts: [{ id: "a1", code: "600519", name: "贵州茅台", triggeredAt: "2026-11-18T02:00:00Z", detail: "涨超 3%" }],
+        ackAlert() {},
+        clearAlerts() {},
+        save: () => true
+      },
+      live: false,
+      onOpen() {},
+      onRemove() {},
+      onNavigate() {}
+    }), { runEffects: false });
+    favHarness.render();
+    for (const btn of walk(favHarness.tree).filter(n => n.type === "button" && typeof n.props?.onClick === "function")) {
+      btn.props.onClick({ stopPropagation() {}, preventDefault() {} });
+    }
+    favHarness.dispose();
 
     const watchHtml = renderToStaticMarkup(React.createElement(WatchlistView, {
       items: [{
@@ -338,7 +375,7 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
       onRemove() {}
     }));
     assert.match(watchHtml, /22\.50/);
-    assert.match(watchHtml, /\+加入自选/);
+    assert.match(watchHtml, /\+自选/);
 
     const StockMonitorEditor = require("./components/StockMonitorEditor.tsx").default;
     const DisplayDensityControl = require("./components/terminal/DisplayDensityControl.tsx").default;
@@ -677,6 +714,467 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
     assert.deepEqual(batchRes.created, ["600519"]);
     assert.deepEqual(batchRes.missingPrice, ["000001"]);
     assert.equal(batchRes.storageError, "");
+
+    const { isCloudSyncFolder } = require("./features/backup/BackupSettingsCard.tsx");
+    assert.equal(isCloudSyncFolder("/Users/demo/Library/Mobile Documents/com~apple~CloudDocs/Backup"), true);
+    assert.equal(isCloudSyncFolder("/Users/demo/坚果云/AStock/sub"), true);
+    assert.equal(isCloudSyncFolder("/Users/demo/CustomCloud", [{ path: "/Users/demo/CustomCloud" }]), true);
+    assert.equal(isCloudSyncFolder("/Users/demo/Documents/AStockLocal", [{ path: "/Users/demo/iCloud" }]), false);
+
+    const { UI_SCALE_PRESETS, stepUiScale, normalizeUiScale } = require("./domain/visualPreferences.ts");
+    assert.deepEqual(UI_SCALE_PRESETS, [90, 100, 110, 120, 125]);
+    assert.equal(normalizeUiScale(125), 125);
+    assert.equal(stepUiScale(120, 1), 125);
+    assert.equal(stepUiScale(125, 1), 125);
+    assert.equal(stepUiScale(90, -1), 90);
+
+    const { QuickMonitorModal } = require("./components/QuickMonitorModal.tsx");
+    const { MasterPasswordUnlockModal } = require("./components/MasterPasswordUnlockModal.tsx");
+    const { HsgtOverlayProvider } = require("./features/hsgt/overlayContext.tsx");
+    const monitorModalHtml = renderToStaticMarkup(
+      React.createElement(HsgtOverlayProvider, null,
+        React.createElement(QuickMonitorModal, {
+          stock: { code: "600519", name: "贵州茅台", secid: "1.600519" },
+          onSave: () => true,
+          onClose() {}
+        })
+      )
+    );
+    assert.match(monitorModalHtml, /贵州茅台/);
+    const unlockHtml = renderToStaticMarkup(
+      React.createElement(HsgtOverlayProvider, null,
+        React.createElement(MasterPasswordUnlockModal, { open: true, onUnlocked() {} })
+      )
+    );
+    assert.match(unlockHtml, /解锁/);
+
+    const { useVirtualWindow } = require("./components/useVirtualWindow.ts");
+    const vSmall = createHookHarness(() => useVirtualWindow({ itemCount: 50, rowHeight: 40 }), { runEffects: false });
+    vSmall.render();
+    assert.equal(vSmall.tree.enabled, false);
+    vSmall.dispose();
+    const vLarge = createHookHarness(() => useVirtualWindow({ itemCount: 200, rowHeight: 40 }), { runEffects: false });
+    vLarge.render();
+    assert.equal(vLarge.tree.enabled, true);
+    assert.ok(vLarge.tree.endIndex < 200);
+    vLarge.dispose();
+
+    const { loadSafeLocalJson, saveSafeLocalJson, resetSafeStorageCache, mirrorToNativeKv, hydrateFromNativeKv } = require("./safeStorage.ts");
+    resetSafeStorageCache();
+    const memStorage = createMemoryStorage();
+    const kvMap = new Map();
+    global.window = {
+      localStorage: memStorage,
+      stockApi: {
+        kvGet: async k => kvMap.get(k) ?? null,
+        kvSet: async (k, v) => { kvMap.set(k, v); return true; }
+      }
+    };
+    assert.equal(saveSafeLocalJson("ux-test-key", { ok: true }, x => Boolean(x && x.ok)), true);
+    assert.deepEqual(loadSafeLocalJson("ux-test-key", { ok: false }), { ok: true });
+    mirrorToNativeKv("ux-test-key", JSON.stringify({ ok: true, fromKv: 1 }));
+    memStorage.removeItem("ux-test-key");
+    const hydrated = await hydrateFromNativeKv("ux-test-key", x => Boolean(x && typeof x === "object"));
+    assert.deepEqual(hydrated, { ok: true, fromKv: 1 });
+    assert.equal(memStorage.getItem("ux-test-key"), JSON.stringify({ ok: true, fromKv: 1 }));
+
+    const { isUsableSecurityCollection, uniqueSecurities } = require("./securitySelection.ts");
+    assert.equal(isUsableSecurityCollection([]), true);
+    assert.equal(isUsableSecurityCollection([{ bad: true }]), false);
+    assert.equal(
+      uniqueSecurities([
+        { code: "600519", name: "贵州茅台", secid: "1.600519" },
+        { code: "600519", name: "重复茅台", secid: "1.600519" },
+        { code: "bad", name: "无效", secid: "1.0" }
+      ]).length,
+      1
+    );
+
+    const StockRowActions = require("./components/StockRowActions.tsx").default;
+    let actionHits = [];
+    const sraHarness = createHookHarness(() => StockRowActions({
+      security: { code: "600519", name: "贵州茅台", secid: "1.600519" },
+      isFavorite: false,
+      isPlanned: false,
+      onToggleFavorite: () => actionHits.push("fav"),
+      onOpenMonitor: () => actionHits.push("mon"),
+      onAddPlan: () => actionHits.push("plan"),
+      compact: true
+    }), { runEffects: false });
+    sraHarness.render();
+    for (const btn of walk(sraHarness.tree).filter(n => n.type === "button")) {
+      btn.props.onClick({ stopPropagation() {} });
+    }
+    assert.deepEqual(actionHits, ["fav", "mon", "plan"]);
+    sraHarness.dispose();
+
+    const { QuickPlanDialogContent, usePlannedCodes } = require("./components/QuickPlanModal.tsx");
+    const QuickPlanModalDefault = require("./components/QuickPlanModal.tsx").default;
+    assert.equal(QuickPlanModalDefault({ target: null, onClose() {} }), null);
+    const plannedH = createHookHarness(() => usePlannedCodes(true), { runEffects: false });
+    plannedH.render();
+    assert.equal(plannedH.tree[0] instanceof Set, true);
+    plannedH.dispose();
+
+    let savedPlanMsg = "";
+    let closedPlan = 0;
+    const qpHarness = createHookHarness(() => QuickPlanDialogContent({
+      target: { code: "600519", name: "贵州茅台", secid: "1.600519", referencePrice: 1500 },
+      onClose: () => { closedPlan += 1; },
+      onSaved: res => { savedPlanMsg = res.message; }
+    }), { runEffects: false });
+    qpHarness.render();
+    const qpInputs = walk(qpHarness.tree).filter(n => n.type === "input");
+    if (qpInputs[0]) qpInputs[0].props.onChange({ target: { value: "1520" } });
+    if (qpInputs[1]) qpInputs[1].props.onChange({ target: { value: "1500" } });
+    qpHarness.render();
+    find(qpHarness.tree, n => n.type === "form").props.onSubmit({ preventDefault() {} });
+    qpHarness.render();
+    if (qpInputs[1]) qpInputs[1].props.onChange({ target: { value: "1560" } });
+    if (qpInputs[2]) qpInputs[2].props.onChange({ target: { value: "1530" } });
+    qpHarness.render();
+    find(qpHarness.tree, n => n.type === "form").props.onSubmit({ preventDefault() {} });
+    qpHarness.render();
+    if (qpInputs[2]) qpInputs[2].props.onChange({ target: { value: "1450" } });
+    if (qpInputs[3]) qpInputs[3].props.onChange({ target: { value: "1650" } });
+    if (qpInputs[4]) qpInputs[4].props.onChange({ target: { value: "备注" } });
+    qpHarness.render();
+    const qpForm = find(qpHarness.tree, n => n.type === "form");
+    qpForm.props.onSubmit({ preventDefault() {} });
+    assert.match(savedPlanMsg, /贵州茅台/);
+    assert.equal(closedPlan, 1);
+    qpHarness.dispose();
+
+    let monitorClosed = 0;
+    const qmHarness = createHookHarness(() => QuickMonitorModal({
+      stock: { code: "600519", name: "贵州茅台", secid: "1.600519" },
+      onSave: () => true,
+      onClose: () => { monitorClosed += 1; }
+    }), { runEffects: false });
+    qmHarness.render();
+    const qmDialog = find(qmHarness.tree, n => n.type === "dialog");
+    qmDialog.props.onCancel({ preventDefault() {} });
+    assert.equal(monitorClosed, 1);
+    qmHarness.dispose();
+
+    global.window.stockApi.cleanupStorageCache = async ({ target }) => ({ ok: true, target, message: `cleaned ${target}`, summary: { userDataBytes: 512, dailyBarsBytes: 1024, dailyBarsCount: 5, webCacheBytes: 0 } });
+    global.window.stockApi.getMasterPasswordStatus = async () => ({ enabled: false, locked: false });
+    global.window.stockApi.setMasterPassword = async () => ({ enabled: true, locked: false });
+    global.window.stockApi.clearMasterPassword = async () => ({ enabled: false, locked: false });
+    global.window.stockApi.backup = {
+      status: async () => ({ folder: "/Users/demo/iCloud/Backups", auto: true, keep: 30, hasPassword: false, files: [{ name: "A股雷达备份-20261112-160509.json", size: 2048 }], suggestions: [{ label: "iCloud", path: "/Users/demo/iCloud" }], storageSummary: { userDataBytes: 1024, dailyBarsBytes: 2048, dailyBarsCount: 10, webCacheBytes: 512 } }),
+      chooseFolder: async () => ({ folder: "/Users/demo/Local", auto: true, keep: 30, hasPassword: false, files: [], suggestions: [] }),
+      configure: async () => ({ folder: "/Users/demo/Local", auto: true, keep: 30, hasPassword: false, files: [], suggestions: [] }),
+      run: async () => ({ name: "b.json", size: 100, status: { folder: "/Users/demo/Local", auto: true, keep: 30, hasPassword: false, files: [], suggestions: [] } }),
+      inspect: async () => ({ createdAt: "", appVersion: "1.6.71", stores: [], localKeys: 0 }),
+      prepareRestore: async () => ({ token: "t", local: {} }),
+      applyRestore: async () => ({ ok: true }),
+      cancelRestore: async () => ({ ok: true })
+    };
+    const { BackupSettingsCard } = require("./features/backup/BackupSettingsCard.tsx");
+    const bscHarness = createHookHarness(() => BackupSettingsCard({ hidden: false }), { runEffects: true });
+    await new Promise(r => setTimeout(r, 10));
+    bscHarness.render();
+    for (const btn of walk(bscHarness.tree).filter(n => n.type === "button" && /清理网页缓存|清理过期日线|清理旧版数据|立即备份|设置密码|选择文件夹|从这份恢复/.test(text(n)))) {
+      await btn.props.onClick?.();
+      bscHarness.render();
+    }
+    bscHarness.dispose();
+
+    const TodayCockpitView = require("./features/cockpit/TodayCockpitView.tsx").default;
+    const cockpitHtml = renderToStaticMarkup(React.createElement(HsgtOverlayProvider, null, React.createElement(TodayCockpitView, {
+      phase: "intraday",
+      holdings: [{ code: "600519", name: "贵州茅台", shares: 100, costPrice: 1500, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }],
+      favorites: [{ code: "000001", name: "平安银行", createdAt: "2026-01-01T00:00:00Z" }],
+      watchlist: [{ code: "300059", name: "东方财富", observationNode: "T+1", createdAt: "2026-01-01T00:00:00Z" }],
+      limitUps: [],
+      notesApi: { store: { notes: [] }, items: [] },
+      tAssistant: { store: { items: [], trades: {}, lastRolloverDay: "" }, runtimes: {} },
+      stockMonitors: { configs: {}, runtimes: {}, latestQuotes: {}, alerts: [] },
+      paperSummary: { normalized: { cash: 100000, initialCapital: 100000, openPositions: [], closedPositions: [] }, equity: 100000, openPnl: 0, cumulativeRealizedPnl: 0, closedCount: 0, winRate: 0 },
+      copilotAlerts: [],
+      live: false,
+      isDefaultView: true,
+      onToggleDefaultView() {},
+      onOpenStock() {},
+      onNavigate() {},
+      onOpenSettings() {}
+    })));
+    assert.match(cockpitHtml, /今日驾驶舱|盘中哨兵|3 步快速启用/);
+
+    const TimeShareChart = require("./features/market/TimeShareChart.tsx").default;
+    const tsHtml = renderToStaticMarkup(React.createElement(TimeShareChart, {
+      rows: [
+        { date: "2026-11-18 09:30", open: 10, close: 10.1, high: 10.2, low: 9.9, volume: 1000 },
+        { date: "2026-11-18 09:35", open: 10.1, close: 10.3, high: 10.4, low: 10.0, volume: 1500 }
+      ],
+      preClose: 10
+    }));
+    assert.match(tsHtml, /time-share-static-price-layers|time-share/);
+
+    const { Dashboard } = require("./features/market/MarketWorkspace.tsx");
+    const { buildPreviewPayload } = require("./preview/mockMarketData.ts");
+    const { usePaperTrading } = require("./features/paper-simulation/usePaperTrading.ts");
+    const previewPayload = buildPreviewPayload("600519");
+    const paperHarness = createHookHarness(() => usePaperTrading({
+      payload: previewPayload,
+      latestAnalysis: { current: previewPayload },
+      settings: initialSettings,
+      settingsRef: { current: initialSettings },
+      settingsLoadState: "ready",
+      live: false,
+      view: "dashboard",
+      dashboardMode: "analysis",
+      askConfirm: async () => true,
+      showToast() {}
+    }), { runEffects: false });
+    paperHarness.render();
+    const { paperSummary: fullPaperSummary, paperExecutionReadiness: fullReadiness } = paperHarness.tree;
+    paperHarness.dispose();
+    const dashAnalysisHtml = renderToStaticMarkup(React.createElement(HsgtOverlayProvider, null, React.createElement(Dashboard, {
+      live: false,
+      payload: previewPayload,
+      loading: false,
+      error: "",
+      isWatched: true,
+      onToggleWatch() {},
+      notes: { store: { notes: [] }, items: [], error: "", dismissError() {}, add: () => "", update: () => "", remove() {}, snooze() {}, setAiReview() {} },
+      monitors: baseRouteProps.stockMonitors,
+      onShowToast() {},
+      onOpenSettings() {},
+      onOpenMonitor() {},
+      onDiscover() {},
+      discovering: false,
+      limitUps: [],
+      limitPoolMeta: { dataDate: "2026-11-18", fetchedAt: "2026-11-18T07:00:00Z", checkedAt: "2026-11-18T07:00:00Z", providers: ["eastmoney"], count: 0, trigger: "manual" },
+      onOpen() {},
+      onAdd() {},
+      isFavorite: () => false,
+      holdings: [],
+      settings: initialSettings,
+      analysisTarget: previewPayload.security,
+      mode: "analysis",
+      backLabel: "返回涨停池",
+      onBack() {},
+      onOpenBacktest() {},
+      executionDecisionLog: [],
+      onClearExecutionDecisionLog() {},
+      paperSummary: fullPaperSummary,
+      paperExecutionReadiness: fullReadiness,
+      paperCurrentPositions: [],
+      canPaperTrade: false,
+      latestExecutionDecision: null,
+      executePaperTrade() {},
+      closePaperTradeForCurrent() {},
+      closePaperTradeForCode() {},
+      closeAllPaperTrades() {},
+      confirmPaperSettlementForCode() {},
+      onRetry() {}
+    })));
+    assert.match(dashAnalysisHtml, /贵州茅台/);
+
+    const dashPoolHtml = renderToStaticMarkup(React.createElement(HsgtOverlayProvider, null, React.createElement(Dashboard, {
+      live: false,
+      payload: null,
+      loading: false,
+      error: "",
+      isWatched: false,
+      onToggleWatch() {},
+      onDiscover() {},
+      discovering: false,
+      limitUps: [{ code: "600519", name: "贵州茅台", secid: "1.600519", latest: 1500, preClose: 1363.64, changePct: 10.0, consecutiveBoards: 2, firstSealTime: "09:35:00", lastSealTime: "10:15:00", openBoardCount: 0, turnover: 2.5, amount: 1_000_000_000, sealedAmount: 100_000_000, sealFloatRatio: 0.05, limitReason: "白酒", industry: "酿酒行业", limitDate: "2026-11-18" }],
+      limitPoolMeta: { dataDate: "2026-11-18", fetchedAt: "2026-11-18T07:00:00Z", checkedAt: "2026-11-18T07:00:00Z", providers: ["eastmoney"], count: 1, trigger: "manual" },
+      onOpen() {},
+      onAdd() {},
+      isFavorite: () => true,
+      holdings: [],
+      settings: initialSettings,
+      analysisTarget: null,
+      mode: "pool",
+      backLabel: "返回",
+      onBack() {},
+      onOpenBacktest() {},
+      executionDecisionLog: [],
+      onClearExecutionDecisionLog() {},
+      paperSummary: fullPaperSummary,
+      paperExecutionReadiness: fullReadiness,
+      paperCurrentPositions: [],
+      canPaperTrade: false,
+      latestExecutionDecision: null,
+      executePaperTrade() {},
+      closePaperTradeForCurrent() {},
+      closePaperTradeForCode() {},
+      closeAllPaperTrades() {},
+      confirmPaperSettlementForCode() {},
+      onRetry() {}
+    })));
+    assert.match(dashPoolHtml, /涨停池/);
+
+    const PreviousLimitUpFailedBoards = require("./features/dashboard/PreviousLimitUpFailedBoards.tsx").default;
+    const failedHtml = renderToStaticMarkup(React.createElement(HsgtOverlayProvider, null, React.createElement(PreviousLimitUpFailedBoards, {
+      live: false,
+      cache: null,
+      onSnapshot() {},
+      onViewStateChange() {},
+      onOpen() {},
+      onAdd() {},
+      onToggleFavorite() {},
+      onOpenMonitor() {},
+      onShowToast() {}
+    })));
+    assert.match(failedHtml, /炸板/);
+
+    const settingsMasterHarness = createHookHarness(() => SettingsView({
+      value: initialSettings,
+      loadState: "ready",
+      initialCategory: "backup",
+      onSave: async next => next
+    }), { runEffects: true });
+    await new Promise(r => setTimeout(r, 10));
+    settingsMasterHarness.render();
+    const openMasterBtn = find(settingsMasterHarness.tree, n => n.type === "button" && /设置主密码/.test(text(n)));
+    openMasterBtn?.props.onClick?.();
+    settingsMasterHarness.render();
+    for (const inp of walk(settingsMasterHarness.tree).filter(n => n.type === "input" && n.props?.type === "password")) {
+      inp.props.onChange?.({ target: { value: "secret1234" } });
+    }
+    settingsMasterHarness.render();
+    const enableMasterBtn = find(settingsMasterHarness.tree, n => n.type === "button" && /开启主密码/.test(text(n)));
+    await enableMasterBtn?.props.onClick?.();
+    settingsMasterHarness.render();
+    for (const sel of walk(settingsMasterHarness.tree).filter(n => n.type === "select")) {
+      sel.props.onChange?.({ target: { value: initialSettings.provider } });
+    }
+    settingsMasterHarness.dispose();
+
+    const LimitUpPoolMod = require("./features/dashboard/LimitUpPool.tsx").default;
+    const lupHtml = renderToStaticMarkup(React.createElement(LimitUpPoolMod, {
+      items: [{ code: "600519", name: "贵州茅台", secid: "1.600519", latest: 1500, changePct: 10.0, consecutiveBoards: 2, firstSealTime: "09:35:00", lastSealTime: "10:15:00", openBoardCount: 0, turnover: 2.5, amount: 1_000_000_000, sealedAmount: 100_000_000, sealFloatRatio: 0.05, limitReason: "白酒", industry: "酿酒行业" }],
+      meta: { dataDate: "2026-11-18", fetchedAt: "2026-11-18T07:00:00Z", checkedAt: "2026-11-18T07:00:00Z", providers: ["eastmoney"], count: 1, trigger: "manual" },
+      onOpen() {},
+      onAdd() {},
+      isFavorite: () => false
+    }));
+    assert.match(lupHtml, /贵州茅台/);
+
+    const wlHarness = createHookHarness(() => WatchlistView({
+      items: [{ code: "300059", name: "东方财富", secid: "0.300059", createdAt: "2026-01-01T00:00:00.000Z", observationNode: "T+1" }],
+      activeNode: "all",
+      quotes: { "300059": { latest: 22.5, changePct: 3.21 } },
+      favoriteCodes: new Set(),
+      onAddFavorite() {},
+      onToggleFavorite() {},
+      onOpenMonitor() {},
+      onNavigate() {},
+      onShowToast() {},
+      onNodeChange() {},
+      onOpen() {},
+      onRemove() {}
+    }), { runEffects: false });
+    wlHarness.render();
+    for (const btn of walk(wlHarness.tree).filter(n => n.type === "button" && typeof n.props?.onClick === "function")) {
+      btn.props.onClick({ stopPropagation() {}, preventDefault() {} });
+    }
+    const wlInp = walk(wlHarness.tree).find(n => n.type === "input");
+    wlInp?.props.onChange?.({ target: { value: "东方" } });
+    wlHarness.render();
+    wlHarness.dispose();
+
+    const { useReportHsgtOverlay, useHsgtOverlayCount } = require("./features/hsgt/overlayContext.tsx");
+    const OverlayProbe = () => {
+      useReportHsgtOverlay(true);
+      return React.createElement("span", null, String(useHsgtOverlayCount()));
+    };
+    assert.match(renderToStaticMarkup(React.createElement(HsgtOverlayProvider, null, React.createElement(OverlayProbe))), /0|1/);
+
+    const useStockMonitors = require("./useStockMonitors.ts").default;
+    const smHarness = createHookHarness(() => useStockMonitors([], true, 15, () => {}), { runEffects: false });
+    smHarness.render();
+    smHarness.tree.ackAlert("missing");
+    smHarness.tree.clearAlerts(["600519"]);
+    smHarness.dispose();
+
+    const QuickNote = require("./features/notes/QuickNote.tsx").default;
+    const qnHarness = createHookHarness(() => QuickNote({
+      api: {
+        items: [],
+        error: "",
+        dismissError() {},
+        add: () => "",
+        update: () => "",
+        remove() {},
+        snooze() {},
+        setAiReview() {}
+      },
+      stock: { code: "600519", name: "贵州茅台", secid: "1.600519" }
+    }), { runEffects: false });
+    qnHarness.render();
+    const toggleBtn = find(qnHarness.tree, n => n.type === "button");
+    toggleBtn.props.onClick();
+    qnHarness.render();
+    const qnTextarea = find(qnHarness.tree, n => n.type === "textarea");
+    qnTextarea.props.onChange({ target: { value: "明日观察突破" } });
+    qnHarness.render();
+    const saveNoteBtn = find(qnHarness.tree, n => n.type === "button" && /记下来/.test(text(n)));
+    saveNoteBtn.props.onClick();
+    qnHarness.render();
+    qnHarness.dispose();
+
+    let mpUnlocked = false;
+    global.window.stockApi.unlockMasterPassword = async ({ password }) => ({ ok: password === "secret12", locked: password !== "secret12", error: password === "secret12" ? "" : "密码错误" });
+    const mpHarness = createHookHarness(() => MasterPasswordUnlockModal({
+      open: true,
+      onUnlocked: () => { mpUnlocked = true; }
+    }), { runEffects: false });
+    mpHarness.render();
+    const mpInput = find(mpHarness.tree, n => n.type === "input");
+    mpInput.props.onChange({ target: { value: "secret12" } });
+    mpHarness.render();
+    const mpForm = find(mpHarness.tree, n => n.type === "form");
+    await mpForm.props.onSubmit({ preventDefault() {} });
+    assert.equal(mpUnlocked, true);
+    mpHarness.dispose();
+
+    const { applyUiScale, applySavedVisualPreferences } = require("./domain/visualPreferences.ts");
+    const docStyle = {};
+    let zoomSet = null;
+    global.document = { ...prevDocument, documentElement: { style: docStyle, dataset: {}, classList: { toggle() {} } } };
+    global.window.localStorage.setItem("a-stock-radar:ui-scale:v1", "110");
+    global.window.stockApi.setZoomFactor = async f => { zoomSet = f; return true; };
+    assert.equal(applyUiScale(120), 120);
+    assert.equal(zoomSet, 1.2);
+    applySavedVisualPreferences();
+    delete global.window.stockApi.setZoomFactor;
+    assert.equal(applyUiScale(125), 125);
+    assert.equal(docStyle.zoom, "125%");
+
+    const { AgentMarkdown } = require("./features/ai-agent/AnswerMarkdown.tsx");
+    const mdHtml = renderToStaticMarkup(React.createElement(AgentMarkdown, {
+      text: "**核心结论**\n\n### 小标题\n- 项目 1\n1. 步骤 A\n\n> 引用\n\n---\n\n| 列A | 列B |\n|---|---|\n| +3.2% | -1.5% |"
+    }));
+    assert.match(mdHtml, /agent-markdown/);
+    assert.match(mdHtml, /<table>/);
+
+    assert.deepEqual(WorkspaceErrorBoundary.getDerivedStateFromError(new Error("boom")).error.message, "boom");
+    let retHome = 0;
+    const wbCompact = new WorkspaceErrorBoundary({ children: "ok", label: "子面板", compact: true });
+    wbCompact.state = { error: new Error("err"), attempt: 0 };
+    assert.ok(wbCompact.render());
+    const wbFull = new WorkspaceErrorBoundary({ children: "ok", label: "全屏", onReturnHome: () => { retHome += 1; } });
+    wbFull.setState = fn => { wbFull.state = { ...wbFull.state, ...(typeof fn === "function" ? fn(wbFull.state) : fn) }; };
+    wbFull.state = { error: new Error("err"), attempt: 0 };
+    const fullTree = wbFull.render();
+    assert.ok(fullTree);
+    wbFull.returnHome();
+    assert.equal(retHome, 1);
+
+    const vwRef = { current: { clientHeight: 400, scrollTop: 3200, scrollHeight: 3600 } };
+    const vwH = createHookHarness(() => useVirtualWindow({ itemCount: 150, rowHeight: 30, containerRef: vwRef }), { runEffects: false });
+    vwH.render();
+    vwH.tree.onScroll({ currentTarget: { clientHeight: 400, scrollTop: 3200, scrollHeight: 3600 } });
+    vwH.render();
+    assert.equal(vwH.tree.endIndex, 150);
+    vwH.dispose();
   } finally {
     global.window = prevWindow;
     global.document = prevDocument;

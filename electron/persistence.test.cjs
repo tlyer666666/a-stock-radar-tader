@@ -6,7 +6,8 @@ const path = require("node:path");
 const {
   capItemsPreservingFavorites,
   readJsonWithBackup,
-  writeJsonAtomic
+  writeJsonAtomic,
+  writeJsonAtomicAsync
 } = require("./persistence.cjs");
 
 function createFixture() {
@@ -259,4 +260,30 @@ test("仅主文件损坏但有备份 → recovered 而非 corrupted", (t) => {
   assert.equal(r.recovered, true);
   assert.equal(r.corrupted, false, "有可用备份时不算双损坏");
   assert.deepEqual(r.value, [{ code: "600519" }]);
+});
+
+test("writeJsonAtomicAsync serializes concurrent writes per path, keeps backup valid, and enforces 0600 permissions", async (t) => {
+  const dir = createFixture();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const primary = path.join(dir, "state.json");
+  const backup = path.join(dir, "state.last-good.json");
+
+  await assert.rejects(
+    () => writeJsonAtomicAsync(primary, backup, "invalid", Array.isArray),
+    { code: "INVALID_JSON_SCHEMA" }
+  );
+
+  const writes = [];
+  for (let i = 1; i <= 8; i += 1) {
+    writes.push(writeJsonAtomicAsync(primary, backup, [{ version: i }], Array.isArray));
+  }
+  const results = await Promise.all(writes);
+  assert.equal(results.length, 8);
+  assert.deepEqual(JSON.parse(fs.readFileSync(primary, "utf8")), [{ version: 8 }]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(backup, "utf8")), [{ version: 7 }]);
+  assert.equal(fs.readdirSync(dir).filter((name) => name.endsWith(".tmp")).length, 0);
+  if (process.platform !== "win32") {
+    assert.equal(fs.statSync(primary).mode & 0o777, 0o600);
+    assert.equal(fs.statSync(backup).mode & 0o777, 0o600);
+  }
 });

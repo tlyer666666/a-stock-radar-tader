@@ -2,7 +2,7 @@
 // 从 electron/services.cjs 提取（2026-11-15 审核 P0-2b 拆分）。
 // services.cjs 通过顶部解构回本模块并继续按原契约 re-export，勿在这里引入
 // 对 services.cjs 的反向依赖。
-const { createMarketSourceHealth } = require("../market-source-health.cjs");
+const { sharedMarketSourceHealth } = require("../market-source-health.cjs");
 const { fetchArrayBufferWithPolicy } = require("../http-client.cjs");
 // 同花顺官方免费行情网关（d.10jqka.com.cn）：实时快照 / 日K线 / 板块成分
 const thsOfficial = require("../ths-quote.cjs");;
@@ -32,6 +32,7 @@ function isAStockCode(...args) { return _runtime.isAStockCode(...args); }
 function fetchJson(...args) { return _runtime.fetchJson(...args); }
 function toSecurity(...args) { return _runtime.toSecurity(...args); }
 function fetchJsonWithCurl(...args) { return _runtime.fetchJsonWithCurl(...args); }
+function curlFallbackEnabled(...args) { return _runtime.curlFallbackEnabled(...args); }
 
 const THS_BASE = "https://quantapi.51ifind.com/api/v1";
 
@@ -41,7 +42,7 @@ const EAST_HISTORY = "https://push2his.eastmoney.com/api/qt";
 
 const SEARCH_API = "https://searchapi.eastmoney.com/api/suggest/get";
 
-const marketSourceHealth = createMarketSourceHealth();
+const marketSourceHealth = sharedMarketSourceHealth;
 
 // 策略引擎约 150KB，计算已在 worker 里做；主进程只在用到定义表时才加载（启动更快）。
 let strategyDefinitionsCache = null;
@@ -787,7 +788,7 @@ async function tencentHistory(security, limit = 160, fqt = 0) {
     json = await fetchJson(url, {}, 15000);
   } catch (error) {
     serviceRuntime.checkpoint();
-    if (process.env.ASTOCK_DISABLE_CURL === "1") throw error;
+    if (!curlFallbackEnabled()) throw error;
     json = await fetchJsonWithCurl(url, 15000, "https://gu.qq.com/", serviceSignal());
   }
   const payload = json?.data?.[symbol] || {};
@@ -860,7 +861,7 @@ async function sinaKline(security, interval = "101", limit = 160) {
     );
   } catch (error) {
     serviceRuntime.checkpoint();
-    if (process.env.ASTOCK_DISABLE_CURL === "1") throw error;
+    if (!curlFallbackEnabled()) throw error;
     json = await fetchJsonWithCurl(url, 15000, "https://finance.sina.com.cn/", serviceSignal());
   }
   const lines = Array.isArray(json?.result?.data)
@@ -1608,7 +1609,7 @@ async function loadBacktestHistory(
     // independently cross-checks raw OHLC with Tencent. Never estimate C*V.
     const loadCompleteRaw = loaders.completeRaw || ((target, bars) => {
       if (bars > 1500) throw incompleteBacktestHistory(`公开量额备用源最多1500根，请求${bars}根超出来源窗口`);
-      return require("../trend-screener-adapter.cjs").createTrendMarketData({ historyBars: bars, ths: trendThsLane })
+      return require("../trend-screener-adapter.cjs").createTrendMarketData({ historyBars: bars, ths: trendThsLane, marketSourceHealth })
         .fetchHistory(target, "none", { signal: serviceSignal() });
     });
     const completeRawLimit = minimumRows <= 1500 ? Math.min(limit, 1500) : limit;

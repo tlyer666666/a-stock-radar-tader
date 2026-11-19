@@ -192,7 +192,7 @@ export function useWorkspaceCollections({
               ];
         return next;
       });
-      showToast(currentlyFavorite ? "已移出自选板块" : "已加入自选板块");
+      showToast(currentlyFavorite ? "已移出自选监控" : "已加入自选监控");
     } catch { showToast("自选保存失败，已保留原有列表"); }
   }, [payload?.security, showToast]);
 
@@ -234,6 +234,49 @@ export function useWorkspaceCollections({
     }
     await toggleFavorite(security);
   }, [favoriteCodes, showToast, toggleFavorite]);
+
+  const addFavoriteSecurities = useCallback(async (securities: Security[]) => {
+    if (!securities.length) return;
+    if (!watchlistLoaded.current) { showToast("自选列表尚未加载，请稍后重试"); return; }
+    let addedCount = 0;
+    try {
+      await watchlistWriter.current!(current => {
+        const next = [...current];
+        const byCode = new Map(next.map((item, idx) => [item.code, idx]));
+        const nowIso = new Date().toISOString();
+        for (const sec of securities) {
+          const code = String(sec?.code || "").trim();
+          if (!/^\d{6}$/.test(code)) continue;
+          const idx = byCode.get(code);
+          if (idx === undefined) {
+            byCode.set(code, next.length);
+            next.push({
+              ...sec,
+              code,
+              name: String(sec.name || code),
+              secid: String(sec.secid || ""),
+              createdAt: nowIso,
+              favoriteAddedAt: nowIso,
+              favorite: true,
+              autoAdded: false,
+              note: ""
+            });
+            addedCount += 1;
+          } else {
+            const existing = next[idx];
+            if (existing && !existing.favorite && existing.autoAdded) {
+              next[idx] = { ...existing, favorite: true, favoriteAddedAt: nowIso };
+              addedCount += 1;
+            }
+          }
+        }
+        return next;
+      });
+      showToast(addedCount > 0 ? `已批量加入 ${addedCount} 只股票到自选监控` : "所选股票均已在自选监控中");
+    } catch {
+      showToast("批量加入自选保存失败，已保留原有列表");
+    }
+  }, [showToast]);
 
   const handleQuickHoldingTrade = useCallback(async (input: {
     code: string;
@@ -321,6 +364,7 @@ export function useWorkspaceCollections({
     removeObservation,
     saveHoldings,
     addFavoriteSecurity,
+    addFavoriteSecurities,
     handleQuickHoldingTrade
   };
 }

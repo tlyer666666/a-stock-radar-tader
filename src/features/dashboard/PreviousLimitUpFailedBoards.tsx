@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AiInterpretPanel } from "../ai-review/AiInterpretPanel";
-import { Activity, ArrowDown, ArrowUp, CircleAlert, LoaderCircle, RefreshCw, Search, Star } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, CircleAlert, LoaderCircle, RefreshCw, Search } from "lucide-react";
+import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
+import StockRowActions from "../../components/StockRowActions";
 import { whenVisible } from "../../visiblePolling";
 import { fmtMoney, fmtPercent } from "../../domain/formatters";
 import { formatShanghaiDate, formatShanghaiDateTime, formatShanghaiTime, shanghaiDateTag } from "../../dateUtils";
@@ -40,6 +42,10 @@ type Props = {
   onOpen: (security: Security) => void;
   onAdd: (security: Security) => void;
   isFavorite: (code: string) => boolean;
+  onToggleFavorite?: ((security: Security) => void) | undefined;
+  onAddFavorite?: ((security: Security) => void) | undefined;
+  onOpenMonitor?: ((security: Security) => void) | undefined;
+  onShowToast?: ((message: string) => void) | undefined;
 };
 
 const providerLabel = (providers?: string[]) => {
@@ -224,8 +230,14 @@ export default function PreviousLimitUpFailedBoards({
   onViewStateChange,
   onOpen,
   onAdd,
-  isFavorite
+  isFavorite,
+  onToggleFavorite,
+  onAddFavorite,
+  onOpenMonitor,
+  onShowToast
 }: Props) {
+  const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [plannedCodes, setPlannedCodes] = usePlannedCodes();
   const [snapshotCache, setSnapshotCache] = useState(cache || emptyCache);
   const { lastGoodSnapshot, latestResponse, lastGoodDailyDays, failureMessage, lastAttemptAt } = snapshotCache;
   const [loading, setLoading] = useState(!cache);
@@ -446,7 +458,32 @@ export default function PreviousLimitUpFailedBoards({
                 <td className="puf-stock-cell"><strong>{row.name}</strong><code>{row.code}</code><small>{row.industry || "未分类"}</small></td>
                 <td>{row.previous.consecutiveBoards === null ? "--" : `${row.previous.consecutiveBoards}板`}</td><td className="puf-seal-times"><span>{row.previous.firstSealTime || "--"}</span><small>{row.previous.lastSealTime || "--"}</small></td><td>{row.previous.openBoardCount === null ? "--" : `${row.previous.openBoardCount}次`}</td><td>{row.previous.isOneWordBoard === null ? "未识别" : row.previous.isOneWordBoard ? "是" : "否"}</td>
                 <td><span className={`puf-status-pill ${rowStatus === "收盘未回封" ? "is-close" : ""}`}>{rowStatus}</span></td><td className="puf-seal-times"><span>{row.today.firstSealTime || "--"}</span><small>{row.today.lastSealTime || "--"}</small></td><td>{row.today.openBoardCount === null ? "--" : `${row.today.openBoardCount}次`}</td><td>{formatPrice(row.today.latest)}</td><td className={changeClass}>{fmtPercent(row.today.changePct)}</td><td>{fmtMoney(row.today.amount)}</td><td>{row.today.turnover === null ? "--" : `${formatNumber(row.today.turnover)}%`}</td>
-                <td><div className="puf-row-actions"><button type="button" className="puf-action-button" onClick={() => onOpen(security)}>分析</button><button type="button" className="puf-action-button" onClick={() => onAdd(security)} disabled={favorite} aria-label={favorite ? `${row.name}已加入自选` : `将${row.name}加入自选`}><Star size={13} />{favorite ? "已自选" : "加入自选"}</button></div></td>
+                <td>
+                  <div className="puf-row-actions">
+                    <button type="button" className="puf-action-button" onClick={() => onOpen(security)}>分析</button>
+                    <StockRowActions
+                      security={security}
+                      isFavorite={favorite}
+                      isPlanned={plannedCodes.has(row.code)}
+                      onToggleFavorite={onToggleFavorite ?? ((sec) => {
+                        if (!favorite) {
+                          if (onAddFavorite) onAddFavorite(sec);
+                          else onAdd(sec);
+                        }
+                      })}
+                      onOpenMonitor={onOpenMonitor}
+                      onAddPlan={() => setPlanTarget({
+                        code: row.code,
+                        name: row.name,
+                        secid: security.secid,
+                        referencePrice: row.today.latest,
+                        asOf: displayedSnapshot?.currentDate || undefined,
+                        defaultNote: `昨日涨停今日炸板${row.industry ? ` · ${row.industry}` : ""}`
+                      })}
+                      compact
+                    />
+                  </div>
+                </td>
               </tr>;
             })}</tbody></table>
           </div>}
@@ -492,13 +529,51 @@ export default function PreviousLimitUpFailedBoards({
               const changeClass = row.changePct === null ? "" : row.changePct > 0 ? "is-up" : row.changePct < 0 ? "is-down" : "";
               return <tr key={row.code}>
                 <td className="puf-stock-cell"><strong>{row.name}</strong><code>{row.code}</code><small>{row.industry || "未分类"}</small></td><td>{row.consecutiveBoards === null ? "--" : `${row.consecutiveBoards}板`}</td><td>{row.firstSealTime || "--"}</td><td>{row.lastSealTime || "--"}</td><td>{row.openBoardCount === null ? "--" : `${row.openBoardCount}次`}</td><td><span className={`puf-status-pill ${selectedDayStatus === "收盘未回封" ? "is-close" : ""}`}>{selectedDayStatus}</span></td><td>{formatPrice(row.latest)}</td><td className={changeClass}>{fmtPercent(row.changePct)}</td><td>{fmtMoney(row.amount)}</td><td>{row.turnover === null ? "--" : `${formatNumber(row.turnover)}%`}</td>
-                <td><div className="puf-row-actions"><button type="button" className="puf-action-button" onClick={() => onOpen(security)}>分析</button><button type="button" className="puf-action-button" onClick={() => onAdd(security)} disabled={favorite} aria-label={favorite ? `${row.name}已加入自选` : `将${row.name}加入自选`}><Star size={13} />{favorite ? "已自选" : "加入自选"}</button></div></td>
+                <td>
+                  <div className="puf-row-actions">
+                    <button type="button" className="puf-action-button" onClick={() => onOpen(security)}>分析</button>
+                    <StockRowActions
+                      security={security}
+                      isFavorite={favorite}
+                      isPlanned={plannedCodes.has(row.code)}
+                      onToggleFavorite={onToggleFavorite ?? ((sec) => {
+                        if (!favorite) {
+                          if (onAddFavorite) onAddFavorite(sec);
+                          else onAdd(sec);
+                        }
+                      })}
+                      onOpenMonitor={onOpenMonitor}
+                      onAddPlan={() => setPlanTarget({
+                        code: row.code,
+                        name: row.name,
+                        secid: security.secid,
+                        referencePrice: row.latest,
+                        asOf: activeDate !== "--" ? activeDate : undefined,
+                        defaultNote: `炸板观察${row.industry ? ` · ${row.industry}` : ""}`
+                      })}
+                      compact
+                    />
+                  </div>
+                </td>
               </tr>;
             })}</tbody></table>
           </div>}
           <footer className="puf-page-footer"><span>交易日期：{activeDate}</span><span>源最新日期：{dailySource?.sourceLatestDate || "--"}</span><span>最近本地检查：{formatShanghaiDateTime(lastAttemptAt || statusSnapshot?.checkedAt)}</span><span>{refreshing ? "正在刷新" : live ? "可见时每 15 秒刷新" : "实时刷新已暂停"}</span></footer>
         </>
       )}
+      <QuickPlanModal
+        target={planTarget}
+        onClose={() => setPlanTarget(null)}
+        onSaved={res => {
+          setPlannedCodes(prev => {
+            const next = new Set(prev);
+            next.add(res.code);
+            return next;
+          });
+          onShowToast?.(res.message);
+        }}
+        onError={msg => onShowToast?.(msg)}
+      />
     </section>
   );
 }

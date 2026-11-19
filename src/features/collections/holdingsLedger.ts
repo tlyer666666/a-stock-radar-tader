@@ -753,19 +753,25 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
   };
 }
 
+export type HoldingItemWithSellable = HoldingItem & { sellableShares?: number | undefined };
+
 export function mergeImportedHoldings(
-  existing: HoldingItem[],
+  existing: HoldingItemWithSellable[],
   entries: ParsedHoldingRow[],
   resolvedNames?: Record<string, Security>,
   now = new Date().toISOString()
-): HoldingItem[] {
-  const byCode = new Map(existing.map(item => [item.code, item]));
+): HoldingItemWithSellable[] {
+  const byCode = new Map<string, HoldingItemWithSellable>(existing.map(item => [item.code, item]));
   for (const row of entries) {
     const prev = byCode.get(row.code);
     const looked = resolvedNames?.[row.code];
     const meta = inferSecurityMeta(row.code);
     const resolvedName = looked?.name || (row.name !== row.code ? row.name : "") || prev?.name || row.code;
-    byCode.set(row.code, {
+    const sellableShares =
+      typeof row.availableShares === "number" && Number.isSafeInteger(row.availableShares) && row.availableShares >= 0
+        ? row.availableShares
+        : prev?.sellableShares;
+    const merged: HoldingItemWithSellable = {
       ...meta,
       ...(prev || {}),
       ...(looked || {}),
@@ -773,11 +779,13 @@ export function mergeImportedHoldings(
       name: resolvedName,
       secid: looked?.secid || prev?.secid || meta.secid,
       shares: row.shares,
+      ...(sellableShares !== undefined ? { sellableShares } : {}),
       costPrice: row.costPrice,
       note: row.note || prev?.note || "",
       createdAt: prev?.createdAt || now,
       updatedAt: now
-    });
+    };
+    byCode.set(row.code, merged);
   }
   return [...byCode.values()].sort((left, right) => left.code.localeCompare(right.code));
 }

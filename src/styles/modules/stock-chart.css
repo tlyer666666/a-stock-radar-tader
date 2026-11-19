@@ -199,7 +199,7 @@ html .terminal-shell .chart-panel .indicator-chart-head span { font-size: var(--
 html .terminal-shell .chart-panel .indicator-chart > svg { height: 100px; }
 html .terminal-shell .chart-panel .indicator-zero { stroke: var(--stock-chart-grid); }
 html .terminal-shell .chart-panel .indicator-reference { stroke: var(--stock-chart-grid); stroke-width: 1; }
-html .terminal-shell .chart-panel .indicator-bar.up { fill: var(--stock-chart-rise); }
+html .terminal-shell .chart-panel .indicator-bar.up { fill: var(--stock-chart-bg); stroke: var(--stock-chart-rise); stroke-width: 1; }
 html .terminal-shell .chart-panel .indicator-bar.down { fill: var(--stock-chart-fall); }
 html .terminal-shell .chart-panel .indicator-yellow { color: var(--warn); stroke: var(--stock-chart-ma5); }
 html .terminal-shell .chart-panel .indicator-blue { color: var(--stock-chart-ma10); stroke: var(--stock-chart-ma10); }

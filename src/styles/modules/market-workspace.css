@@ -193,7 +193,7 @@ html .terminal-shell .information-workspace .news-relations > span { color:var(-
 html .terminal-shell .sector-explorer { overflow:visible; }
 html .terminal-shell .sector-explorer-directory { overflow:visible; max-height:none; position:relative; z-index:3; }
 html .terminal-shell .sector-directory-tools { position:relative; overflow:visible; }
-html .terminal-shell .sector-directory-list { overflow:auto; max-height:520px; min-width:0; scrollbar-width:thin; }
+html .terminal-shell .sector-directory-list { overflow-x:auto; overflow-y:visible; max-height:none; min-width:0; scrollbar-width:thin; }
 html .terminal-shell .sector-explorer-detail-refresh { padding:8px 14px; }
 html .terminal-shell .sector-explorer-detail-title { align-items:center; }
 html .terminal-shell .sector-explorer-detail-title h3 { font-size: var(--fs-terminal-heading); margin:0; }

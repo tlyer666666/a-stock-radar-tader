@@ -91,7 +91,7 @@ export function AiStockReviewPanel({ security, context, agentContext }: {
       </div>
     </header>
     {notice && <p className="ai-selection-note" role="status">{notice}</p>}
-    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|403|404|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
+    {error && <div className="test-result fail" role="alert"><span />{error}{canJumpAi && /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i.test(error) && <button type="button" className="link-btn" onClick={() => window.__aStockOpenSettings?.("ai")}>前往 AI 设置</button>}</div>}
     {failed.length > 0 && item && <div className="test-result fail" role="alert"><span />{failed.map(model => `${model.name} 点评失败：${model.error || "未知原因"}`).join("；")}</div>}
     {item && review && <div className="ai-stock-review-body">
       <div className="ai-stock-review-score">

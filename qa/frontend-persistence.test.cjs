@@ -27,7 +27,7 @@ test('failed manual paper close keeps the ledger unchanged; retry commits once a
   await paperStorageFixture(p,'600001');await analyzePaperFixture(p);
   const key='a-stock-radar-v054-paper-sim-v1',before=await p.evaluate(key=>localStorage.getItem(key),key);
   await p.locator('.paper-position-table').getByRole('button',{name:'平仓',exact:true}).click();
-  await p.getByRole('alert').filter({hasText:'本次操作未生效'}).waitFor();
+  await p.locator('.paper-save-error').filter({hasText:'本次操作未生效'}).waitFor();
   assert.equal(await p.locator('.paper-position-table').getByRole('button',{name:'平仓',exact:true}).count(),1);
   assert.equal(await p.evaluate(key=>localStorage.getItem(key),key),before);
   assert.equal(await p.getByText(/已全部平仓/).count(),0);
@@ -178,13 +178,13 @@ assert.equal(await input.inputValue(),'乙');assert.equal(await p.locator('#glob
 }finally{await p.close();}});
 test('local watchlist and version hydrate without waiting for holdings',async()=>{
 const p=await page();try{await p.addInitScript(()=>{let api;Object.defineProperty(window,'stockApi',{get:()=>api,set(value){api=value;value.getHoldings=()=>new Promise(()=>{});}});});
-await ready(p);await openView(p,'favorites','自选板块');
+await ready(p);await openView(p,'favorites','自选监控');
 await p.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
 assert.equal(await p.locator('.favorites-empty').count(),0);
 }finally{await p.close();}});
 for(const mode of ['all-bad','mixed','empty'])test('compare selection recovery preserves usable primary priority: '+mode,async()=>{
 const p=await page();try{await p.addInitScript(mode=>{const key='a-stock-radar:compare-selection';const bad={code:'600001',name:{bad:'object'},secid:'1.600001'};const good={code:'600002',name:'有效主档',secid:'1.600002'};const rows=mode==='all-bad'?[bad]:mode==='mixed'?[good,bad]:[];window.originalCompare=JSON.stringify(rows);localStorage.setItem(key,window.originalCompare);localStorage.setItem(key+':last-good',JSON.stringify([{code:'600003',name:'有效备份',secid:'1.600003'}]));},mode);
-await ready(p);await p.getByRole('button',{name:'多股同列',exact:true}).first().click();
+await ready(p);await openView(p,'compare','多股同列');
 await p.locator('.compare-selected-chips, .app-crash-fallback').waitFor();
 await p.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
 assert.equal(await p.locator('.app-crash-fallback').count(),0);
@@ -195,7 +195,7 @@ assert.equal(await p.evaluate(()=>localStorage.getItem('a-stock-radar:compare-se
 
 for (const target of ['compare','portfolio']) test('search candidates belong to current input and wait for IME: '+target,async()=>{
 const p=await page();try{await ready(p);await p.evaluate(()=>{window.calls=[];window.stockApi.search=q=>{window.calls.push(q);return q==='甲甲'?Promise.resolve([{code:'600001',name:'旧查询股票',secid:'1.600001',assetType:'stock'}]):new Promise(resolve=>window.finishNewSearch=()=>resolve([{code:'600002',name:'新查询股票',secid:'1.600002',assetType:'stock'}]));};});
-if(target==='compare')await p.getByRole('button',{name:'多股同列',exact:true}).first().click();else{await openView(p,'backtest','回测中心');await p.getByRole('button',{name:'多股组合回测',exact:true}).click();}
+if(target==='compare')await openView(p,'compare','多股同列');else{await openView(p,'backtest','回测中心');await p.getByRole('button',{name:'多股组合回测',exact:true}).click();}
 const input=target==='compare'?p.getByLabel('搜索对比股票',{exact:true}):p.getByPlaceholder('输入股票名称或6位代码添加');const choices=p.locator(target==='compare'?'.compare-candidate-list':'.pbt-stock-suggestions');
 await input.fill('甲甲');await choices.getByText('旧查询股票',{exact:true}).waitFor();await input.fill('乙乙');await p.waitForFunction(()=>window.finishNewSearch);assert.equal(await choices.getByText('旧查询股票',{exact:true}).count(),0);
 await input.dispatchEvent('compositionstart');await input.fill('zhong');await p.evaluate(()=>window.calls=[]);await p.waitForTimeout(300);assert.deepEqual(await p.evaluate(()=>window.calls),[]);

@@ -60,6 +60,7 @@ type WatchItem = Security & {
 
 type HoldingItem = Security & {
   shares: number;
+  sellableShares?: number | undefined;
   costPrice: number;
   createdAt: string;
   updatedAt: string;

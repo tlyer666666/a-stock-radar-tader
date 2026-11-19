@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
+import { hydrateFromNativeKv, loadSafeLocalJson, mirrorToNativeKv, saveSafeLocalJson } from "../../safeStorage";
 import { startVisibleInterval } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import {
@@ -12,7 +12,7 @@ type ReminderKind = "time" | "condition";
 type ReminderPopup = { id: string; kind: ReminderKind };
 const CHECK_MS = 15_000;
 const AI_POLL_MS = 1500;
-const isStore = (value: unknown) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const isStore = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
 const brief = (text: string, max = 60) => text.replace(/\s+/g, " ").slice(0, max);
 const errorText = (reason: unknown) => aiErrorMessage(reason).replace(/^\[[A-Z_]+\]\s*/, "").replace(/（可重试）$/, "");
@@ -43,6 +43,7 @@ export function useNotes() {
   const [watch, setWatch] = useState<{ watching: number; session: boolean; error: string }>({ watching: 0, session: false, error: "" });
   const storeRef = useRef(store);
   const mountedRef = useRef(true);
+  const hasMutatedRef = useRef(false);
   const lastWatchingRef = useRef(0);
   const soonTimersRef = useRef(new Set<number>());
 
@@ -56,12 +57,37 @@ export function useNotes() {
     };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    let localHasNotes = false;
+    try {
+      const raw = typeof window !== "undefined" ? window.localStorage?.getItem(NOTES_KEY) : null;
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        localHasNotes = isStore(parsed) && Array.isArray(parsed.notes) && parsed.notes.length > 0;
+      }
+    } catch {
+      localHasNotes = false;
+    }
+    void hydrateFromNativeKv(NOTES_KEY, isStore).then(hydrated => {
+      if (!active || !mountedRef.current || hasMutatedRef.current || localHasNotes || !hydrated) return;
+      const normalized = normalizeNotes(hydrated);
+      if (!normalized.notes.length) return;
+      storeRef.current = normalized;
+      setStore(normalized);
+    });
+    return () => { active = false; };
+  }, []);
+
   const commit = useCallback((update: (current: NotesStore) => NotesStore) => {
     if (!mountedRef.current) return;
+    hasMutatedRef.current = true;
     const next = normalizeNotes(update(storeRef.current));
     storeRef.current = next;
     setStore(next);
-    setSaveError(!saveSafeLocalJson(NOTES_KEY, next, isStore));
+    const ok = saveSafeLocalJson(NOTES_KEY, next, isStore);
+    setSaveError(!ok);
+    if (ok) mirrorToNativeKv(NOTES_KEY, JSON.stringify(next));
   }, []);
   const patchNote = useCallback((id: string, patch: (note: Note) => Note) => commit(current => ({ ...current, notes: current.notes.map(note => note.id === id ? patch(note) : note) })), [commit]);
 

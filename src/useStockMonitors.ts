@@ -52,6 +52,7 @@ export function createStockMonitorPolling(options: PollingOptions) {
   };
   const poll = async (): Promise<void> => {
     if (busy || !enabled) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     const epoch = generation;
     const pending = items.filter(item => configs[item.code]?.enabled);
     if (!pending.length) return;
@@ -177,7 +178,10 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
     if (!live) return undefined;
     const intervalMs = Math.max(5, Number(refreshSeconds) || 5) * 1000;
     const stopVisible = startVisibleInterval(
-      () => void pollerRef.current?.poll(),
+      () => {
+        if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+        void pollerRef.current?.poll();
+      },
       intervalMs
     );
     // 桌面端盘中最小化或切去券商软件下单时，保持后台降频巡检，防止漏报止损或突破预警。
@@ -228,9 +232,15 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
     setSaved(next);
   }, []);
 
-  const clearAlerts = useCallback(() => {
+  const clearAlerts = useCallback((codes?: string[]) => {
     if (!savedRef.current.alerts.length) return;
-    const next = { ...savedRef.current, alerts: [] };
+    const codeSet = Array.isArray(codes) ? new Set(codes) : null;
+    if (codeSet && codeSet.size === 0) return;
+    const nextAlerts = codeSet
+      ? savedRef.current.alerts.filter(item => !codeSet.has(item.code))
+      : [];
+    if (nextAlerts.length === savedRef.current.alerts.length) return;
+    const next = { ...savedRef.current, alerts: nextAlerts };
     saveSafeLocalJson(STOCK_MONITOR_STORAGE_KEY, next, isUsableMonitorStorage);
     savedRef.current = next;
     setSaved(next);

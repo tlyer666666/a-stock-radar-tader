@@ -15,6 +15,7 @@ function registerStrategyIpc({
   usableHoldings,
   scanStrategySignals,
   getStrategyScanProgress = defaultGetStrategyScanProgress,
+  getDailyBarCoverage = null,
   cancelServiceJob,
   getStrategyDefinitions,
   customStrategyStore,
@@ -30,7 +31,12 @@ function registerStrategyIpc({
       const progress = typeof getStrategyScanProgress === "function"
         ? getStrategyScanProgress()
         : { active: false, processed: 0, total: 0, hits: 0, fetched: 0, startedAt: null, etaSeconds: null };
-      return { statusOnly: true, progress };
+      const barSummary = typeof getDailyBarCoverage === "function" ? getDailyBarCoverage() : null;
+      return {
+        statusOnly: true,
+        progress,
+        ...(barSummary ? { dailyBarsCount: barSummary.fileCount, estimatedCoverageRatio: barSummary.estimatedRatio } : {})
+      };
     }
     const runtime = serviceRequestRuntime(event, safeOptions);
     const settings = settingsForService();
