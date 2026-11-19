@@ -193,6 +193,12 @@ function pickBacktestSettingOverrides(value) {
   return picked;
 }
 
+function normalizeFileUrlDrive(url) {
+  if (url.protocol === "file:" && /^\/[a-z]:(?=\/|$)/.test(url.pathname)) {
+    url.pathname = `/${url.pathname[1].toUpperCase()}:${url.pathname.slice(3)}`;
+  }
+}
+
 function isExpectedRendererEntry(value, entryUrl) {
   if (typeof value !== "string" || typeof entryUrl !== "string") return false;
   try {
@@ -202,6 +208,8 @@ function isExpectedRendererEntry(value, entryUrl) {
       && ["localhost", "127.0.0.1", "[::1]"].includes(entry.hostname))) return false;
     target.hash = "";
     entry.hash = "";
+    normalizeFileUrlDrive(target);
+    normalizeFileUrlDrive(entry);
     return target.href === entry.href;
   } catch { return false; }
 }
@@ -374,6 +382,7 @@ module.exports = {
   decryptStoredSecret,
   encryptSecretForStorage,
   isAllowedRendererNavigation,
+  isExpectedRendererEntry,
   isTrustedMainFrameIpcEvent,
   migrateLegacyStoredSecrets,
   normalizeExternalHttpsUrl,

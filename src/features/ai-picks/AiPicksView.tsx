@@ -10,7 +10,7 @@ import { createServiceJobScope } from "../../serviceJobClient";
 import { selectionSummaryDataState } from "../../domain/strategySelectionDataState";
 import { startVisibleInterval } from "../../visiblePolling";
 import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
-import { readTrendPlans, saveQuickObservationPlan, TREND_PLAN_STORAGE_KEY } from "../../trendWorkspace";
+import { readTrendPlans, saveQuickObservationPlan, saveQuickObservationPlansBatch, TREND_PLAN_STORAGE_KEY } from "../../trendWorkspace";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -250,6 +250,11 @@ export default function AiPicksView({
   const pageRows = boardRows.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
   const securities = useMemo(() => pageRows.map(row => toSecurity({ code: row.code, name: row.name, secid: row.source?.secid })), [pageRows]);
   const quotes = useSelectionQuotes(securities, live && !isHistory, quoteRefreshSeconds);
+  const seenQuotesRef = useRef<Record<string, number>>({});
+  for (const [code, entry] of Object.entries(quotes.entries)) {
+    const p = Number(entry?.quote?.latest);
+    if (Number.isFinite(p) && p > 0) seenQuotesRef.current[code] = p;
+  }
   const multi = (shownRanking?.models?.length || 0) > 1;
   const hasDims = Boolean(shownRanking?.items.some(item => item.dims?.length));
   const failedModels = (shownRanking?.models || []).filter(item => !item.ok);
@@ -267,44 +272,47 @@ export default function AiPicksView({
   const batchAddPlans = () => {
     if (typeof window === "undefined" || !window.localStorage || !selection.list.length) return;
     const rowByCode = new Map(boardRows.map(row => [row.code, row]));
+    const aiByCode = new Map((shownRanking?.items || []).map(item => [item.code, item]));
     const candByCode = new Map(candidates.map(item => [item.code, item]));
-    let addedCount = 0;
-    let existingCount = 0;
-    let skippedNoPrice = 0;
-    const addedCodes: string[] = [];
-    for (const code of selection.list) {
+    const inputs = selection.list.map(code => {
       const row = rowByCode.get(code);
+      const aiItem = row?.ai || aiByCode.get(code);
       const source = row?.source || candByCode.get(code);
-      const name = row?.name || source?.name || code;
+      const name = row?.name || source?.name || aiItem?.name || code;
       const livePrice = Number(quotes.entries[code]?.quote?.latest);
-      const refPrice = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : source?.latest;
-      const res = saveQuickObservationPlan(window.localStorage, {
+      const cachedQuote = seenQuotesRef.current[code] ?? 0;
+      const refPrice = Number.isFinite(livePrice) && livePrice > 0
+        ? livePrice
+        : cachedQuote > 0
+          ? cachedQuote
+          : source?.latest;
+      return {
         code,
         name,
         secid: source?.secid || secidFor(code),
         referencePrice: refPrice,
         asOf: asOfDate || source?.signalDate,
-        reason: row?.ai?.highlights || (row?.ai ? `AI评分 ${row.ai.score} (${row.ai.rating})` : "AI 候选批量关注")
-      });
-      if (!res.ok) {
-        skippedNoPrice += 1;
-      } else {
-        addedCodes.push(code);
-        if (res.created) addedCount += 1;
-        else existingCount += 1;
-      }
-    }
+        reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "AI 候选批量关注")
+      };
+    });
+    const res = saveQuickObservationPlansBatch(window.localStorage, inputs);
+    const addedCodes = [...res.created, ...res.existing];
     if (addedCodes.length) {
       setPlannedCodes(prev => {
         const next = new Set(prev);
         for (const code of addedCodes) next.add(code);
         return next;
       });
+      selection.clear();
+    }
+    if (res.storageError) {
+      onShowToast?.(res.storageError);
+      return;
     }
     const parts = [
-      addedCount ? `新增 ${addedCount} 只观察计划` : "",
-      existingCount ? `${existingCount} 只已在计划中` : "",
-      skippedNoPrice ? `${skippedNoPrice} 只暂缺参考价` : ""
+      res.created.length ? `新增 ${res.created.length} 只观察计划` : "",
+      res.existing.length ? `${res.existing.length} 只已在计划中` : "",
+      res.missingPrice.length ? `${res.missingPrice.length} 只暂缺参考价` : ""
     ].filter(Boolean);
     onShowToast?.(parts.length ? `批量流转完成：${parts.join("，")}` : "未生成新的观察计划");
   };

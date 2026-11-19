@@ -18,37 +18,57 @@ const SYSTEM = `你是 A 股交易者的记事助手。用户随手写了一段�
 6. note：你没法变成时间或条件的部分（例如「跌破均价线」要人看），一句话说明；没有就空字符串。
 只输出 JSON：{"text":"...","when":"YYYY-MM-DD HH:mm"|null,"repeat":"none","code":"600519"|null,"stockName":null,"condition":{...}|null,"note":""}`;
 
+const _priceLimitRules = require("./price-limit-rules.cjs");
+const isAStockCode = typeof _priceLimitRules.isAStockCode === "function"
+  ? _priceLimitRules.isAStockCode
+  : (code = "") => {
+      const value = String(code).trim();
+      return /^(?:00[0-3]|30[012]|60[0135]|68[89])\d{3}$/.test(value) || _priceLimitRules.isBseAshareCode(value);
+    };
+
 const clip = (value, max) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
 
-const CODE_RE = /^[03689]\d{5}$/;
+const isSupportedNoteCode = raw => {
+  const code = String(raw || "").trim();
+  return isAStockCode(code) || /^(?:5\d{5}|159\d{3}|1[12]\d{4})$/.test(code);
+};
 const STOP_PHRASES = /^(?:明早|明天|今天|盘前|盘中|开盘|午盘|尾盘|收盘|关注|买入|卖出|减仓|加仓|清仓|跌破|涨到|涨幅|跌幅|超过|低于|高于|提醒|瞅一眼|看下|一下)$/;
 
 function stockNameCandidates(result, outText, rawText) {
   const candidates = [];
-  const push = token => {
+  const seen = new Set();
+  const push = (token, explicit = false) => {
     const clean = clip(token, 16);
-    if (!clean || clean.length < 2 || STOP_PHRASES.test(clean) || candidates.includes(clean)) return;
-    candidates.push(clean);
+    if (!clean || clean.length < 2 || STOP_PHRASES.test(clean) || seen.has(clean)) return;
+    seen.add(clean);
+    candidates.push({ name: clean, explicit });
   };
-  if (result?.stockName) push(result.stockName);
+  if (result?.stockName) push(result.stockName, true);
   const combined = `${outText || ""} ${rawText || ""}`;
   for (const seg of combined.match(/[\u4e00-\u9fa5]{2,6}/g) || []) {
     const trimmed = seg.replace(/(?:明日|明早|明天|今天|早盘|开盘|尾盘|收盘|盘中|跌破|涨到|减仓|加仓|关注|盯紧|买点|卖点)/g, "").trim();
-    if (trimmed.length >= 2) push(trimmed);
+    if (trimmed.length >= 2) push(trimmed, false);
   }
   return candidates.slice(0, 3);
 }
 
 async function fallbackResolveCode(resolveStock, candidates) {
   if (typeof resolveStock !== "function" || !candidates.length) return null;
-  for (const candidate of candidates) {
+  for (const entry of candidates) {
+    const candidate = typeof entry === "string" ? entry : entry.name;
+    const explicit = typeof entry === "object" && entry?.explicit === true;
     try {
       const hit = await resolveStock(candidate);
       const list = Array.isArray(hit) ? hit : hit ? [hit] : [];
-      const exact = list.find(item => item?.name === candidate && CODE_RE.test(String(item?.code || "")));
-      if (exact) return String(exact.code);
-      const first = list.find(item => CODE_RE.test(String(item?.code || "")));
-      if (first) return String(first.code);
+      const exact = list.find(item => item?.name === candidate && isSupportedNoteCode(item?.code));
+      if (exact) return String(exact.code).trim();
+      if (explicit) {
+        const first = list.find(item => {
+          const itemName = String(item?.name || "").trim();
+          return isSupportedNoteCode(item?.code) && itemName && (itemName.includes(candidate) || candidate.includes(itemName));
+        });
+        if (first) return String(first.code).trim();
+      }
     } catch { /* 行情联想失败时保持原字段，不影响保存或整理 */ }
   }
   return null;
@@ -63,8 +83,8 @@ function sanitize(result, { tradingDays = [] } = {}) {
     if (Number.isFinite(midnight) && new Date(midnight).toISOString().slice(0, 10) === date) out.when = when;
   }
   if (["tradingDays", "daily", "weekly"].includes(result?.repeat)) out.repeat = result.repeat;
-  const code = String(result?.code || "");
-  if (CODE_RE.test(code)) out.code = code;
+  const code = String(result?.code || "").trim();
+  if (isSupportedNoteCode(code)) out.code = code;
   const c = result?.condition;
   if (c && typeof c === "object") {
     const value = Number(c.value);

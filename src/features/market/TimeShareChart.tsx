@@ -13,8 +13,24 @@ function TimeShareChart({ rows, preClose: sourcePreClose = null, assetType, unit
   const cachedRectRef = useRef<{ left: number; width: number } | null>(null);
   const rafRef = useRef<number | null>(null);
   const pendingSlotRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (rafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(rafRef.current);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+      return () => {
+        if (rafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(rafRef.current);
+      };
+    }
+    const invalidateRect = () => {
+      cachedRectRef.current = null;
+    };
+    window.addEventListener("resize", invalidateRect);
+    window.addEventListener("scroll", invalidateRect, true);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("resize", invalidateRect);
+        window.removeEventListener("scroll", invalidateRect, true);
+      }
+      if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+    };
   }, []);
   if (!share) return <div className="empty-inline">暂无分时数据</div>;
   const { points, preClose, scale } = share;

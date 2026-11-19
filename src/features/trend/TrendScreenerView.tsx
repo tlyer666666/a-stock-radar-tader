@@ -331,6 +331,7 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
   latestPlansRef.current = storage.plans;
   const draftTimerRef = useRef<number | null>(null);
   const pendingDraftPlansRef = useRef<SavedTrendPlan[] | null>(null);
+  const dirtyDraftIdsRef = useRef<Set<string>>(new Set());
   const selfWritingPlansRef = useRef(false);
   const writePlansSafely = useCallback((plans: SavedTrendPlan[]): boolean => {
     selfWritingPlansRef.current = true;
@@ -346,10 +347,23 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
       draftTimerRef.current = null;
     }
     const pending = pendingDraftPlansRef.current;
+    const dirtyIds = new Set(dirtyDraftIdsRef.current);
+    dirtyDraftIdsRef.current.clear();
     if (!pending) return;
     pendingDraftPlansRef.current = null;
     try {
-      if (!writePlansSafely(pending)) {
+      const current = readTrendPlans(window.localStorage);
+      let toWrite = pending;
+      if (!current.error && dirtyIds.size > 0) {
+        const draftById = new Map(pending.filter(item => dirtyIds.has(item.id)).map(item => [item.id, item.reviewDraft]));
+        const seen = new Set(current.plans.map(item => item.id));
+        const extra = pending.filter(item => !seen.has(item.id));
+        toWrite = capTrendPlans([
+          ...extra,
+          ...current.plans.map(item => (draftById.has(item.id) ? { ...item, reviewDraft: draftById.get(item.id)! } : item))
+        ]);
+      }
+      if (!writePlansSafely(toWrite)) {
         setSaveNotice("复核输入未保存：本地存储不可写或空间不足。请导出并检查存储权限。");
       }
     } catch {
@@ -364,23 +378,49 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
         const storageEvent = event as StorageEvent;
         if (storageEvent.key !== null && storageEvent.key !== TREND_PLAN_STORAGE_KEY) return;
       }
-      flushPendingDraft();
       try {
         const next = readTrendPlans(window.localStorage);
         if (next.error) return;
+        let finalPlans = next.plans;
+        if (pendingDraftPlansRef.current) {
+          if (draftTimerRef.current !== null) {
+            window.clearTimeout(draftTimerRef.current);
+            draftTimerRef.current = null;
+          }
+          const dirtyIds = new Set(dirtyDraftIdsRef.current);
+          dirtyDraftIdsRef.current.clear();
+          const draftById = new Map(
+            pendingDraftPlansRef.current
+              .filter(item => dirtyIds.has(item.id))
+              .map(item => [item.id, item.reviewDraft])
+          );
+          pendingDraftPlansRef.current = null;
+          if (draftById.size > 0) {
+            finalPlans = capTrendPlans(
+              next.plans.map(item => (draftById.has(item.id) ? { ...item, reviewDraft: draftById.get(item.id)! } : item))
+            );
+            writePlansSafely(finalPlans);
+          }
+        }
         setStorage(prev => {
           if (
             prev.error === next.error &&
-            prev.plans.length === next.plans.length &&
+            prev.plans.length === finalPlans.length &&
             prev.plans.every((item, idx) => {
-              const other = next.plans[idx];
-              return other !== undefined && item.id === other.id && item.archivedAt === other.archivedAt && item.savedAt === other.savedAt;
+              const other = finalPlans[idx];
+              return (
+                other !== undefined &&
+                item.id === other.id &&
+                item.archivedAt === other.archivedAt &&
+                item.savedAt === other.savedAt &&
+                item.reviewDraft === other.reviewDraft
+              );
             })
           ) {
             return prev;
           }
-          latestPlansRef.current = next.plans;
-          return next;
+          latestPlansRef.current = finalPlans;
+          return { plans: finalPlans, error: "" };
         });
       } catch {
         // ignore storage read error during background sync
@@ -394,7 +434,7 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
       window.removeEventListener("storage", syncPlans);
       window.removeEventListener("a-stock-radar:trend-plans-updated", syncPlans);
     };
-  }, [flushPendingDraft]);
+  }, [writePlansSafely]);
   const mounted = useRef(false);
   const requestId = useRef(0);
   const pollPending = useRef(false);
@@ -535,20 +575,11 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
     const plans = capTrendPlans(latestPlansRef.current.map((plan) => plan.id === id ? { ...plan, reviewDraft } : plan));
     latestPlansRef.current = plans;
     pendingDraftPlansRef.current = plans;
+    dirtyDraftIdsRef.current.add(id);
     setStorage({ plans, error: "" });
     if (draftTimerRef.current !== null) window.clearTimeout(draftTimerRef.current);
     draftTimerRef.current = window.setTimeout(() => {
-      draftTimerRef.current = null;
-      const pending = pendingDraftPlansRef.current;
-      pendingDraftPlansRef.current = null;
-      if (!pending) return;
-      try {
-        if (!writePlansSafely(pending)) {
-          setSaveNotice("复核输入未保存：本地存储不可写或空间不足。请导出并检查存储权限。");
-        }
-      } catch {
-        setSaveNotice("复核输入未保存：本地存储不可用。");
-      }
+      flushPendingDraft();
     }, 250);
   };
   const candidates = status?.candidates || EMPTY_CANDIDATES;

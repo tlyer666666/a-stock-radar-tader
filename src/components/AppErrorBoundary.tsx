@@ -102,9 +102,16 @@ export default class AppErrorBoundary extends Component<
       for (const key of [
         "a-stock-radar:default-view",
         "a-stock-radar:sidebar-core-only:v1",
-        "a-stock-radar:display-density:v1"
+        "astock:display-density:v1",
+        "a-stock-radar:display-density:v1",
+        "a-stock-radar:ui-scale:v1",
+        "a-stock-radar:color-vision:v1"
       ]) {
         window.localStorage?.removeItem(key);
+      }
+      if (typeof document !== "undefined") {
+        document.documentElement.style.zoom = "";
+        delete document.documentElement.dataset.colorVision;
       }
     } catch {
       // ignore storage errors during crash recovery

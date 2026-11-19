@@ -3,7 +3,7 @@ import { ArrowDownUp, CircleAlert, Eye, EyeOff, MessagesSquare, Plus, RefreshCw,
 import { fmt, fmtMoney } from "../../domain/formatters";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
 import { TIME_SHARE_SLOTS, timeShareSlot, type TimeShare } from "../market/timeShareModel";
-import { paperRoundShares } from "../paper-simulation/paperTradingRules";
+import { calcAshareBuyFee, calcAshareSellFee, paperRoundShares } from "../paper-simulation/paperTradingRules";
 import { MAX_ROUNDS, STYLE_LABELS, actionSide, calibrateTAdvice, isActionable, replayT, type TAnalysis, type TConfig, type TMarker, type TStyle, type TTrade } from "./tEngine";
 import { MAX_T_ITEMS, inTradingSession, secidForCode, shanghaiClock, shanghaiDay, type TItem } from "./tStore";
 import type { TAssistantApi, TRuntime } from "./useTAssistant";
@@ -20,7 +20,7 @@ type Props = {
   live: boolean;
   onOpenStock: (security: Security) => void;
   onToast: (message: string) => void;
-  onSyncCostToHolding?: ((code: string, shares: number, newCost: number) => void) | undefined;
+  onSyncCostToHolding?: ((code: string, shares: number, newCost: number, name?: string) => void) | undefined;
 };
 
 type TradeDraft = { day: string; side: "buy" | "sell"; price: string; shares: string; time: string };
@@ -114,7 +114,7 @@ function StockRow({ item, runtime, active, onSelect }: { item: TItem; runtime: T
   </button>;
 }
 
-function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSyncCostToHolding, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; onSyncCostToHolding?: ((code: string, shares: number, newCost: number) => void) | undefined; display: TToolboxDisplay }) {
+function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSyncCostToHolding, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; onSyncCostToHolding?: ((code: string, shares: number, newCost: number, name?: string) => void) | undefined; display: TToolboxDisplay }) {
   const { analysis, share } = runtime;
   const replay = useMemo(
     () => (showReplay && share ? replayT(share, { code: item.code, name: item.name }, item.config) : runtime.replay ?? null),
@@ -213,27 +213,47 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSync
       </div>
       <div className="t-assistant-grid">
         <SignalCard analysis={analysis} referenceNote={runtime.signalNote} onRecord={() => startDraft(true)} />
-        <LevelsCard
-          analysis={analysis}
-          onSyncCost={
-            onSyncCostToHolding && trades.length > 0 && analysis.stats.newCost !== null && analysis.stats.newCost > 0
-              ? () => {
-                  const netDelta = trades.reduce((acc, t) => acc + (t.side === "buy" ? t.shares : -t.shares), 0);
-                  const postTShares = Math.max(0, item.config.baseShares + netDelta);
-                  if (postTShares > 0 && analysis.stats.newCost !== null && analysis.stats.newCost > 0) {
-                    onSyncCostToHolding(item.code, postTShares, Math.round(analysis.stats.newCost * 1000) / 1000);
-                  }
-                }
-              : undefined
-          }
-          canSyncCost={Boolean(
+        {(() => {
+          const validTrades = trades.filter(t => t.price > 0 && t.shares > 0);
+          const netDelta = validTrades.reduce((acc, t) => acc + (t.side === "buy" ? t.shares : -t.shares), 0);
+          const postTShares = Math.max(0, item.config.baseShares + netDelta);
+          const canComputeCost = Boolean(
             onSyncCostToHolding &&
-            trades.length > 0 &&
-            analysis.stats.newCost !== null &&
-            analysis.stats.newCost > 0 &&
-            item.config.baseShares + trades.reduce((acc, t) => acc + (t.side === "buy" ? t.shares : -t.shares), 0) > 0
-          )}
-        />
+            validTrades.length > 0 &&
+            item.config.costPrice > 0 &&
+            postTShares > 0 &&
+            (netDelta !== 0 || (analysis.stats.newCost !== null && Number.isFinite(analysis.stats.newCost)))
+          );
+          const handleSyncCost = canComputeCost && onSyncCostToHolding
+            ? () => {
+                let rawPostTCost: number;
+                if (netDelta === 0 && analysis.stats.newCost !== null && Number.isFinite(analysis.stats.newCost)) {
+                  rawPostTCost = analysis.stats.newCost;
+                } else {
+                  let buyCashOutflow = 0;
+                  let sellCashInflow = 0;
+                  for (const t of validTrades) {
+                    const gross = t.price * t.shares;
+                    if (t.side === "buy") {
+                      buyCashOutflow += gross + calcAshareBuyFee(gross, item.config.commissionPercent);
+                    } else {
+                      sellCashInflow += gross - calcAshareSellFee(gross, item.config.commissionPercent);
+                    }
+                  }
+                  rawPostTCost = (item.config.baseShares * item.config.costPrice + buyCashOutflow - sellCashInflow) / postTShares;
+                }
+                const clampedNewCost = Math.max(0.001, Math.round(rawPostTCost * 1000) / 1000);
+                onSyncCostToHolding(item.code, postTShares, clampedNewCost, item.name);
+              }
+            : undefined;
+          return (
+            <LevelsCard
+              analysis={analysis}
+              onSyncCost={handleSyncCost}
+              canSyncCost={canComputeCost}
+            />
+          );
+        })()}
       </div>
       <div className="panel t-assistant-chart-panel">
         <div className="t-assistant-chart-head">

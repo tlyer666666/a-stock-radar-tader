@@ -77,7 +77,7 @@
 :root .terminal-shell .limit-stock-link { max-width: 100%; overflow: hidden; border: 0; padding: 0; background: transparent; color: var(--ink-1); font: inherit; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; }
 :root .terminal-shell .limit-stock-link:hover { color: var(--accent); text-decoration: underline; }
 :root .terminal-shell .limit-analysis-row .board-tag { display: inline-block; min-width: 27px; padding: 0 4px; color: var(--ink-2); background: var(--surface-3); border-radius: var(--radius-2xs); font-size: var(--fs-2xs); line-height: 19px; }
-:root .terminal-shell .limit-analysis-row .board-tag.high { color: var(--on-up); background: var(--high-board-bg); }
+:root .terminal-shell .limit-analysis-row .board-tag.high { color: var(--ink-on-action); background: var(--high-board-bg); }
 :root .terminal-shell .limit-row-actions { display: flex; align-items: center; gap: 4px; }
 :root .terminal-shell .limit-row-actions .table-action { display: inline-flex; align-items: center; gap: 2px; min-height: 21px; height: 21px; padding: 1px 4px; font-size: var(--fs-2xs); }
 :root .terminal-shell[data-workspace="dashboard"] .main > .page { display: flex; flex-direction: column; }

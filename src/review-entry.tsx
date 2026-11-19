@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot, type Root } from "react-dom/client";
 import AppErrorBoundary from "./components/AppErrorBoundary";
 import ProfessionalReview from "./ProfessionalReview";
+import { applySavedVisualPreferences } from "./domain/visualPreferences";
 import { DataBridgeFailure, initializeStockApi } from "./runtimeBridge";
 import { allowPreviewRuntime } from "./runtimePreview";
 import "./styles/review-index.css";
@@ -48,15 +49,21 @@ if (document.body?.hasAttribute('data-standalone-review') && window.stockApi) {
     mode = ['dark', 'light'].includes(next) ? next : 'system';
     apply();
   };
-  const sync = () => { void window.stockApi.getReviewTheme?.().then(result => applyMode(result.theme)).catch(apply); };
+  const sync = () => {
+    applySavedVisualPreferences();
+    void window.stockApi.getReviewTheme?.().then(result => applyMode(result.theme)).catch(apply);
+  };
+  applySavedVisualPreferences();
   apply(); sync();
   media.addEventListener('change', apply);
   // 主窗口切换主题时由主进程推送；焦点同步保留为主进程未推送时的兜底。
   const unsubscribeTheme = window.stockApi.onThemeChange?.(applyMode);
   window.addEventListener('focus', sync);
+  window.addEventListener('storage', applySavedVisualPreferences);
   window.addEventListener('pagehide', () => {
     media.removeEventListener('change', apply);
     window.removeEventListener('focus', sync);
+    window.removeEventListener('storage', applySavedVisualPreferences);
     unsubscribeTheme?.();
   }, { once: true });
 }

@@ -155,11 +155,17 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       } else if (inSessionRef.current) {
         inSessionRef.current = false;
         setClockTick(Date.now());
+        void loadAll(true);
       }
     }, REFRESH_MS);
-    const canBgPoll = typeof window !== "undefined" && typeof window.setInterval === "function" && typeof document !== "undefined";
+    const canBgPoll =
+      typeof window !== "undefined" &&
+      typeof window.setInterval === "function" &&
+      typeof document !== "undefined" &&
+      Boolean(window.stockApi?.notify || storeRef.current.voice);
     const bgTimer = canBgPoll
       ? window.setInterval(() => {
+          if (!window.stockApi?.notify && !storeRef.current.voice) return;
           if (typeof document === "undefined" || !document.hidden) return;
           if (typeof navigator !== "undefined" && navigator.onLine === false) return;
           const inSession = inTradingSession();
@@ -170,6 +176,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
           } else if (inSessionRef.current) {
             inSessionRef.current = false;
             setClockTick(Date.now());
+            void loadAll(true);
           }
         }, 20_000)
       : undefined;
@@ -177,7 +184,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       stopVisible();
       if (bgTimer !== undefined) window.clearInterval(bgTimer);
     };
-  }, [live, codes, loadAll]);
+  }, [live, codes, loadAll, store.voice]);
 
   const runtimes = useMemo(() => {
     const result: Record<string, TRuntime> = {};
@@ -238,7 +245,10 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
     if (!messages.length) return;
     const alertText = `做T提示 · ${messages.join("；")}`;
     onAlertRef.current(alertText);
-    if (typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
+    const isBackgrounded =
+      typeof document !== "undefined" &&
+      (document.hidden || (typeof document.hasFocus === "function" && !document.hasFocus()));
+    if (isBackgrounded && typeof window !== "undefined" && typeof window.stockApi?.notify === "function") {
       void window.stockApi.notify({ title: "做T助手盘中信号", body: alertText }).catch(() => undefined);
     }
     const synthesis = typeof window !== "undefined" ? window.speechSynthesis : undefined;

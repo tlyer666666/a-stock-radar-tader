@@ -23,7 +23,7 @@ function classifySelectionFailure(error) {
   else if (/TREND_DATA_UNAVAILABLE/.test(codes) || /字段|空行情|无有效|缺少|缺失|日期不符|核验|原价|成交额|数据源返回\s*rc/i.test(message)) category = 'data';
   return { category, label: REASONS[category][0], hint: REASONS[category][1] };
 }
-const SOURCE_LABELS = { eastmoney: '东方财富', 'sohu+tencent-raw': '搜狐原价与腾讯交叉核验', 'tencent-qfq': '腾讯前复权', 'tencent-csi-000985': '腾讯中证全指', 'sina-all-a': '新浪名单' };
+const SOURCE_LABELS = { 'ths-free': '同花顺免费日线', 'ths-fuyao': '同花顺扶摇校验日线', 'fuyao-csi-000985': '同花顺扶摇中证全指', eastmoney: '东方财富', 'sohu+tencent-raw': '搜狐原价与腾讯交叉核验', 'tencent-qfq': '腾讯前复权', 'tencent-csi-000985': '腾讯中证全指', 'sina-all-a': '新浪名单' };
 function buildSelectionDiagnostics({ pools = [], universe = [], histories = [], benchmark, watchHistories = [], sources = [] } = {}) {
   const counts = new Map();
   const add = (rows, stage) => {

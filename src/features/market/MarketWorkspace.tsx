@@ -227,7 +227,13 @@ export function Dashboard({
   useEffect(() => {
     if (mode !== "analysis" || (!onPrevStock && !onNextStock) || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
     const onKey = (event: KeyboardEvent) => {
-      if (!event.altKey || event.isComposing) return;
+      if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey || event.isComposing || event.defaultPrevented) return;
+      if (typeof document !== "undefined" && typeof document.querySelector === "function" && document.querySelector("dialog[open]")) return;
+      const target = event.target as HTMLElement | null;
+      if (target) {
+        const tag = typeof target.tagName === "string" ? target.tagName.toUpperCase() : "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target.isContentEditable) return;
+      }
       if (event.key === "ArrowUp" && onPrevStock) {
         event.preventDefault();
         onPrevStock();
@@ -237,7 +243,11 @@ export function Dashboard({
       }
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("keydown", onKey);
+      }
+    };
   }, [mode, onNextStock, onPrevStock]);
   if (mode === "analysis" && !payload) {
     const targetName = typeof analysisTarget === "string"
@@ -1971,8 +1981,33 @@ function PriceChart({
   const chartRectRef = useRef<{ left: number; width: number } | null>(null);
   const hoverRafRef = useRef<number | null>(null);
   const pendingHoverRef = useRef<number | null>(null);
-  useEffect(() => () => {
-    if (hoverRafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(hoverRafRef.current);
+  useEffect(() => {
+    chartRectRef.current = null;
+    pendingHoverRef.current = null;
+    if (hoverRafRef.current !== null && typeof window !== "undefined") {
+      window.cancelAnimationFrame(hoverRafRef.current);
+      hoverRafRef.current = null;
+    }
+    setHoverIndex(null);
+  }, [data.length, interval]);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") {
+      return () => {
+        if (hoverRafRef.current !== null && typeof window !== "undefined") window.cancelAnimationFrame(hoverRafRef.current);
+      };
+    }
+    const invalidateRect = () => {
+      chartRectRef.current = null;
+    };
+    window.addEventListener("resize", invalidateRect);
+    window.addEventListener("scroll", invalidateRect, true);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("resize", invalidateRect);
+        window.removeEventListener("scroll", invalidateRect, true);
+      }
+      if (hoverRafRef.current !== null) window.cancelAnimationFrame(hoverRafRef.current);
+    };
   }, []);
   const fullMaValues = useMemo(() => calculatePriceMovingAverages(fullData), [fullData]);
   const showBoll = indicators.includes("BOLL");
@@ -2036,7 +2071,7 @@ function PriceChart({
     }
   }
   const shortDate = (value: string | undefined) => value && value.length > 10 ? value.slice(5, 16) : (value || "--");
-  const selectedIndex = hoverIndex ?? data.length - 1;
+  const selectedIndex = hoverIndex === null ? data.length - 1 : Math.min(hoverIndex, Math.max(0, data.length - 1));
   const selected = data[selectedIndex];
   const axisValues = [0, 0.25, 0.5, 0.75, 1].map((ratio) => max - (max - min) * ratio);
   const dateTickIndexes = [...new Set(

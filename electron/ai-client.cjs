@@ -156,7 +156,7 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
     } finally {
       try { reader.releaseLock(); } catch { /* already released */ }
     }
-    return { choices: [{ message: { content: content || reasoning, ...(reasoning ? { reasoning_content: reasoning } : {}) } }] };
+    return { choices: [{ message: { content, ...(reasoning ? { reasoning_content: reasoning } : {}) } }] };
   }
 
   async function post(url, apiKey, body, signal, onToken) {
@@ -237,8 +237,14 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
       }
     }
     signal?.throwIfAborted();
-    const content = payload?.choices?.[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim()) throw aiError("AI 没有返回内容，请重试", "AI_EMPTY");
+    const message = payload?.choices?.[0]?.message;
+    const content = message?.content;
+    const reasoning = typeof message?.reasoning_content === "string" ? message.reasoning_content.trim()
+      : typeof message?.reasoning === "string" ? message.reasoning.trim() : "";
+    if (typeof content !== "string" || !content.trim()) {
+      if (reasoning) throw aiError("AI 思考过程超出输出上限，未生成最终回答，请重试或切换非推理模型", "AI_EMPTY");
+      throw aiError("AI 没有返回内容，请重试", "AI_EMPTY");
+    }
     return json ? parseModelJson(content) : content.trim();
   }
 

@@ -22,18 +22,30 @@ const BATCH_SIZE = 10;
 const BATCH_CONCURRENCY = 3;
 
 /** 分批调用：返回每批的结果或错误（按批次顺序）。 */
-async function inBatches(list, worker) {
+async function inBatches(list, worker, signal) {
+  signal?.throwIfAborted();
   const batches = [];
   for (let index = 0; index < list.length; index += BATCH_SIZE) batches.push(list.slice(index, index + BATCH_SIZE));
   const outcomes = new Array(batches.length);
   let cursor = 0;
+  let abortError = null;
   await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, batches.length) }, async () => {
     while (cursor < batches.length) {
+      if (abortError) throw abortError;
+      signal?.throwIfAborted();
       const index = cursor++;
       try { outcomes[index] = { ok: true, batch: batches[index], value: await worker(batches[index]) }; }
-      catch (error) { outcomes[index] = { ok: false, batch: batches[index], error }; }
+      catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") {
+          abortError = signal?.aborted ? (signal.reason ?? error) : error;
+          throw abortError;
+        }
+        outcomes[index] = { ok: false, batch: batches[index], error };
+      }
     }
   }));
+  signal?.throwIfAborted();
+  if (abortError) throw abortError;
   if (outcomes.every(item => !item.ok)) throw outcomes[0].error;
   return outcomes;
 }
@@ -307,7 +319,7 @@ function createAiSelection({ ai }) {
       const user = JSON.stringify({ asOfDate: String(asOfDate || ""), market: cleanMarket, stocks: batch });
       const result = await ai.chat({ system, user, json: true, temperature: 0.2, maxTokens: 4000, signal });
       return validateRanking(result, batch);
-    });
+    }, signal);
     const items = outcomes.flatMap(item => item.ok ? item.value : []).sort((a, b) => b.score - a.score || a.code.localeCompare(b.code));
     const missed = list.length - items.length;
     return { asOfDate: String(asOfDate || ""), model: ai.model(), generatedAt: new Date().toISOString(), items, evaluated: items.length, ...(missed ? { missed } : {}) };
@@ -397,7 +409,7 @@ function createAiSelection({ ai }) {
       const user = JSON.stringify({ asOfDate: String(asOfDate || ""), market: cleanMarket, stocks });
       const result = await ai.chat({ system: withInstructions(system, instructions), user, json: true, temperature: 0.2, maxTokens: framework?.id === "auto" ? 5500 : 4000, signal });
       return evaluations ? validateFrameworkRanking(result, batch, evaluations) : validateRanking(result, batch);
-    });
+    }, signal);
     // 某一批失败：按框架时这批按基础分给出并注明，没有框架时这批不出分。
     const items = outcomes.flatMap(item => item.ok ? item.value : evaluations ? item.batch.map(stock => {
       const evaluation = evaluations.get(stock.code);

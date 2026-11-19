@@ -15,6 +15,7 @@ import type { CopilotAlertItem, resolveMarketSessionPhase } from "../copilotBrie
 import type { WorkspaceView as View } from "../workspaceView";
 import type { ExecutionDecisionLog, PaperSimulationState } from "../features/paper-simulation/paperSimulationTypes";
 import type { PaperClosedPosition } from "../domain/paperSimulationTypes";
+import { inferSecid } from "../domain/securityIdentifiers";
 import type { useWorkspaceCollections } from "../features/collections/useWorkspaceCollections";
 import type { usePaperTrading } from "../features/paper-simulation/usePaperTrading";
 import type { BacktestHistoryRecord } from "../features/backtest/backtestTypes";
@@ -164,7 +165,9 @@ type AppWorkspaceRoutesProps = {
   closePaperTradeForCode: (code: string, reason?: PaperClosedPosition["closeReason"]) => void;
   closeAllPaperTrades: (reason?: PaperClosedPosition["closeReason"]) => void;
   confirmPaperSettlementForCode?: ((code: string) => void) | undefined;
+  refreshPaperPositions?: (() => Promise<void> | void) | undefined;
   settingsCategory?: string | undefined;
+  settingsRequestSeq?: number | undefined;
   openSettings?: ((category?: string) => void) | undefined;
 };
 
@@ -276,7 +279,9 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
     closePaperTradeForCode,
     closeAllPaperTrades,
     confirmPaperSettlementForCode,
+    refreshPaperPositions,
     settingsCategory,
+    settingsRequestSeq,
     openSettings
   } = props;
 
@@ -424,6 +429,8 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
                 winCount: paperSummary.winCount
               }}
               onClosePaperPosition={(code) => closePaperTradeForCode(code, "MANUAL")}
+              onConfirmPaperSettlement={confirmPaperSettlementForCode}
+              onRefreshPaperPositions={refreshPaperPositions}
               onOpenPaperStock={(security: Security) =>
                 openAnalysis(security, { view: "holdings", label: "返回持仓股" })
               }
@@ -609,15 +616,33 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               api={tAssistant}
               holdings={holdings}
               live={live}
-              onSyncCostToHolding={(code, shares, newCost) => {
-                void saveHoldings(items =>
-                  items.map(item =>
-                    item.code === code
-                      ? { ...item, shares, costPrice: Number(Math.max(0.001, newCost).toFixed(3)) }
-                      : item
-                  )
-                ).then(ok => {
-                  if (ok) showToast(`已同步 ${code} 做T后成本 ¥${newCost.toFixed(3)} 到持仓`);
+              onSyncCostToHolding={(code, shares, newCost, name) => {
+                const clampedCost = Number(Math.max(0.001, newCost).toFixed(3));
+                const safeShares = Math.max(1, Math.round(shares));
+                void saveHoldings(items => {
+                  const nowIso = new Date().toISOString();
+                  if (items.some(item => item.code === code)) {
+                    return items.map(item =>
+                      item.code === code
+                        ? { ...item, shares: safeShares, costPrice: clampedCost, updatedAt: nowIso }
+                        : item
+                    );
+                  }
+                  return [
+                    ...items,
+                    {
+                      code,
+                      name: String(name || code),
+                      secid: inferSecid(code),
+                      shares: safeShares,
+                      costPrice: clampedCost,
+                      note: "做T助手同步",
+                      createdAt: nowIso,
+                      updatedAt: nowIso
+                    }
+                  ].sort((a, b) => a.code.localeCompare(b.code));
+                }).then(ok => {
+                  if (ok) showToast(`已同步 ${code} 做T后成本 ¥${clampedCost.toFixed(3)} 到持仓`);
                 });
               }}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "t-assistant", label: "返回做T助手" })}
@@ -718,6 +743,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               value={settings}
               loadState={settingsLoadState}
               initialCategory={settingsCategory}
+              categoryRequestSeq={settingsRequestSeq}
               onSave={async (next) => {
                 const analysisGeneration = analysisRequestId.current;
                 const refreshTarget = latestAnalysis.current?.security;

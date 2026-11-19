@@ -62,8 +62,8 @@ function Chart({ data, compact = false, signalDate, sessions = 120 }: { data: Se
         const isUp = row.close > row.open || (row.close === row.open && (prevBar ? row.close >= prevBar.close : true));
         return <g key={row.date} className={isUp ? 'candle-up' : 'candle-down'}><title>{candleTitle(row)}</title>
           <line x1={x(i)} x2={x(i)} y1={y(row.high)} y2={y(row.low)} />
-          <rect x={x(i) - step * 0.31} y={Math.min(y(row.open), y(row.close))} width={Math.max(0.8, step * 0.62)} height={Math.max(1, Math.abs(y(row.open) - y(row.close)))} />
-          {!compact && row.volume !== null && <rect x={x(i) - step * 0.31} y={331 - row.volume / maxVolume * 48} width={Math.max(0.8, step * 0.62)} height={Math.max(0.5, row.volume / maxVolume * 48)} />}
+          <rect className="candle-body" x={x(i) - step * 0.31} y={Math.min(y(row.open), y(row.close))} width={Math.max(0.8, step * 0.62)} height={Math.max(1, Math.abs(y(row.open) - y(row.close)))} />
+          {!compact && row.volume !== null && <rect className="volume-bar" x={x(i) - step * 0.31} y={331 - row.volume / maxVolume * 48} width={Math.max(0.8, step * 0.62)} height={Math.max(0.5, row.volume / maxVolume * 48)} />}
         </g>;
       })}
       {!compact && maSeries.map((series, index) => <path key={index} className={`ma-line ma-${[5, 10, 20][index]}`} d={series.slice(offset).map((value, i, list) => Number.isFinite(value) ? `${i > 0 && Number.isFinite(list[i - 1]) ? 'L' : 'M'}${x(i)},${y(value)}` : '').join(' ')} />)}
@@ -116,6 +116,7 @@ function Detail({ security, signalDate, data, error, loading, refresh, close }: 
       try {
         res = await window.stockApi.getChart(security, 'time', { forceRefresh });
       } catch {
+        if (!tsAliveRef.current || reqId !== tsReqRef.current) return;
         res = await window.stockApi.getChart(security, 'timeshare', { forceRefresh });
       }
       if (!tsAliveRef.current || reqId !== tsReqRef.current) return;
@@ -230,6 +231,6 @@ export function SelectionKline({ security, signalDate }: { security: Security; s
       {data ? <Chart data={data} compact signalDate={signalDate} /> : <span>{error ? 'K线暂不可用 · 点击重试' : visible ? '日K加载中…' : '查看日K线'}</span>}
       <small>{data ? `${error ? "更新失败·旧图 · " : loading ? "更新中 · " : ""}近${Math.min(30, data.rows.length)}日 · ${data.rows.at(-1)?.date.slice(5)} · 展开` : '近30日日K'}</small>
     </button>
-    {open && <Detail security={security} signalDate={signalDate} data={data} error={error} loading={loading} refresh={() => { pendingForce.current = true; setRevision(value => value + 1); }} close={() => setOpen(false)} />}
+    {open && <Detail key={key} security={security} signalDate={signalDate} data={data} error={error} loading={loading} refresh={() => { pendingForce.current = true; setRevision(value => value + 1); }} close={() => setOpen(false)} />}
   </div>;
 }

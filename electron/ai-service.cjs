@@ -17,6 +17,7 @@ const { createNoteParser } = require("./ai-notes.cjs");
 const { createServiceRuntime, semanticKey } = require("./service-runtime.cjs");
 const { producerContext } = require("./service-context.cjs");
 const { credentialFingerprint } = require("./bounded-cache.cjs");
+const { isOpeningLimitUpEntry } = require("./price-limit-rules.cjs");
 const { priceBasisIssueAt } = require("./quant-history-safety.cjs");
 
 const MAX_CACHE_ENTRIES = 150;
@@ -725,16 +726,19 @@ function baseOnly(item) {
 }
 
 /** Calculate T+1/T+3/T+5 returns and 5-day max drawdown / -7% stop trigger from OHLC rows. */
-function evaluateRowsOutcome(rows, asOfDate, code = "") {
+function evaluateRowsOutcome(rows, asOfDate, code = "", name = "") {
   const date = String(asOfDate || "");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !Array.isArray(rows) || !rows.length) return null;
   const idx = rows.findIndex(row => row?.date === date);
-  if (idx < 0) return null;
-  const baseClose = Number(rows[idx]?.close);
+  if (idx < 0 || idx + 1 >= rows.length) return null;
+  const base = rows[idx];
+  const baseClose = Number(base?.close);
   if (!Number.isFinite(baseClose) || baseClose <= 0) return null;
+  const entry = rows[idx + 1];
+  if (isOpeningLimitUpEntry(base.close, entry, code, name)) return null;
   let maxValidOffset = 0;
   for (let offset = 1; offset <= 5 && idx + offset < rows.length; offset += 1) {
-    if (priceBasisIssueAt(rows, idx + offset, code, code)) break;
+    if (priceBasisIssueAt(rows, idx + offset, code, name || code)) break;
     maxValidOffset = offset;
   }
   if (maxValidOffset < 1) return null;

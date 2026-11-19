@@ -46,21 +46,21 @@ const FAILURES_TO_OPEN = 2;
 
 function humanizeSourceError(rawMessage) {
   if (rawMessage && typeof rawMessage === "object") {
+    if (rawMessage.name === "AbortError" || rawMessage.name === "TimeoutError" || rawMessage.code === "ETIMEDOUT") {
+      return "请求超时，已自动切换备用线路";
+    }
     const status = Number(rawMessage.status);
     if (status === 429 || status === 403) {
       return "接口触发频率或验证限制，已自动切换备用线路";
     }
-    if (rawMessage.name === "AbortError" || rawMessage.name === "TimeoutError" || rawMessage.code === "ETIMEDOUT") {
-      return "请求超时，已自动切换备用线路";
-    }
   }
   const text = String(rawMessage?.message ?? rawMessage ?? "").replace(/\s+/g, " ").trim();
   if (!text) return "未知错误";
-  if (/Unexpected token\s*['"]?<|not valid JSON|<!DOCTYPE|<html|(?:\bHTTP\s*|^)(?:429|403)\b|\b(?:429|403)\b/i.test(text)) {
-    return "接口触发频率或验证限制，已自动切换备用线路";
-  }
-  if (/ETIMEDOUT|timeout|timed?\s*out|AbortError|The operation was aborted/i.test(text)) {
+  if (/ETIMEDOUT|AbortError|timeout|timed?\s*out|超时|The operation was aborted/i.test(text)) {
     return "请求超时，已自动切换备用线路";
+  }
+  if (/Unexpected token\s*['"]?<|not valid JSON|<!DOCTYPE|<html|(?:\bHTTP\s*|\bstatus\s*[=:]?\s*|^)(?:429|403)\b/i.test(text)) {
+    return "接口触发频率或验证限制，已自动切换备用线路";
   }
   if (/fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|socket hang up/i.test(text)) {
     return "网络连接异常，请检查网络或稍后重试";

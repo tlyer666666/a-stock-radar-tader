@@ -59,7 +59,12 @@ function createRuntimeLogger({ isEnabled, getDirectory, debugLog = () => {} }) {
       const entry = `${new Date().toISOString()} ${event}${detailMetadata ? ` ${detailMetadata}` : ""}\n${detail}\n`;
       const logPath = path.join(getDirectory(), "runtime-errors.log");
       if (!rotateIfNeeded(logPath, Buffer.byteLength(entry, "utf8"))) return;
-      fs.appendFileSync(logPath, entry, "utf8");
+      fs.appendFileSync(logPath, entry, { encoding: "utf8", mode: 0o600 });
+      if (process.platform !== "win32") {
+        try {
+          if (!fs.lstatSync(logPath).isSymbolicLink()) fs.chmodSync(logPath, 0o600);
+        } catch { /* best-effort permission hardening */ }
+      }
     } catch {
       // Diagnostics cannot depend on a readable profile or writable disk.
     }

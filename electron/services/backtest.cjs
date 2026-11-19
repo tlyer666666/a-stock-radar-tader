@@ -21,7 +21,7 @@ const { semanticKey } = require("../service-runtime.cjs");
 const { roundTripBps, DEFAULT_COSTS } = require("../backtest-costs.cjs");
 const { loadNamedConfig } = require("../config-loader.cjs");
 const _runtime = require("./runtime.cjs");
-const { serviceRuntime, securitySearchCache, fuyao, historyCache, workerRunner } = _runtime;
+const { serviceController, serviceRuntime, securitySearchCache, fuyao, historyCache, workerRunner } = _runtime;
 function isConvertibleBondCode(...args) { return _runtime.isConvertibleBondCode(...args); }
 function canonicalSecurityIdentifiers(...args) { return _runtime.canonicalSecurityIdentifiers(...args); }
 function hasIdentifierValue(...args) { return _runtime.hasIdentifierValue(...args); }
@@ -472,6 +472,7 @@ function trackedThsFreeQuote(security) {
 }
 
 const fuyaoQuoteSource = createFuyaoQuoteSource({ fuyao, loadProfile: (security) => trackedThsFreeQuote(security) });
+_runtime.bindShutdownResources?.({ fuyaoQuoteSource });
 
 function quoteSteps(security, order, { timeoutMs = 6000, eastFactory } = {}) {
   const factories = {
@@ -554,15 +555,30 @@ function publicQuoteWithFallback(security, timeoutMs = 12000) {
 // 同一证券的扶摇快照在几秒内复用：不复权与前复权两次取日线时只请求一次快照。
 const fuyaoSnapshotCache = new Map();
 
-function cachedFuyaoSnapshot(security, { signal, index }) {
+function raceSnapshotWithSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("任务已取消", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException("任务已取消", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); }
+    );
+  });
+}
+
+function cachedFuyaoSnapshot(security, { signal, index } = {}) {
+  signal?.throwIfAborted();
+  serviceController.signal.throwIfAborted();
   const key = `${index ? "i" : "s"}:${fuyaoThscode(security)}`;
   const hit = fuyaoSnapshotCache.get(key);
-  if (hit && Date.now() - hit.at < 8000) return hit.promise;
-  const promise = fuyao.snapshot([security], { signal, index }).then((quotes) => quotes.get(fuyaoThscode(security)) || null);
+  if (hit && Date.now() - hit.at < 8000) return raceSnapshotWithSignal(hit.promise, signal);
+  const promise = fuyao.snapshot([security], { signal: serviceController.signal, index }).then((quotes) => quotes.get(fuyaoThscode(security)) || null);
   fuyaoSnapshotCache.set(key, { at: Date.now(), promise });
   promise.catch(() => { if (fuyaoSnapshotCache.get(key)?.promise === promise) fuyaoSnapshotCache.delete(key); });
   if (fuyaoSnapshotCache.size > 64) fuyaoSnapshotCache.delete(fuyaoSnapshotCache.keys().next().value);
-  return promise;
+  return raceSnapshotWithSignal(promise, signal);
 }
 
 /**

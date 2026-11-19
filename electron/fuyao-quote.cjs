@@ -91,17 +91,40 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
       const entry = pending.get(thscode) || { security, waiters: [] };
       entry.waiters.push({ resolve, reject });
       pending.set(thscode, entry);
-      if (!timer) timer = setTimeout(() => void flush(), batchWindowMs);
+      if (!timer) {
+        // Must remain ref'd while callers await this batch; shutdown() clears timer on exit.
+        timer = setTimeout(() => void flush(), batchWindowMs);
+      }
     });
+  }
+
+  function shutdown(reason = new DOMException("应用正在退出，任务已取消", "AbortError")) {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    const batch = pending;
+    pending = new Map();
+    for (const entry of batch.values()) {
+      entry.waiters.forEach(waiter => waiter.reject(reason));
+    }
+    profiles.clear();
   }
 
   async function quote(security) {
     if (!fuyaoQuoteSupports(security)) throw quoteError("扶摇报价只用于沪深A股", "FUYAO_UNSUPPORTED");
     const code = String(security.code);
     const thscode = `${code}.${/^6/.test(code) ? "SH" : "SZ"}`;
+    let t = null;
     const [snap, profile] = await Promise.all([
       snapshotFor(security, thscode),
-      Promise.race([profileFor(security), new Promise(resolve => { const t = setTimeout(() => resolve(null), 2000); t.unref?.(); })])
+      Promise.race([
+        profileFor(security),
+        new Promise(resolve => {
+          t = setTimeout(() => resolve(null), 2000);
+          t.unref?.();
+        })
+      ]).finally(() => clearTimeout(t))
     ]);
     const latest = Number(snap.latest);
     if (!(latest > 0)) throw quoteError("同花顺扶摇快照没有有效现价", "FUYAO_EMPTY");
@@ -109,7 +132,10 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
     if (inTradingSession(now()) && (!Number.isFinite(quoteMs) || (now() - quoteMs) / 1000 > staleSeconds)) {
       throw quoteError(`同花顺扶摇行情盘中已 ${Number.isFinite(quoteMs) ? Math.round((now() - quoteMs) / 1000) : "--"} 秒未更新`, "FUYAO_STALE");
     }
-    const name = String(security.name || profile?.name || code);
+    const callerName = security.name && String(security.name).trim() !== code ? String(security.name).trim() : "";
+    const profileName = String(profile?.name || "").trim();
+    const liveRiskOrIpo = /^(?:\*?ST|S\*?ST|[NC])/i.test(profileName) || profileName.includes("退");
+    const name = String((liveRiskOrIpo ? profileName : callerName || profileName) || code);
     const preClose = Number(snap.preClose) > 0 ? Number(snap.preClose) : null;
     const today = shanghaiParts(Number.isFinite(quoteMs) ? quoteMs : now()).date;
     const limitUp = preClose ? upperLimitPrice(preClose, { date: today }, code, name) : null;
@@ -143,7 +169,7 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
     };
   }
 
-  return { quote, supports: fuyaoQuoteSupports };
+  return { quote, supports: fuyaoQuoteSupports, shutdown };
 }
 
 module.exports = { createFuyaoQuoteSource, fuyaoQuoteSupports, inTradingSession };

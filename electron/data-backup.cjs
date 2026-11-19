@@ -184,18 +184,37 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     if (!folder) return [];
     let names = [];
     try { names = fsApi.readdirSync(folder); } catch { return []; }
-    return names.filter(name => FILE_PATTERN.test(name)).sort().reverse().map(name => {
-      let size = 0;
-      try { size = fsApi.statSync(path.join(folder, name)).size; } catch { size = 0; }
-      return { name, size };
-    });
+    const items = [];
+    for (const name of names.filter(item => FILE_PATTERN.test(item)).sort().reverse()) {
+      const fullPath = path.join(folder, name);
+      try {
+        const stat = fsApi.lstatSync ? fsApi.lstatSync(fullPath) : fsApi.statSync(fullPath);
+        if (stat?.isSymbolicLink?.()) continue;
+        if (typeof stat?.isFile === "function" && !stat.isFile()) continue;
+        items.push({ name, size: Number(stat?.size) || 0 });
+      } catch {
+        // Skip unreadable or vanished entries instead of exposing symlinks or broken files.
+      }
+    }
+    return items;
   };
   const safeFile = (folder, name) => {
     if (!FILE_PATTERN.test(String(name || ""))) throw fail("BACKUP_INVALID", "备份文件名不对");
     return path.join(folder, name);
   };
   const readBackupFile = file => {
-    const size = fsApi.statSync?.(file)?.size;
+    const lstat = fsApi.lstatSync?.(file);
+    if (lstat?.isSymbolicLink?.()) {
+      throw fail("BACKUP_INVALID", "拒绝读取符号链接备份文件");
+    }
+    const stat = fsApi.statSync ? fsApi.statSync(file) : lstat;
+    if (stat?.isSymbolicLink?.()) {
+      throw fail("BACKUP_INVALID", "拒绝读取符号链接备份文件");
+    }
+    if (lstat && typeof lstat.isFile === "function" && !lstat.isFile()) {
+      throw fail("BACKUP_INVALID", "备份路径不是普通文件");
+    }
+    const size = stat?.size ?? lstat?.size;
     if (typeof size === "number" && size > MAX_FILE_BYTES) {
       throw fail("BACKUP_TOO_LARGE", "备份文件超过 64MB，无法读取");
     }
@@ -324,9 +343,9 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
         if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw fail("BACKUP_TOO_LARGE", "备份超过 64MB，请先清理 AI 对话或回测历史");
         const name = backupFileName(now());
         const file = path.join(current.folder, name);
-        const temp = `${file}.part`;
+        const temp = path.join(current.folder, `.${name}.${process.pid}.${crypto.randomUUID()}.part`);
         try {
-          fsApi.writeFileSync(temp, content, { mode: 0o600 });
+          fsApi.writeFileSync(temp, content, { mode: 0o600, flag: "wx" });
           fsApi.renameSync(temp, file);
         } finally {
           try {
@@ -340,7 +359,11 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
         writeConfig({ ...current, lastBackupAt: new Date(now()).toISOString(), lastError: "" });
         return { name, size: Buffer.byteLength(content), reason, status: status() };
       } catch (error) {
-        writeConfig({ ...current, lastError: String(error?.message || error).slice(0, 200) });
+        try {
+          writeConfig({ ...current, lastError: String(error?.message || error).slice(0, 200) });
+        } catch {
+          // 写配置失败不能覆盖原始备份错误
+        }
         throw error;
       }
     },

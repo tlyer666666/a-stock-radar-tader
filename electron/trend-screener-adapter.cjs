@@ -19,8 +19,10 @@ function defaultThs() {
   }
   return defaultThsSingleton;
 }
-const sharedFailedHostsByTransport = new WeakMap();
-const sharedThsByProvider = new WeakMap();
+let sharedFailedHostsByTransport = new WeakMap();
+let sharedThsByProvider = new WeakMap();
+const trackedFailedHostMaps = new Set();
+const trackedThsStates = new Set();
 const moduleDefaultFailedHosts = new Map();
 const moduleDefaultThsState = { faults: 0, pausedUntil: 0, lastFaultAt: 0 };
 
@@ -32,6 +34,7 @@ function resolveSharedFailedHosts(fetchJson, explicitMap) {
     if (!map) {
       map = new Map();
       sharedFailedHostsByTransport.set(fetchJson, map);
+      trackedFailedHostMaps.add(map);
     }
     return map;
   }
@@ -47,6 +50,7 @@ function resolveSharedThsState(thsProvider, explicitState) {
     if (!state) {
       state = { faults: 0, pausedUntil: 0, lastFaultAt: 0 };
       sharedThsByProvider.set(thsProvider, state);
+      trackedThsStates.add(state);
     }
     return state;
   }
@@ -54,10 +58,18 @@ function resolveSharedThsState(thsProvider, explicitState) {
 }
 
 function resetSharedTrendBreakerState() {
+  sharedFailedHostsByTransport = new WeakMap();
+  sharedThsByProvider = new WeakMap();
   moduleDefaultFailedHosts.clear();
+  for (const map of trackedFailedHostMaps) map.clear();
   moduleDefaultThsState.faults = 0;
   moduleDefaultThsState.pausedUntil = 0;
   moduleDefaultThsState.lastFaultAt = 0;
+  for (const state of trackedThsStates) {
+    state.faults = 0;
+    state.pausedUntil = 0;
+    state.lastFaultAt = 0;
+  }
 }
 
 function isThsProviderFault(error) {
@@ -379,41 +391,31 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
   /** 同花顺主源；返回 null 表示这只证券改走应急源。 */
   async function thsHistory(ctx, security, adjustment, stage, signal) {
     const nowMs = clock();
-    if (!ths || ctx.ths.pausedUntil > nowMs) return null;
-    if (ctx.ths.pausedUntil === 0 && ctx.ths.faults > 0 && nowMs - (ctx.ths.lastFaultAt || 0) >= THS_PAUSE_MS) {
+    if (!ths) return null;
+    if (ctx.ths.pausedUntil > 0 && nowMs >= ctx.ths.pausedUntil) {
+      ctx.ths.pausedUntil = 0;
+      ctx.ths.faults = nowMs - (ctx.ths.lastFaultAt || 0) >= 2 * THS_PAUSE_MS ? 0 : Math.max(0, THS_FAULT_LIMIT - 1);
+    } else if (ctx.ths.pausedUntil === 0 && ctx.ths.faults > 0 && nowMs - (ctx.ths.lastFaultAt || 0) >= THS_PAUSE_MS) {
       ctx.ths.faults = 0;
     }
+    if (ctx.ths.pausedUntil > nowMs) return null;
+    let rows;
+    let source;
     try {
       signal?.throwIfAborted();
       const quote = await sharedThsQuote(ctx, security, signal);
       const fetched = await ths.history({ code: security.code, secid: security.secid, assetType: "stock" },
         { limit: historyBars, fqt: adjustment === "front" ? 1 : 0, signal, now: new Date(now()).getTime(), quote });
-      let rows = validateRows(fetched.map(row => ({ date: row.date, open: row.open, close: row.close, high: row.high, low: row.low,
+      rows = validateRows(fetched.map(row => ({ date: row.date, open: row.open, close: row.close, high: row.high, low: row.low,
         volume: row.volume, amount: row.amount, amplitude: row.amplitude ?? null,
         change: row.change ?? null, turnover: row.turnover ?? null,
         ...(row.changePct !== undefined && row.changePct !== null ? { changePct: row.changePct } : {}),
         ...Object.fromEntries(["preClose", "previousClose", "upperLimit", "lowerLimit", "adjustmentFactor", "adjFactor", "corporateActionUnresolved", "noPriceLimit", "isST"]
           .filter(key => Object.hasOwn(row, key)).map(key => [key, row[key]])) })), "同花顺");
-      if (adjustment === "front") {
-        // 与应急路径同口径：前复权只调价格，成交量/额取同一来源的不复权日线。
-        const raw = await fetchHistory(security, "none", { signal });
-        const byDate = new Map(raw.rows.map(row => [row.date, row]));
-        // 本地日线库只存到 asOf（盘中是上一交易日），同花顺前复权会带上当天未收盘的一根：去掉不复权里还没有的日期再配对。
-        const rawLast = raw.rows.at(-1)?.date;
-        rows = rows.filter(row => !rawLast || row.date <= rawLast).map(row => {
-          const original = byDate.get(row.date);
-          if (!original) throw unavailable(`同花顺前复权与不复权日线日期不齐：${security.code} ${row.date}`);
-          return { ...row, volume: original.volume, amount: original.amount };
-        });
-      }
-      signal?.throwIfAborted();
       ctx.ths.faults = 0;
       ctx.ths.pausedUntil = 0;
       ctx.ths.lastFaultAt = 0;
-      const source = String(fetched?.dataSource || "").startsWith("fuyao") ? "ths-fuyao" : "ths-free";
-      const result = { rows, adjustment, source, provenance: { source, amountUnit: "CNY", volumeUnit: "lot" } };
-      record(ctx, stage, source, true, result);
-      return result;
+      source = String(fetched?.dataSource || "").startsWith("fuyao") ? "ths-fuyao" : "ths-free";
     } catch (error) {
       if (signal?.aborted || localCapacityError(error)) throw error;
       if (isThsProviderFault(error)) {
@@ -424,6 +426,31 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
       record(ctx, stage, "ths-free", false, null, new Error(`同花顺未取到，已改用应急源：${error?.message || error}`));
       return null;
     }
+    const raw = adjustment === "front" ? await fetchHistory(security, "none", { signal }) : null;
+    if (raw) {
+      // 与应急路径同口径：前复权只调价格，成交量/额取同一来源的不复权日线。
+      const byDate = new Map(raw.rows.map(row => [row.date, row]));
+      // 本地日线库只存到 asOf（盘中是上一交易日），同花顺前复权会带上当天未收盘的一根：去掉不复权里还没有的日期再配对。
+      const rawLast = raw.rows.at(-1)?.date;
+      const paired = [];
+      for (const row of rows.filter(item => !rawLast || item.date <= rawLast)) {
+        const original = byDate.get(row.date);
+        if (!original) {
+          record(ctx, stage, source, false, null, new Error(`同花顺未取到，已改用应急源：同花顺前复权与不复权日线日期不齐：${security.code} ${row.date}`));
+          return null;
+        }
+        paired.push({ ...row, volume: original.volume, amount: original.amount });
+      }
+      if (!paired.length) {
+        record(ctx, stage, source, false, null, new Error(`同花顺未取到，已改用应急源：同花顺前复权与不复权日线无重叠日期：${security.code}`));
+        return null;
+      }
+      rows = paired;
+    }
+    signal?.throwIfAborted();
+    const result = { rows, adjustment, source, provenance: { source, amountUnit: "CNY", volumeUnit: "lot" } };
+    record(ctx, stage, source, true, result);
+    return result;
   }
   async function fetchHistory(security, adjustment, { signal } = {}) {
     signal?.throwIfAborted();

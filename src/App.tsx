@@ -58,7 +58,7 @@ import { useAutoBackup } from "./features/backup/backupClient";
 import { NoteReminderStack } from "./features/notes/NoteReminderStack";
 import { WorkspaceErrorBoundary } from "./components/AppErrorBoundary";
 import WorkspaceNavigation from "./components/WorkspaceNavigation";
-import { applySavedVisualPreferences } from "./features/settings/SettingsView";
+import { applySavedVisualPreferences, normalizeSettingsCategory } from "./domain/visualPreferences";
 import { initialSettings, normalizeSettings } from "./domain/settings";
 
 export {
@@ -143,13 +143,18 @@ function App() {
   sidebarCoreOnlyRef.current = sidebarCoreOnly;
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [settingsCategory, setSettingsCategory] = useState("sources");
+  const [settingsRequestSeq, setSettingsRequestSeq] = useState(0);
   const [isOffline, setIsOffline] = useState<boolean>(() => typeof navigator !== "undefined" && navigator.onLine === false);
 
-  type ToastEntry = { id: number; text: string; tone: "info" | "warn" | "error"; durationMs: number };
+  type ToastEntry = { id: number; text: string; tone: "info" | "warn" | "error"; durationMs: number; expiresAt: number };
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
-  const toastHoverRef = useRef(false);
+  const toastHoverAtRef = useRef<number | null>(null);
+  const toastTimersRef = useRef<Map<number, number>>(new Map());
   const toastSeqRef = useRef(0);
   const dismissToast = useCallback((id: number) => {
+    const timer = toastTimersRef.current.get(id);
+    if (timer !== undefined && typeof window !== "undefined") window.clearTimeout(timer);
+    toastTimersRef.current.delete(id);
     setToasts(current => current.filter(item => item.id !== id));
   }, []);
   const showToast = useCallback((message: string) => {
@@ -162,24 +167,55 @@ function App() {
         : "info";
     const durationMs = tone === "error" ? 5600 : tone === "warn" ? 3800 : 2600;
     const id = ++toastSeqRef.current;
-    setToasts(current => [...current.filter(item => item.text !== text).slice(-2), { id, text, tone, durationMs }]);
+    const now = Date.now();
+    setToasts(current => [
+      ...current.filter(item => item.text !== text).slice(-2),
+      { id, text, tone, durationMs, expiresAt: now + durationMs }
+    ]);
   }, []);
   useEffect(() => {
-    if (!toasts.length || typeof window === "undefined") return undefined;
-    const timers = toasts.map(item =>
-      window.setTimeout(() => {
-        if (!toastHoverRef.current) {
-          setToasts(current => current.filter(entry => entry.id !== item.id));
-        }
-      }, item.durationMs)
-    );
-    return () => { timers.forEach(t => window.clearTimeout(t)); };
+    if (typeof window === "undefined") return undefined;
+    if (!toasts.length) {
+      toastHoverAtRef.current = null;
+      toastTimersRef.current.forEach(t => window.clearTimeout(t));
+      toastTimersRef.current.clear();
+      return undefined;
+    }
+    const activeIds = new Set(toasts.map(item => item.id));
+    for (const [id, timer] of toastTimersRef.current.entries()) {
+      if (!activeIds.has(id)) {
+        window.clearTimeout(timer);
+        toastTimersRef.current.delete(id);
+      }
+    }
+    if (toastHoverAtRef.current !== null) return undefined;
+    const now = Date.now();
+    for (const item of toasts) {
+      if (toastTimersRef.current.has(item.id)) continue;
+      const delay = Math.max(400, item.expiresAt - now);
+      const timer = window.setTimeout(() => {
+        toastTimersRef.current.delete(item.id);
+        setToasts(current => current.filter(entry => entry.id !== item.id));
+      }, delay);
+      toastTimersRef.current.set(item.id, timer);
+    }
+    return undefined;
   }, [toasts]);
+  useEffect(() => () => {
+    if (typeof window !== "undefined") {
+      toastTimersRef.current.forEach(t => window.clearTimeout(t));
+      toastTimersRef.current.clear();
+    }
+  }, []);
 
   const openSettings = useCallback((category = "sources") => {
-    setSettingsCategory(category);
+    setSettingsCategory(normalizeSettingsCategory(category));
+    setSettingsRequestSeq(seq => seq + 1);
     setView("settings");
   }, []);
+  if (typeof window !== "undefined") {
+    window.__aStockOpenSettings = openSettings;
+  }
 
   useEffect(() => {
     applySavedVisualPreferences();
@@ -362,7 +398,8 @@ function App() {
     closePaperTradeForCode,
     closePaperTradeForCurrent,
     closeAllPaperTrades,
-    confirmPaperSettlementForCode
+    confirmPaperSettlementForCode,
+    refreshPaperPositions
   } = usePaperTrading({
     payload,
     latestAnalysis,
@@ -448,6 +485,10 @@ function App() {
 
   const navigateTo = (next: View) => {
     if (next === "sectors" && view !== "sectors") setSectorBoardError("");
+    if (next === "settings") {
+      setSettingsCategory("sources");
+      setSettingsRequestSeq(seq => seq + 1);
+    }
     if (next === "news" || next === "announcements") {
       const route = resolveInformationCenterRoute(next, informationTab);
       setInformationTab(route.informationTab);
@@ -885,7 +926,9 @@ function App() {
           closePaperTradeForCode,
           closeAllPaperTrades,
           confirmPaperSettlementForCode,
+          refreshPaperPositions,
           settingsCategory,
+          settingsRequestSeq,
           openSettings
         })}
 
@@ -903,10 +946,21 @@ function App() {
       {toasts.length > 0 && (
         <div
           className="toast-stack"
-          onMouseEnter={() => { toastHoverRef.current = true; }}
+          onMouseEnter={() => {
+            toastHoverAtRef.current = Date.now();
+            toastTimersRef.current.forEach(t => window.clearTimeout(t));
+            toastTimersRef.current.clear();
+          }}
           onMouseLeave={() => {
-            toastHoverRef.current = false;
-            setToasts(current => current.slice(1));
+            const pausedAt = toastHoverAtRef.current;
+            toastHoverAtRef.current = null;
+            const now = Date.now();
+            setToasts(current =>
+              current.map(item => ({
+                ...item,
+                expiresAt: now + Math.max(900, pausedAt !== null ? item.expiresAt - pausedAt : 1200)
+              }))
+            );
           }}
         >
           {toasts.map(item => (
@@ -952,6 +1006,7 @@ function App() {
             holdings={holdings}
             favorites={favoriteItems}
             watchlist={observationItems}
+            privacyMask={privacyMask}
             onNavigateView={id => (id === "backtest" ? openBacktest() : navigateTo(id as View))}
             onOpenStock={sec => openAnalysis(sec, originForView(view))}
             onRunCommand={cmdId => {

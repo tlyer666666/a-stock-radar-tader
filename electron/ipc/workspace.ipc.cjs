@@ -171,7 +171,8 @@ function registerWorkspaceIpc({
   handleTrustedIpc("backup:run", (_, local, options) => {
     if (stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
     const reason = options && options.reason === "auto" ? "auto" : "manual";
-    return { ...backup.run(backupLocal(local), { reason }), status: backupStatus() };
+    const res = backup.run(backupLocal(local), { reason });
+    return { ...res, status: { ...res.status, suggestions: backup.suggestions() } };
   });
   handleTrustedIpc("backup:inspect", (_, name, password) => backup.inspect(String(name || ""), typeof password === "string" ? password : ""));
   const clearStagedRestore = () => {

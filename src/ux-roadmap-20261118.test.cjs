@@ -28,8 +28,10 @@ const {
   clearHoldingTrades
 } = require("./features/collections/holdingsLedger.ts");
 const { humanizeMarketSourceError } = require("./features/market/marketSourceHealth.ts");
-const { saveQuickObservationPlan, readTrendPlans } = require("./trendWorkspace.ts");
+const { saveQuickObservationPlan, saveQuickObservationPlansBatch, readTrendPlans } = require("./trendWorkspace.ts");
 const { buildCopilotAlerts } = require("./copilotBriefing.ts");
+const { normalizeSettingsCategory } = require("./domain/visualPreferences.ts");
+const { isAppLocalKey } = require("./features/backup/backupClient.ts");
 const { tightenUserDataPermissions, writeJsonAtomic } = require("../electron/persistence.cjs");
 const { createDailyBarStore } = require("../electron/daily-bar-store.cjs");
 const { humanizeSourceError } = require("../electron/market-source-health.cjs");
@@ -78,7 +80,7 @@ test("applyHoldingTrade diluteCost & real trade ledger persistence summarize rea
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z"
   }];
-  const sellRes = applyHoldingTrade({
+  const sellDiluted = applyHoldingTrade({
     items,
     code: "600519",
     side: "sell",
@@ -86,10 +88,30 @@ test("applyHoldingTrade diluteCost & real trade ledger persistence summarize rea
     price: 1600,
     diluteCost: true
   });
-  assert.equal(sellRes.ok, true);
-  assert.equal(sellRes.realizedPnl, 10000);
-  assert.equal(sellRes.nextItems[0].shares, 100);
-  assert.equal(sellRes.nextItems[0].costPrice, 1400);
+  assert.equal(sellDiluted.ok, true);
+  // 摊薄成本时不重复计入该笔已实现盈亏，等剩余仓位清仓时一次性兑现全额 20000 利润
+  assert.equal(sellDiluted.realizedPnl, 0);
+  assert.equal(sellDiluted.nextItems[0].shares, 100);
+  assert.equal(sellDiluted.nextItems[0].costPrice, 1400);
+
+  const sellFinal = applyHoldingTrade({
+    items: sellDiluted.nextItems,
+    code: "600519",
+    side: "sell",
+    shares: 100,
+    price: 1600
+  });
+  assert.equal(sellFinal.ok, true);
+  assert.equal(sellFinal.realizedPnl, 20000);
+
+  const rejectTiny = applyHoldingTrade({
+    items,
+    code: "600519",
+    side: "buy",
+    shares: 100,
+    price: 0.0004
+  });
+  assert.equal(rejectTiny.ok, false);
 
   const storage = createMemoryStorage();
   appendHoldingTradeRecord({
@@ -98,16 +120,26 @@ test("applyHoldingTrade diluteCost & real trade ledger persistence summarize rea
     side: "sell",
     shares: 100,
     price: 1600,
-    realizedPnl: 10000
+    realizedPnl: 20000
   }, storage);
   const records = loadHoldingTrades(storage);
   assert.equal(records.length, 1);
   const summary = summarizeHoldingTrades(records);
   assert.equal(summary.sellCount, 1);
   assert.equal(summary.winCount, 1);
-  assert.equal(summary.cumulativeRealizedPnl, 10000);
+  assert.equal(summary.cumulativeRealizedPnl, 20000);
   clearHoldingTrades(storage);
   assert.equal(loadHoldingTrades(storage).length, 0);
+
+  const brokerEdgePaste = parseHoldingsPaste([
+    "000001\t平安银行\t1000\t1000\t-700.00\t12.50",
+    "688981 中芯国际 250 50 82.45 85.10",
+    "贵州茅台 200 1480.50 600519"
+  ].join("\n"));
+  assert.equal(brokerEdgePaste.errors.length, 0);
+  assert.equal(brokerEdgePaste.entries.find(e => e.code === "000001").costPrice, 12.5);
+  assert.equal(brokerEdgePaste.entries.find(e => e.code === "688981").costPrice, 82.45);
+  assert.equal(brokerEdgePaste.entries.find(e => e.code === "600519").costPrice, 1480.5);
 });
 
 test("humanizeMarketSourceError and backend humanizeSourceError translate technical errors to actionable Chinese", () => {
@@ -159,10 +191,12 @@ test("persistence and daily-bar-store tighten permissions, sweep tmp files, and 
 
     const barDir = path.join(tmpRoot, "daily-bars-v2");
     fs.mkdirSync(barDir, { recursive: true });
-    fs.writeFileSync(path.join(barDir, "stale.json.tmp"), "{}");
+    fs.writeFileSync(path.join(barDir, "600519.json.12345.1.tmp"), "{}");
+    fs.writeFileSync(path.join(barDir, "selection-universe.json.tmp"), "{}");
     const store = createDailyBarStore({ directory: barDir, previousSession: () => "2026-01-01" });
     const cleaned = await store.cleanupStaleBars({ activeCodes: new Set(), maxAgeDays: 180 });
     assert.equal(cleaned.removedTmp, 1);
+    assert.equal(fs.existsSync(path.join(barDir, "selection-universe.json.tmp")), true);
     assert.deepEqual(store.getStorageStats(), { fileCount: 0, totalBytes: 0 });
 
     const progress = getStrategyScanProgress();
@@ -618,8 +652,9 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
         node.props.onOpenSecurity?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
         node.props.onOpenPaperStock?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
         node.props.onClosePaperPosition?.("600519");
+        node.props.onConfirmPaperSettlement?.("600519");
         node.props.onAddFavorite?.({ code: "600519", name: "贵州茅台", secid: "1.600519" });
-        node.props.onSyncCostToHolding?.("600519", 100, 1490);
+        node.props.onSyncCostToHolding?.("600519", 100, 1490, "贵州茅台");
         node.props.onPrevStock?.();
         node.props.onNextStock?.();
         node.props.onOpenSettings?.();
@@ -629,6 +664,19 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
         node.props.onNavigate?.("signals");
       }
     }
+
+    assert.equal(normalizeSettingsCategory("appearance"), "monitoring");
+    assert.equal(normalizeSettingsCategory("nonexistent"), "sources");
+    assert.equal(isAppLocalKey("astock:display-density:v1"), true);
+
+    const batchStorage = createMemoryStorage();
+    const batchRes = saveQuickObservationPlansBatch(batchStorage, [
+      { code: "600519", name: "贵州茅台", referencePrice: 1500 },
+      { code: "000001", name: "平安银行", referencePrice: null }
+    ]);
+    assert.deepEqual(batchRes.created, ["600519"]);
+    assert.deepEqual(batchRes.missingPrice, ["000001"]);
+    assert.equal(batchRes.storageError, "");
   } finally {
     global.window = prevWindow;
     global.document = prevDocument;

@@ -36,14 +36,36 @@ function readJsonFile(filePath, validator) {
 // 现按「同一源文件只保留最近 CORRUPTED_COPY_LIMIT 份」清理更早的副本；
 // 时间戳由 ISO 派生且定长，按文件名升序即按时间升序。
 const CORRUPTED_COPY_LIMIT = 3;
+const SENSITIVE_USER_DATA_FILE_RE = /\.(?:json|key|log)(?:\.\d+|\.corrupt(?:ed)?-.*)?$/;
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_WAIT_BUFFER = typeof globalThis.SharedArrayBuffer === "function"
+  ? new Int32Array(new globalThis.SharedArrayBuffer(4))
+  : null;
 
 function safeChmod(targetPath, mode) {
   if (process.platform === "win32" || !targetPath) return false;
   try {
+    if (fs.lstatSync(targetPath).isSymbolicLink()) return false;
     fs.chmodSync(targetPath, mode);
     return true;
   } catch {
     return false;
+  }
+}
+
+function renameWithRetrySync(sourcePath, targetPath, maxRetries = 3) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fs.renameSync(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      if (!RETRYABLE_RENAME_CODES.has(error?.code) || attempt >= maxRetries) {
+        throw error;
+      }
+      if (RENAME_WAIT_BUFFER && typeof globalThis.Atomics?.wait === "function") {
+        try { globalThis.Atomics.wait(RENAME_WAIT_BUFFER, 0, 0, (attempt + 1) * 10); } catch { /* ignore */ }
+      }
+    }
   }
 }
 
@@ -54,21 +76,31 @@ function tightenUserDataPermissions(userDataDir) {
   let directoryTightened = false;
   let tightenedFiles = 0;
   try {
-    if (!fs.existsSync(userDataDir)) return { directoryTightened: false, tightenedFiles: 0 };
-    directoryTightened = safeChmod(userDataDir, 0o700);
-    const entries = fs.readdirSync(userDataDir, { withFileTypes: true });
+    const resolvedDir = path.resolve(userDataDir);
+    if (!fs.existsSync(resolvedDir)) {
+      let existingLink = false;
+      try { existingLink = fs.lstatSync(resolvedDir).isSymbolicLink(); } catch { existingLink = false; }
+      if (existingLink) return { directoryTightened: false, tightenedFiles: 0 };
+      const parentDir = path.dirname(resolvedDir);
+      if (!fs.existsSync(parentDir) || fs.lstatSync(parentDir).isSymbolicLink()) {
+        return { directoryTightened: false, tightenedFiles: 0 };
+      }
+      fs.mkdirSync(resolvedDir, { recursive: true, mode: 0o700 });
+    }
+    if (fs.lstatSync(resolvedDir).isSymbolicLink()) {
+      return { directoryTightened: false, tightenedFiles: 0 };
+    }
+    directoryTightened = safeChmod(resolvedDir, 0o700);
+    const entries = fs.readdirSync(resolvedDir, { withFileTypes: true });
     for (const entry of entries) {
-      const fullPath = path.join(userDataDir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      const fullPath = path.join(resolvedDir, entry.name);
       if (entry.isDirectory()) {
         if (entry.name === "daily-bars") safeChmod(fullPath, 0o700);
         continue;
       }
       if (!entry.isFile()) continue;
-      if (
-        entry.name.endsWith(".json")
-        || entry.name.endsWith(".key")
-        || /\.(?:json|key)\.corrupted-/.test(entry.name)
-      ) {
+      if (SENSITIVE_USER_DATA_FILE_RE.test(entry.name)) {
         if (safeChmod(fullPath, 0o600)) tightenedFiles += 1;
       }
     }
@@ -157,23 +189,27 @@ function capItemsPreservingFavorites(items, limit = 500, isFavorite = (item) => 
 function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, options = {}) {
   if (typeof validator === "function" && !validator(value)) throw jsonSchemaError();
   const directory = path.dirname(filePath);
-  fs.mkdirSync(directory, { recursive: true });
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const backupDirectory = path.dirname(backupPath);
+  if (backupDirectory !== directory) {
+    fs.mkdirSync(backupDirectory, { recursive: true, mode: 0o700 });
+  }
   const temporaryPath = path.join(
     directory,
     `.${path.basename(filePath)}.${process.pid}.${randomUUID()}.tmp`
   );
-  const previousBackupPath = path.join(path.dirname(backupPath), `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.rollback.tmp`);
+  const previousBackupPath = path.join(backupDirectory, `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.rollback.tmp`);
   let backupWasReplaced = false;
   let backupPreviouslyExisted = false;
   let preservePreviousBackup = false;
   const replaceBackup = (sourcePath = filePath) => {
-    const backupTemporaryPath = path.join(path.dirname(backupPath), `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.tmp`);
+    const backupTemporaryPath = path.join(backupDirectory, `.${path.basename(backupPath)}.${process.pid}.${randomUUID()}.tmp`);
     try {
       fs.copyFileSync(sourcePath, backupTemporaryPath);
       safeChmod(backupTemporaryPath, 0o600);
       const handle = fs.openSync(backupTemporaryPath, "r+");
       try { fs.fsyncSync(handle); } finally { fs.closeSync(handle); }
-      fs.renameSync(backupTemporaryPath, backupPath);
+      renameWithRetrySync(backupTemporaryPath, backupPath);
       safeChmod(backupPath, 0o600);
     } finally {
       try { fs.unlinkSync(backupTemporaryPath); } catch { /* Already renamed or cleanup failed; preserve the original error. */ }
@@ -212,7 +248,7 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
       }
     }
     try {
-      fs.renameSync(temporaryPath, filePath);
+      renameWithRetrySync(temporaryPath, filePath);
       safeChmod(filePath, 0o600);
     } catch (error) {
       // A failed primary commit must not make a newly prepared recovery copy
@@ -220,7 +256,7 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
       // primary was corrupt. Restore the exact pre-save backup if possible.
       if (backupWasReplaced) {
         try {
-          if (backupPreviouslyExisted) fs.renameSync(previousBackupPath, backupPath);
+          if (backupPreviouslyExisted) renameWithRetrySync(previousBackupPath, backupPath);
           else fs.unlinkSync(backupPath);
         } catch (rollbackError) {
           preservePreviousBackup = backupPreviouslyExisted;

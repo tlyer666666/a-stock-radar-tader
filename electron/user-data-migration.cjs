@@ -99,14 +99,14 @@ function copyFileIfAbsent(srcFile, destFile, options = {}) {
   const srcStat = fs.lstatSync(srcFile);
   if (!srcStat.isFile() || srcStat.isSymbolicLink()) return false;
   if (fs.existsSync(destFile)) return false;
-  fs.mkdirSync(path.dirname(destFile), { recursive: true });
+  fs.mkdirSync(path.dirname(destFile), { recursive: true, mode: 0o700 });
   const tempFile = `${destFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
   try {
     const content = fs.readFileSync(srcFile);
     const mode = options.mode !== undefined ? options.mode : 0o600;
     fs.writeFileSync(tempFile, content, { flag: "wx", mode });
-    if (options.mode !== undefined && process.platform !== "win32") {
-      try { fs.chmodSync(tempFile, options.mode); } catch { /* Best effort on restricted FS. */ }
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(tempFile, mode); } catch { /* Best effort on restricted FS. */ }
     }
     fs.renameSync(tempFile, destFile);
     return true;
@@ -119,7 +119,7 @@ function copyDirFilesIfAbsent(srcDir, destDir) {
   let copiedCount = 0;
   const srcStat = fs.lstatSync(srcDir);
   if (!srcStat.isDirectory() || srcStat.isSymbolicLink()) return 0;
-  fs.mkdirSync(destDir, { recursive: true });
+  fs.mkdirSync(destDir, { recursive: true, mode: 0o700 });
   for (const entry of fs.readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || entry.name.endsWith(".tmp") || entry.isSymbolicLink()) continue;
     const srcPath = path.join(srcDir, entry.name);
@@ -127,7 +127,7 @@ function copyDirFilesIfAbsent(srcDir, destDir) {
     if (entry.isDirectory()) {
       copiedCount += copyDirFilesIfAbsent(srcPath, destPath);
     } else if (entry.isFile()) {
-      if (copyFileIfAbsent(srcPath, destPath, { mode: 0o644 })) copiedCount += 1;
+      if (copyFileIfAbsent(srcPath, destPath, { mode: 0o600 })) copiedCount += 1;
     }
   }
   return copiedCount;
@@ -181,7 +181,7 @@ function migrateLegacyUserData(options = {}) {
     return { migrated: false, reason: "no-legacy-profile" };
   }
 
-  fs.mkdirSync(targetDir, { recursive: true });
+  fs.mkdirSync(targetDir, { recursive: true, mode: 0o700 });
   const copiedFiles = [];
   const copiedDirs = [];
 
@@ -190,8 +190,7 @@ function migrateLegacyUserData(options = {}) {
     const srcPath = path.join(source.dir, entry.name);
     const destPath = path.join(targetDir, entry.name);
     if (entry.isFile() && isAppDataFileName(entry.name)) {
-      const mode = entry.name === "local-secret.key" ? 0o600 : 0o644;
-      if (copyFileIfAbsent(srcPath, destPath, { mode })) {
+      if (copyFileIfAbsent(srcPath, destPath, { mode: 0o600 })) {
         copiedFiles.push(entry.name);
       }
     } else if (entry.isDirectory() && isAppDataDirName(entry.name)) {

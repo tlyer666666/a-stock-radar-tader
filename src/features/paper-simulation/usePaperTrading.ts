@@ -120,8 +120,39 @@ export function usePaperTrading({
   };
 
   const syncPaperQuote = useCallback((nextPayload: AnalysisPayload) => {
-    setPaperState(currentState => advancePaperSimulationByQuote(currentState, nextPayload, settingsRef.current).state);
-  }, [settingsRef]);
+    const baseState = paperStateRef.current;
+    const preview = advancePaperSimulationByQuote(baseState, nextPayload, settingsRef.current);
+    const previewChanged = preview.changed ?? preview.state !== baseState;
+    if (previewChanged) {
+      paperStateRef.current = preview.state;
+    }
+    setPaperState(current => {
+      const res = current === baseState
+        ? preview
+        : advancePaperSimulationByQuote(current, nextPayload, settingsRef.current);
+      const changed = res.changed ?? res.state !== current;
+      if (!changed) return current;
+      paperStateRef.current = res.state;
+      return res.state;
+    });
+    if (previewChanged && preview.message) {
+      const prevClosedIds = new Set((baseState.closedPositions || []).map(item => item.id));
+      const autoClosed = preview.state.closedPositions.some(
+        item =>
+          !prevClosedIds.has(item.id) &&
+          (item.closeReason === "SL" ||
+            item.closeReason === "TP" ||
+            item.closeReason === "TIME_EXIT" ||
+            item.closeReason === "KILL_SWITCH")
+      );
+      if (
+        autoClosed ||
+        /(?:止损触发|止盈触发|超时退出|风控熔断|持仓闭环处理|\b(?:SL|TP|TIME_EXIT|KILL_SWITCH)\b)/.test(preview.message)
+      ) {
+        showToast(preview.message);
+      }
+    }
+  }, [settingsRef, showToast]);
 
   const appendExecutionDecisionLog = (entry: Omit<ExecutionDecisionLog, "id" | "createdAt">) => {
     const next = buildExecutionDecisionLogEntry(entry);
@@ -338,51 +369,58 @@ export function usePaperTrading({
   };
 
   const openPositionsSignature = paperSummary.normalized.openPositions.map(p => p.code).sort().join(",");
+  const paperPollBusyRef = useRef(false);
+  const paperMountedRef = useRef(true);
+  useEffect(() => {
+    paperMountedRef.current = true;
+    return () => {
+      paperMountedRef.current = false;
+    };
+  }, []);
+
+  const refreshPaperPositions = useCallback(async () => {
+    if (paperPollBusyRef.current || !openPositionsSignature || typeof window === "undefined" || typeof window.stockApi?.getQuoteSnapshot !== "function") return;
+    paperPollBusyRef.current = true;
+    try {
+      const activeDashboardCode = view === "dashboard" && dashboardMode === "analysis" ? latestAnalysis.current?.security.code || "" : "";
+      const maxPollCount = Math.max(10, Math.round(Number(settingsRef.current.maxOpenPositions) || 10));
+      const targets = openPositionsSignature.split(",").filter(code => code && code !== activeDashboardCode).slice(0, maxPollCount);
+      for (const code of targets) {
+        if (!paperMountedRef.current) break;
+        try {
+          const security: Security = { code, name: code, secid: inferSecid(code), assetType: "stock" };
+          const snapshot = await window.stockApi.getQuoteSnapshot(security);
+          const latest = Number(snapshot?.quote?.latest);
+          if (!paperMountedRef.current || !Number.isFinite(latest) || latest <= 0) continue;
+          const synthetic = {
+            security: { ...security, name: snapshot.quote?.name || code },
+            quote: snapshot.quote,
+            actualProvider: snapshot.actualProvider || settingsRef.current.provider,
+            updatedAt: snapshot.updatedAt || new Date().toISOString()
+          } as unknown as AnalysisPayload;
+          const res = advancePaperSimulationByQuote(paperStateRef.current, synthetic, settingsRef.current);
+          if (res.changed) {
+            paperStateRef.current = res.state;
+            setPaperState(res.state);
+            if (res.message) showToast(`模拟持仓巡检：${res.message}`);
+          }
+        } catch {
+          // Single position quote error should not interrupt monitoring others.
+        }
+      }
+    } finally {
+      paperPollBusyRef.current = false;
+    }
+  }, [openPositionsSignature, view, dashboardMode, latestAnalysis, settingsRef, showToast]);
+
   useEffect(() => {
     if (!live || settingsLoadState !== "ready" || !openPositionsSignature || typeof window.stockApi?.getQuoteSnapshot !== "function") return;
-    let active = true;
-    let busy = false;
-    const pollOpenPositions = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        const activeDashboardCode = view === "dashboard" && dashboardMode === "analysis" ? latestAnalysis.current?.security.code || "" : "";
-        const maxPollCount = Math.max(10, Math.round(Number(settingsRef.current.maxOpenPositions) || 10));
-        const targets = openPositionsSignature.split(",").filter(code => code && code !== activeDashboardCode).slice(0, maxPollCount);
-        for (const code of targets) {
-          if (!active) break;
-          try {
-            const security: Security = { code, name: code, secid: inferSecid(code), assetType: "stock" };
-            const snapshot = await window.stockApi.getQuoteSnapshot(security);
-            const latest = Number(snapshot?.quote?.latest);
-            if (!active || !Number.isFinite(latest) || latest <= 0) continue;
-            const synthetic = {
-              security: { ...security, name: snapshot.quote?.name || code },
-              quote: snapshot.quote,
-              actualProvider: snapshot.actualProvider || settingsRef.current.provider,
-              updatedAt: snapshot.updatedAt || new Date().toISOString()
-            } as unknown as AnalysisPayload;
-            const res = advancePaperSimulationByQuote(paperStateRef.current, synthetic, settingsRef.current);
-            if (res.changed) {
-              paperStateRef.current = res.state;
-              setPaperState(res.state);
-              if (res.message) showToast(`模拟持仓巡检：${res.message}`);
-            }
-          } catch {
-            // Single position quote error should not interrupt monitoring others.
-          }
-        }
-      } finally {
-        busy = false;
-      }
-    };
-    const pollVisible = whenVisible(() => void pollOpenPositions());
+    const pollVisible = whenVisible(() => void refreshPaperPositions());
     const timer = window.setInterval(pollVisible, Math.max(15, (Number(settings.quoteRefreshSeconds) || 5) * 3) * 1000);
     return () => {
-      active = false;
       window.clearInterval(timer);
     };
-  }, [live, settingsLoadState, openPositionsSignature, settings.quoteRefreshSeconds, view, dashboardMode, showToast, latestAnalysis, settingsRef]);
+  }, [live, settingsLoadState, openPositionsSignature, settings.quoteRefreshSeconds, refreshPaperPositions]);
 
   const paperCurrentPositions = payload
     ? paperSummary.normalized.openPositions.filter(position => position.code === payload.security?.code)
@@ -413,6 +451,7 @@ export function usePaperTrading({
     closePaperTradeForCode,
     closePaperTradeForCurrent,
     closeAllPaperTrades,
-    confirmPaperSettlementForCode
+    confirmPaperSettlementForCode,
+    refreshPaperPositions
   };
 }
