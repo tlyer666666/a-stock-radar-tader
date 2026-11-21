@@ -4180,6 +4180,16 @@ body { font-size: var(--fs-base); }
   margin-top: 5px;
 }
 
+.compare-stock-head > button.compare-cockpit-add {
+  width: auto;
+  display: inline-flex;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  font-size: var(--fs-2xs);
+}
+
 .compare-metric-row {
   border-bottom: 1px solid var(--line);
 }
@@ -5264,3 +5274,5 @@ select:focus-visible {
     width: auto;
   }
 }
+.news-relations > button.news-cockpit-add { color: var(--accent); background: transparent; border-style: dashed; }
+.news-relations > button.news-cockpit-add.active { border-style: solid; background: var(--accent-soft); }

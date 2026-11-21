@@ -287,3 +287,73 @@ test("writeJsonAtomicAsync serializes concurrent writes per path, keeps backup v
     assert.equal(fs.statSync(backup).mode & 0o777, 0o600);
   }
 });
+
+test("an identical atomic JSON write touches neither file", () => {
+  const directory = createFixture();
+  const primary = path.join(directory, "watchlist.json");
+  const backup = path.join(directory, "watchlist.last-good.json");
+  const realWrite = fs.writeFileSync;
+  const realRename = fs.renameSync;
+  const realCopy = fs.copyFileSync;
+  try {
+    const value = [{ code: "600519", favorite: true }];
+    writeJsonAtomic(primary, backup, value);
+    let writes = 0, renames = 0, copies = 0;
+    fs.writeFileSync = (...args) => { writes++; return realWrite(...args); };
+    fs.renameSync = (...args) => { renames++; return realRename(...args); };
+    fs.copyFileSync = (...args) => { copies++; return realCopy(...args); };
+    try {
+      writeJsonAtomic(primary, backup, value);
+    } finally {
+      fs.writeFileSync = realWrite;
+      fs.renameSync = realRename;
+      fs.copyFileSync = realCopy;
+    }
+    assert.equal(writes, 0);
+    assert.equal(renames, 0);
+    assert.equal(copies, 0);
+    assert.equal(fs.readdirSync(directory).filter(name => name.endsWith(".tmp")).length, 0);
+    writeJsonAtomic(primary, backup, [{ code: "300750", favorite: false }]);
+    assert.equal(JSON.parse(fs.readFileSync(primary, "utf8"))[0].code, "300750");
+  } finally {
+    fs.writeFileSync = realWrite;
+    fs.renameSync = realRename;
+    fs.copyFileSync = realCopy;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an identical async atomic JSON write touches neither file", async () => {
+  const directory = createFixture();
+  const primary = path.join(directory, "watchlist.json");
+  const backup = path.join(directory, "watchlist.last-good.json");
+  const realWrite = fs.promises.writeFile;
+  const realRename = fs.promises.rename;
+  const realCopy = fs.promises.copyFile;
+  try {
+    const value = [{ code: "600519", favorite: true }];
+    await writeJsonAtomicAsync(primary, backup, value);
+    let writes = 0, renames = 0, copies = 0;
+    fs.promises.writeFile = (...args) => { writes++; return realWrite(...args); };
+    fs.promises.rename = (...args) => { renames++; return realRename(...args); };
+    fs.promises.copyFile = (...args) => { copies++; return realCopy(...args); };
+    try {
+      await writeJsonAtomicAsync(primary, backup, value);
+    } finally {
+      fs.promises.writeFile = realWrite;
+      fs.promises.rename = realRename;
+      fs.promises.copyFile = realCopy;
+    }
+    assert.equal(writes, 0);
+    assert.equal(renames, 0);
+    assert.equal(copies, 0);
+    assert.equal(fs.readdirSync(directory).filter(name => name.endsWith(".tmp")).length, 0);
+    await writeJsonAtomicAsync(primary, backup, [{ code: "300750", favorite: false }]);
+    assert.equal(JSON.parse(fs.readFileSync(primary, "utf8"))[0].code, "300750");
+  } finally {
+    fs.promises.writeFile = realWrite;
+    fs.promises.rename = realRename;
+    fs.promises.copyFile = realCopy;
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});

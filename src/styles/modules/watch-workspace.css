@@ -28,6 +28,10 @@ html .terminal-shell .ten-day-workspace .watch-stock-panel { display:flex; flex-
 .watch-stock-table th:first-child,.watch-stock-table td:first-child { text-align:right; padding-right:10px; color:var(--terminal-muted); font-size: var(--fs-xs); }
 .watch-stock-table th:nth-child(6),.watch-stock-table td:nth-child(6) { text-align:right; }
 .watch-stock-table .watch-security-code { color:var(--terminal-muted); font-size: var(--fs-xs); }
+.watch-quote-status { margin:0; color:var(--terminal-muted); font-size: var(--fs-2xs); line-height:1.2; font-variant-numeric:tabular-nums; }
+.watch-sort-btn { appearance:none; border:0; background:none; padding:0; margin:0; color:inherit; font:inherit; letter-spacing:inherit; cursor:pointer; }
+.watch-sort-btn:hover { color:var(--terminal-text); }
+.watch-sort-arrow { font-size:8px; margin-left:3px; }
 .watch-security-code small { font-size: var(--fs-2xs); margin-left:5px; }
 .watch-stock-open { display:block; max-width:100%; border:0; background:none; color:var(--terminal-text); padding:0; cursor:pointer; text-align:left; overflow:hidden; text-overflow:ellipsis; }
 .watch-stock-open strong { font-size: var(--fs-base); font-weight:500; line-height:22px; }

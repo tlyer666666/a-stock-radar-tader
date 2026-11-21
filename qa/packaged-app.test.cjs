@@ -87,7 +87,7 @@ test("packaged E2E waits for visible professional review content after navigatio
   const runner = fs.readFileSync(path.join(projectRoot, "qa", "packaged-app.cjs"), "utf8");
   assert.match(
     runner,
-    /getByText\("有序证据 · 2–6 周观察", \{ exact: true \}\)\.waitFor\(\{ timeout: 90_000 \}\)/
+    /getByText\("大盘复盘 · 看 2–6 周趋势", \{ exact: true \}\)\.waitFor\(\{ timeout: 90_000 \}\)/
   );
   assert.match(runner, /await page\.waitForFunction\([\s\S]*?data-workspace[\s\S]*?review/);
   assert.match(runner, /locator\("\.review-dimension"\)\.count\(\)/);

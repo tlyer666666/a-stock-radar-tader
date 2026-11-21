@@ -3,6 +3,7 @@ import { createServiceJobScope } from '../../serviceJobClient';
 import { whenVisible } from '../../visiblePolling';
 import { inTradingSession } from './tStore';
 import { normalizeToolboxChart, T_FRAMES, type TChartData, type TFrame } from './tToolboxModel';
+import { userErrorText } from "../../userErrorText";
 
 type Snapshot = { key: string; data: TChartData | null; loading: boolean; error: string };
 /** One active history request per hook. Scope cancellation and generation checks
@@ -43,7 +44,7 @@ function useHistoryChart(security: Security, frame: TFrame, adjustment: string, 
         while (cache.current.size > 14) cache.current.delete(cache.current.keys().next().value!);
         setSnapshot({ key, data, loading: false, error: '' });
       } catch (error) {
-        if (active()) setSnapshot(old => ({ key, data: old.key === key ? old.data : null, loading: false, error: error instanceof Error ? error.message : 'K线读取失败' }));
+        if (active()) setSnapshot(old => ({ key, data: old.key === key ? old.data : null, loading: false, error: userErrorText(error, 'K线读取失败') }));
       } finally {
         if (active()) { clearTimeout(timeout); busy = false; }
       }

@@ -105,6 +105,10 @@ test("validateIpcPayload enforces structural runtime validation and preserves ty
   assert.throws(() => validateIpcPayload("backup:run", [["bad"], undefined]), { code: "INVALID_IPC_PAYLOAD" });
   assert.throws(() => validateIpcPayload("market:search", [12345]), { code: "INVALID_IPC_PAYLOAD" });
   assert.throws(() => validateIpcPayload("trend-screener:status", [["bad-cursor"]]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("market:batch-quotes", ["not-an-array"]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("market:batch-quotes", [[{ code: "600519" }, "bad"]]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("market:batch-quotes", [[{ code: "12345" }]]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("market:batch-quotes", [Array.from({ length: 1201 }, (_, i) => ({ code: String(600000 + i) }))]), { code: "INVALID_IPC_PAYLOAD" });
 
   assert.doesNotThrow(() => validateIpcPayload("watchlist:get", []));
   assert.doesNotThrow(() => validateIpcPayload("watchlist:save", [[]]));
@@ -114,6 +118,7 @@ test("validateIpcPayload enforces structural runtime validation and preserves ty
   assert.doesNotThrow(() => validateIpcPayload("news:analyze-impact", [{ item: { title: "公告" } }]));
   assert.doesNotThrow(() => validateIpcPayload("trend-screener:status", [{ jobId: "t1", offset: 0 }]));
   assert.doesNotThrow(() => validateIpcPayload("agent:poll", ["run-123"]));
+  assert.doesNotThrow(() => validateIpcPayload("market:batch-quotes", [[{ code: "600519" }, { code: "920006", thscode: "920006.BJ" }]]));
 
   const tsContract = loadTsContractModule();
   assert.equal(tsContract.decodePlainRecord({ ok: true }).ok, true);

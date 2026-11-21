@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useId, useMemo, useRef, useState, type PointerEvent } from 'react';
-import { Activity, Bookmark, Search, Sparkles } from 'lucide-react';
+import { Activity, Bookmark, BookmarkCheck, Search, Sparkles } from 'lucide-react';
 import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from '../../components/QuickPlanModal';
 import StockRowActions from '../../components/StockRowActions';
 import { PanelTitle } from '../../components/terminal/TerminalPrimitives';
@@ -40,7 +40,7 @@ export default memo(function LimitUpPool({
   meta?: { dataDate?: string } | null;
   onOpen: (stock: LimitUpStock) => void;
   onAdd: (stock: LimitUpStock) => void;
-  /** 已在自选里的股票显示「已监控」，不会再点一次就取消。 */
+  /** 已在自选里的股票显示「已自选」，不会再点一次就取消。 */
   isFavorite?: ((code: string) => boolean) | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
   onAddFavorite?: ((security: Security) => void) | undefined;
@@ -188,8 +188,8 @@ export default memo(function LimitUpPool({
             {columns.map(column => <div role="gridcell" key={column.key} className={('numeric' in column) ? 'num' : undefined} title={TITLE_LIMIT_COLUMNS.has(column.key) ? cellTitle(item, column.key) : undefined}>{cell(item, column.key)}</div>)}
             <div role="gridcell" className="limit-row-actions">
               <button className="table-action" aria-label={`分析${item.name}`} onClick={() => onOpen(item)}><Activity size={12} />分析</button>
-              {fav ? <button className="table-action" disabled aria-label={`${item.name}已在监控`}><Bookmark size={12} />已监控</button>
-                : <button className="table-action" aria-label={`监控${item.name}`} onClick={() => onAdd(item)}><Bookmark size={12} />监控</button>}
+              {fav ? <button className="table-action" disabled aria-label={`${item.name}已在自选`} title="已在自选监控"><BookmarkCheck size={12} />已自选</button>
+                : <button className="table-action" aria-label={`加入自选 ${item.name}`} title="加入自选监控" onClick={() => onAdd(item)}><Bookmark size={12} />+自选</button>}
               <StockRowActions
                 security={sec}
                 isFavorite={fav}
@@ -202,6 +202,7 @@ export default memo(function LimitUpPool({
                   secid: sec.secid,
                   referencePrice: nullableNumber(item.latest),
                   asOf: meta?.dataDate,
+                  source: '涨停池',
                   defaultNote: [
                     typeof item.consecutiveBoards === 'number' && item.consecutiveBoards > 1 ? `${item.consecutiveBoards}连板` : '首板涨停',
                     item.limitReason ? String(item.limitReason) : ''

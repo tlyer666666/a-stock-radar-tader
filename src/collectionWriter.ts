@@ -3,6 +3,7 @@ export function createCollectionWriter<T>(options: {
   read: () => T[];
   persist: (items: T[]) => Promise<T[]>;
   accept: (items: T[]) => void;
+  same?: (next: T[], current: T[]) => boolean;
 }) {
   let tail: Promise<unknown> = Promise.resolve();
   return (update: (items: T[]) => T[]): Promise<T[]> => {
@@ -10,9 +11,9 @@ export function createCollectionWriter<T>(options: {
       const current = options.read();
       const next = update(current);
       // 内容没变就不写盘也不触发界面更新（观察池每分钟合并一次，多数时候没有新股票）。
-      if (next === current || JSON.stringify(next) === JSON.stringify(current)) return current;
+      if (next === current || (options.same ? options.same(next, current) : JSON.stringify(next) === JSON.stringify(current))) return current;
       const saved = await options.persist(next);
-      options.accept(saved);
+      if (JSON.stringify(saved) !== JSON.stringify(current)) options.accept(saved);
       return saved;
     });
     tail = pending.catch(() => undefined);

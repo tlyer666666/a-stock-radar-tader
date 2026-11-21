@@ -190,7 +190,7 @@ function registerAiIpc({
       message: typeof payload.message === "string" ? payload.message : "",
       title: typeof payload.title === "string" ? payload.title.slice(0, 16) : "",
       conversationId: typeof payload.conversationId === "string" ? payload.conversationId.slice(0, 80) : "",
-      ...(Object.hasOwn(payload, "focus") ? { focus: payload.focus && typeof payload.focus === "object" ? { code: String(payload.focus.code || ""), name: String(payload.focus.name || "") } : null } : {}),
+      ...(Object.hasOwn(payload, "focus") ? { focus: payload.focus && typeof payload.focus === "object" ? { code: String(payload.focus.code || ""), name: String(payload.focus.name || ""), ...(["etf", "sector", "market"].includes(payload.focus.kind) ? { kind: payload.focus.kind } : {}) } : null } : {}),
       ...(Array.isArray(payload.skillIds) ? { skillIds: payload.skillIds.slice(0, 6).map(item => String(item).slice(0, 40)) } : {}),
       ...(payload.userContext && typeof payload.userContext === "object" && !Array.isArray(payload.userContext) ? { userContext: payload.userContext } : {}),
       allowPersonalContext: payload.allowPersonalContext !== false

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
+import { userErrorText } from "../../userErrorText";
 
 type PortfolioBacktestStrategyContext = {
   source?: "single_strategy" | "optimized_portfolio" | string;
@@ -840,7 +841,7 @@ export default function PortfolioBacktestView({
         setDefinitionError(next.length ? "" : "策略服务未返回可选策略");
       })
       .catch((reason) => {
-        if (active) setDefinitionError(reason instanceof Error ? reason.message : "策略定义加载失败");
+        if (active) setDefinitionError(userErrorText(reason, "策略定义加载失败"));
       })
       .finally(() => {
         if (active) setDefinitionLoading(false);
@@ -1075,7 +1076,7 @@ export default function PortfolioBacktestView({
       setSearchError("");
     } catch (reason) {
       if (currentRequest === strategyUniverseRequestId.current) {
-        setStrategyUniverseError(reason instanceof Error ? reason.message : String(reason));
+        setStrategyUniverseError(userErrorText(reason));
       }
     } finally {
       if (currentRequest === strategyUniverseRequestId.current) {
@@ -1157,7 +1158,7 @@ export default function PortfolioBacktestView({
       onResult?.(completedResult);
     } catch (reason) {
       if (requestId.current === currentRequest) {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(userErrorText(reason));
       }
     } finally {
       if (requestId.current === currentRequest) setRunning(false);

@@ -252,3 +252,14 @@ test("pending restart after backup restore rejects late writes from the old app 
     assert.equal(h.json("watchlist")[0].code, "600000");
   } finally { h.cleanup(); }
 });
+
+test("saving more than 80 distinct holdings throws explicitly instead of silently dropping positions", () => {
+  const h = createHarness();
+  try {
+    const eighty = Array.from({ length: 80 }, (_, idx) => ({ code: String(600000 + idx), name: `样本${idx}`, shares: 100, costPrice: 10 }));
+    assert.equal(h.invoke("holdings:save", eighty).length, 80);
+    const eightyOne = [...eighty, { code: "600080", name: "第81只", shares: 100, costPrice: 10 }];
+    assert.throws(() => h.invoke("holdings:save", eightyOne), { code: "HOLDINGS_LIMIT_EXCEEDED" });
+    assert.equal(h.json("holdings").length, 80);
+  } finally { h.cleanup(); }
+});

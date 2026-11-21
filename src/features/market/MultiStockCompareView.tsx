@@ -19,6 +19,8 @@ import { createNumberFormatters, fmtMoney } from "../../domain/formatters";
 import { formatShanghaiTime } from "../../dateUtils";
 
 import type { AnalysisPayload } from "./analysisTypes";
+import CockpitAddButton from "../../components/CockpitAddButton";
+import { userErrorText } from "../../userErrorText";
 
 type CompareRecord = Record<string, unknown>;
 type ComparePayload = AnalysisPayload | {
@@ -284,7 +286,7 @@ export default function MultiStockCompareView({
         (payload) => publish(security.code, { loading: false, error: "", payload }),
         (error) => publish(security.code, {
           loading: false,
-          error: error instanceof Error ? error.message : String(error),
+          error: userErrorText(error),
           payload: null
         })
       );
@@ -368,7 +370,7 @@ export default function MultiStockCompareView({
       } catch (error) {
         if (requestId === searchRequestId.current) {
           setRemoteCandidates([]);
-          setSearchError(error instanceof Error ? error.message : "暂时无法连接搜索服务");
+          setSearchError(userErrorText(error, "暂时无法连接搜索服务"));
           setSearchState("error");
         }
       }
@@ -516,6 +518,7 @@ export default function MultiStockCompareView({
       render: (payload) => {
         const rawEdge = payload.analysis?.historicalEdge;
         const edge = rawEdge && typeof rawEdge === "object" ? rawEdge : {};
+        if (!(Number(edge.sampleCount) > 0)) return <span>暂无历史样本<small>近期没有同类信号可复核，不代表胜率为 0</small></span>;
         return (
           <span>
             样本 {fmt(edge.sampleCount, 0)} · 5日胜率 {unit(edge.winRate5, 1, "%")}
@@ -645,6 +648,7 @@ export default function MultiStockCompareView({
                     )}
                     <ChevronRight size={15} />
                   </button>
+                  <CockpitAddButton security={security} source="多股对比" referencePrice={latest} className="table-action compare-cockpit-add" />
                   <small>
                     {providerLabel(result?.payload?.actualProvider)} ·{" "}
                     {/* B-04：行情时间始终按北京时间显示（跨时区机器不再跟随系统时区）。 */}

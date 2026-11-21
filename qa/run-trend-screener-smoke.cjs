@@ -21,7 +21,7 @@ async function run() {
     assert.equal(await page.locator(".trend-candidate").count(),1);
     await page.locator(".trend-candidate").getByRole("button",{name:/规则依据/}).click();
     assert.ok(await page.locator(".trend-evidence").isVisible());
-    await page.getByRole("button",{name:"加入我的计划",exact:true}).click();
+    await page.getByRole("button",{name:"+驾驶舱",exact:true}).click();
     await page.getByRole("button",{name:/^我的计划/}).click();
     assert.equal(await page.locator(".trend-candidate").count(),1);
     await page.locator(".trend-calculator > summary").click();

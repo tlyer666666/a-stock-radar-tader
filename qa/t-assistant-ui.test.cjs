@@ -122,18 +122,22 @@ describe('做T助手 page in the actual renderer', () => {
     });
   });
 
-  test('从持仓导入：只导入填了股数的 A 股，底仓和成本按持仓填写', async () => {
+  test('从持仓导入：导入填了股数的 A 股和 ETF，底仓和成本按持仓填写', async () => {
     await pageTest(async page => {
       await page.getByRole('button', { name: '从持仓导入' }).click();
       await page.locator('.t-assistant-row').first().waitFor();
-      assert.equal(await page.locator('.t-assistant-row').count(), 1, 'ETF 不导入');
-      assert.match(await page.locator('.t-assistant-row').innerText(), /平安银行/);
+      assert.equal(await page.locator('.t-assistant-row').count(), 2, 'A 股和 ETF 都导入');
+      const rowTexts = await page.locator('.t-assistant-row').allInnerTexts();
+      assert.match(rowTexts.join(), /平安银行/);
+      assert.match(rowTexts.join(), /沪深300ETF/);
+      assert.equal(rowTexts.some(text => /510300/.test(text) && /T\+0/.test(text)), false, '沪深300ETF 是 T+1，不应出现 T+0 标签');
+      await page.locator('.t-assistant-row', { hasText: '平安银行' }).click();
       const fields = page.locator('.t-assistant-fields input');
       assert.equal(await fields.nth(0).inputValue(), '2000');
       assert.equal(await fields.nth(1).inputValue(), '', '持仓导入不能假定当日买入的股份可卖');
       assert.equal(await fields.nth(2).inputValue(), '12.3');
       assert.equal(await fields.nth(3).inputValue(), '600');
-      assert.match((await page.evaluate(() => window.calls.toasts)).join(), /已从持仓导入 1 只/);
+      assert.match((await page.evaluate(() => window.calls.toasts)).join(), /已从持仓导入 2 只/);
       await page.getByRole('button', { name: /语音提醒开/ }).click();
       await page.getByRole('button', { name: /语音提醒关/ }).waitFor();
     });

@@ -55,7 +55,7 @@ function fixture(t, options = false) {
   };
   const module = { exports: {} };
   const processStub = { ...process, argv: ['node', filename, '--from-build'],
-    env: { ...process.env, ASTOCK_APP_DIR: target }, stdout: { write() {} },
+    env: { ...process.env, ASTOCK_RELEASE_GATE: '', ...(opts.env || {}), ASTOCK_APP_DIR: target }, stdout: { write() {} },
     ...(opts.kill ? { kill: opts.kill } : {}) };
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
     module, exports: module.exports, require: customRequire, __dirname: path.join(repo, 'electron'),
@@ -114,4 +114,16 @@ test('pidsUsingExecutable matches only the target executable path and excludes s
 
   await f.main();
   assert.deepEqual(killed, [{ pid: 91005, signal: 'SIGTERM' }]);
+});
+
+test('version metadata records the release gate truthfully instead of claiming tests passed', async t => {
+  const ungated = fixture(t);
+  await ungated.main();
+  const plain = JSON.parse(fs.readFileSync(path.join(ungated.target, '当前版本.json')));
+  assert.match(plain.verification.unitTests, /未运行/);
+  assert.doesNotMatch(plain.verification.unitTests, /已通过/);
+  const gated = fixture(t, { env: { ASTOCK_RELEASE_GATE: 'typecheck,lint,test' } });
+  await gated.main();
+  const meta = JSON.parse(fs.readFileSync(path.join(gated.target, '当前版本.json')));
+  assert.match(meta.verification.unitTests, /^已通过（本次部署前运行：类型检查、lint、全量单测/);
 });

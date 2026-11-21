@@ -282,6 +282,43 @@ function writeSelectionUniverseCache(boards) {
   return selectionUniverseWriteChain;
 }
 
+function selectionReportFile() {
+  const directory = typeof dailyBarDirectory === "function" ? dailyBarDirectory() : dailyBarDirectory;
+  return directory ? require("node:path").join(directory, "selection-report.json") : null;
+}
+
+async function readSavedSelectionReport(cacheKey) {
+  try {
+    const file = selectionReportFile();
+    if (!file) return null;
+    const saved = JSON.parse(await require("node:fs").promises.readFile(file, "utf8"));
+    return saved?.v === 1 && saved.cacheKey === cacheKey && Number(saved.expiresAt) > Date.now() && saved.value ? saved : null;
+  } catch { return null; }
+}
+
+let selectionReportWriteChain = Promise.resolve();
+
+function writeSavedSelectionReport(cacheKey, expiresAt, value) {
+  const file = selectionReportFile();
+  if (!file) return Promise.resolve(false);
+  const path = require("node:path");
+  const fsPromises = require("node:fs").promises;
+  const run = async () => {
+    const tempFile = path.join(path.dirname(file), `selection-report.json.${process.pid}.${Date.now()}.tmp`);
+    try {
+      await fsPromises.mkdir(path.dirname(file), { recursive: true });
+      await fsPromises.writeFile(tempFile, JSON.stringify({ v: 1, cacheKey, expiresAt, value }), { mode: 0o600 });
+      await fsPromises.rename(tempFile, file);
+      return true;
+    } catch {
+      await fsPromises.rm(tempFile, { force: true }).catch(() => { /* ignore cleanup error */ });
+      return false;
+    }
+  };
+  selectionReportWriteChain = selectionReportWriteChain.then(run, run);
+  return selectionReportWriteChain;
+}
+
 function shanghaiDateText(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
 }
@@ -388,6 +425,13 @@ function scanStrategySignals(rawOptions = {}, runtime = {}) {
   return serviceRuntime.run("selection", identity, runtime, async () => {
     const cached = strategySignalCache.get(cacheKey);
     if (!forceRefresh && cached?.value && cached.expiresAt > Date.now()) return cached.value;
+    if (!forceRefresh) {
+      const saved = await readSavedSelectionReport(cacheKey);
+      if (saved) {
+        strategySignalCache.set(cacheKey, { value: saved.value, expiresAt: Number(saved.expiresAt) });
+        return saved.value;
+      }
+    }
     const generation = {};
     strategySignalLoads.set(cacheKey, generation);
     try {
@@ -399,8 +443,10 @@ function scanStrategySignals(rawOptions = {}, runtime = {}) {
         // A clean result for a completed session cannot change until the next
         // session closes; degraded results (failed/stale reads) retry after 5 min.
         const validUntil = Number(value?.cacheValidUntil);
-        const expiresAt = Number.isFinite(validUntil) && validUntil > Date.now() ? validUntil : Date.now() + 5 * 60 * 1000;
+        const clean = Number.isFinite(validUntil) && validUntil > Date.now();
+        const expiresAt = clean ? validUntil : Date.now() + 5 * 60 * 1000;
         strategySignalCache.set(cacheKey, { value, expiresAt });
+        if (clean) await writeSavedSelectionReport(cacheKey, expiresAt, value);
       }
       return value;
     } finally {

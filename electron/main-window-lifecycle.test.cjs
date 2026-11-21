@@ -29,8 +29,22 @@ test("Windows close retains a reachable visible window when tray creation fails"
 });
 test("successful Windows tray hiding and ordinary platform shutdown semantics remain intact", () => {
   assert.deepEqual(closeWindow("win32", { isDestroyed: () => false }), { prevented: true, hidden: true, trayCalls: 1 });
-  for (const platform of ["darwin", "linux"]) assert.deepEqual(closeWindow(platform), { prevented: false, hidden: false, trayCalls: 0 });
+  assert.deepEqual(closeWindow("linux"), { prevented: false, hidden: false, trayCalls: 0 });
   assert.deepEqual(closeWindow("win32", undefined, true), { prevented: false, hidden: false, trayCalls: 0 });
+});
+test("macOS close hides the window so background stop-loss and T alerts keep running; Cmd+Q still quits", () => {
+  assert.deepEqual(closeWindow("darwin"), { prevented: true, hidden: true, trayCalls: 0 });
+  assert.deepEqual(closeWindow("darwin", undefined, true), { prevented: false, hidden: false, trayCalls: 0 });
+});
+test("macOS close from full screen leaves full screen first, then hides", () => {
+  const steps = [];
+  const callback = vm.runInNewContext(`(${closeCallback})`, {
+    process: { platform: "darwin" }, isQuitting: false, debugLog: () => {}, createTray: () => undefined,
+    createdWindow: { isDestroyed: () => false, isFullScreen: () => true, once: (name, fn) => { steps.push(`once:${name}`); fn(); },
+      setFullScreen: value => steps.push(`fullscreen:${value}`), hide: () => steps.push("hide") }
+  });
+  callback({ preventDefault: () => steps.push("prevent") });
+  assert.deepEqual(steps, ["prevent", "once:leave-full-screen", "hide", "fullscreen:false"]);
 });
 test("partial tray setup failure destroys the allocated native tray", () => {
   let destroyed = 0;

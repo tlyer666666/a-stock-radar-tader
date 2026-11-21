@@ -2,7 +2,7 @@ import { SelectionKline } from "../strategy-selection/SelectionKline";
 import { AlertTriangle, ArrowDownRight, ArrowRight, Bookmark, BookmarkCheck, Calculator, Check, ChevronDown, ChevronRight, CircleHelp, ClipboardCheck, Download, Layers3, ListFilter, LoaderCircle, Play, RefreshCw, Search, ShieldCheck, Square, Target, Trash2, TrendingUp, X } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import type { TrendCandidate, TrendScanStatus, TrendStrategyId, TrendQualityConfig, TrendStrategySelection, TrendExecutionCheck } from "../../trendScreenerTypes";
-import { indexTrendCandidates, createSavedTrendPlan, readTrendPlans, reviewSavedTrendPlan, trendCandidatesCsv, trendPlanId, writeTrendPlans, TREND_PLAN_STORAGE_KEY, type SavedTrendPlan, type TrendReviewDraft, appendTrendScanJournal, readTrendScanJournal, trendScanJournalCsv } from "../../trendWorkspace";
+import { indexTrendCandidates, createSavedTrendPlan, restoreTrendPlan, isQuickObservationCandidate, readTrendPlans, reviewSavedTrendPlan, trendCandidatesCsv, trendPlanId, writeTrendPlans, TREND_PLAN_STORAGE_KEY, type SavedTrendPlan, type TrendReviewDraft, appendTrendScanJournal, readTrendScanJournal, trendScanJournalCsv } from "../../trendWorkspace";
 import { ariaSortOf, sortButtonLabel, sortGlyph, sortRowsBy, toggleColumnSort, type ColumnSort } from "../../domain/columnSort";
 import { calculateTrendPosition, evaluateTrendExit } from "../../trendPlan";
 import { TREND_CONFIG_FIELDS, TREND_STRATEGY_CHOICES, strategyName, validQualityConfig, qualityPresetName } from "../../trendStrategyConfig";
@@ -12,6 +12,7 @@ import TrendStrategyPanel from "./TrendStrategyPanel";
 import TrendScanDiagnostics from "./TrendScanDiagnostics";
 import TrendResearchTools from "./TrendResearchTools";
 import { readTrendViewPreferences, saveTrendViewPreferences, type TrendViewPreferences } from "../../trendViewPreferences";
+import { userErrorText } from "../../userErrorText";
 
 type Filter = "all" | "signal" | "A" | "B" | "watch";
 type Action = "start" | "cancel" | null;
@@ -63,7 +64,7 @@ const dateTime = (value?: string) => {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" });
 };
-const errorText = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
+const errorText = (reason: unknown) => userErrorText(reason);
 const filterLabels: Record<Filter, string> = { all: "全部候选", signal: "有效信号", A: "A 回踩转强", B: "B 平台突破", watch: "趋势观察" };
 
 const exampleCandidate: TrendCandidate = {
@@ -226,7 +227,7 @@ function CandidateCard({ candidate, isPreview, saved, onSave, onRemove, onOpen, 
         {candidate.limitDate ? <div className="trend-event"><span>最近收盘涨停</span><b>{candidate.limitDate}</b><small>距截止日 {candidate.daysSinceLimit} 个交易日</small></div>
           : <div className="trend-event"><span>近期涨停</span><b>无</b><small>本策略不要求近期涨停</small></div>}
         <div className="trend-reasons">{highlights.map((item, index) => <span key={`${item.label}-${index}`}><Check size={12} /><b>{item.label}</b><span>{item.value}</span></span>)}</div>
-        <div className="trend-market-metrics"><div><small>收盘</small><strong>{number(candidate.metrics.close)}</strong></div><div><small>MA20 / MA60</small><strong>{number(candidate.metrics.ma20)} <i>/</i> {number(candidate.metrics.ma60)}</strong></div><div><small>距 MA20</small><strong>{number(candidate.metrics.deviationPercent, 1)}%</strong></div><div><small>20日平均成交额</small><strong>{number(candidate.metrics.avgAmount20 / 100000000, 2)} 亿</strong></div><div><small>20日成交额中位数</small><strong>{candidate.metrics.medianAmount20 === undefined ? "未知" : `${number(candidate.metrics.medianAmount20 / 100000000, 2)} 亿`}</strong></div></div>
+        {isQuickObservationCandidate(candidate) ? <div className="trend-market-metrics"><div><small>加入时参考价</small><strong>{number(candidate.metrics.close)}</strong></div><div><small>均线与成交额</small><strong>一键加入，未计算</strong></div></div> : <div className="trend-market-metrics"><div><small>收盘</small><strong>{number(candidate.metrics.close)}</strong></div><div><small>MA20 / MA60</small><strong>{number(candidate.metrics.ma20)} <i>/</i> {number(candidate.metrics.ma60)}</strong></div><div><small>距 MA20</small><strong>{number(candidate.metrics.deviationPercent, 1)}%</strong></div><div><small>20日平均成交额</small><strong>{number(candidate.metrics.avgAmount20 / 100000000, 2)} 亿</strong></div><div><small>20日成交额中位数</small><strong>{candidate.metrics.medianAmount20 === undefined ? "未知" : `${number(candidate.metrics.medianAmount20 / 100000000, 2)} 亿`}</strong></div></div>}
       </div>
       <div className={`trend-reference-plan ${candidate.plan ? "" : "is-pending"}`}>
         <span className="trend-kicker">{saved ? "冻结计划 · 保存时价格" : "次日参考 · 收盘后计算"}</span>
@@ -235,7 +236,7 @@ function CandidateCard({ candidate, isPreview, saved, onSave, onRemove, onOpen, 
     </div>
     {candidate.technical && <div className="trend-quality-metrics">{Object.entries(candidate.technical.indicators).map(([key, value]) => <span key={key}>{key} <b>{number(value)}</b></span>)}</div>}
     {candidate.quality && <div className="trend-quality-metrics"><span>昨日 ATR <b>{number(candidate.quality.atr14Previous)}</b></span><span>均线偏离 <b>{number(candidate.quality.extensionAtr)} ATR</b></span><span>收盘位置 <b>{number(candidate.quality.closeLocation * 100, 0)}%</b></span><span>五日量比 <b>{number(candidate.quality.volumeRatio)}</b></span><span>止损引用 <b>{candidate.primaryPattern || "待确认"}</b></span></div>}
-    <div className="trend-candidate-actions"><button className="trend-text-button" onClick={() => onWorkspaceChange({ evidenceExpanded: !expanded })} aria-expanded={expanded} aria-label={`${candidate.security.name}规则依据`}><ListFilter size={14} />规则依据 <span>{candidate.evidence.length}</span><ChevronDown size={14} className={expanded ? "trend-rotate" : ""} /></button><span className="trend-limit-note">{!candidate.limitDate ? "技术指标策略 · 不依赖涨停" : candidate.limitEvidence === "calculated" ? "涨停价待官方核验" : "涨停价为源端报告值，待券商核验"}</span><div><button className="trend-btn trend-btn-small" onClick={() => onOpen(candidate.security)} disabled={isPreview} title={isPreview ? "虚构演示证券无法打开真实分析" : undefined}>个股分析<ChevronRight size={13} /></button>{onArchive && <button className="trend-btn trend-btn-small" onClick={onArchive}>{saved?.archivedAt ? "恢复计划" : "归档计划"}</button>}{onRemove ? <button className="trend-btn trend-btn-small" onClick={onRemove} aria-label={`移除${candidate.security.name}的计划`}><Trash2 size={13} />移除</button> : <button className={`trend-btn trend-btn-small ${saved ? "is-saved" : "trend-btn-accent"}`} onClick={() => onSave?.(draft)} disabled={Boolean(saved) || !onSave}>{saved ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}{saved ? "已保存快照" : "加入我的计划"}</button>}</div></div>
+    <div className="trend-candidate-actions"><button className="trend-text-button" onClick={() => onWorkspaceChange({ evidenceExpanded: !expanded })} aria-expanded={expanded} aria-label={`${candidate.security.name}规则依据`}><ListFilter size={14} />规则依据 <span>{candidate.evidence.length}</span><ChevronDown size={14} className={expanded ? "trend-rotate" : ""} /></button><span className="trend-limit-note">{!candidate.limitDate ? "技术指标策略 · 不依赖涨停" : candidate.limitEvidence === "calculated" ? "涨停价待官方核验" : "涨停价为源端报告值，待券商核验"}</span><div><button className="trend-btn trend-btn-small" onClick={() => onOpen(candidate.security)} disabled={isPreview} title={isPreview ? "虚构演示证券无法打开真实分析" : undefined}>个股分析<ChevronRight size={13} /></button>{onArchive && <button className="trend-btn trend-btn-small" onClick={onArchive}>{saved?.archivedAt ? "恢复计划" : "归档计划"}</button>}{onRemove ? <button className="trend-btn trend-btn-small" onClick={onRemove} aria-label={`移除${candidate.security.name}的计划`}><Trash2 size={13} />移除</button> : <button className={`trend-btn trend-btn-small ${saved ? "is-saved" : "trend-btn-accent"}`} onClick={() => onSave?.(draft)} disabled={Boolean(saved) || !onSave}>{saved ? <BookmarkCheck size={13} /> : <Bookmark size={13} />}{saved ? "已在驾驶舱" : "+驾驶舱"}</button>}</div></div>
     {expanded && <div className="trend-evidence"><div className="trend-evidence-grid">{candidate.evidence.map((item, index) => <div
       key={`${item.label}-${index}`}
       className={[
@@ -265,7 +266,7 @@ function CandidateRow({ candidate, isPreview, saved, workspace, onWorkspaceChang
       <td>{strategyName(candidate.strategy)}</td>
       <td>{candidate.stage === "signal" ? candidate.setup?.label || candidate.patterns.map(pattern => filterLabels[pattern]).join(" / ") || "有效信号" : "趋势观察"}{candidate.evidence.length > 0 && <small> · {passedCount}/{candidate.evidence.length}</small>}</td>
       <td>{candidate.asOf}</td>
-      <td className="trend-numeric">{number(candidate.metrics.close)} <small>{candidate.metrics.deviationPercent >= 0 ? "+" : ""}{number(candidate.metrics.deviationPercent, 1)}%</small></td>
+      <td className="trend-numeric">{number(candidate.metrics.close)} {!isQuickObservationCandidate(candidate) && <small>{candidate.metrics.deviationPercent >= 0 ? "+" : ""}{number(candidate.metrics.deviationPercent, 1)}%</small>}</td>
       <td className="trend-numeric">{candidate.plan ? number(candidate.plan.stop) : "—"}</td>
       <td className="trend-numeric">{candidate.plan ? <>{number(candidate.plan.maxEntry)}{entryGap !== null && <small> ({entryGap >= 0 ? "+" : ""}{number(entryGap, 1)}%)</small>}</> : "—"}</td>
       <td>{isPreview ? <span>演示数据不请求真实行情</span> : <SelectionKline security={candidate.security} signalDate={candidate.stage === "signal" ? candidate.asOf : undefined} />}</td>
@@ -565,9 +566,9 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
   };
   const saveCandidate = (candidate: TrendCandidate, reviewDraft: TrendReviewDraft) => {
     if (!status) return;
-    const snapshot = { ...createSavedTrendPlan(candidate, status), reviewDraft };
+    const snapshot = { ...createSavedTrendPlan(candidate, status), reviewDraft, source: "趋势筛选" };
     if (planIndex.has(snapshot.id)) return;
-    updatePlans([snapshot, ...latestPlansRef.current], `已保存 ${candidate.security.name} 的 ${candidate.asOf} 快照，可在“我的计划”复核。`);
+    updatePlans([snapshot, ...latestPlansRef.current], `${candidate.security.name} 已加入今日驾驶舱，${candidate.asOf} 快照存入“我的计划”可复核。`);
   };
 
   const updateDraft = (id: string, reviewDraft: TrendReviewDraft) => {
@@ -717,10 +718,10 @@ export default function TrendScreenerView({ onOpen, embedded = false, focusStrat
       })}{planWindow.map((plan) => {
         const workspace = rowWorkspace(plan.id, plan);
         const onWorkspaceChange: RowWorkspaceChange = patch => changeRowWorkspace(plan.id, patch);
-        return <CandidateRow key={plan.id} candidate={plan.candidate} isPreview={plan.isPreview} saved workspace={workspace} onWorkspaceChange={onWorkspaceChange}><CandidateCard workspace={workspace} onWorkspaceChange={onWorkspaceChange} candidate={plan.candidate} isPreview={plan.isPreview} saved={plan} onDraftChange={(draft) => updateDraft(plan.id, draft)} onArchive={() => updatePlans(storage.plans.map(item => { if (item.id !== plan.id) return item; const { archivedAt, ...snapshot } = item; return archivedAt ? snapshot : { ...snapshot, archivedAt: new Date().toISOString() }; }), plan.archivedAt ? "计划已恢复到使用中列表。" : "计划已归档，快照和复核输入仍保存在本机，可在已归档列表恢复。")} onRemove={() => updatePlans(storage.plans.filter((item) => item.id !== plan.id), `已移除 ${plan.candidate.security.name} 的计划快照。`)} onOpen={onOpen} {...reviewSavedTrendPlan(plan, status, candidateIndex)} marketGate={marketGate} /></CandidateRow>;
+        return <CandidateRow key={plan.id} candidate={plan.candidate} isPreview={plan.isPreview} saved workspace={workspace} onWorkspaceChange={onWorkspaceChange}><CandidateCard workspace={workspace} onWorkspaceChange={onWorkspaceChange} candidate={plan.candidate} isPreview={plan.isPreview} saved={plan} onDraftChange={(draft) => updateDraft(plan.id, draft)} onArchive={() => updatePlans(storage.plans.map(item => { if (item.id !== plan.id) return item; return item.archivedAt ? restoreTrendPlan(item) : { ...item, archivedAt: new Date().toISOString() }; }), plan.archivedAt ? "计划已恢复到使用中列表。" : "计划已归档，快照和复核输入仍保存在本机，可在已归档列表恢复。")} onRemove={() => updatePlans(storage.plans.filter((item) => item.id !== plan.id), `已移除 ${plan.candidate.security.name} 的计划快照。`)} onOpen={onOpen} {...reviewSavedTrendPlan(plan, status, candidateIndex)} marketGate={marketGate} /></CandidateRow>;
       })}</tbody></table></div>{visibleCount === 0 && <div className="trend-empty"><div>{tab === "plans" ? <Bookmark size={27} /> : <TrendingUp size={27} />}</div>
         <strong>{hiddenByFilters ? "当前筛选没有匹配结果" : tab === "plans" ? planArchive === "archived" ? "尚无归档的计划" : "把值得跟踪的候选，留成下一步计划" : active ? "正在逐只检验趋势与涨停形态" : phase === "idle" ? "从一次全 A 股扫描开始" : "目前没有可展示的研究候选"}</strong>
-        <p>{hiddenByFilters ? `已有 ${sourceCount} 条${tab === "plans" ? "计划" : "研究候选"}，当前搜索、${tab === "candidates" ? "形态或" : ""}结果策略筛选没有匹配。清除筛选可查看全部记录。` : tab === "plans" ? planArchive === "archived" ? "在使用中列表展开计划并点击归档，原快照与复核输入会保留，可随时恢复。" : "在候选卡片点击“加入我的计划”，保存截止日、规则依据和参考价。" : active ? "候选会随扫描更新。请先关注市场门槛和板块覆盖。" : !complete ? "先完成扫描并查看失败明细；缺失数据不会被当作未命中。" : "当前规则下没有候选，等待新的收盘信号。"}</p>
+        <p>{hiddenByFilters ? `已有 ${sourceCount} 条${tab === "plans" ? "计划" : "研究候选"}，当前搜索、${tab === "candidates" ? "形态或" : ""}结果策略筛选没有匹配。清除筛选可查看全部记录。` : tab === "plans" ? planArchive === "archived" ? "在使用中列表展开计划并点击归档，原快照与复核输入会保留，可随时恢复。" : "在候选卡片点击“+驾驶舱”，保存截止日、规则依据和参考价，并在今日驾驶舱跟踪 5 个交易日。" : active ? "候选会随扫描更新。请先关注市场门槛和板块覆盖。" : !complete ? "先完成扫描并查看失败明细；缺失数据不会被当作未命中。" : "当前规则下没有候选，等待新的收盘信号。"}</p>
         {hiddenByFilters ? <button className="trend-btn" onClick={clearFilters}>清除筛选</button> : tab === "plans" ? planArchive === "archived" ? <button className="trend-btn" onClick={() => setPlanArchive("active")}>查看使用中计划</button> : <button className="trend-btn" onClick={() => setTab("candidates")}>去研究候选<ArrowRight size={14} /></button> : !active && <button className="trend-btn" onClick={() => void invoke("start")} disabled={Boolean(action)}><Play size={14} />扫描全 A 股</button>}
       </div>}</div>
     </section>

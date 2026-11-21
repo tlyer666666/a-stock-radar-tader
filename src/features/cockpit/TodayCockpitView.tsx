@@ -21,7 +21,8 @@ import {
   TrendingUp,
   X
 } from "lucide-react";
-import { readTrendPlans, type SavedTrendPlan } from "../../trendWorkspace";
+import { archiveTrendPlan, expireStaleTrendPlans, readTrendPlans, PLAN_COCKPIT_TRADING_DAYS, type SavedTrendPlan } from "../../trendWorkspace";
+import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
 import type { WorkspaceView } from "../../workspaceView";
 import type { CopilotAlertItem, MarketSessionPhase } from "../../copilotBriefing";
 import { inferSecid } from "../../domain/securityIdentifiers";
@@ -33,6 +34,7 @@ import type { StockMonitorConfig, StockMonitorEvaluation } from "../../stockMoni
 import { settleTrades } from "../t-assistant/tEngine";
 import { buildStopLossMonitorConfig, maskSensitiveText } from "../collections/holdingsLedger";
 import {
+  buildMarketPulse,
   buildMorningPriorities,
   buildPreopenAuctionRows,
   buildUnifiedSentinels,
@@ -40,24 +42,27 @@ import {
   resolveDefaultCockpitMode,
   type CockpitQuote,
   type CockpitSessionMode,
+  type MarketPulse,
   type MorningPriorityItem
 } from "./cockpitModel";
+import MarketPulseCard from "./MarketPulseCard";
+import { canOpenAgent, openAgentForMarket } from "../ai-agent/agentModel";
 
 const MODE_META: Record<CockpitSessionMode, { label: string; badge: string; focus: string }> = {
   preopen: {
     label: "盘前准备",
-    badge: "09:30 前备战",
-    focus: "核对隔夜复盘策略、持仓/自选公告、T+1 自动解锁可卖仓位与条件哨兵"
+    badge: "开盘前",
+    focus: "开盘前看一眼：昨晚的复盘结论、持仓和自选的公告、今天能卖的仓位和提醒条件"
   },
   intraday: {
     label: "盘中哨兵",
     badge: "盘中实时",
-    focus: "融合持仓、模拟盘、冻结计划、价格盯盘、做T与随心记条件触发队列"
+    focus: "持仓、模拟盘、观察股、价格提醒、做T 和随心记，触发了就排在最前面"
   },
   afterclose: {
-    label: "盘后验收",
-    badge: "盘后复盘对照",
-    focus: "自动对照冻结策略计划收盘位置、当日做T收益、AI复盘与事后回看"
+    label: "收盘后对账",
+    badge: "收盘后对账",
+    focus: "看观察股收在什么位置、今天做T赚了多少、AI 复盘怎么说"
   }
 };
 
@@ -204,8 +209,38 @@ export default function TodayCockpitView({
   const [refreshing, setRefreshing] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState("");
   const generation = useRef(0);
+  const [marketPulse, setMarketPulse] = useState<MarketPulse | null>(null);
+  const [pulseState, setPulseState] = useState<"loading" | "ready" | "error">("loading");
+  const pulseSeqRef = useRef(0);
+  const pulseLastOkRef = useRef(0);
+  const pulseLastTryRef = useRef(0);
 
   const activePlans = useMemo(() => plans.filter(item => !item.archivedAt), [plans]);
+  const planByCode = useMemo(() => new Map(activePlans.map(plan => [plan.candidate.security.code, plan])), [activePlans]);
+  const [adjustTarget, setAdjustTarget] = useState<QuickPlanTarget | null>(null);
+  const adjustPlan = (plan: SavedTrendPlan) => {
+    const sec = plan.candidate.security;
+    setAdjustTarget({ code: sec.code, name: sec.name, secid: sec.secid, referencePrice: plan.candidate.metrics.close });
+  };
+  const removePlan = (plan: SavedTrendPlan) => {
+    if (typeof window === "undefined" || !window.localStorage) return;
+    const ok = archiveTrendPlan(window.localStorage, plan.id);
+    if (ok) setPlans(readTrendPlans(window.localStorage).plans);
+    onShowToast?.(ok ? `${plan.candidate.security.name} 已移出今日驾驶舱，需要时在原页面再点「+驾驶舱」即可加回` : `${plan.candidate.security.name} 移出失败：本地存储不可写`);
+  };
+  const planActions = (code: string) => {
+    const plan = planByCode.get(code);
+    if (!plan) return null;
+    const sec = plan.candidate.security;
+    return <span className="cockpit-plan-actions">
+      <button type="button" className="table-action" onClick={() => adjustPlan(plan)} aria-label={`调整 ${sec.name} 的买点与止损`}>调整</button>
+      <button type="button" className="table-action" onClick={() => removePlan(plan)} aria-label={`把 ${sec.name} 移出今日驾驶舱`}><X size={11} />移出</button>
+    </span>;
+  };
+  const planChip = (code: string) => {
+    const plan = planByCode.get(code);
+    return <span key="计划" className="cockpit-chip muted" title={plan ? `加入于 ${plan.savedAt.slice(0, 10)}，${PLAN_COCKPIT_TRADING_DAYS} 个交易日后自动移出` : undefined}>观察{plan?.source ? ` · ${plan.source}` : ""}</span>;
+  };
   const openPaperPositions = useMemo(
     () => (Array.isArray(paperSummary?.normalized?.openPositions) ? paperSummary.normalized.openPositions : []),
     [paperSummary]
@@ -250,6 +285,7 @@ export default function TodayCockpitView({
     try {
       try {
         if (typeof window !== "undefined") {
+          expireStaleTrendPlans(window.localStorage);
           const freshPlans = readTrendPlans(window.localStorage).plans;
           freshPlans
             .filter(item => !item.archivedAt)
@@ -336,6 +372,43 @@ export default function TodayCockpitView({
       if (generation.current === requestId) setRefreshing(false);
     }
   }, []);
+
+  const loadMarketPulse = useCallback(async (refresh = false) => {
+    const api = typeof window !== "undefined" ? window.stockApi : undefined;
+    if (typeof api?.getProfessionalReview !== "function") {
+      setPulseState("error");
+      return;
+    }
+    const seq = ++pulseSeqRef.current;
+    pulseLastTryRef.current = Date.now();
+    try {
+      const review = await api.getProfessionalReview({ refresh });
+      if (pulseSeqRef.current !== seq) return;
+      const next = buildMarketPulse(review, todayShanghaiDate());
+      if (next) {
+        setMarketPulse(next);
+        pulseLastOkRef.current = Date.now();
+      }
+      setPulseState(next ? "ready" : "error");
+    } catch {
+      if (pulseSeqRef.current === seq) setPulseState("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadMarketPulse(false);
+    return () => {
+      pulseSeqRef.current += 1;
+    };
+  }, [loadMarketPulse]);
+
+  useEffect(() => {
+    if (!live) return;
+    return startVisibleInterval(() => {
+      const at = Date.now();
+      if (at - pulseLastOkRef.current > 180_000 && at - pulseLastTryRef.current > 60_000) void loadMarketPulse(false);
+    }, 15_000);
+  }, [live, loadMarketPulse]);
 
   useEffect(() => {
     void refreshCockpit(true, false);
@@ -479,7 +552,7 @@ export default function TodayCockpitView({
             <div>
               <span className="cockpit-pill-badge"><Sparkles size={13} />快速上手</span>
               <h3>3 步快速启用引导卡</h3>
-              <p>当前尚未添加持仓或自选股票，按以下三步即可启用全流程盘中哨兵与复盘工作台。</p>
+              <p>还没有持仓和自选股。按下面三步设置好，盘中就能自动帮你盯盘和复盘。</p>
             </div>
             <button
               type="button"
@@ -495,7 +568,7 @@ export default function TodayCockpitView({
               <span className="cockpit-onboarding-num">1</span>
               <div>
                 <b>导入或添加持仓与自选</b>
-                <small>录入持仓成本、股数或添加关注自选，开启止损与异动哨兵。</small>
+                <small>录入持仓成本和股数，或者添加自选，就能开启止损和异动提醒。</small>
                 <div className="cockpit-onboarding-actions">
                   <button type="button" className="primary-btn" onClick={() => onNavigate("holdings")}>去添加持仓</button>
                   <button type="button" className="secondary-btn" onClick={() => onNavigate("favorites")}>去添加自选</button>
@@ -506,7 +579,7 @@ export default function TodayCockpitView({
               <span className="cockpit-onboarding-num">2</span>
               <div>
                 <b>1 分钟配置扶摇行情或 AI 助手</b>
-                <small>填入同花顺扶摇 API Key 提升行情速度，或配置 AI 模型解锁问股与复盘。</small>
+                <small>填入同花顺扶摇 API Key 让行情更快；配置 AI 模型后可以用 AI 问股和 AI 复盘。</small>
                 <div className="cockpit-onboarding-actions">
                   <button type="button" className="secondary-btn" onClick={() => openSettingsCategory("sources")}>配置扶摇行情</button>
                   <button type="button" className="secondary-btn" onClick={() => openSettingsCategory("ai")}>配置 AI 助手</button>
@@ -517,7 +590,7 @@ export default function TodayCockpitView({
               <span className="cockpit-onboarding-num">3</span>
               <div>
                 <b>开始盘中盯盘或按需运行策略选股</b>
-                <small>筛选涨停形态与趋势结构候选，一键冻结次日买入与止损计划。</small>
+                <small>选出的股票点「+驾驶舱」一键加入，这里会跟踪买点与止损 5 个交易日。</small>
                 <div className="cockpit-onboarding-actions">
                   <button type="button" className="primary-btn" onClick={() => onNavigate("signals")}>去运行策略选股</button>
                 </div>
@@ -559,7 +632,7 @@ export default function TodayCockpitView({
             <button
               type="button"
               className="secondary-btn"
-              onClick={() => void refreshCockpit(true, true)}
+              onClick={() => { void refreshCockpit(true, true); void loadMarketPulse(true); }}
               disabled={refreshing}
             >
               <RefreshCw size={14} className={refreshing ? "spin" : ""} />
@@ -571,20 +644,20 @@ export default function TodayCockpitView({
         <div className="cockpit-kpi-strip">
           <div className="cockpit-kpi">
             <span>风控与预警</span>
-            <strong className={copilotAlerts.length > 0 ? "tone-warn" : "tone-ok"}>
-              {copilotAlerts.length > 0 ? `${copilotAlerts.length} 项待看` : "状态平稳"}
+            <strong className={copilotAlerts.length > 0 || marketPulse?.tone === "defense" || marketPulse?.tone === "warning" ? "tone-warn" : "tone-ok"}>
+              {copilotAlerts.length > 0 ? `${copilotAlerts.length} 项待看` : marketPulse?.tone === "defense" ? (marketPulse.stale ? "上个交易日偏弱" : "大盘偏弱") : marketPulse?.tone === "warning" ? (marketPulse.stale ? "上个交易日有分歧" : "大盘有分歧") : "状态平稳"}
             </strong>
-            <small>{paperSummary?.portfolioKill ? "组合硬风控已触发" : live ? "全账户哨兵监控中" : "实时轮询已暂停"}</small>
+            <small>{paperSummary?.portfolioKill ? "组合硬风控已触发" : live ? "正在盯盘" : "实时轮询已暂停"}</small>
           </div>
           <div className="cockpit-kpi">
-            <span>冻结策略计划</span>
+            <span>驾驶舱观察</span>
             <strong>{activePlans.length} 只待跟踪</strong>
             <small>
               {planReconciliation.filter(r => r.status === "stop-hit").length > 0
                 ? `${planReconciliation.filter(r => r.status === "stop-hit").length} 只触发止损`
                 : planReconciliation.filter(r => r.status === "in-band").length > 0
                   ? `${planReconciliation.filter(r => r.status === "in-band").length} 只处于买点区`
-                  : "点击查看计划对照"}
+                  : `${PLAN_COCKPIT_TRADING_DAYS} 个交易日后自动移出`}
             </small>
           </div>
           <div className="cockpit-kpi">
@@ -595,7 +668,7 @@ export default function TodayCockpitView({
                 ? `今日成交 ${todayTradeSummary.count} 笔 · 净盈亏 ${maskSensitiveText(`${todayTradeSummary.realized >= 0 ? "+" : ""}${todayTradeSummary.realized.toFixed(0)}`, privacyMask)}`
                 : tAssistant.store.lastRolloverDay === todayDate
                   ? "今日已自动完成 T+1 仓位结转"
-                  : "已启用次日可卖自动解锁"}
+                  : "第二天自动变为可卖"}
             </small>
           </div>
           <div className="cockpit-kpi">
@@ -608,13 +681,23 @@ export default function TodayCockpitView({
         </div>
       </section>
 
+      <section className="panel cockpit-pulse" aria-label="今日大盘">
+        <MarketPulseCard
+          pulse={marketPulse}
+          state={pulseState}
+          onRetry={() => void loadMarketPulse(true)}
+          onOpenReview={() => onNavigate("review")}
+          onAskAi={canOpenAgent() ? () => { void openAgentForMarket(); } : undefined}
+        />
+      </section>
+
       {morningPriorities.length > 0 && (
         <section className="panel cockpit-priority-strip" aria-label="今日开盘先盯事项">
           <header className="cockpit-priority-head">
             <div>
               <ShieldAlert size={15} />
               <b>今日先盯这 {morningPriorities.length} 件事</b>
-              <small>结合风险预警、止损空缺、冻结买点与持仓公告自动提炼</small>
+              <small>从风险提醒、没设止损的持仓、观察股买点和持仓公告里自动挑出来</small>
             </div>
           </header>
           <div className="cockpit-priority-grid">
@@ -674,7 +757,7 @@ export default function TodayCockpitView({
 
           <section className="panel cockpit-card">
             <header className="cockpit-card-head">
-              <div><ArrowDownUp size={16} /><h3>今日 T+1 可卖解锁与随心记待办</h3></div>
+              <div><ArrowDownUp size={16} /><h3>今天能卖的仓位与随心记待办</h3></div>
               <button type="button" className="link-btn" onClick={() => onNavigate("t-assistant")}>做T助手 <ArrowUpRight size={13} /></button>
             </header>
             {tAssistant.store.items.length === 0 && urgentNotes.length === 0 ? (
@@ -748,7 +831,7 @@ export default function TodayCockpitView({
               <small className="cockpit-muted">按涨跌幅绝对值与止损风险排序 · 高开 ≥3.5% 防追高 / 低开 ≤-3% 警惕止损</small>
             </header>
             {preopenRows.length === 0 ? (
-              <div className="cockpit-empty"><p>暂无持仓或活跃计划。在持仓或趋势筛选创建计划后，盘前将在此汇总竞价与止损盯防状态。</p></div>
+              <div className="cockpit-empty"><p>暂无持仓或观察股。在 AI 选股、策略选股、涨停池等页面点「+驾驶舱」后，盘前会在这里汇总竞价与止损状态。</p></div>
             ) : (
               <div className="cockpit-table-wrap">
                 <table className="cockpit-table">
@@ -773,7 +856,7 @@ export default function TodayCockpitView({
                             <b>{row.name}</b> <small>{row.code}</small>
                           </button>{" "}
                           {row.isHolding && <span className="cockpit-chip muted">持仓</span>}
-                          {row.hasPlan && <span className="cockpit-chip muted">计划</span>}
+                          {row.hasPlan && planChip(row.code)}
                         </td>
                         <td className={row.changePct === null ? "" : row.changePct >= 0 ? "tone-up" : "tone-down"}>
                           {row.latestPrice !== null ? row.latestPrice.toFixed(2) : "--"}{" "}
@@ -807,6 +890,7 @@ export default function TodayCockpitView({
                               看图
                             </button>
                           )}
+                          {planActions(row.code)}
                         </td>
                       </tr>
                     ))}
@@ -880,18 +964,18 @@ export default function TodayCockpitView({
 
           <section className="panel cockpit-card">
             <header className="cockpit-card-head">
-              <div><ZapIcon /><h3>高频协同入口</h3></div>
+              <div><ZapIcon /><h3>常用入口</h3></div>
             </header>
             <div className="cockpit-quick-grid">
               <button type="button" className="cockpit-quick-tile" onClick={() => onNavigate("signals")}>
                 <TrendingUp size={18} />
                 <b>策略选股与趋势雷达</b>
-                <small>全市场条件扫描 · 多维拟合</small>
+                <small>按条件扫一遍全市场</small>
               </button>
               <button type="button" className="cockpit-quick-tile" onClick={() => onNavigate("ai-picks")}>
                 <Sparkles size={18} />
-                <b>AI 多模型共识评级</b>
-                <small>看多/谨慎观点拆解与分歧验证</small>
+                <b>AI 多模型一起打分</b>
+                <small>看几个模型的看法是否一致</small>
               </button>
               <button type="button" className="cockpit-quick-tile" onClick={() => onNavigate("ai-agent")}>
                 <Bot size={18} />
@@ -908,11 +992,11 @@ export default function TodayCockpitView({
 
           <section className="panel cockpit-card cockpit-card-wide">
             <header className="cockpit-card-head">
-              <div><Activity size={16} /><h3>全账户融合实时哨兵（持仓 · 模拟 · 计划 · 做T · 盯盘）</h3></div>
+              <div><Activity size={16} /><h3>全账户融合实时哨兵（持仓 · 模拟 · 观察 · 做T · 盯盘）</h3></div>
               <small className="cockpit-muted">按风险/信号优先级自动排序，点击行进入个股工作台</small>
             </header>
             {sentinels.length === 0 ? (
-              <div className="cockpit-empty"><p>暂未添加持仓、自选、冻结计划或做T标的。</p></div>
+              <div className="cockpit-empty"><p>暂未添加持仓、自选、观察股或做T标的。在各选股页面点「+驾驶舱」即可加入。</p></div>
             ) : (
               <div className="cockpit-table-wrap">
                 <table className="cockpit-table">
@@ -923,6 +1007,7 @@ export default function TodayCockpitView({
                       <th>现价 / 涨跌</th>
                       <th>盯盘与风控位</th>
                       <th>做T / 模拟仓状态</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -939,7 +1024,7 @@ export default function TodayCockpitView({
                         </td>
                         <td>
                           <div className="cockpit-role-tags">
-                            {row.roles.map(role => <span key={role} className="cockpit-chip muted">{role}</span>)}
+                            {row.roles.map(role => role === "计划" ? planChip(row.code) : <span key={role} className="cockpit-chip muted">{role}</span>)}
                           </div>
                         </td>
                         <td className={row.changePct === null ? "" : row.changePct >= 0 ? "tone-up" : "tone-down"}>
@@ -972,6 +1057,7 @@ export default function TodayCockpitView({
                             <span className="cockpit-muted">--</span>
                           )}
                         </td>
+                        <td>{planActions(row.code)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -986,12 +1072,12 @@ export default function TodayCockpitView({
         <div className="cockpit-grid">
           <section className="panel cockpit-card cockpit-card-wide">
             <header className="cockpit-card-head">
-              <div><Target size={16} /><h3>冻结交易计划盘后自动验收对照</h3></div>
-              <button type="button" className="link-btn" onClick={() => onNavigate("signals")}>去策略选股管理计划 <ArrowUpRight size={13} /></button>
+              <div><Target size={16} /><h3>观察股收盘后对账</h3></div>
+              <button type="button" className="link-btn" onClick={() => onNavigate("ai-picks")}>去 AI 选股挑股 <ArrowUpRight size={13} /></button>
             </header>
             {planReconciliation.length === 0 ? (
               <div className="cockpit-empty">
-                <p>当前没有激活中的趋势/策略冻结计划。你可以在「策略选股 → 趋势雷达」冻结交易计划后回这里统一验收。</p>
+                <p>驾驶舱里还没有观察股。在 AI 选股、策略选股、涨停池、板块等页面点「+驾驶舱」，收盘后会在这里对照买点与止损。</p>
               </div>
             ) : (
               <div className="cockpit-table-wrap">
@@ -1002,7 +1088,8 @@ export default function TodayCockpitView({
                       <th>计划买入区 / 止损</th>
                       <th>现价 / 涨跌</th>
                       <th>偏离基准</th>
-                      <th>验收结论</th>
+                      <th>结论</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1032,6 +1119,7 @@ export default function TodayCockpitView({
                             </span>{" "}
                             <small className="cockpit-muted">{item.detail}</small>
                           </td>
+                          <td>{planActions(sec.code)}</td>
                         </tr>
                       );
                     })}
@@ -1065,7 +1153,7 @@ export default function TodayCockpitView({
 
           <section className="panel cockpit-card">
             <header className="cockpit-card-head">
-              <div><BookOpenCheck size={16} /><h3>盘后 AI 复盘与事后回看</h3></div>
+              <div><BookOpenCheck size={16} /><h3>收盘后 AI 复盘与回看</h3></div>
               <button type="button" className="link-btn" onClick={() => onNavigate("review")}>完整复盘 <ArrowUpRight size={13} /></button>
             </header>
             {lookback ? (
@@ -1088,7 +1176,7 @@ export default function TodayCockpitView({
               </div>
             ) : (
               <div className="cockpit-empty">
-                <p>今日尚未运行 AI 盘后复盘或事后回看。</p>
+                <p>今天还没跑 AI 盘后复盘或回看。</p>
                 <button type="button" className="primary-btn" onClick={() => onNavigate("review")}><Sparkles size={14} />前往生成今日复盘</button>
               </div>
             )}
@@ -1108,6 +1196,12 @@ export default function TodayCockpitView({
           </section>
         </div>
       )}
+      <QuickPlanModal
+        target={adjustTarget}
+        onClose={() => setAdjustTarget(null)}
+        onSaved={res => { if (typeof window !== "undefined") setPlans(readTrendPlans(window.localStorage).plans); onShowToast?.(res.message); }}
+        onError={msg => onShowToast?.(msg)}
+      />
     </div>
   );
 }

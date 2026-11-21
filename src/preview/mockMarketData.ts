@@ -1,4 +1,6 @@
 import type { StockApi } from "../shared/ipc-contract";
+import type { EtfItem } from "../features/etf/etfTypes";
+import type { BatchQuote, BatchQuoteRequest } from "../domain/batchQuoteTypes";
 import {
   previewShanghaiDate,
   previewTradingDates,
@@ -29,6 +31,8 @@ export type PreviewMarketApi = Pick<
   | "cancelSectorRequest"
   | "getLimitEcology"
   | "getConvertibleBonds"
+  | "getEtfMarket"
+  | "getBatchQuotes"
   | "getSectorQuotes"
   | "analyzeSector"
   | "getProfessionalReview"
@@ -305,9 +309,9 @@ const buildPreviewProfessionalReview = () => {
       "真实复盘需要桌面版行情源完成后再作判断。"
     ],
     indices: [
-      { name: "中证全指", code: "000985", date, returns: { r1: 0.2, r3: 0.6, r5: 1.1 }, trend: "震荡", ma5: 6120, ma20: 6088, volumeRatio: 0.96, score: 58 },
-      { name: "上证指数", code: "000001", date, returns: { r1: 0.1, r3: 0.4, r5: 0.7 }, trend: "震荡", ma5: 3560, ma20: 3542, volumeRatio: 0.92, score: 55 },
-      { name: "深证成指", code: "399001", date, returns: { r1: 0.3, r3: 0.8, r5: 1.4 }, trend: "偏强", ma5: 11120, ma20: 10980, volumeRatio: 1.03, score: 62 }
+      { name: "中证全指", code: "000985", date, close: 6120, returns: { r1: 0.2, r3: 0.6, r5: 1.1 }, trend: "震荡", ma5: 6120, ma20: 6088, volumeRatio: 0.96, score: 58 },
+      { name: "上证指数", code: "000001", date, close: 3560, returns: { r1: 0.1, r3: 0.4, r5: 0.7 }, trend: "震荡", ma5: 3560, ma20: 3542, volumeRatio: 0.92, score: 55 },
+      { name: "深证成指", code: "399001", date, close: 11120, returns: { r1: 0.3, r3: 0.8, r5: 1.4 }, trend: "偏强", ma5: 11120, ma20: 10980, volumeRatio: 1.03, score: 62 }
     ],
     focusSectors: [
       { reviewRank: 1, name: "新能源", state: "预览演示", verdict: "观察", poolLimitUps: 8, returns: { r1: 1.2, r3: 2.6, r5: 3.8 }, breadth: 0.68, amountHeat: 1.18, score: 76 },
@@ -653,6 +657,33 @@ export function createPreviewMarketMethods(): PreviewMarketApi {
     async getLimitEcology() {
       return buildPreviewLimitEcology();
     },
+    async getEtfMarket() {
+      const rows: Array<[string, string, EtfItem["category"], number, number, number, number | null]> = [
+        ["510300", "沪深300ETF演示", "宽基", 4.012, 0.62, 3.1e9, 4.01],
+        ["588000", "科创50ETF演示", "宽基", 1.304, -1.21, 4.4e9, 1.3047],
+        ["512880", "证券ETF演示", "行业主题", 1.105, 3.42, 1.2e9, 1.104],
+        ["588170", "科创半导体ETF演示", "行业主题", 0.695, 2.66, 4.5e9, 0.6974],
+        ["513310", "中韩半导体ETF演示", "跨境", 3.513, -2.69, 4.6e9, 3.2108],
+        ["513180", "恒生科技ETF演示", "跨境", 0.721, 1.85, 2.8e9, 0.7196],
+        ["518880", "黄金ETF演示", "商品", 6.88, -0.41, 2.1e9, 6.879],
+        ["511260", "十年国债ETF演示", "债券", 136.08, 0.01, 4.2e8, 136.07],
+        ["511880", "货币ETF演示", "货币", 100.992, 0, 5.6e9, null]
+      ];
+      const items: EtfItem[] = rows.map(([code, name, category, latest, changePct, amount, iopv]) => ({
+        code, name, category, secid: `${code.startsWith("1") ? 0 : 1}.${code}`, latest, changePct, amount, iopv,
+        t0: ["跨境", "商品", "债券", "货币"].includes(category), amplitude: category === "货币" ? 0.01 : Math.round((Math.abs(changePct) + 1.2) * 100) / 100,
+        volume: Math.round(amount / latest / 100), turnover: 2.4, volumeRatio: 1.1, open: latest, preClose: latest / (1 + changePct / 100), scale: amount * 30,
+        premiumPct: iopv ? Math.round((latest / iopv - 1) * 10000) / 100 : null
+      }));
+      const priced = items.filter(item => item.category !== "货币" && item.changePct !== null);
+      return {
+        fetchedAt: new Date().toISOString(), items, highPremiumPercent: 3, complete: true, warnings: ["演示数据（浏览器预览不连接东方财富）"],
+        summary: { count: items.length, rising: priced.filter(item => (item.changePct ?? 0) > 0).length, falling: priced.filter(item => (item.changePct ?? 0) < 0).length, flat: priced.filter(item => item.changePct === 0).length,
+          totalAmount: items.reduce((sum, item) => sum + (item.amount ?? 0), 0), highPremium: items.filter(item => (item.premiumPct ?? 0) > 3).length,
+          byCategory: { 宽基: 2, 行业主题: 2, 跨境: 2, 商品: 1, 债券: 1, 货币: 1 }, t0Count: items.filter(item => item.t0).length },
+        topThemes: items.filter(item => item.category === "行业主题").sort((a, b) => (b.changePct ?? 0) - (a.changePct ?? 0)).map(({ code, name, secid, changePct, amount }) => ({ code, name, secid, changePct, amount }))
+      };
+    },
     async getConvertibleBonds() {
       const names: [string, string, string][] = [["113052", "演示转债A", "600001"], ["123288", "演示转债B", "300101"], ["127117", "演示转债C", "002913"], ["118077", "演示转债D", "688150"], ["128136", "演示转债E", "002001"]];
       const members = names.map(([code, name, stockCode], index) => {
@@ -669,6 +700,23 @@ export function createPreviewMarketMethods(): PreviewMarketApi {
         quoteCoverage: { loaded: 5, total: 5, pending: false, complete: true },
         roster: { discoveredAt: new Date().toISOString(), feedCount: 0, discoveredCount: 5, discovering: null },
         warnings: ["浏览器预览不连接同花顺，以下为虚构数据。"] };
+    },
+    async getBatchQuotes(securities: BatchQuoteRequest[]) {
+      const quotes: Record<string, BatchQuote> = {};
+      const missing: string[] = [];
+      for (const item of Array.isArray(securities) ? securities : []) {
+        const code = String(item?.code || "");
+        if (!/^\d{6}$/.test(code)) continue;
+        const quote = buildPreviewPayload(code).quote;
+        quotes[code] = {
+          code, name: quote.name, latest: quote.latest, preClose: quote.preClose, open: quote.open,
+          high: quote.high, low: quote.low, change: quote.change, changePct: quote.changePct,
+          volumeLots: quote.volume, amount: quote.amount, turnover: quote.turnover, amplitude: quote.amplitude,
+          floatMarketCap: null, totalMarketCap: null, limitUp: null, limitDown: null,
+          quoteAt: quote.updatedAt, quoteDate: quote.updatedAt.slice(0, 10), tradeStatus: "trading", source: "预览数据"
+        };
+      }
+      return { quotes, missing, source: "预览数据", fetchedAt: new Date().toISOString() };
     },
     async getSectorQuotes() {
       return { status: "unavailable" as const, fetchedAt: new Date().toISOString(), quotes: {}, sources: [],

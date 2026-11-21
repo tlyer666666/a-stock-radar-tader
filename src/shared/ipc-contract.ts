@@ -5,6 +5,8 @@
  */
 import type { SectorExplorerApi } from "../sectorExplorerTypes";
 import type { ConvertibleBondSnapshot } from "../features/bonds/bondTypes";
+import type { EtfMarketSnapshot } from "../features/etf/etfTypes";
+import type { BatchQuoteRequest, BatchQuoteResult } from "../domain/batchQuoteTypes";
 import type { AnalysisPayload } from "../features/market/analysisTypes";
 import type { CustomStrategy } from "../features/strategy-selection/customStrategyModel";
 import type {
@@ -73,10 +75,12 @@ export const MAIN_IPC_CHANNELS = [
   "backup:status",
   "bond:list",
   "diagnostics:corrupted-on-load",
+  "etf:list",
   "holdings:get",
   "holdings:save",
   "market:analyze",
   "market:analyze-sector",
+  "market:batch-quotes",
   "market:chart",
   "market:concept-chain",
   "market:federation",
@@ -245,6 +249,8 @@ export type StockApi = SectorExplorerApi & {
   getMarketSourceHealth?(): Promise<MarketSourceHealth>;
   resetMarketSourceHealth?(): Promise<{ ok: boolean }>;
   getConvertibleBonds?(options?: { forceRefresh?: boolean; waitForQuotes?: boolean }): Promise<ConvertibleBondSnapshot>;
+  getEtfMarket?(options?: { forceRefresh?: boolean }): Promise<EtfMarketSnapshot>;
+  getBatchQuotes?(securities: BatchQuoteRequest[]): Promise<BatchQuoteResult>;
   getLimitEcology?(options?: { forceRefresh?: boolean }): Promise<Record<string, unknown>>;
   ai?: {
     status(): Promise<{ configured: boolean; model: string; profile?: string; rankModels?: string[]; framework?: string }>;

@@ -341,3 +341,33 @@ test('a synchronous curl spawn failure rejects and releases admission without wa
     assert.equal(require('./http-client.cjs').getHttpDiagnostics().active, 0);
   } finally { await s.shutdownServiceResources(); }
 });
+
+test('a clean selection report survives an app restart so the page opens without a full rescan', async t => {
+  const fs = require('node:fs'), os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'astock-selection-report-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const boot = () => {
+    const s = load('services.cjs');
+    s.configureDailyBarStore({ directory: dir });
+    const box = { calls: 0 };
+    rebindAll(s, 'loadStrategySignals', async () => { box.calls++; return { marker: `run-${box.calls}`, cacheValidUntil: Date.now() + 3600_000 }; });
+    return { s, box };
+  };
+  const first = boot();
+  assert.equal((await first.s.scanStrategySignals({ maxUniverse: 40 })).marker, 'run-1');
+  assert.ok(fs.existsSync(path.join(dir, 'selection-report.json')));
+
+  const restarted = boot();
+  assert.equal((await restarted.s.scanStrategySignals({ maxUniverse: 40 })).marker, 'run-1');
+  assert.equal(restarted.box.calls, 0, 'the saved report is reused after restart');
+  assert.equal((await restarted.s.scanStrategySignals({ maxUniverse: 41 })).marker, 'run-1');
+  assert.equal(restarted.box.calls, 1, 'different options still compute');
+  assert.equal((await restarted.s.scanStrategySignals({ maxUniverse: 40, refresh: true })).marker, 'run-2');
+
+  const degraded = boot();
+  rebindAll(degraded.s, 'loadStrategySignals', async () => ({ marker: 'degraded', cacheValidUntil: null }));
+  await degraded.s.scanStrategySignals({ maxUniverse: 50, refresh: true });
+  const again = boot();
+  await again.s.scanStrategySignals({ maxUniverse: 50 });
+  assert.equal(again.box.calls, 1, 'degraded results are not persisted');
+});

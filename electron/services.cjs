@@ -43,11 +43,20 @@ function isAStockCode(...args) { return _runtime.isAStockCode(...args); }
 function configureFuyao(...args) { return _runtime.configureFuyao(...args); }
 function configureStockIndustryStore(...args) { return _runtime.configureStockIndustryStore(...args); }
 
-// 可转债：同花顺新券名单 + 逐券快照；在市老券名单由主进程注入的本机存储缓存（每 7 天重新核对）。
+// 可转债：名单来自同花顺发行名单；行情先走腾讯批量快照，取不到的逐只读同花顺。
+// 在市老券名单由主进程注入的本机存储缓存（每 7 天重新核对）。
+const { readTencentBatchQuotes } = require("./tencent-batch-quote.cjs");
+async function getBatchQuotes(securities) {
+  const result = await readTencentBatchQuotes(securities, { signal: serviceSignal() });
+  return { quotes: Object.fromEntries(result.quotes), missing: result.missing, source: result.source, fetchedAt: result.fetchedAt };
+}
 const { createConvertibleSource } = require("./ths-convertible.cjs");
-let convertibleSource = createConvertibleSource();
+const convertibleBatchQuotes = (bonds, signal) =>
+  readTencentBatchQuotes(bonds.map((bond) => ({ code: bond.code, thscode: `${bond.code}.${bond.market === 19 ? "SH" : "SZ"}` })), { signal })
+    .then((result) => result.quotes);
+let convertibleSource = createConvertibleSource({ readBatch: convertibleBatchQuotes });
 function configureConvertibleRosterStore(store) {
-  convertibleSource = createConvertibleSource({ store });
+  convertibleSource = createConvertibleSource({ store, readBatch: convertibleBatchQuotes });
 }
 async function getConvertibleBonds(options = {}) {
   return convertibleSource.load({
@@ -55,6 +64,11 @@ async function getConvertibleBonds(options = {}) {
     signal: serviceSignal(),
     waitForQuotes: options?.waitForQuotes !== false
   });
+}
+const { createEtfMarket } = require("./etf-market.cjs");
+const etfMarket = createEtfMarket({ fetchJson: (url, options, timeoutMs) => _runtime.fetchJson(url, options, timeoutMs) });
+async function getEtfMarket(options = {}) {
+  return etfMarket.load({ forceRefresh: options?.forceRefresh === true, signal: serviceSignal() });
 }
 const { priceLimitRate } = require("./price-limit-rules.cjs");
 const { workerScriptPath } = require("./worker-runner.cjs");
@@ -226,6 +240,8 @@ module.exports = {
   getQuoteSnapshot,
   getMarketSourceHealth,
   getConvertibleBonds,
+  getEtfMarket,
+  getBatchQuotes,
   configureConvertibleRosterStore,
   configureStockIndustryStore,
   configureDailyBarStore,

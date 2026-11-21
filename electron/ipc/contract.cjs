@@ -63,10 +63,12 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "backup:status",
   "bond:list",
   "diagnostics:corrupted-on-load",
+  "etf:list",
   "holdings:get",
   "holdings:save",
   "market:analyze",
   "market:analyze-sector",
+  "market:batch-quotes",
   "market:chart",
   "market:concept-chain",
   "market:federation",
@@ -189,6 +191,7 @@ const VALIDATORS = new Map([
   ["market:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "证券搜索关键词无效"],
   ["market:search-sectors", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "板块搜索关键词无效"],
   ["market:analyze-sector", args => (args[0] === undefined || args[0] === null || isSecurityOrText(args[0])) ? null : "板块分析参数无效"],
+  ["market:batch-quotes", args => (Array.isArray(args[0]) && args[0].length <= 1200 && args[0].every(item => isPlainObject(item) && typeof item.code === "string" && /^\d{6}$/.test(item.code))) ? null : "批量行情参数无效"],
   ["sector:cancel", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 256) ? null : "板块取消请求编号无效"],
   ["review-window:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "复盘搜索关键词无效"],
   ["review-window:analyze", args => (isSecurityOrText(args[0]) && isOptionalPlainObject(args[1])) ? null : "复盘分析标的参数无效"],
@@ -236,6 +239,7 @@ const NO_ARG_CHANNELS = new Set([
 
 const OPTIONAL_OBJECT_CHANNELS = new Set([
   "bond:list",
+  "etf:list",
   "ths-web:show",
   "ths-web:bounds",
   "ths-web:command",

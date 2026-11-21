@@ -8,6 +8,7 @@ export type WorkspaceView =
   | "sectors"
   | "beijing"
   | "bonds"
+  | "etf"
   | "hsgt"
   | "news"
   | "announcements"

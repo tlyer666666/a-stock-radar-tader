@@ -147,7 +147,7 @@ test("missing market inputs remain unknown and cannot generate a score-based pos
   assert.equal(review.decision.canPlan, false);
   assert.equal(review.exposure.max, null);
   assert.ok(review.decision.steps[0].facts.some(text => /缺|不足|不可用/.test(text)));
-  assert.ok(review.decision.steps[3].facts.some(text => /炸板.*不可用|不可用.*炸板/.test(text)));
+  assert.ok(review.decision.steps[3].facts.some(text => /炸板.*不可用|不可用.*炸板|没取到炸板/.test(text)));
 });
 
 test("market MA60 needs sixty actual observations; high legacy scores cannot overturn the gate", () => {
@@ -164,7 +164,7 @@ test("same-day intraday, mismatched source dates and stale market observations r
   const make = () => ({generatedAt:"2026-09-30T08:00:00Z", emotion:{date:"2026-09-30",limitUpCount:0,limitDownCount:0}, market:{stockCount:100,upCount:0,downCount:0,flatCount:100}, indices:[{code:"000985",date:"2026-09-30",historyBars:65,ma60:100,ma20:100,close:110,score:99,available:true,returns:{r1:1,r3:1,r5:1}}],ladderPools:{failedPool:[],failedPoolAvailable:true}});
   const good=buildProfessionalReviewSnapshot(make());assert.equal(good.decision.marketGate,"open");
   assert.match(good.decision.steps[1].facts.join(" "),/上涨 0 \/ 下跌 0 \/ 平盘 100/);
-  assert.doesNotMatch(good.decision.steps[3].facts.join(" "),/炸板池不可用/);
+  assert.doesNotMatch(good.decision.steps[3].facts.join(" "),/炸板池不可用|没取到炸板/);
   for(const edit of [x=>x.generatedAt="2026-09-30T02:00:00Z",x=>x.emotion.date="2026-09-29",x=>{x.indices[0].date="2026-09-01";x.emotion.date="2026-09-01";}]){
     const input=make();edit(input);assert.equal(buildProfessionalReviewSnapshot(input).decision.marketGate,"unknown");
   }
@@ -172,7 +172,7 @@ test("same-day intraday, mismatched source dates and stale market observations r
 test("negative and inconsistent breadth counts are not described as observed market breadth",()=>{
   for(const market of [{stockCount:100,upCount:-1,downCount:99,flatCount:2},{stockCount:100,upCount:80,downCount:80,flatCount:1},{stockCount:100,upCount:40.5,downCount:50,flatCount:9.5}]){
     const review=buildProfessionalReviewSnapshot({generatedAt:"2026-09-30T08:00:00Z",market});
-    assert.match(review.decision.steps[0].facts.join(" "),/涨跌家数缺失|家数.*无效/);
+    assert.match(review.decision.steps[0].facts.join(" "),/涨跌家数缺失|家数.*无效|没取到全市场涨跌家数/);
     assert.doesNotMatch(review.decision.steps[1].facts.join(" "),/上涨 .*下跌/);
   }
 });

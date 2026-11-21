@@ -219,7 +219,8 @@ async function runWithPolicy(url, options = {}, policy = {}, consume = null) {
     const finish = () => { clearTimeout(timer); release(); };
     try {
       throwIfAborted(signal);
-      const headers = new Headers(policy.headers || {});
+      const headers = new Headers({ "Cache-Control": "no-cache", Pragma: "no-cache" });
+      new Headers(policy.headers || {}).forEach((value, name) => headers.set(name, value));
       new Headers(options.headers || {}).forEach((value, name) => headers.set(name, value));
       const requestOptions = {
         ...options,

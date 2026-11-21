@@ -118,8 +118,8 @@ async function tencentQuote(security) {
     turnover: optionalNumber(fields[38]),
     volumeRatio: optionalNumber(fields[49]),
     amplitude: optionalNumber(fields[43]),
-    totalMarketCap: scaledNumber(fields[44], 1e8),
-    floatMarketCap: scaledNumber(fields[45], 1e8),
+    floatMarketCap: scaledNumber(fields[44], 1e8),
+    totalMarketCap: scaledNumber(fields[45], 1e8),
     limitUp: optionalNumber(fields[47]),
     limitDown: optionalNumber(fields[48]),
     change: optionalNumber(fields[31]),
@@ -336,5 +336,9 @@ module.exports = {
   tencentQuote,
   tushareDailyQuote,
   collectAuxiliarySources,
-  buildQuoteConsensus
+  buildQuoteConsensus,
+  marketPrefix,
+  formatTencentTime,
+  optionalNumber,
+  scaledNumber
 };

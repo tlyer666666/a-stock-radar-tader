@@ -67,7 +67,7 @@ test("stock tools return compact facts with one-line summaries and reuse results
   const { sources, calls } = fakeSources();
   const tools = createStockAgentTools(sources, { now: () => clockMs });
   const search = await tools.runTool("search_stock", { query: "茅台" });
-  assert.deepEqual(search.data.stocks.map(item => item.code), ["600519"], "ETFs are not offered as stocks");
+  assert.deepEqual(search.data.stocks.map(item => item.code), ["600519", "512690"], "ETFs can be analysed too");
   const quote = await tools.runTool("quote", { code: "600519" });
   assert.equal(quote.ok, true);
   assert.equal(quote.data.amountYi, 50);

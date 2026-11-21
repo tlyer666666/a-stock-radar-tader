@@ -44,7 +44,8 @@ test("page helpers: quick tasks, stance colors, step summaries and the stock-pag
   assert.equal(model.stepsSummary([{ kind: "tools", thought: "", calls: [{ tool: "quote", name: "实时行情", args: "", status: "ok", summary: "" }, { tool: "news", name: "相关资讯", args: "", status: "failed", summary: "" }] }]),
     "查了 2 项数据：实时行情、相关资讯（1 项没取到）");
   assert.equal(model.formatDuration(83000), "1 分 23 秒");
-  assert.equal(model.focusFromSecurity({ code: "512690", name: "酒ETF", assetType: "etf" }), null);
+  assert.deepEqual(model.focusFromSecurity({ code: "512690", name: "酒ETF", assetType: "etf" }), { kind: "etf", code: "512690", name: "酒ETF" });
+  assert.equal(model.focusFromSecurity({ code: "881121", name: "半导体", assetType: "sector" }), null);
   assert.deepEqual(model.focusFromSecurity({ code: "600519", name: " 贵州 茅台 " }), { code: "600519", name: "贵州茅台" });
   assert.equal(model.shortTime("2026-11-06T02:49:00.000Z", new Date("2026-11-06T05:00:00.000Z")), "10:49");
   assert.equal(model.shortTime("2026-10-01T02:49:00.000Z", new Date("2026-11-06T05:00:00.000Z")), "10月1日");
@@ -373,4 +374,21 @@ test("a delayed acknowledgement only clears the submitted draft and keeps newly 
   assert.equal(h.part("Composer").props.value, "");
   await h.open("A");
   assert.equal(h.part("Composer").props.value, "下一条还没写完");
+});
+
+test("quick questions follow what is being asked about: stock, ETF, sector, market or nothing yet", () => {
+  const ids = focus => model.tasksFor(focus).map(task => task.id);
+  assert.ok(ids({ code: "600519", name: "贵州茅台" }).includes("full"));
+  assert.ok(!ids({ code: "600519", name: "贵州茅台" }).includes("market_regime"));
+  assert.ok(ids({ kind: "etf", code: "510300", name: "沪深300ETF" }).includes("etf_buy"));
+  assert.ok(!ids({ kind: "etf", code: "510300", name: "沪深300ETF" }).includes("holding"));
+  assert.ok(ids({ kind: "sector", code: "", name: "PCB" }).includes("sector_view"));
+  assert.ok(ids(model.MARKET_FOCUS).includes("market_regime"));
+  assert.ok(ids(null).includes("market_regime") && ids(null).includes("market"));
+  assert.match(model.tasksFor({ kind: "sector", code: "", name: "PCB" }).find(task => task.id === "sector_view").prompt({ kind: "sector", code: "", name: "PCB" }), /PCB/);
+  assert.equal(model.focusLabel({ kind: "sector", code: "", name: "PCB" }), "PCB 板块");
+  assert.equal(model.focusLabel({ code: "600519", name: "贵州茅台" }), "贵州茅台 600519");
+  assert.equal(model.focusLabel(model.MARKET_FOCUS), "大盘");
+  assert.equal(model.hasSecurity({ kind: "etf", code: "510300", name: "x" }), true);
+  assert.equal(model.hasSecurity(model.MARKET_FOCUS), false);
 });

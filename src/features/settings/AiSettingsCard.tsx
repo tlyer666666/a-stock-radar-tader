@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Bot, Check, LoaderCircle, Pencil, Plus, Scale, ShieldCheck, Trash2, Wifi, X } from "lucide-react";
 import { PanelTitle } from "../../components/terminal/TerminalPrimitives";
+import { userErrorText } from "../../userErrorText";
 
 /** 常用 AI 服务：只填地址和示例模型名，Key 需在对应平台申请。模型名可随意改成平台支持的任何模型。 */
 export const AI_PRESETS = [
@@ -19,7 +20,7 @@ export const AI_INSTRUCTION_EXAMPLES = {
 
 type Editing = { id: string | null; name: string; baseUrl: string; model: string; apiKey: string; hasKey: boolean };
 const blank = (): Editing => ({ id: null, name: "", baseUrl: "", model: "", apiKey: "", hasKey: false });
-const cleanError = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "");
+const cleanError = (error: unknown) => (userErrorText(error)).replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "");
 
 /**
  * 设置 → AI 助手：多套模型配置（名称/地址/模型/Key，可随时切换）+ 自定义 AI 要求（打分偏好、总结格式）。

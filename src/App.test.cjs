@@ -99,6 +99,39 @@ test("failed-board view defaults to one independent latest day and exposes five 
   assert.deepEqual(selectedDates, [dates[2]]);
 });
 
+test("failed-board refresh button stays disabled until the first snapshot loads", () => {
+  const coldHtml = renderToStaticMarkup(React.createElement(PreviousLimitUpFailedBoards, {
+    live: false,
+    cache: null,
+    onSnapshot() {},
+    onOpen() {},
+    onAdd() {},
+    isFavorite: () => false
+  }));
+  const coldButton = coldHtml.match(/<button[^>]*puf-refresh-button[^>]*>[\s\S]*?<\/button>/)?.[0] || "";
+  assert.match(coldButton, /disabled/);
+  assert.match(coldButton, /刷新中/);
+
+  const snapshot = {
+    status: "ready", currentDate: "2026-10-16", previousDate: "2026-10-15",
+    failedBoardDays: [], rows: [],
+    sources: { previousLimitUp: null, todayFailed: null },
+    errors: { previousLimitUp: null, todayFailed: null },
+    checkedAt: "2026-10-16T08:00:00.000Z", isPreview: false
+  };
+  const readyHtml = renderToStaticMarkup(React.createElement(PreviousLimitUpFailedBoards, {
+    live: false,
+    cache: { latestResponse: snapshot, lastGoodSnapshot: snapshot, lastGoodDailyDays: [], failureMessage: "", lastAttemptAt: null },
+    onSnapshot() {},
+    onOpen() {},
+    onAdd() {},
+    isFavorite: () => false
+  }));
+  const readyButton = readyHtml.match(/<button[^>]*puf-refresh-button[^>]*>[\s\S]*?<\/button>/)?.[0] || "";
+  assert.doesNotMatch(readyButton, /disabled/);
+  assert.match(readyButton, />刷新</);
+});
+
 test("last-good daily snapshots retain each successful date across partial results and request failures", () => {
   const days = ["2026-10-16", "2026-10-15", "2026-10-14"].map(date => ({
     date, status: "ready", rows: [{ code: "600001", name: date }], source: null, error: null

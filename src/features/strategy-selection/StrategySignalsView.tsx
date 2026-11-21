@@ -5,6 +5,7 @@ import { Activity, Bot, Check, ChevronRight, CircleAlert, Clock3, Copy, Database
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
 import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
+import { cockpitBatchMessage, emitAppToast, COCKPIT_TOAST_ACTION } from "../cockpit/cockpitAdd";
 import StockRowActions from "../../components/StockRowActions";
 import { CustomStrategyEditor } from "./CustomStrategyEditor";
 import { CUSTOM_CATALOG, copyCustomStrategy, describeCustomStrategy, emptyCustomStrategy, ipcMessage, type CustomStrategy, type PatternOption } from "./customStrategyModel";
@@ -30,6 +31,7 @@ import {
   type StrategySignalReport,
   type StockSummaryRow
 } from "../../domain/strategySelectionReport";
+import { userErrorText } from "../../userErrorText";
 export {
   normalizeSignalReport,
   defaultStrategyId,
@@ -231,7 +233,7 @@ function StrategyBatchBar({
           )}
           {onBatchAddPlans && (
             <button type="button" className="table-action" onClick={() => onBatchAddPlans(selectedStocks, livePrices)}>
-              批量+次日计划
+              批量加入驾驶舱
             </button>
           )}
           {onBatchCompare && (
@@ -277,7 +279,6 @@ function StrategyRowQuickActions({
       onToggleFavorite={onToggleFavorite}
       onOpenMonitor={onOpenMonitor}
       onAddPlan={onAddQuickPlan ? () => onAddQuickPlan(stock, livePrice ?? null) : undefined}
-      compact
       className="ai-picks-quick-actions"
     />
   );
@@ -696,6 +697,7 @@ export default function StrategySignalsView({
       secid: sec.secid,
       referencePrice: refPrice ?? null,
       asOf: report?.asOfDate || stock.signalDate,
+      source: "策略选股",
       defaultNote: stock.reasons?.[0] || "策略选股观察计划"
     });
   }, [onAddQuickPlan, report?.asOfDate]);
@@ -745,7 +747,8 @@ export default function StrategySignalsView({
         secid: stock.secid || inferSecid(stock.code),
         referencePrice: livePrices[stock.code] ?? stock.latest ?? null,
         asOf: report?.asOfDate || stock.signalDate,
-        reason: stock.reasons?.[0] || "策略选股批量加入次日观察计划"
+        reason: stock.reasons?.[0] || "策略选股批量加入驾驶舱",
+        source: "策略选股"
       }))
     );
     if (result.storageError) {
@@ -759,12 +762,9 @@ export default function StrategySignalsView({
         return next;
       });
     }
-    const parts = [
-      result.created.length ? `新增 ${result.created.length} 只` : "",
-      result.existing.length ? `已在计划 ${result.existing.length} 只` : "",
-      result.missingPrice.length ? `缺少参考价跳过 ${result.missingPrice.length} 只` : ""
-    ].filter(Boolean);
-    emitFeedback(parts.length ? `批量次日计划：${parts.join("，")}` : "未新增次日计划");
+    const message = cockpitBatchMessage(result);
+    if (result.created.length || result.existing.length) emitAppToast(message, COCKPIT_TOAST_ACTION);
+    emitFeedback(message);
     setSelectedCodes(new Set());
   }, [emitFeedback, report?.asOfDate]);
   const jobs = useRef(createServiceJobScope());
@@ -778,7 +778,7 @@ export default function StrategySignalsView({
       const definitions = Array.isArray(input) ? input : input.strategies || input.definitions || [];
       setCatalog(normalizeSignalReport({ strategies: definitions.filter(item => item?.retired !== true).map(item => ({ ...item, stocks: [] })) }).strategies);
       setRetiredCatalog(normalizeSignalReport({ strategies: definitions.filter(item => item?.retired === true).map(item => ({ ...item, name: `${item.name}（已下线）`, stocks: [] })) }).strategies);
-    }).catch(reason => { if (active) setCatalogError(reason instanceof Error ? reason.message : String(reason)); });
+    }).catch(reason => { if (active) setCatalogError(userErrorText(reason)); });
     return () => { active = false; };
   }, []);
   const loadCustom = useCallback(async () => {
@@ -803,7 +803,7 @@ export default function StrategySignalsView({
       setSelectionReport(next); setReport(next);
       setActiveId(previous => next.strategies.some(group => group.id === previous && !group.custom) ? previous : defaultStrategyId(next.strategies.filter(group => !group.custom)));
     } catch (reason) {
-      if (revision.current === current) setError(reason instanceof Error ? reason.message : String(reason));
+      if (revision.current === current) setError(userErrorText(reason));
     } finally { if (revision.current === current) { setLoading(false); setScanProgress(null); } }
   }, []);
   useEffect(() => {

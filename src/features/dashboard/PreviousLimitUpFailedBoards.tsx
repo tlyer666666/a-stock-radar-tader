@@ -6,6 +6,7 @@ import StockRowActions from "../../components/StockRowActions";
 import { whenVisible } from "../../visiblePolling";
 import { fmtMoney, fmtPercent } from "../../domain/formatters";
 import { formatShanghaiDate, formatShanghaiDateTime, formatShanghaiTime, shanghaiDateTag } from "../../dateUtils";
+import { userErrorText } from "../../userErrorText";
 
 type SortKey = "changePct" | "amount" | "turnover" | "openBoardCount";
 type ViewMode = "today" | "five-days" | "previous-intersection";
@@ -269,11 +270,17 @@ export default function PreviousLimitUpFailedBoards({
     onSnapshotRef.current(next);
   }, []);
 
-  const refresh = useCallback(async (target?: RefreshTarget) => {
-    if (busyRef.current) return;
+  const queuedTargetRef = useRef<RefreshTarget | null>(null);
+  const refresh = useCallback(async (target?: RefreshTarget): Promise<void> => {
+    if (busyRef.current) {
+      if (target) queuedTargetRef.current = target;
+      return;
+    }
     busyRef.current = true;
-    setRefreshing(true);
-    setRefreshNotice(null);
+    if (target) {
+      setRefreshing(true);
+      setRefreshNotice(null);
+    }
     try {
       const result = await window.stockApi.getPreviousLimitUpFailedBoardSnapshot({
         forceRefresh: Boolean(target),
@@ -299,18 +306,23 @@ export default function PreviousLimitUpFailedBoards({
       updateCache({
         ...snapshotCacheRef.current,
         latestResponse: null,
-        failureMessage: error instanceof Error ? error.message : "炸板数据刷新失败",
+        failureMessage: userErrorText(error, "炸板数据刷新失败"),
         lastAttemptAt: new Date().toISOString()
       });
       if (target) setRefreshNotice({ ...target, message: "刷新失败，请重试。" });
     } finally {
       busyRef.current = false;
+      const queued = queuedTargetRef.current;
+      queuedTargetRef.current = null;
       if (mountedRef.current) {
-        setRefreshing(false);
+        setRefreshing(Boolean(queued));
         setLoading(false);
+        if (queued) void refreshRef.current(queued);
       }
     }
   }, [updateCache]);
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   useEffect(() => {
     void refresh();
@@ -323,6 +335,7 @@ export default function PreviousLimitUpFailedBoards({
   }, [live, refresh]);
 
   const displayedSnapshot = lastGoodSnapshot || latestResponse;
+  const refreshBusy = refreshing || (loading && !displayedSnapshot);
   const stale = Boolean(lastGoodSnapshot && (failureMessage || latestResponse?.status !== "ready"));
   const statusLabel = getStatusLabel(latestResponse || displayedSnapshot, stale);
   const daySnapshots = useMemo(() => failedBoardDaysForDisplay(latestResponse, lastGoodDailyDays), [latestResponse, lastGoodDailyDays]);
@@ -386,9 +399,9 @@ export default function PreviousLimitUpFailedBoards({
               ? "近五个交易日独立展示，点击日期切换。"
               : "查看最新交易日的炸板池，不要求股票昨日也涨停。"}</p>
         </div>
-        <button className="secondary-btn puf-refresh-button" type="button" onClick={() => void refresh({ mode, date: mode === "five-days" ? selectedDay?.date || "" : "" })} disabled={refreshing}>
-          {refreshing ? <LoaderCircle size={15} className="trend-spin" /> : <RefreshCw size={15} />}
-          {refreshing ? "刷新中" : "刷新"}
+        <button className="secondary-btn puf-refresh-button" type="button" onClick={() => void refresh({ mode, date: mode === "five-days" ? selectedDay?.date || "" : "" })} disabled={refreshBusy}>
+          {refreshBusy ? <LoaderCircle size={15} className="trend-spin" /> : <RefreshCw size={15} />}
+          {refreshBusy ? "刷新中" : "刷新"}
         </button>
       </header>
 
@@ -478,6 +491,7 @@ export default function PreviousLimitUpFailedBoards({
                         secid: security.secid,
                         referencePrice: row.today.latest,
                         asOf: displayedSnapshot?.currentDate || undefined,
+                        source: "炸板观察",
                         defaultNote: `昨日涨停今日炸板${row.industry ? ` · ${row.industry}` : ""}`
                       })}
                       compact
@@ -549,6 +563,7 @@ export default function PreviousLimitUpFailedBoards({
                         secid: security.secid,
                         referencePrice: row.latest,
                         asOf: activeDate !== "--" ? activeDate : undefined,
+                        source: "炸板观察",
                         defaultNote: `炸板观察${row.industry ? ` · ${row.industry}` : ""}`
                       })}
                       compact

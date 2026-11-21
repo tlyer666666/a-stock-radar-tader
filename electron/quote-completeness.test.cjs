@@ -90,7 +90,7 @@ const tencentFixture = () => {
   Object.assign(fields, {
     1: "fixture", 2: "600000", 3: "10.25", 30: "20260930103000",
     4: "10.05", 5: "10.12", 31: "0.25", 32: "1", 33: "10.30", 34: "10.10", 35: "10.25/300/50000",
-    36: "3000", 37: "5", 38: "2", 43: "2.1", 44: "100", 45: "80",
+    36: "3000", 37: "5", 38: "2", 43: "2.1", 44: "80", 45: "100",
     47: "11.28", 48: "9.23", 49: "1.2"
   });
   return fields;
@@ -114,7 +114,7 @@ test("Tencent parser keeps every absent optional field null instead of zero and 
   // 涨跌（change/changePct/amplitude）。空串 / 空白 / "-" / 非数字都必须解析成 null 且进入缺失清单。
   const cases = {
     4: "preClose", 5: "open", 31: "change", 32: "changePct", 33: "high", 34: "low", 36: "volume",
-    37: "amount", 38: "turnover", 43: "amplitude", 44: "totalMarketCap", 45: "floatMarketCap",
+    37: "amount", 38: "turnover", 43: "amplitude", 44: "floatMarketCap", 45: "totalMarketCap",
     47: "limitUp", 48: "limitDown", 49: "volumeRatio"
   };
   for (const [index, field] of Object.entries(cases)) {

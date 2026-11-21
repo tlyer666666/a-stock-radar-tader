@@ -12,7 +12,7 @@ const MAX_CUSTOM_TOOLS = 6;
 const MAX_METHOD = 600;
 const MAX_PREFETCH = 12;
 
-const SKILL_GROUPS = ["短线情绪", "波段趋势", "量价技术", "消息资金", "持仓风控"];
+const SKILL_GROUPS = ["短线情绪", "波段趋势", "量价技术", "消息资金", "持仓风控", "大盘与ETF"];
 
 /** tools：这个打法必须看的数据（工具 id，`kline:30` 表示看 30 根日K）。 */
 const BUILTIN_SKILLS = [
@@ -188,7 +188,57 @@ const BUILTIN_SKILLS = [
       "目标：上方第一、第二压力位（前高、缺口、均线）",
       "风险收益比 =（目标 − 买点）÷（买点 − 止损），不到 2 倍的不值得做；写出计算过程，价位只用数据里出现过的"
     ],
-    focus: "列出买点、止损、目标和风险收益比，给出做或不做" }
+    focus: "列出买点、止损、目标和风险收益比，给出做或不做" },
+  { id: "market_regime", group: "大盘与ETF", name: "大盘研判", summary: "现在该进攻、均衡还是防守",
+    tools: ["index_overview", "market", "sector_rank"],
+    method: [
+      "指数位置：上证、创业板、沪深300、中证全指分别在 20 日线和 60 日线的上方还是下方，均线方向是否一致；中证全指代表全市场",
+      "强弱与广度：当日涨跌、5 日和 20 日涨幅；涨停与跌停家数、炸板数、封板率说明赚钱效应",
+      "板块：行业涨幅前列是否集中在少数方向，领涨板块有没有涨停家数支撑",
+      "三类信号一致才下重结论：指数站上 60 日线且涨停多于跌停偏进攻；跌破 60 日线且跌停增多偏防守；其余为均衡"
+    ],
+    focus: "给出进攻 / 均衡 / 防守的态度，写出关键指数点位（20 日线、60 日线）和判断失效的条件" },
+  { id: "sentiment_cycle", group: "大盘与ETF", name: "情绪周期", summary: "短线情绪处在冰点、发酵、高潮还是退潮",
+    tools: ["market", "index_overview"],
+    method: [
+      "冰点：涨停家数少、跌停或炸板多、最高连板被压到 3 板以内，往往是试错的低点",
+      "发酵：涨停家数回升、封板率提高、出现新的连板梯队和集中题材",
+      "高潮：涨停家数大增、最高连板创新高、几乎全面普涨，次日容易分歧",
+      "退潮：高位股接连跌停或炸板、封板率下滑、涨停家数明显减少，不宜接力"
+    ],
+    focus: "判断现在处于哪个阶段并写出依据数字，说明接下来要盯的转折信号" },
+  { id: "mainline", group: "大盘与ETF", name: "主线识别", summary: "今天的钱在往哪个方向走",
+    tools: ["sector_rank", "market", "sector_detail"],
+    method: [
+      "涨幅、涨停家数、主力净流入三项都靠前的板块才算主线候选，只有一项靠前的是轮动",
+      "涨停原因前列与板块排行重合的方向可信度更高；有高度板和龙头股的方向持续性更好",
+      "只有当天数据时要说明“持续性需看后面几天是否延续”，不要把一日行情说成主线确立"
+    ],
+    focus: "列出 1–3 个主线候选、各自的证据和龙头，以及主线结束的信号" },
+  { id: "etf_pick", group: "大盘与ETF", name: "ETF 选择", summary: "这只 ETF 值不值得买、同类里选哪只",
+    tools: ["etf_quote", "etf_rank", "index_overview"],
+    method: [
+      "溢价率：超过 3% 不追高（跨境 ETF 常见高溢价，溢价回落会直接亏钱）；折价过大说明流动性差",
+      "规模与成交：规模小于 2 亿或成交额很小的，买卖价差大；同一指数有多只时选规模大、成交活跃、溢价低的",
+      "所跟踪方向的位置：对应指数或板块在 20/60 日线的上方还是下方，近期是否已经大涨"
+    ],
+    focus: "给出买 / 等 / 不买，写清合适的买入价位或溢价条件，以及放弃的条件" },
+  { id: "index_timing", group: "大盘与ETF", name: "指数择时", summary: "宽基指数什么时候加仓、什么时候减仓",
+    tools: ["index_overview", "market"],
+    method: [
+      "指数在 60 日线上方且 20 日线向上，属于可以持有的趋势；跌破 60 日线要降低仓位预期",
+      "高于 60 日线超过 8% 时短期偏热，追高性价比低；低于 60 日线超过 10% 属于超跌区域，适合分批而不是一次买满",
+      "结合涨跌停家数判断是否只是指数被权重股拉动"
+    ],
+    focus: "写出加仓、持有、减仓分别对应的指数点位，以及这套判断失效的条件" },
+  { id: "style_rotation", group: "大盘与ETF", name: "风格切换", summary: "大盘还是小盘、成长还是价值更强",
+    tools: ["index_overview", "sector_rank", "etf_rank"],
+    method: [
+      "创业板指对比沪深300 的 5 日、20 日涨幅：创业板更强偏成长，沪深300 更强偏价值和权重",
+      "中证全指对比沪深300：全指更强说明中小盘活跃，反之资金抱团大盘",
+      "用行业排行和主题 ETF 排行确认：领涨的是科技成长还是金融、消费、资源"
+    ],
+    focus: "给出当前偏向的风格和依据，说明风格可能切换的信号" }
 ];
 
 const BUILTIN_BY_ID = new Map(BUILTIN_SKILLS.map(skill => [skill.id, skill]));
@@ -220,15 +270,20 @@ function resolveSkills(ids, custom = []) {
   return [...new Set((Array.isArray(ids) ? ids : []).map(String))].map(id => byId.get(id)).filter(Boolean).slice(0, MAX_SELECTED);
 }
 
-/** 这几个打法要求的数据里，能在第一轮前直接读的（需要股票的工具要有关注股票）。 */
+const MARKET_WIDE_ARGS = { market: {}, index_overview: {}, sector_rank: { kind: "industry", sortBy: "change", top: 10 }, etf_rank: { sortBy: "change", top: 10 } };
+const ETF_CODE_TOOLS = new Set(["kline", "intraday", "quote"]);
+
+/** 这几个打法要求的数据里，能在第一轮前直接读的：按分析对象（个股、ETF、板块、大盘）只读用得上的。 */
 function skillPrefetchCalls(skills, focus, base = []) {
-  const calls = new Map(base.map(tool => [tool, { tool, args: focus ? { code: focus.code } : {} }]));
+  const kind = focus ? focus.kind || "stock" : "";
+  const calls = new Map(base.map(item => typeof item === "string" ? [item, { tool: item, args: focus?.code ? { code: focus.code } : {} }] : [item.tool, item]));
   for (const skill of skills) {
     for (const spec of skill.tools || []) {
       const { tool, days } = parseToolSpec(spec);
-      if (tool === "market") { calls.set(tool, { tool, args: {} }); continue; }
-      if (tool === "sector_rank") { calls.set(tool, { tool, args: { kind: "industry", sortBy: "change", top: 10 } }); continue; }
-      if (!focus) continue;
+      if (Object.hasOwn(MARKET_WIDE_ARGS, tool)) { if (!calls.has(tool)) calls.set(tool, { tool, args: { ...MARKET_WIDE_ARGS[tool] } }); continue; }
+      if (tool === "sector_detail") { if (kind === "sector" && !calls.has(tool)) calls.set(tool, { tool, args: { name: focus.name } }); continue; }
+      if (tool === "etf_quote") { if (kind === "etf" && !calls.has(tool)) calls.set(tool, { tool, args: { code: focus.code } }); continue; }
+      if (kind !== "stock" && !(kind === "etf" && ETF_CODE_TOOLS.has(tool))) continue;
       const previous = calls.get(tool);
       if (tool === "kline") {
         const want = Math.max(days || 20, previous?.args?.days || 0);
@@ -257,6 +312,7 @@ ${blocks.join("\n")}
 - 先查齐每个打法的必看数据（initialData 里已有的不用再查）。
 - 回答用「### 打法：名称」分节，逐条对照判断要点写出这只股票的实际数据和结论；之后再写关键价位表和操作思路。
 - 第一行的结论要回答：现在是否符合这些打法的参与条件。全文 500–1400 字，每个打法的对照写要点、不写套话。
+- 每个打法的结论都写清：明确态度、关键价位（或指数点位）、失效条件（出现什么情况说明判断错了）。
 - 在 final.skillVerdicts 里对每个打法给出 {"skill":"打法名称","verdict":"符合|接近|不符合|不适用","reason":"≤40字的依据"}；多个打法结论冲突时如实写出，并说明更倾向哪个。`;
 }
 

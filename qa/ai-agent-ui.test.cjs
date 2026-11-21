@@ -172,14 +172,13 @@ describe('AI 问股 page in the actual renderer', () => {
   const pickStock = async page => {
     await page.getByLabel('选择要分析的股票').fill('茅台');
     await page.locator('.ai-agent-options [role="option"]').first().waitFor();
-    assert.equal(await page.locator('.ai-agent-options [role="option"]').count(), 1, 'ETFs are not offered');
-    await page.getByLabel('选择要分析的股票').press('Enter');
+    await page.locator('.ai-agent-options [role="option"]').filter({ hasText: '600519' }).first().locator('button').click();
     await page.locator('.ai-agent-focus').waitFor();
   };
 
   test('choose a stock, run a full analysis with live steps, read the answer and ask a follow-up', async () => pageTest(async page => {
-    assert.match(await page.locator('.ai-agent-welcome h2').innerText(), /先选一只股票/);
-    assert.equal(await page.getByRole('button', { name: /^全面分析/ }).isDisabled(), true, 'stock tasks wait for a stock');
+    assert.match(await page.locator('.ai-agent-welcome h2').innerText(), /选一个对象/);
+    assert.equal(await page.getByRole('button', { name: /^全面分析/ }).count(), 0, 'stock tasks appear once a stock is chosen');
     assert.equal(await page.getByRole('button', { name: /^今日市场/ }).isDisabled(), false);
     await pickStock(page);
     assert.match(await page.locator('.ai-agent-focus').innerText(), /贵州茅台\s*600519\s*1500\.50 \+1\.23%/);

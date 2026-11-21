@@ -1,4 +1,5 @@
 import conditionCatalog from "../../../config/strategy-custom-conditions.json";
+import { userErrorText } from "../../userErrorText";
 
 // 自定义选股策略的前端模型。条件词表与主进程共用 config/strategy-custom-conditions.json；
 // 这里的校验只为即时提示，最终以主进程保存时的校验为准。
@@ -89,6 +90,6 @@ export function describeCustomStrategy(strategy: CustomStrategy, patterns: Patte
 
 /** Turn an IPC error ("Error invoking remote method …: Error: msg") into the user-facing message. */
 export const ipcMessage = (reason: unknown) => {
-  const text = reason instanceof Error ? reason.message : String(reason);
+  const text = userErrorText(reason);
   return text.replace(/^Error invoking remote method '[^']+':\s*/, "").replace(/^(?:[A-Za-z]*Error):\s*/, "");
 };

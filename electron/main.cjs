@@ -87,6 +87,9 @@ const {
   getQuoteSnapshot,
   getMarketSourceHealth,
   getConvertibleBonds,
+  getEtfMarket,
+  getBatchQuotes,
+  getReviewIndexChart,
   getFuyaoReviewData,
   configureConvertibleRosterStore,
   configureStockIndustryStore,
@@ -334,7 +337,7 @@ function normalizeSecurityIdentity(row, code) {
   };
 }
 
-function normalizeHoldings(value) {
+function collectNormalizedHoldings(value) {
   const rows = Array.isArray(value) ? value : [];
   const holdings = new Map();
   const now = new Date().toISOString();
@@ -365,7 +368,19 @@ function normalizeHoldings(value) {
     };
     holdings.set(code, holding);
   }
-  return [...holdings.values()].slice(0, 80);
+  return [...holdings.values()];
+}
+
+function normalizeHoldings(value) {
+  return collectNormalizedHoldings(value).slice(0, 80);
+}
+
+function normalizeHoldingsForSave(value) {
+  const normalized = collectNormalizedHoldings(value);
+  if (normalized.length > 80) {
+    throw Object.assign(new Error(`最多保存 80 只持仓（当前 ${normalized.length} 只），请先清仓移除部分股票后再添加`), { code: "HOLDINGS_LIMIT_EXCEEDED" });
+  }
+  return normalized;
 }
 
 function normalizeWatchlist(value) {
@@ -1031,6 +1046,16 @@ function createWindow() {
   observeWindowResponsiveness(createdWindow);
   createdWindow.on("close", (event) => {
     if (isQuitting) return;
+    if (process.platform === "darwin") {
+      event.preventDefault();
+      if (createdWindow.isDestroyed()) return;
+      if (createdWindow.isFullScreen?.()) {
+        createdWindow.once("leave-full-screen", () => { if (!createdWindow.isDestroyed()) createdWindow.hide(); });
+        createdWindow.setFullScreen(false);
+      } else createdWindow.hide();
+      debugLog("window hidden; background monitors keep running");
+      return;
+    }
     if (process.platform !== "win32") return;
     event.preventDefault();
     const availableTray = createTray();
@@ -1443,6 +1468,9 @@ function stockAgent() {
     diagnosis: security => analyzeSecurity(security, settingsForService()),
     sectorBoard: () => getSectorStrengthBoard(settingsForService()),
     reviewSkill: (skill, args) => reviewSkills().runSkill(skill, args),
+    indexCharts: () => Promise.all([["1.000001", "上证指数"], ["0.399001", "深证成指"], ["0.399006", "创业板指"], ["1.000300", "沪深300"], ["1.000985", "中证全指"]]
+      .map(([secid, name]) => getReviewIndexChart(secid, { range: "3m", limit: 90 }).then(chart => ({ code: secid.slice(2), name, rows: chart?.rows || [] }), () => ({ code: secid.slice(2), name, rows: [] })))),
+    etfMarket: () => getEtfMarket(),
     myPortfolio: code => {
       const holdingsValidator = typeof usableHoldings !== "undefined" ? usableHoldings : undefined;
       const watchlistValidator = typeof usableWatchlist !== "undefined" ? usableWatchlist : undefined;
@@ -1552,6 +1580,7 @@ if (!hasSingleInstanceLock) {
     backupJsonPath,
     normalizeWatchlist,
     normalizeHoldings,
+    normalizeHoldingsForSave,
     usableWatchlist,
     usableHoldings,
     getCorruptedOnLoad,
@@ -1579,6 +1608,12 @@ if (!hasSingleInstanceLock) {
     customStrategyStore,
     kvGet: key => localKvStore().get(key),
     kvSet: (key, value) => localKvStore().set(key, value),
+    localKvMirror: {
+      keys: () => localKvStore().keys(),
+      get: key => localKvStore().get(key),
+      set: (key, value) => localKvStore().set(key, value),
+      remove: key => localKvStore().remove(key)
+    },
     getMasterPasswordStatus: () => secretStorage().status(),
     setMasterPassword: input => secretStorage().setMasterPassword(String(input?.newPassword || ""), String(input?.currentPassword || "")),
     unlockMasterPassword: async input => {
@@ -1616,6 +1651,8 @@ if (!hasSingleInstanceLock) {
     getMarketSourceHealth,
     resetMarketSourceHealth,
     getConvertibleBonds,
+    getEtfMarket,
+    getBatchQuotes,
     getFuyaoReviewData,
     getDataFederation,
     getChart,

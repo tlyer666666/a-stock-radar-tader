@@ -12,6 +12,8 @@ const { fetchWithPolicy, fetchJsonWithPolicy } = require("./http-client.cjs");
 
 const AI_TIMEOUT_MS = 120_000;
 const AI_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const AI_STREAM_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+const AI_MAX_ACCUMULATED_CHARS = 512 * 1024;
 
 function aiError(message, code) {
   return Object.assign(new Error(message), { code });
@@ -131,6 +133,9 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
       if (!textDelta && !reasonDelta) return;
       content += textDelta;
       reasoning += reasonDelta;
+      if (content.length + reasoning.length > AI_MAX_ACCUMULATED_CHARS) {
+        throw aiError("AI 流式返回内容过长，已中止读取", "AI_RESPONSE_TOO_LARGE");
+      }
       try { onToken(textDelta, content, { reasoningDelta: reasonDelta, reasoning }); } catch { /* ignore UI progress errors */ }
     };
     try {
@@ -180,7 +185,7 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
         redirect: "error",
         streamResponse: true,
         signal
-      }, { timeoutMs: requestTimeoutMs, retries: 0, maxResponseBytes: AI_MAX_RESPONSE_BYTES }));
+      }, { timeoutMs: requestTimeoutMs, retries: 0, maxResponseBytes: AI_STREAM_MAX_RESPONSE_BYTES }));
       signal?.throwIfAborted();
       return track(() => consumeSseResponse(response, signal, onToken));
     }

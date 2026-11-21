@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity, CircleAlert, ExternalLink, FileText, Filter, Gauge, Newspaper, Pin, RefreshCw, Search, ShieldAlert, ShieldCheck, Sparkles, Wifi, Zap } from "lucide-react";
 import { PageHeading, PanelTitle, LoadingState } from "../../components/terminal/TerminalPrimitives";
 import { whenVisible } from "../../visiblePolling";
@@ -6,6 +6,8 @@ import { formatShanghaiTime, formatShanghaiDateTime, newsTimeText } from "../../
 import { readTrendPlans } from "../../trendWorkspace";
 import { informationTabs, type InformationTab } from "./informationModel";
 import type { AnalysisPayload } from "../market/analysisTypes";
+import { CockpitAddTrigger, useCockpitAdd } from "../../components/CockpitAddButton";
+import { userErrorText } from "../../userErrorText";
 
 const EMPTY_FAVORITES: Array<string | { code?: string; name?: string; industry?: string }> = [];
 type NewsQuoteMap = Record<string, { code?: string; name?: string | undefined; changePct?: number; price?: number | undefined }>;
@@ -92,6 +94,8 @@ export function NewsView({
   onContentTypeChange: (type: InformationTab) => void;
   onOpenStock: (stock: Security) => void;
 }) {
+  // 整页共用一份驾驶舱状态和一个弹窗，每行只放轻量按钮（资讯列表未虚拟化，最多 8 只/条）。
+  const cockpit = useCockpitAdd();
   const announcementOnly = contentType === "announcement";
   const scopes = [
     { id: "all", label: "全市场" },
@@ -204,7 +208,7 @@ export function NewsView({
     } catch (reason) {
       failed = true;
       if (requestId === feedRequestId.current) {
-        setError(reason instanceof Error ? reason.message : String(reason));
+        setError(userErrorText(reason));
       }
     } finally {
       if (requestId === feedRequestId.current) {
@@ -569,9 +573,12 @@ export function NewsView({
                 <div className="news-relations">
                   {(item.relatedSectors || []).map((sector: string) => <span key={sector}>板块 · {sector}</span>)}
                   {(item.relatedStocks || []).slice(0, 8).map((stock) => (
-                    <button key={`${item.id}-${stock.code}`} onClick={() => onOpenStock(stock)}>
-                      {stock.name || stock.code}<small>{stock.code}</small>
-                    </button>
+                    <Fragment key={`${item.id}-${stock.code}`}>
+                      <button onClick={() => onOpenStock(stock)}>
+                        {stock.name || stock.code}<small>{stock.code}</small>
+                      </button>
+                      <CockpitAddTrigger security={stock} source="资讯" className="news-cockpit-add" planned={cockpit.plannedCodes.has(stock.code)} onOpen={cockpit.open} />
+                    </Fragment>
                   ))}
                   {!item.relatedSectors?.length && !item.relatedStocks?.length && <small>尚未建立A股直接映射</small>}
                 </div>
@@ -631,6 +638,7 @@ export function NewsView({
 
 
       </div></div>
+      {cockpit.modal}
     </div>
   );
 }

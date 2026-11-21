@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Lock } from "lucide-react";
 import { useReportHsgtOverlay } from "../features/hsgt/overlayContext";
+import { userErrorText } from "../userErrorText";
 
 type MasterPasswordUnlockModalProps = {
   open: boolean;
@@ -54,7 +55,7 @@ export function MasterPasswordUnlockModal({ open, onUnlocked }: MasterPasswordUn
       }
       onUnlocked();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "主密码错误，请重试");
+      setError(userErrorText(err, "主密码错误，请重试"));
     } finally {
       setSubmitting(false);
     }

@@ -363,7 +363,7 @@ type AiSkillStep = { thought: string; calls: { skill: string; name: string; ok: 
 type AiLookback = AiStamp & { previousDate: string; previousHeadline: string; summary: string; verdicts: { claim: string; result: "兑现" | "部分兑现" | "未兑现" | "无法判断"; evidence: string }[];
   lessons: string[]; hitRatePct: number | null; judged: number };
 type AiInterpretKind = "ecology" | "failed-boards" | "sectors";
-type AgentFocus = { code: string; name: string };
+type AgentFocus = { code: string; name: string; kind?: "etf" | "sector" | "market" };
 type AgentStepCall = { tool: string; name: string; args: string; status: "running" | "ok" | "failed"; summary: string };
 type AgentStep = { kind: "prefetch" | "tools" | "answer"; thought: string; calls: AgentStepCall[] };
 type AgentStance = "偏多" | "中性" | "偏空" | "回避" | "不适用";

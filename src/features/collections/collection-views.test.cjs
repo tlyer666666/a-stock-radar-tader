@@ -77,6 +77,28 @@ test("observation filtering exposes visible coverage and links the trading-day e
   assert.doesNotMatch(markup, /第三只<\/strong>/);
 });
 
+test("watchlist renders sortable quote columns and a quote status line", () => {
+  const items = [
+    { code: "300059", name: "东方财富", thscode: "300059.SZ", observationNode: "T+1", limitDate: "2026-11-19" },
+    { code: "600001", name: "停牌股", thscode: "600001.SH", observationNode: "T+1", limitDate: "2026-11-19" }
+  ];
+  const markup = renderToStaticMarkup(React.createElement(WatchlistView, {
+    items,
+    activeNode: "all",
+    quotes: { "300059": { latest: 22.5, changePct: 3.21 }, "600001": { latest: 11, changePct: 0, tradeStatus: "suspended" } },
+    onNodeChange: noop,
+    onOpen: noop,
+    onRemove: noop
+  }));
+  assert.match(markup, /aria-sort="none"/, "未排序列仍给出 aria-sort");
+  assert.match(markup, /watch-sort-btn/, "现价与涨跌幅表头是可点击的排序按钮");
+  const status = markup.match(/<p[^>]*class="watch-quote-status"[^>]*>([\s\S]*?)<\/p>/);
+  assert.ok(status, "行情状态行紧贴在说明文字下方");
+  assert.match(status[1], /行情 2\/2 只/);
+  assert.match(status[1], /上涨 1 · 下跌 0 · 平 1 · 涨停 0/);
+  assert.match(markup, /停牌/);
+});
+
 test("holdings view exposes entry mode tabs, stop-loss banner, and privacy mask mode", () => {
   const markup = renderToStaticMarkup(React.createElement(HoldingsView, {
     items: [{ code: "600519", name: "贵州茅台", secid: "1.600519", shares: 300, costPrice: 1450, createdAt: "", updatedAt: "" }],

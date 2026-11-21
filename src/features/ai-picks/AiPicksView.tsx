@@ -10,7 +10,9 @@ import { createServiceJobScope } from "../../serviceJobClient";
 import { selectionSummaryDataState } from "../../domain/strategySelectionDataState";
 import { startVisibleInterval } from "../../visiblePolling";
 import { canOpenAgent, openAgentFor } from "../ai-agent/agentModel";
-import { readTrendPlans, saveQuickObservationPlan, saveQuickObservationPlansBatch, TREND_PLAN_STORAGE_KEY } from "../../trendWorkspace";
+import { readTrendPlans, saveQuickObservationPlansBatch, TREND_PLAN_STORAGE_KEY } from "../../trendWorkspace";
+import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
+import { cockpitBatchMessage, emitAppToast, COCKPIT_TOAST_ACTION } from "../cockpit/cockpitAdd";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -68,6 +70,7 @@ export default function AiPicksView({
   quoteRefreshSeconds?: number;
 }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai;
+  const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
   const [plannedCodes, setPlannedCodes] = useState<Set<string>>(() => {
     try {
       if (typeof window === "undefined" || !window.localStorage) return new Set();
@@ -292,7 +295,8 @@ export default function AiPicksView({
         secid: source?.secid || secidFor(code),
         referencePrice: refPrice,
         asOf: asOfDate || source?.signalDate,
-        reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "AI 候选批量关注")
+        reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "AI 候选批量关注"),
+        source: "AI 打分"
       };
     });
     const res = saveQuickObservationPlansBatch(window.localStorage, inputs);
@@ -309,12 +313,9 @@ export default function AiPicksView({
       onShowToast?.(res.storageError);
       return;
     }
-    const parts = [
-      res.created.length ? `新增 ${res.created.length} 只观察计划` : "",
-      res.existing.length ? `${res.existing.length} 只已在计划中` : "",
-      res.missingPrice.length ? `${res.missingPrice.length} 只暂缺参考价` : ""
-    ].filter(Boolean);
-    onShowToast?.(parts.length ? `批量流转完成：${parts.join("，")}` : "未生成新的观察计划");
+    const message = cockpitBatchMessage(res);
+    if (addedCodes.length) emitAppToast(message, COCKPIT_TOAST_ACTION);
+    onShowToast?.(message);
   };
 
   if (!api) return <div className="ai-picks-view"><div className="page-heading"><div><h1>AI 选股</h1><p>AI 打分、每日复盘和大白话建策略需要在桌面版使用。</p></div></div>
@@ -471,7 +472,7 @@ export default function AiPicksView({
       <div className="ai-board-toolbar">
       {selectable && (!!candidates.length || removedCount > 0) && <AiSelectionBar selection={selection} removeLabel="移除" removeDisabled={Boolean(busy)} hint="勾选几只可以只给它们打分；点行首 × 把股票从候选里移除（不影响策略选股结果）"
         onRemoveSelected={() => { if (busy) return; updateExcluded([...excluded, ...selection.list]); selection.clear(); }} removedCount={removedCount} onRestore={() => { if (!busy) updateExcluded([]); }} />}
-      {selectable && selection.list.length > 0 && <button type="button" className="secondary-btn" disabled={Boolean(busy)} onClick={batchAddPlans}><Target size={14} />批量+观察计划（{selection.list.length} 只）</button>}
+      {selectable && selection.list.length > 0 && <button type="button" className="secondary-btn" disabled={Boolean(busy)} onClick={batchAddPlans}><Target size={14} />批量加入驾驶舱（{selection.list.length} 只）</button>}
       {!isHistory && !!pageRows.length && <SelectionQuoteControls total={pageRows.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />}
       </div>
       <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="AI 打分榜表格，可横向滚动">
@@ -484,27 +485,15 @@ export default function AiPicksView({
             const isPlanned = plannedCodes.has(row.code);
             const livePrice = Number(quotes.entries[row.code]?.quote?.latest);
             const refPrice = Number.isFinite(livePrice) && livePrice > 0 ? livePrice : row.source?.latest;
-            const addPlan = () => {
-              if (typeof window === "undefined") return;
-              const result = saveQuickObservationPlan(window.localStorage, {
-                code: row.code,
-                name: row.name,
-                secid: sec.secid,
-                referencePrice: refPrice,
-                asOf: asOfDate || row.source?.signalDate,
-                reason: row.ai?.highlights || (row.ai ? `AI评分 ${row.ai.score} (${row.ai.rating})` : "AI 候选关注")
-              });
-              if (!result.ok) {
-                onShowToast?.(result.error);
-                return;
-              }
-              setPlannedCodes(prev => {
-                const next = new Set(prev);
-                next.add(row.code);
-                return next;
-              });
-              onShowToast?.(result.created ? `${row.name} 已加入趋势观察计划（可在驾驶舱跟踪买点）` : `${row.name} 已在活跃观察计划中`);
-            };
+            const addPlan = () => setPlanTarget({
+              code: row.code,
+              name: row.name,
+              secid: sec.secid,
+              referencePrice: refPrice,
+              asOf: asOfDate || row.source?.signalDate,
+              defaultNote: row.ai?.highlights || (row.ai ? `AI评分 ${row.ai.score} (${row.ai.rating})` : "AI 候选关注"),
+              source: "AI 打分"
+            });
             return <Fragment key={row.code}><tr className={`${onOpen ? "clickable" : ""}${selection.selected.has(row.code) ? " selected" : ""}${row.ai ? " has-comment" : ""}`} onClick={() => open({ code: row.code, name: row.name, secid: row.source?.secid })}>
             {selectable && <AiSelectCell selection={selection} code={row.code} name={row.name} removeLabel="从候选移除" removeDisabled={Boolean(busy)} onRemove={() => { if (!busy) updateExcluded([...excluded, row.code]); }} />}
             <td>{row.ai ? <AiScoreCell item={row.ai} expectedModels={isHistory ? (shownRanking?.models?.length || 1) : expectedModels} /> : <small>未打分</small>}</td>
@@ -531,10 +520,10 @@ export default function AiPicksView({
                   type="button"
                   className={`table-action${isPlanned ? " active" : ""}`}
                   onClick={addPlan}
-                  title={isPlanned ? "已在趋势观察计划中" : "一键转入今日驾驶舱观察计划"}
+                  title={isPlanned ? "已在今日驾驶舱，点击可调整买点与止损" : "一键加入今日驾驶舱（按现价设买入区 -1%~+2%、止损 -6%，保留 5 个交易日）"}
                 >
                   <Target size={12} />
-                  {isPlanned ? "已在计划" : "观察计划"}
+                  {isPlanned ? "已在驾驶舱" : "+驾驶舱"}
                 </button>
                 {canOpenAgent() && (
                   <button
@@ -571,5 +560,11 @@ export default function AiPicksView({
     </section>}
 
     <p className="ai-selection-note">AI 根据规则给出的数据判断，可能出错，仅供参考，不构成投资建议；股票是否入选仍由规则决定。</p>
+    <QuickPlanModal
+      target={planTarget}
+      onClose={() => setPlanTarget(null)}
+      onSaved={res => { setPlannedCodes(prev => new Set(prev).add(res.code)); onShowToast?.(res.message); }}
+      onError={msg => onShowToast?.(msg)}
+    />
   </div>;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPlus, X } from "lucide-react";
+import { addToCockpit, emitAppToast, COCKPIT_TOAST_ACTION } from "../features/cockpit/cockpitAdd";
 import { inferSecid } from "../domain/securityIdentifiers";
 import {
   TREND_PLAN_STORAGE_KEY,
@@ -9,6 +10,15 @@ import {
   writeTrendPlans,
   type SavedTrendPlan
 } from "../trendWorkspace";
+
+function readActivePlan(code: string): SavedTrendPlan | null {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    return readTrendPlans(window.localStorage).plans.find(plan => !plan.archivedAt && plan.candidate.security.code === code) || null;
+  } catch {
+    return null;
+  }
+}
 
 function readPlannedCodeSet(): Set<string> {
   try {
@@ -56,6 +66,7 @@ export type QuickPlanTarget = {
   atr?: number | null | undefined;
   asOf?: string | undefined;
   defaultNote?: string | undefined;
+  source?: string | undefined;
 };
 
 export type QuickPlanModalProps = {
@@ -67,7 +78,10 @@ export type QuickPlanModalProps = {
 
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
-function computeDefaults(refPrice: number | null | undefined, atr: number | null | undefined) {
+/** 无 ATR 时的默认止损比例，与一键加入驾驶舱（AGENTS.md：止损 -6%）保持一致。 */
+const DEFAULT_STOP_RATIO = 0.94;
+
+export function computeDefaults(refPrice: number | null | undefined, atr: number | null | undefined) {
   const ref = Number(refPrice);
   if (!Number.isFinite(ref) || ref <= 0) {
     return { buyLow: "", buyHigh: "", stopPrice: "", targetPrice: "" };
@@ -75,7 +89,7 @@ function computeDefaults(refPrice: number | null | undefined, atr: number | null
   const hasAtr = typeof atr === "number" && Number.isFinite(atr) && atr > 0 && atr < ref * 0.4;
   const stop = hasAtr
     ? round2(Math.max(0.01, ref - atr * 1.5))
-    : round2(Math.max(0.01, ref * 0.95));
+    : round2(Math.max(0.01, ref * DEFAULT_STOP_RATIO));
   const buyLow = round2(Math.max(stop + 0.01, ref * 0.99));
   const buyHigh = round2(Math.max(buyLow, ref * 1.02));
   const target = hasAtr
@@ -102,12 +116,22 @@ export function QuickPlanDialogContent({
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
-  const initialDefaults = computeDefaults(target.referencePrice, target.atr);
+  const [existingPlan] = useState(() => readActivePlan(target.code));
+  const initialDefaults = (() => {
+    const saved = existingPlan?.candidate.plan;
+    if (!saved) return computeDefaults(target.referencePrice, target.atr);
+    return {
+      buyLow: (saved.minEntry ?? saved.maxEntry).toFixed(2),
+      buyHigh: saved.maxEntry.toFixed(2),
+      stopPrice: saved.stop.toFixed(2),
+      targetPrice: existingPlan?.reviewDraft?.fields.targetPrice || ""
+    };
+  })();
   const [buyLow, setBuyLow] = useState(initialDefaults.buyLow);
   const [buyHigh, setBuyHigh] = useState(initialDefaults.buyHigh);
   const [stopPrice, setStopPrice] = useState(initialDefaults.stopPrice);
   const [targetPrice, setTargetPrice] = useState(initialDefaults.targetPrice);
-  const [note, setNote] = useState(target.defaultNote || "");
+  const [note, setNote] = useState(existingPlan?.reviewDraft?.fields.note || target.defaultNote || "");
   const [formError, setFormError] = useState("");
   const [fetchedRef, setFetchedRef] = useState<number | null>(
     typeof target.referencePrice === "number" && Number.isFinite(target.referencePrice) && target.referencePrice > 0
@@ -207,7 +231,8 @@ export function QuickPlanDialogContent({
       referencePrice: refPrice,
       asOf: target.asOf,
       reason,
-      stopPercent
+      stopPercent,
+      source: target.source
     });
 
     if (!res.ok) {
@@ -230,7 +255,7 @@ export function QuickPlanDialogContent({
             ...plan.candidate,
             evidence: [
               {
-                label: "次日观察计划",
+                label: "驾驶舱观察计划",
                 passed: true,
                 value: reason.slice(0, 60),
                 rule: "手动设定入场区间、止损与目标位"
@@ -259,8 +284,9 @@ export function QuickPlanDialogContent({
     }
 
     const message = res.created
-      ? `已将 ${target.name}（${target.code}）加入次日观察计划`
-      : `已更新 ${target.name}（${target.code}）次日观察计划参数`;
+      ? `${target.name}（${target.code}）已加入今日驾驶舱`
+      : `已更新 ${target.name}（${target.code}）的驾驶舱计划`;
+    emitAppToast(message, COCKPIT_TOAST_ACTION);
     onSaved?.({ code: target.code, name: target.name, created: res.created, message });
     onClose();
   };
@@ -319,16 +345,18 @@ export function QuickPlanDialogContent({
             <ClipboardPlus size={18} />
             <div>
               <h3 id={titleId} style={{ margin: 0, fontSize: 16 }}>
-                加入次日观察计划 · {target.name} <small style={{ opacity: 0.72 }}>{target.code}</small>
+                {existingPlan ? "调整驾驶舱计划" : "加入今日驾驶舱"} · {target.name} <small style={{ opacity: 0.72 }}>{target.code}</small>
               </h3>
               <small style={{ opacity: 0.7 }}>
-                {fetchedRef !== null
-                  ? `参考价 ${fetchedRef.toFixed(2)} 元${target.atr && target.atr > 0 ? ` · ATR 预填止损` : " · 默认 -5% 止损"}`
+                {existingPlan
+                  ? `已在今日驾驶舱 · 加入于 ${existingPlan.savedAt.slice(0, 10)}，改完点保存`
+                  : fetchedRef !== null
+                  ? `参考价 ${fetchedRef.toFixed(2)} 元${target.atr && target.atr > 0 ? ` · ATR 预填止损` : " · 默认 -6% 止损"}`
                   : "请填写参考买入区间与止损位"}
               </small>
             </div>
           </div>
-          <button type="button" className="secondary-btn" aria-label="关闭次日观察计划弹窗" onClick={onClose}>
+          <button type="button" className="secondary-btn" aria-label="关闭驾驶舱计划弹窗" onClick={onClose}>
             <X size={16} />
           </button>
         </header>
@@ -405,7 +433,7 @@ export function QuickPlanDialogContent({
         <footer style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
           <button type="button" className="secondary-btn" onClick={onClose}>取消</button>
           <button type="submit" className="primary-btn">
-            <ClipboardPlus size={15} />保存次日计划
+            <ClipboardPlus size={15} />{existingPlan ? "保存调整" : "加入驾驶舱"}
           </button>
         </footer>
       </form>
@@ -413,16 +441,44 @@ export function QuickPlanDialogContent({
   );
 }
 
+function OneClickCockpitAdd({ target, onClose, onSaved, onError, onNeedDialog }: {
+  target: QuickPlanTarget;
+  onClose: () => void;
+  onSaved?: QuickPlanModalProps["onSaved"];
+  onError?: QuickPlanModalProps["onError"];
+  onNeedDialog: () => void;
+}) {
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    if (typeof window === "undefined" || !window.localStorage) {
+      onError?.("当前环境不支持本地存储");
+      onClose();
+      return;
+    }
+    void addToCockpit(window.localStorage, target, target.source || "手动加入").then(result => {
+      if (result.ok) {
+        emitAppToast(result.message, COCKPIT_TOAST_ACTION);
+        onSaved?.({ code: target.code, name: target.name, created: result.created, message: result.message });
+        onClose();
+        return;
+      }
+      onError?.(result.message);
+      onNeedDialog();
+    });
+  }, [onClose, onError, onNeedDialog, onSaved, target]);
+  return null;
+}
+
+function QuickPlanFlow({ target, onClose, onSaved, onError }: QuickPlanModalProps & { target: QuickPlanTarget }) {
+  const [dialog, setDialog] = useState(() => readActivePlan(target.code) !== null);
+  const openDialog = useRef(() => setDialog(true)).current;
+  if (!dialog) return <OneClickCockpitAdd target={target} onClose={onClose} onSaved={onSaved} onError={onError} onNeedDialog={openDialog} />;
+  return createPortal(<QuickPlanDialogContent target={target} onClose={onClose} onSaved={onSaved} onError={onError} />, document.body);
+}
+
 export default function QuickPlanModal({ target, onClose, onSaved, onError }: QuickPlanModalProps) {
   if (!target || typeof document === "undefined") return null;
-  return createPortal(
-    <QuickPlanDialogContent
-      key={`${target.code}:${target.referencePrice ?? ""}`}
-      target={target}
-      onClose={onClose}
-      onSaved={onSaved}
-      onError={onError}
-    />,
-    document.body
-  );
+  return <QuickPlanFlow key={`${target.code}:${target.referencePrice ?? ""}`} target={target} onClose={onClose} onSaved={onSaved} onError={onError} />;
 }

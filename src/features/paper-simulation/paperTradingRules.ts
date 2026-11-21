@@ -2,6 +2,7 @@ import { shanghaiDateTag } from "../../dateUtils";
 import { nullableNumber } from "../../numericValue";
 import type { PaperPosition } from "../../domain/paperSimulationTypes";
 import type { AnalysisPayload } from "../market/analysisTypes";
+import { isTradingDay } from "../notes/notesModel";
 
 const positive = (value: unknown) => { const n = nullableNumber(value); return n !== null && n > 0 ? n : null; };
 export const paperPriceLimitRate = (code: string, name = "", date = shanghaiDateTag()): number | null => {
@@ -35,10 +36,13 @@ export const paperEffectiveQuoteIso = (payload: AnalysisPayload): string => {
 };
 
 export const paperQuoteEvidence = (payload: AnalysisPayload): Partial<PaperPosition> => {
+  const rawQuoteAt = typeof payload.quote?.quoteAt === "string" ? payload.quote.quoteAt.trim() : "";
   const quoteIso = paperEffectiveQuoteIso(payload);
   const effectiveDate = quoteIso ? paperDate(quoteIso) : "";
   return {
     quoteDate: effectiveDate,
+    // 新报价不带 quoteAt 时显式清掉旧值，避免前一晚的报价时间一直留在持仓上卡住次日撮合。
+    quoteAt: rawQuoteAt && Number.isFinite(Date.parse(rawQuoteAt)) ? rawQuoteAt : undefined,
     quoteName: String(payload.quote?.name || payload.security?.name || ""),
     ...(nullableNumber(payload.quote?.volume) !== null ? { quoteVolume: Math.max(0, Number(payload.quote?.volume)) } : {}),
     ...(positive(payload.quote?.preClose) !== null ? { quotePreClose: Number(payload.quote?.preClose) } : {}),
@@ -108,7 +112,19 @@ export const paperCorporateActionBlock = (position: PaperPosition, payload: Anal
   return "前收盘参考价与已记录收盘价不一致（除权或缺失交易日待核实），暂停撮合";
 };
 
-export const paperMatchBlock = (position: PaperPosition, side: "buy" | "sell", executionPrice: number): string => {
+export const paperSessionBlock = (at: Date): string => {
+  const ms = at.getTime();
+  if (!Number.isFinite(ms)) return "";
+  const cn = new Date(ms + 8 * 3600 * 1000);
+  const date = cn.toISOString().slice(0, 10);
+  if (!isTradingDay(date)) return "休市日，暂停模拟撮合";
+  const seconds = cn.getUTCHours() * 3600 + cn.getUTCMinutes() * 60 + cn.getUTCSeconds();
+  const inMorning = seconds >= (9 * 60 + 30) * 60 && seconds <= (11 * 60 + 30) * 60;
+  const inAfternoon = seconds >= 13 * 3600 && seconds <= 15 * 3600;
+  return inMorning || inAfternoon ? "" : "非交易时段（仅交易日 09:30–11:30、13:00–15:00 可撮合），暂停模拟撮合";
+};
+
+export const paperMatchBlock = (position: PaperPosition, side: "buy" | "sell", executionPrice: number, at?: Date): string => {
   // F-01 修复：这里保留「有阻塞标记即拒绝撮合」的安全底线（撮合路径不自行解除阻塞，
   // 解除只发生在行情同步时按事实判定），但错误信息会带上解除指引，
   // 避免用户面对一句无法操作的原因。
@@ -116,6 +132,15 @@ export const paperMatchBlock = (position: PaperPosition, side: "buy" | "sell", e
     return `${position.settlementBlockedReason}（待行情核实除权/前收后自动解除，也可在持仓行手动确认）`;
   }
   const today = shanghaiDateTag();
+  // 只认今天的报价时间：非今天的 quoteAt 已过期，交给下面的「缺少今日有效行情」判定，
+  // 否则前一晚存下的报价时间会把次日盘中的强平/止损误判为非交易时段。
+  const quoteAtMs = position.quoteAt ? Date.parse(position.quoteAt) : NaN;
+  const freshQuoteAt = Number.isFinite(quoteAtMs) && paperDate(new Date(quoteAtMs).toISOString()) === today ? new Date(quoteAtMs) : null;
+  const sessionAt = at ?? freshQuoteAt;
+  if (sessionAt) {
+    const sessionBlock = paperSessionBlock(sessionAt);
+    if (sessionBlock) return sessionBlock;
+  }
   if (side === "sell" && (!paperDate(position.openedAt) || paperDate(position.openedAt) >= today)) return "T+1：当日买入股份尚不可卖出";
   if (position.quoteDate !== today) return "缺少今日有效行情，暂停撮合";
   if (!(position.quoteVolume && position.quoteVolume > 0)) return "停牌或缺少有效成交量，暂停撮合";

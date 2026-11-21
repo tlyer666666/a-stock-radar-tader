@@ -3,6 +3,7 @@ import { ArrowUpRight, ChevronRight, Layers3, RefreshCw, Search, X } from 'lucid
 import type { SectorExplorerApi, SectorExplorerCatalog, SectorExplorerDetail, SectorExplorerEntry, SectorExplorerMember, SectorExplorerQuote, SectorExplorerQuotes, SectorExplorerTrend } from './sectorExplorerTypes';
 import { eligibleSignalTestStocks } from './signalTestRequest';
 import { whenVisible } from './visiblePolling';
+import { userErrorText } from "./userErrorText";
 type Filter = 'all' | SectorExplorerEntry['kind'];
 const tabs: {
     id: Filter;
@@ -172,7 +173,7 @@ export default function SectorExplorerPanel({ onOpenStock, active = true }: {
             }).catch(reason => {
                 if (generation !== stockSearchGeneration.current) return;
                 setStockChoices([]);
-                setStockSearchError(reason instanceof Error ? reason.message : String(reason));
+                setStockSearchError(userErrorText(reason));
             }).finally(() => {
                 if (generation === stockSearchGeneration.current) setStockSearchBusy(false);
             });
@@ -213,7 +214,7 @@ export default function SectorExplorerPanel({ onOpenStock, active = true }: {
         }
         catch (e) {
             if (state.alive && state.catalog === requestId)
-                setError(e instanceof Error ? e.message : String(e));
+                setError(userErrorText(e));
         }
         finally {
             if (state.alive && state.catalog === requestId) {
@@ -276,7 +277,7 @@ export default function SectorExplorerPanel({ onOpenStock, active = true }: {
         }
         catch (e) {
             if (state.alive && state.detail === requestId)
-                setError(e instanceof Error ? e.message : String(e));
+                setError(userErrorText(e));
         }
         finally {
             if (state.alive && state.detail === requestId) {
@@ -325,7 +326,7 @@ export default function SectorExplorerPanel({ onOpenStock, active = true }: {
         }
         catch (e) {
             if (state.alive && state.classification === requestId)
-                setError(e instanceof Error ? e.message : String(e));
+                setError(userErrorText(e));
         }
         finally {
             if (state.alive && state.classification === requestId) {

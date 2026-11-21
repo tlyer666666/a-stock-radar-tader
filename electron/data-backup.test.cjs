@@ -313,3 +313,52 @@ test("超过 200 字符的备份密码显式报错 BACKUP_PASSWORD_TOO_LONG 而�
   );
   api.configure({ password: "p".repeat(200) });
 });
+
+function mirror(initial) {
+  const values = new Map(Object.entries(initial));
+  return { values, keys: () => [...values.keys()], get: key => values.get(key) ?? null,
+    set: (key, value) => { values.set(key, value); return true; }, remove: key => values.delete(key) };
+}
+
+test("恢复后本机键值库与备份一致：备份里没有的随心记/复盘档案被清掉，不会在重启后复活", async () => {
+  const dir = tempDir();
+  const source = service(STORES, { folder: dir });
+  const { name } = await source.api.run({ "a-stock-radar:review-archive:v2": "[{\"id\":\"r-new\"}]", "a-stock-radar:default-view": "\"cockpit\"" });
+  const kv = mirror({ "a-stock-radar:notes:v1": "{\"notes\":[{\"id\":\"old\"}]}", "a-stock-radar:review-archive:v2": "[{\"id\":\"r-old\"}]", "unrelated:key": "keep" });
+  let data = structuredClone(STORES);
+  const api = backup.createBackupService({
+    readStore: store => structuredClone(data[store] ?? null), writeStore: (store, value) => { data[store] = value; },
+    readConfig: () => ({ folder: dir }), writeConfig: () => {}, encryptSecret: v => v, decryptSecret: v => v,
+    appVersion: "1.6.71", now: () => NOW, localMirror: kv
+  });
+  await api.restore(name);
+  assert.equal(kv.values.has("a-stock-radar:notes:v1"), false);
+  assert.equal(kv.values.get("a-stock-radar:review-archive:v2"), "[{\"id\":\"r-new\"}]");
+  assert.equal(kv.values.get("unrelated:key"), "keep");
+});
+
+test("键值库同步失败时整次恢复回滚，已写的数据和键值都恢复原样", async () => {
+  const dir = tempDir();
+  const source = service(STORES, { folder: dir });
+  const { name } = await source.api.run({ "a-stock-radar:notes:v1": "{\"notes\":[{\"id\":\"new\"}]}" });
+  const kv = mirror({ "a-stock-radar:notes:v1": "{\"notes\":[{\"id\":\"old\"}]}", "a-stock-radar:review-archive:v2": "[1]" });
+  const realRemove = kv.remove;
+  kv.remove = () => { throw new Error("disk full"); };
+  const data = { holdings: [{ code: "000001", shares: 200, costPrice: 10 }] };
+  const api = backup.createBackupService({
+    readStore: store => structuredClone(data[store] ?? null), writeStore: (store, value) => { data[store] = value; }, removeStore: store => { delete data[store]; },
+    readConfig: () => ({ folder: dir }), writeConfig: () => {}, encryptSecret: v => v, decryptSecret: v => v,
+    appVersion: "1.6.71", now: () => NOW, localMirror: kv
+  });
+  await assert.rejects(api.restore(name), /disk full/);
+  kv.remove = realRemove;
+  assert.equal(data.holdings[0].code, "000001");
+  assert.equal(kv.values.get("a-stock-radar:notes:v1"), "{\"notes\":[{\"id\":\"old\"}]}");
+  assert.equal(kv.values.get("a-stock-radar:review-archive:v2"), "[1]");
+});
+
+test("前后端对“本软件的本地存储键”判断一致（含显示密度）", () => {
+  for (const key of ["a-stock-radar:notes:v1", "ai-picks-excluded", "astock:display-density:v1"]) assert.equal(backup.isAppLocalKey(key), true, key);
+  const client = fs.readFileSync(path.join(__dirname, "..", "src", "features", "backup", "backupClient.ts"), "utf8");
+  for (const literal of client.match(/key === "([^"]+)"/g) || []) assert.equal(backup.isAppLocalKey(literal.slice(9, -1)), true, literal);
+});

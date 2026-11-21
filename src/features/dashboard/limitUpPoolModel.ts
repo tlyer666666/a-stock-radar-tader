@@ -88,3 +88,5 @@ export function limitPoolWindow(count: number, top: number, height: number, rowH
   const first = Math.min(Math.max(0, Math.floor(top / rowHeight)), Math.max(0, count - visibleCount));
   return {start: Math.max(0, first - 6), end: Math.min(count, first + visibleCount + 6)};
 }
+
+export const LIMIT_POOL_REFRESH_EVENT = "a-stock-radar:limit-pool-refresh";

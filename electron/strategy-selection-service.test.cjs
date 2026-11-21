@@ -70,7 +70,7 @@ test('selection cache identity changes when the independently completed session 
  const fs=require('node:fs'),vm=require('node:vm'),source=fs.readFileSync(require.resolve('./services/strategy-scan.cjs'),'utf8');
  const body=source.slice(source.indexOf('function scanStrategySignals('),source.indexOf('\nmodule.exports',source.indexOf('function scanStrategySignals(')));
  let date='2026-10-20',loads=0;
- const scan=vm.runInNewContext(`(${body.trim()})`,{strategySignalOptions:()=>({}),strategySelectionLoader:{context:()=>({asOfDate:date})},strategySignalCache:new Map(),strategySignalLoads:new Map(),Date,loadStrategySignals:async()=>({load:++loads}),serviceRuntime:{run:(_kind,_id,_runtime,fn)=>fn(),checkpoint:()=>{}}});
+ const scan=vm.runInNewContext(`(${body.trim()})`,{strategySignalOptions:()=>({}),strategySelectionLoader:{context:()=>({asOfDate:date})},strategySignalCache:new Map(),strategySignalLoads:new Map(),readSavedSelectionReport:async()=>null,writeSavedSelectionReport:async()=>false,Date,loadStrategySignals:async()=>({load:++loads}),serviceRuntime:{run:(_kind,_id,_runtime,fn)=>fn(),checkpoint:()=>{}}});
  assert.equal((await scan()).load,1);date='2026-10-21';assert.equal((await scan()).load,2);
 });
 test('named first-board analysis cannot qualify by scoring other factors when its core factor fails',()=>{
@@ -150,7 +150,7 @@ test('a normal scan after the recovery interval recalculates corrected history',
   loadHistory:async security=>{const rows=completeRows();if(security.assetType!=='index'&&!repaired)rows[100].amount=null;return rows;}});
  class ClockDate extends Date {constructor(...args){super(...(args.length?args:[clock]));}static now(){return clock;}}
  const scan=vm.runInNewContext(`(${source.slice(start,end).trim()})`,{strategySignalOptions:()=>({}),strategySelectionLoader:service,
-  strategySignalCache:new Map(),strategySignalLoads:new Map(),Date:ClockDate,loadStrategySignals:async()=>{loads++;return service.load({});},
+  strategySignalCache:new Map(),strategySignalLoads:new Map(),readSavedSelectionReport:async()=>null,writeSavedSelectionReport:async()=>false,Date:ClockDate,loadStrategySignals:async()=>{loads++;return service.load({});},
   serviceRuntime:{run:(_kind,_id,_runtime,fn)=>fn(),checkpoint:()=>{}}});
  assert.equal((await scan()).processed,0);repaired=true;
  clock+=4*60*1000;assert.equal((await scan()).processed,0);assert.equal(loads,1);

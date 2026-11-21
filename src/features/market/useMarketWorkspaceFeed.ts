@@ -4,9 +4,11 @@ import { enrichAnalysisWithExecution } from "../../domain/executionProjection";
 import type { FailedBoardCache, FailedBoardViewState } from "../dashboard/PreviousLimitUpFailedBoards";
 import type { AnalysisPayload } from "./analysisTypes";
 import { limitPoolProviderLabel } from "./marketLabels";
+import { LIMIT_POOL_REFRESH_EVENT } from "../dashboard/limitUpPoolModel";
 import type { WorkspaceView as View } from "../../workspaceView";
 import { isTradingDay } from "../notes/notesModel";
 import { startVisibleInterval } from "../../visiblePolling";
+import { userErrorText } from "../../userErrorText";
 
 export type LimitPoolMeta = {
   dataDate: string;
@@ -247,7 +249,7 @@ export function useMarketWorkspaceFeed({
     } catch (e) {
       if (requestId !== analysisRequestId.current) return;
       if (silent) showToast("刷新失败，继续显示上次有效行情");
-      else setError(e instanceof Error ? e.message : String(e));
+      else setError(userErrorText(e));
     } finally {
       activeAnalysisLoads.current--;
       if (requestId === analysisRequestId.current) setLoading(false);
@@ -271,14 +273,14 @@ export function useMarketWorkspaceFeed({
       try {
         commitLimitUpPool(snapshot, requestId, "startup");
       } catch (reason) {
-        const message = reason instanceof Error ? reason.message : "涨停行情响应异常，请稍后刷新";
+        const message = userErrorText(reason, "涨停行情响应异常，请稍后刷新");
         setError(message);
         showToast(message);
       }
       await mergeObservationsRef.current(recent, true);
       if (poolResult.status === "rejected" && recentResult.status === "rejected") setError("涨停行情暂时不可用，请稍后点击刷新");
     }).catch(reason => {
-      setError(reason instanceof Error ? reason.message : "初始化涨停行情失败，请稍后刷新");
+      setError(userErrorText(reason, "初始化涨停行情失败，请稍后刷新"));
     });
   }, [view, researchView, commitLimitUpPool, showToast]);
 
@@ -523,7 +525,7 @@ export function useMarketWorkspaceFeed({
       return true;
     } catch (e) {
       if (requestId !== sectorBoardRequestId.current) return false;
-      const message = e instanceof Error ? e.message : "涨停板块对比加载失败";
+      const message = userErrorText(e, "涨停板块对比加载失败");
       setSectorBoardError(message);
       showToast(message);
       return false;
@@ -589,6 +591,7 @@ export function useMarketWorkspaceFeed({
     if (limitPoolManualRefresh.current) return;
     limitPoolManualRefresh.current = true;
     setDiscovering(true);
+    window.dispatchEvent(new CustomEvent(LIMIT_POOL_REFRESH_EVENT));
     const requestId = ++limitPoolRequestId.current;
     try {
       const snapshot = await window.stockApi.getLimitUpPoolSnapshot({ forceRefresh: true });
@@ -606,7 +609,7 @@ export function useMarketWorkspaceFeed({
           : `${datePrefix} · 涨停池已核对，暂无变化：${result.rows.length}只 · ${source}`
       );
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "涨停池更新失败");
+      showToast(userErrorText(e, "涨停池更新失败"));
     } finally {
       limitPoolManualRefresh.current = false;
       setDiscovering(false);

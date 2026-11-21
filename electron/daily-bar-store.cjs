@@ -483,7 +483,7 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
       let fileCount = 0;
       let totalBytes = 0;
       for (const entry of entries) {
-        if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === "selection-universe.json") continue;
+        if (!entry.isFile() || !/^\d{6}\.json$/.test(entry.name)) continue;
         try {
           const stat = fs.statSync(path.join(base, entry.name));
           fileCount += 1;

@@ -28,7 +28,7 @@ async function run() {
   const initial = await page.evaluate(()=>window.stockApi.getTrendScan());
   assert.equal(initial.strategy.id,'quality-v2');assert.equal(initial.strategy.config.maxExtensionAtr,2);
   let card=await revealCandidate('DEMO-A01');
-  await card.getByRole('button',{name:'加入我的计划',exact:true}).click();
+  await card.getByRole('button',{name:'+驾驶舱',exact:true}).click();
   await card.locator('.trend-calculator > summary').click();
   for(const [label,value] of Object.entries({'账户净资产':'100000','拟成交价 P':'12.29','可用现金':'100000','已有同业仓位':'0','已有总仓位':'0','已有持仓数量':'0','预留费用':'0','该股最低买入数量':'100','该股申报递增单位':'100'})) await card.getByLabel(label,{exact:true}).fill(value);
   for(const cb of await card.getByRole('checkbox').all())if(!(await cb.locator('..').innerText()).includes('当前账户已持有'))await cb.check();
@@ -54,7 +54,7 @@ async function run() {
   await page.waitForFunction(async h=>(await window.stockApi.getTrendScan()).strategy.configHash!==h,initial.strategy.configHash);
   const balanced=await page.evaluate(()=>window.stockApi.getTrendScan());assert.equal(balanced.strategy.config.maxExtensionAtr,2.5);
   card=await revealCandidate('DEMO-A01');
-  await card.getByRole('button',{name:'加入我的计划',exact:true}).click();
+  await card.getByRole('button',{name:'+驾驶舱',exact:true}).click();
   await page.getByLabel('最大均线偏离（ATR）',{exact:true}).fill('99');
   await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
   await page.getByRole('alert').filter({hasText:'三个有效参数'}).waitFor();

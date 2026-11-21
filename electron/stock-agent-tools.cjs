@@ -9,6 +9,7 @@
 
 const { createServiceRuntime } = require("./service-runtime.cjs");
 const { BoundedCache } = require("./bounded-cache.cjs");
+const { isBseAshareCode } = require("./price-limit-rules.cjs");
 
 const clip = (value, max) => {
   const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -43,15 +44,51 @@ const within = (promise, ms) => new Promise(resolve => {
 const DIRECTION_LABEL = { positive: "利好", negative: "利空", mixed: "多空交织", neutral: "中性" };
 const toolError = message => Object.assign(new Error(message), { code: "TOOL_FAILED" });
 
-/** 6 位 A 股代码 → 证券标识（沪市 6 开头 secid 前缀 1，其余 0）。 */
+const ETF_CODE = /^(?:5[1-9]\d{4}|15\d{4}|16\d{4})$/;
+
+/** 沪市（6 开头 A 股、900 开头 B 股、5 开头场内基金）secid 前缀 1；深市与北交所（含 920 新代码）为 0。 */
+function exchangePrefix(code) {
+  if (isBseAshareCode(code)) return "0";
+  return /^(?:6\d{5}|900\d{3}|5\d{5})$/.test(code) ? "1" : "0";
+}
+
+/** 6 位代码 → 证券标识；5/15/16 开头的是场内基金。 */
 function securityOf(code, name = "") {
   const value = String(code || "").match(/\d{6}/)?.[0] || "";
   if (!value) throw toolError("请给出 6 位股票代码（不知道代码时先用 search_stock 查）");
-  return { code: value, name: String(name || value), secid: `${value.startsWith("6") ? "1" : "0"}.${value}`, assetType: "stock" };
+  return { code: value, name: String(name || value), secid: `${exchangePrefix(value)}.${value}`, assetType: ETF_CODE.test(value) ? "etf" : "stock" };
 }
 
+const INDEX_NAMES = ["上证指数", "深证成指", "创业板指", "沪深300", "中证全指"];
+const pct = (value, base) => finite(value) !== null && finite(base) > 0 ? round((value / base - 1) * 100) : null;
+const average = rows => rows.length ? rows.reduce((sum, row) => sum + row.close, 0) / rows.length : null;
+function indexFacts(name, rawRows) {
+  const rows = (Array.isArray(rawRows) ? rawRows : []).filter(row => finite(Number(row?.close)) > 0).map(row => ({ date: String(row.date || "").slice(0, 10), close: Number(row.close) }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (rows.length < 2) return null;
+  const last = rows.at(-1);
+  const ma20 = rows.length >= 20 ? average(rows.slice(-20)) : null;
+  const ma60 = rows.length >= 60 ? average(rows.slice(-60)) : null;
+  const aboveMa20 = ma20 === null ? null : last.close >= ma20;
+  const aboveMa60 = ma60 === null ? null : last.close >= ma60;
+  const trend = aboveMa20 === null || aboveMa60 === null ? "日线不足，趋势未判断"
+    : aboveMa20 && aboveMa60 && ma20 >= ma60 ? "多头：站上20日线和60日线" : !aboveMa20 && !aboveMa60 && ma20 <= ma60 ? "空头：跌破20日线和60日线" : "震荡：均线方向不一致";
+  return { name, date: last.date, close: round(last.close), changePct: pct(last.close, rows.at(-2).close), return5Pct: rows.length > 5 ? pct(last.close, rows.at(-6).close) : null,
+    return20Pct: rows.length > 20 ? pct(last.close, rows.at(-21).close) : null, ma20: round(ma20), ma60: round(ma60), ma20GapPct: pct(last.close, ma20), ma60GapPct: pct(last.close, ma60), aboveMa20, aboveMa60, trend };
+}
+const ETF_SORTS = { change: "changePct", amount: "amount", premium: "premiumPct", turnover: "turnover", scale: "scale", amplitude: "amplitude" };
+const etfFacts = (item, threshold) => ({
+  code: item.code, name: clip(item.name, 16), category: item.category,
+  ...(typeof item.t0 === "boolean" ? { tradingRule: item.t0 ? "T+0：当日买入当日可卖，可日内回转" : "T+1：当日买入次日才能卖" } : {}),
+  amplitudePct: round(finite(item.amplitude)), latest: finite(item.latest), changePct: round(finite(item.changePct)), amountYi: yi(finite(item.amount)),
+  scaleYi: yi(finite(item.scale)), turnoverPct: round(finite(item.turnover)), iopv: finite(item.iopv), premiumPct: round(finite(item.premiumPct)),
+  ...(finite(item.premiumPct) !== null && item.premiumPct > threshold ? { warning: `价格比实时净值高 ${item.premiumPct.toFixed(2)}%，溢价回落会亏钱，不宜追高` }
+    : finite(item.premiumPct) !== null && item.premiumPct < -threshold ? { warning: `价格比实时净值低 ${Math.abs(item.premiumPct).toFixed(2)}%，折价较大，留意流动性` } : {}),
+  ...(finite(item.scale) !== null && item.scale < 2e8 ? { liquidity: "规模不足 2 亿，买卖价差可能较大" } : {})
+});
+
 const TOOLS = [
-  { id: "search_stock", name: "查找股票", description: "按名称、代码或拼音首字母查 A 股代码（用户只说了名字时先查）", args: '{"query":"贵州茅台"}' },
+  { id: "search_stock", name: "查找股票", description: "按名称、代码或拼音首字母查 A 股或 ETF 代码（用户只说了名字时先查）", args: '{"query":"贵州茅台"}' },
   { id: "quote", name: "实时行情", description: "现价、涨跌幅、开高低、成交额、换手、振幅、涨跌停价、总市值和流通市值", args: '{"code":"600519"}' },
   { id: "profile", name: "日线体检", description: "近 120 日：5/20/60 日涨幅、均线排列、量比、连板与近 20 日涨停/炸板次数、MACD、RSI、乖离、跳空缺口、软件算好的支撑位和压力位、情境标签、公告摘要", args: '{"code":"600519"}' },
   { id: "kline", name: "近期K线", description: "最近 N 个交易日的日K（开高低收、涨跌幅、成交额、换手），N 最多 60", args: '{"code":"600519","days":20}' },
@@ -64,6 +101,10 @@ const TOOLS = [
   { id: "announcements", name: "公司公告", description: "最近 8 条公司公告（日期、标题、软件判断的利好利空方向和风险等级）", args: '{"code":"600519"}' },
   { id: "news", name: "相关资讯", description: "财联社等快讯里提到这只股票或其行业的最新资讯（标题、时间、方向）", args: '{"code":"600519"}' },
   { id: "market", name: "市场情绪", description: "当日短线情绪：涨停/跌停/炸板家数、封板率、最高连板、涨停原因前列、热股，以及行业涨幅前列和后列", args: "{}" },
+  { id: "index_overview", name: "大盘指数", description: "上证指数、深证成指、创业板指、沪深300、中证全指的点位、当日涨跌、5/20 日涨幅、相对 20/60 日线的位置和趋势", args: "{}" },
+  { id: "sector_detail", name: "板块详情", description: "按名称查任意行业或概念板块：成分股涨跌家数、涨停家数、领涨股和板块强弱", args: '{"name":"PCB"}' },
+  { id: "etf_quote", name: "ETF 行情", description: "按代码或关键词查 ETF：现价、涨跌幅、成交额、规模、换手、实时净值估算和溢价率（溢价过高会提示风险）", args: '{"code":"510300"} 或 {"query":"半导体"}' },
+  { id: "etf_rank", name: "ETF 排行", description: "按类别（宽基/行业主题/跨境/商品/债券/货币，或 T+0 = 可当日回转的跨境/商品/债券/货币 ETF）把 ETF 按涨幅、成交额、溢价率、换手、规模或振幅排序", args: '{"category":"行业主题|T+0","sortBy":"change|amount|premium|turnover|scale|amplitude","top":10}' },
   { id: "sector_rank", name: "板块排行", description: "行业或概念板块按涨幅、涨停家数或主力净流入排行", args: '{"kind":"industry|concept","sortBy":"change|limitUps|netInflow","top":10}' },
   { id: "my_portfolio", name: "我的持仓与关注", description: "本机持仓（代码、名称、成本价、持仓权重、备注，不含股数）、自选池与 AI 选股池状态", args: '{"code":"6 位代码，可选；不填则汇总全部持仓与自选"}' },
   { id: "get_my_t_context", name: "我的做T状态", description: "读取做T助手参数（风格、成本价、今日可卖比例、目标价差、当日做T盈亏与未完成方向，不含绝对股数或资金）", args: '{"code":"6 位代码，可选"}' },
@@ -120,9 +161,9 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
       const query = clip(args?.query, 20);
       if (!query) throw toolError("请给出要查的股票名称或代码");
       const rows = await cached(`search:${query}`, () => source("search", query));
-      const stocks = take((Array.isArray(rows) ? rows : []).filter(row => row && row.assetType === "stock" && /^\d{6}$/.test(String(row.code))), 6)
+      const stocks = take((Array.isArray(rows) ? rows : []).filter(row => row && (row.assetType === "stock" || row.assetType === "etf") && /^\d{6}$/.test(String(row.code))), 6)
         .map(row => { remember(row.code, row.name); return { code: String(row.code), name: clip(row.name, 12), market: clip(row.marketName || "A股", 6) }; });
-      if (!stocks.length) throw toolError(`没有找到「${query}」对应的 A 股`);
+      if (!stocks.length) throw toolError(`没有找到「${query}」对应的 A 股或 ETF`);
       return { summary: `找到 ${stocks.map(item => `${item.name}(${item.code})`).join("、")}`, data: { query, stocks } };
     },
 
@@ -389,6 +430,54 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
         strongIndustries: industries.slice(0, 6), weakIndustries: industries.slice(-4)
       };
       return { summary: `涨停 ${data.limitUpCount ?? "--"}，跌停 ${data.limitDownCount ?? "--"}，炸板 ${data.limitBreakCount ?? "--"}，封板率 ${data.sealRatePct ?? "--"}%，最高 ${data.maxBoards ?? "--"} 板`, data };
+    },
+
+    async index_overview() {
+      const charts = await cached("index-overview", () => source("indexCharts"));
+      const byName = new Map((Array.isArray(charts) ? charts : []).map(item => [String(item?.name || ""), item?.rows]));
+      const indices = INDEX_NAMES.map(name => indexFacts(name, byName.get(name))).filter(Boolean);
+      const missing = INDEX_NAMES.filter(name => !indices.some(item => item.name === name));
+      if (!indices.length) throw toolError("大盘指数日线暂时没取到");
+      return { summary: indices.map(item => `${item.name} ${item.close}（${item.changePct === null ? "--" : `${item.changePct > 0 ? "+" : ""}${item.changePct}%`}，${item.trend.split("：")[0]}）`).join("；"),
+        data: { indices, missing, note: "盘中最后一根是当天未收盘的数据" } };
+    },
+
+    async sector_detail(args) {
+      const name = clip(args?.name, 12);
+      if (!name) throw toolError("请给出板块名称，例如 PCB、半导体、白酒");
+      const result = await cached(`sector-detail:${name}`, () => source("reviewSkill", "sector_members", { name }));
+      if (!result?.ok) throw toolError(result?.summary || `没查到「${name}」板块`);
+      return { summary: result.summary, data: result.data };
+    },
+
+    async etf_quote(args) {
+      const snapshot = await cached("etf-market", () => source("etfMarket"));
+      const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+      if (!items.length) throw toolError("ETF 行情暂时没取到");
+      const code = String(args?.code || "").match(/\d{6}/)?.[0] || "";
+      const query = clip(args?.query, 12);
+      const found = code ? items.filter(item => item.code === code) : query ? items.filter(item => String(item.name).includes(query)).sort((a, b) => (b.amount ?? 0) - (a.amount ?? 0)) : [];
+      if (!found.length) throw toolError(code ? `没有找到代码 ${code} 的 ETF` : query ? `没有找到名称含「${query}」的 ETF` : "请给出 ETF 代码或关键词");
+      const etfs = take(found, 6).map(item => etfFacts(item, finite(snapshot.highPremiumPercent) ?? 3));
+      return { summary: etfs.map(item => `${item.name} ${item.latest ?? "--"}（${item.changePct ?? "--"}%，溢价 ${item.premiumPct ?? "--"}%）`).join("；"), data: { etfs, fetchedAt: String(snapshot.fetchedAt || "") } };
+    },
+
+    async etf_rank(args) {
+      const snapshot = await cached("etf-market", () => source("etfMarket"));
+      const items = Array.isArray(snapshot?.items) ? snapshot.items : [];
+      if (!items.length) throw toolError("ETF 行情暂时没取到");
+      const rawCategory = String(args?.category || "").replace(/\s+/g, "").toUpperCase();
+      const t0Only = rawCategory === "T+0" || rawCategory === "T0";
+      const category = !t0Only && ["宽基", "行业主题", "跨境", "商品", "债券", "货币"].includes(String(args?.category)) ? String(args.category) : "";
+      const sortBy = Object.hasOwn(ETF_SORTS, String(args?.sortBy)) ? String(args.sortBy) : "change";
+      const key = ETF_SORTS[sortBy];
+      const top = intArg(args?.top, 1, 20, 10);
+      const ranked = items.filter(item => (!category || item.category === category) && (!t0Only || item.t0 === true) && finite(item[key]) !== null && ((sortBy !== "change" && sortBy !== "amplitude") || item.category !== "货币"))
+        .sort((a, b) => b[key] - a[key]).slice(0, top).map(item => etfFacts(item, finite(snapshot.highPremiumPercent) ?? 3));
+      if (!ranked.length) throw toolError("没有符合条件的 ETF");
+      const label = t0Only ? "T+0" : category || "全部";
+      return { summary: `${label} ETF 按${{ change: "涨幅", amount: "成交额", premium: "溢价率", turnover: "换手", scale: "规模", amplitude: "振幅" }[sortBy]}：${ranked.slice(0, 5).map(item => item.name).join("、")}`,
+        data: { category: label, sortBy, etfs: ranked } };
     },
 
     async sector_rank(args) {

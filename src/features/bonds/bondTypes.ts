@@ -19,6 +19,7 @@ export type ConvertibleBond = {
   low: number | null;
   quoteAt: string;
   quoteStatus: "ready" | "unavailable";
+  tradeStatus?: "trading" | "suspended" | undefined;
   remainingYears: number | null;
   secid: string;
   thscode: string;
@@ -33,8 +34,8 @@ export type ConvertibleBondSnapshot = {
   members: ConvertibleBond[];
   upcoming: UpcomingBond[];
   summary: { count: number; quoted: number; rising: number; falling: number; flat: number; medianChangePct: number | null; amount: number };
-  quoteCoverage: { loaded: number; total: number; pending: boolean; complete: boolean };
-  roster: { discoveredAt: string | null; feedCount: number; discoveredCount: number; discovering: { checked: number; total: number; found: number } | null };
+  quoteCoverage: { loaded: number; total: number; pending: boolean; complete: boolean; source?: string | undefined };
+  roster: { discoveredAt: string | null; feedCount: number; discoveredCount: number; delistedCount?: number | undefined; discovering: { checked: number; total: number; found: number } | null };
   warnings: string[];
 };
 

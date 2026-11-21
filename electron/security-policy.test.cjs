@@ -452,3 +452,17 @@ test("backup:run allows localStorage JSON strings over 65536 chars while ordinar
     { code: "INVALID_IPC_PAYLOAD" }
   );
 });
+
+test("internal programming errors reach the page as a plain retry hint, not as JavaScript jargon", async () => {
+  const { withIpcResult } = require("./security-policy.cjs");
+  const logged = [];
+  const crash = await withIpcResult(() => { const value = {}; return value.then(); }, code => logged.push(code))({});
+  assert.equal(crash.ok, false);
+  assert.equal(crash.error.code, "IPC_FAILED");
+  assert.equal(crash.error.message, "操作失败，请稍后再试");
+  const domain = await withIpcResult(() => { throw Object.assign(new TypeError("配置名称须为 1–20 个字"), { code: "INVALID_AI_PROFILE" }); })({});
+  assert.equal(domain.error.message, "配置名称须为 1–20 个字");
+  const plain = await withIpcResult(() => { throw new Error("同花顺接口暂时不可用"); })({});
+  assert.equal(plain.error.message, "同花顺接口暂时不可用");
+  assert.deepEqual(logged, ["IPC_FAILED"]);
+});

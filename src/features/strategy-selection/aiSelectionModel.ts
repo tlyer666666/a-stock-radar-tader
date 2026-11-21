@@ -32,7 +32,7 @@ export function sortByAiScore<T extends { code: string }>(rows: T[], scores: Map
 export const ratingTone = (rating: string | undefined) => rating === "重点关注" ? "strong" : rating === "关注" ? "good" : rating === "观望" ? "neutral" : rating === "回避" ? "weak" : "";
 
 export function aiErrorMessage(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error);
+  const text = userErrorText(error);
   return text.replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "");
 }
 
@@ -54,6 +54,7 @@ export function buildAiBoardRows<T extends { code: string; name: string }>(sourc
 }
 
 import { inferSecid } from "../../domain/securityIdentifiers";
+import { userErrorText } from "../../userErrorText";
 
 /** 证券代码 → 规范行情 secid。 */
 export const secidFor = inferSecid;
