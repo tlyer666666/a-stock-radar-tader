@@ -212,3 +212,84 @@ test("P1-2: buildUnifiedSentinels recognizes canonical PaperPosition stopPrice a
   // Near stopPrice (15.1 <= 15.0 * 1.015 = 15.225) boosts priority by +45 instead of +25
   assert.equal(sentinels[0].priority, 45);
 });
+
+const REAL_REVIEW = {
+  date: "2026-11-20",
+  session: "收盘复盘",
+  generatedAt: "2026-11-20T07:10:00.000Z",
+  regime: { id: "retreat", name: "退潮防守", tone: "defense", posture: "现金优先，等待风险释放" },
+  decision: { status: "blocked", headline: "今天大盘偏弱，先别开新仓" },
+  market: { available: true, upCount: 313, downCount: 5236, flatCount: 23, breadth: 0.056, averageReturn: -4.76 },
+  ecology: { available: true, limitUpCount: 28, limitDownCount: 58, failedRate: 0.2, maxHeight: 4 },
+  emotion: { limitUpCount: 28, limitDownCount: 58, state: "情绪退潮" },
+  indices: [
+    { name: "中证全指", close: 6120.4, returns: { r1: -2.1 }, trend: "偏弱", available: true },
+    { name: "上证指数", close: 3533.79, returns: { r1: -1.2251 }, trend: "偏弱", available: true },
+    { name: "创业板指", close: 2210.5, returns: { r1: -3.02 }, trend: "偏弱", available: true },
+    { name: "深证成指", close: 10980.2, returns: { r1: -2.4 }, trend: "偏弱", available: true },
+    { name: "沪深300", close: 4012.6, returns: { r1: -1.1 }, trend: "偏弱", available: true }
+  ],
+  focusSectors: [{ name: "保险", leaderName: "中国太保" }, { name: "银行", leaderName: "工商银行" }, { name: "贵金属", leaderName: "紫金矿业" }, { name: "第四个", leaderName: "略" }],
+  riskSignals: ["上涨广度不足45%，赚钱效应偏弱", "跌停家数偏多", "", "第三条", "第四条不显示"]
+};
+
+test("buildMarketPulse turns a real review payload into a cockpit pulse", () => {
+  const pulse = model.buildMarketPulse(REAL_REVIEW);
+  assert.equal(pulse.tone, "defense");
+  assert.equal(pulse.regimeName, "退潮防守");
+  assert.equal(pulse.headline, "今天大盘偏弱，先别开新仓");
+  assert.equal(pulse.provisional, false);
+  assert.deepEqual(pulse.breadth, { up: 313, down: 5236, flat: 23, upRatio: 313 / 5572 });
+  assert.equal(pulse.averageReturn, -4.76);
+  assert.deepEqual(pulse.limit, { up: 28, down: 58, failedRate: 0.2, maxHeight: 4 });
+  assert.deepEqual(pulse.indices.map((index) => index.name), ["上证指数", "深证成指", "创业板指", "沪深300", "中证全指"]);
+  assert.equal(pulse.indices[0].changePct, -1.2251);
+  assert.equal(pulse.sectors.length, 3);
+  assert.equal(pulse.sectors[0].leaderName, "中国太保");
+  assert.deepEqual(pulse.risks, ["上涨广度不足45%，赚钱效应偏弱", "跌停家数偏多", "第三条"]);
+});
+
+test("buildMarketPulse marks an intraday review as provisional", () => {
+  const pulse = model.buildMarketPulse({ ...REAL_REVIEW, decision: { status: "watch", headline: "忽略这条" } });
+  assert.equal(pulse.provisional, true);
+  assert.equal(pulse.headline, "盘中暂看「退潮防守」：现金优先，等待风险释放");
+});
+
+test("buildMarketPulse tolerates missing market and ecology blocks", () => {
+  const pulse = model.buildMarketPulse({ ...REAL_REVIEW, market: { available: false }, ecology: { available: false } });
+  assert.equal(pulse.breadth, null);
+  assert.equal(pulse.averageReturn, null);
+  assert.deepEqual(pulse.limit, { up: 28, down: 58, failedRate: null, maxHeight: null }, "生态不可用时退回情绪统计");
+});
+
+test("buildMarketPulse rejects unusable input and never zero-fills", () => {
+  assert.equal(model.buildMarketPulse(null), null);
+  assert.equal(model.buildMarketPulse("garbage"), null);
+  assert.equal(model.buildMarketPulse({ decision: { status: "blocked" } }), null);
+  const marketOnly = model.buildMarketPulse({ market: { available: true, upCount: 1, downCount: 2 } });
+  assert.ok(marketOnly);
+  assert.equal(marketOnly.tone, "neutral");
+  assert.equal(marketOnly.regimeName, "");
+  assert.equal(marketOnly.averageReturn, null);
+  const unknownTone = model.buildMarketPulse({ regime: { name: "测试", tone: "unknown" } });
+  assert.equal(unknownTone.tone, "neutral");
+});
+
+test("buildMarketPulse marks yesterday's review as stale and rewrites the headline", () => {
+  const pulse = model.buildMarketPulse(REAL_REVIEW, "2026-11-21");
+  assert.equal(pulse.stale, true);
+  assert.equal(pulse.provisional, false);
+  assert.equal(pulse.headline, "上个交易日大盘偏弱，先别开新仓");
+  const noToday = model.buildMarketPulse(REAL_REVIEW);
+  assert.equal(noToday.stale, false);
+  const sameDay = model.buildMarketPulse(REAL_REVIEW, "2026-11-20");
+  assert.equal(sameDay.stale, false);
+  assert.equal(sameDay.headline, "今天大盘偏弱，先别开新仓");
+});
+
+test("buildMarketPulse prefixes a stale headline without 今天 and clears provisional", () => {
+  const pulse = model.buildMarketPulse({ ...REAL_REVIEW, decision: { status: "watch" } }, "2026-11-21");
+  assert.equal(pulse.stale, true);
+  assert.equal(pulse.provisional, false);
+  assert.equal(pulse.headline, "上个交易日：盘中暂看「退潮防守」：现金优先，等待风险释放");
+});

@@ -161,6 +161,17 @@ function evaluateAudit(payload, exitCode, { mitigatedAdvisories = new Map() } = 
   };
 }
 
+function spawnPnpmAudit(root, { platform = process.platform, spawnImpl = spawnSync } = {}) {
+  const options = {
+    cwd: root, encoding: "utf8", timeout: 120000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, shell: platform === "win32"
+  };
+  const primary = spawnImpl(platform === "win32" ? "pnpm.cmd" : "pnpm", ["audit", "--json"], options);
+  if (primary?.error?.code === "ENOENT") {
+    return spawnImpl(platform === "win32" ? "corepack.cmd" : "corepack", ["pnpm", "audit", "--json"], options);
+  }
+  return primary;
+}
+
 function run(root, { audit = false } = {}) {
   const manifestPath = path.join(root, "package.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
@@ -193,10 +204,7 @@ function run(root, { audit = false } = {}) {
       note: 'Affected embedded undici is isolated by the shared HTTP policy transport.'
     }, audit: "not requested" };
   if (audit) {
-    // Fixed arguments only. Windows needs a shell to execute pnpm.cmd.
-    const auditResult = spawnSync(process.platform === "win32" ? "pnpm.cmd" : "pnpm", ["audit", "--json"], {
-      cwd: root, encoding: "utf8", timeout: 120000, maxBuffer: 16 * 1024 * 1024, windowsHide: true, shell: process.platform === "win32",
-    });
+    const auditResult = spawnPnpmAudit(root);
     if (auditResult.error) throw new Error(`Dependency audit could not complete: ${auditResult.error.message}`);
     let payload;
     try { payload = JSON.parse(auditResult.stdout); } catch { throw new Error(`Dependency audit returned invalid JSON (exit ${auditResult.status})`); }
@@ -218,4 +226,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { parseRootImporter, verifyVersions, evaluateAudit, verifyInTreePatchedAdvisories, run };
+module.exports = { parseRootImporter, verifyVersions, evaluateAudit, verifyInTreePatchedAdvisories, spawnPnpmAudit, run };

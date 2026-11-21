@@ -23,13 +23,15 @@ import {
 } from "lucide-react";
 import { PageHeading, PanelTitle, Fact } from "../../components/terminal/TerminalPrimitives";
 import StockMonitorEditor from "../../components/StockMonitorEditor";
-import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
+import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
 import StockRowActions from "../../components/StockRowActions";
 import { useVirtualWindow } from "../../components/useVirtualWindow";
 import useStockMonitors from "../../useStockMonitors";
 import { startVisibleInterval } from "../../visiblePolling";
 import { fmt, fmtMoney, nullableNumber } from "../../domain/formatters";
 import { inferSecid } from "../../domain/securityIdentifiers";
+import type { BatchQuoteRequest, BatchQuoteResult } from "../../domain/batchQuoteTypes";
+import { nextWatchSort, sortWatchItems, toWatchQuotes, watchQuoteStats, type WatchQuote, type WatchSort } from "./watchlistModel";
 import type { PaperPosition } from "../../domain/paperSimulationTypes";
 import { formatShanghaiTime, formatShanghaiDateTime } from "../../dateUtils";
 import { summarizeStockMonitor } from "../../stockMonitorRules";
@@ -41,6 +43,7 @@ import {
   buildStopLossMonitorConfig,
   clearHoldingTrades,
   computeMonitorStopPrice,
+  loadHoldingTradeLedger,
   loadHoldingTrades,
   maskSensitiveText,
   mergeImportedHoldings,
@@ -50,6 +53,7 @@ import {
   type HoldingTradeRecord,
   type HoldingTradeSide
 } from "./holdingsLedger";
+import { userErrorText } from "../../userErrorText";
 
 function MonitorSubTabs({
   active,
@@ -450,7 +454,7 @@ export function HoldingsView({
       setCostPrice("");
       setNote("");
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "持仓保存失败");
+      setFormError(userErrorText(error, "持仓保存失败"));
     } finally {
       setSubmitting(false);
     }
@@ -513,7 +517,7 @@ export function HoldingsView({
     () => (monitors?.alerts || []).filter(alert => holdingCodeSet.has(alert.code)),
     [monitors?.alerts, holdingCodeSet]
   );
-  const tradeSummary = useMemo(() => summarizeHoldingTrades(tradeRecords), [tradeRecords]);
+  const tradeSummary = useMemo(() => summarizeHoldingTrades(tradeRecords, loadHoldingTradeLedger().archived), [tradeRecords]);
 
   const unmonitoredRows = useMemo(
     () => (monitors ? rows.filter(row => !monitors.configs[row.item.code]?.enabled) : []),
@@ -537,6 +541,7 @@ export function HoldingsView({
       }
       let summaryText = "";
       let settledPnl: number | null = null;
+      let settledDilutedPnl: number | undefined;
       let settledName = resolved?.name || cleanCode;
       const numericShares = Number(tradeShares);
       const numericPrice = Number(tradePrice);
@@ -558,27 +563,35 @@ export function HoldingsView({
         if (!outcome.ok) throw new Error(outcome.error);
         summaryText = outcome.summary;
         settledPnl = outcome.realizedPnl;
+        settledDilutedPnl = outcome.dilutedPnl;
         settledName = resolved?.name || prevItem?.name || outcome.nextItems.find(item => item.code === cleanCode)?.name || cleanCode;
         return outcome.nextItems;
       });
       if (saved) {
-        setTradeRecords(appendHoldingTradeRecord({
-          code: cleanCode,
-          name: settledName,
-          side: tradeSide,
-          shares: numericShares,
-          price: numericPrice,
-          realizedPnl: settledPnl,
-          note: tradeNote
-        }));
-        setBatchMessage(summaryText);
+        // 持仓已落盘：流水写失败只提示，不能走外层 catch，否则表单保留会诱导用户重复提交、重复记账。
+        let ledgerWarning = "";
+        try {
+          setTradeRecords(appendHoldingTradeRecord({
+            code: cleanCode,
+            name: settledName,
+            side: tradeSide,
+            shares: numericShares,
+            price: numericPrice,
+            realizedPnl: settledPnl,
+            dilutedPnl: settledDilutedPnl,
+            note: tradeNote
+          }));
+        } catch (ledgerError) {
+          ledgerWarning = userErrorText(ledgerError, "持仓已更新，但这笔成交流水未能保存，请勿重复提交本笔交易");
+        }
+        setBatchMessage(ledgerWarning ? `${summaryText}；${ledgerWarning}` : summaryText);
         setTradeCode("");
         setTradeShares("100");
         setTradePrice("");
         setTradeNote("");
       }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "加减仓记账失败");
+      setFormError(userErrorText(error, "加减仓记账失败"));
     } finally {
       setSubmitting(false);
     }
@@ -622,7 +635,7 @@ export function HoldingsView({
         setEntryMode("single");
       }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : "批量导入失败");
+      setFormError(userErrorText(error, "批量导入失败"));
     } finally {
       setSubmitting(false);
     }
@@ -1110,7 +1123,7 @@ export function HoldingsView({
           <b>实盘成交流水与累计已实现盈亏</b>
           <span>
             共 {tradeSummary.totalCount} 笔成交
-            {tradeSummary.sellCount > 0 ? ` · 卖出结算 ${tradeSummary.sellCount} 笔（胜 ${tradeSummary.winCount}）· 累计已实现盈亏 ${maskSensitiveText(signedMoney(tradeSummary.cumulativeRealizedPnl), privacyMask)}` : ""}
+            {tradeSummary.sellCount > 0 ? ` · 卖出结算 ${tradeSummary.sellCount} 笔（胜 ${tradeSummary.winCount}）· 累计已实现盈亏 ${maskSensitiveText(signedMoney(tradeSummary.cumulativeRealizedPnl), privacyMask)}${tradeSummary.cumulativeDilutedPnl ? `（另有 ${maskSensitiveText(signedMoney(tradeSummary.cumulativeDilutedPnl), privacyMask)} 已摊薄进持仓成本）` : ""}` : ""}
           </span>
         </summary>
         {tradeRecords.length > 0 ? (
@@ -1164,7 +1177,7 @@ export function HoldingsView({
   );
 }
 
-type WatchQuoteValue = { latest?: number | null | undefined; changePct?: number | null | undefined };
+type WatchQuoteValue = WatchQuote;
 type OptionalQuoteApi = {
   getQuote?: ((security: Security) => Promise<{
     quote?: { latest?: number | null; price?: number | null; changePct?: number | null };
@@ -1175,6 +1188,7 @@ type OptionalQuoteApi = {
   getQuoteSnapshot?: ((security: Security) => Promise<{
     quote?: { latest?: number | null; price?: number | null; changePct?: number | null };
   }>) | undefined;
+  getBatchQuotes?: ((securities: BatchQuoteRequest[]) => Promise<BatchQuoteResult>) | undefined;
 };
 
 export function WatchlistView({
@@ -1208,9 +1222,14 @@ export function WatchlistView({
 }) {
   const [filter, setFilter] = useState("");
   const [fetchedQuotes, setFetchedQuotes] = useState<Record<string, WatchQuoteValue>>({});
+  const [sort, setSort] = useState<WatchSort>(null);
+  const [batchFailed, setBatchFailed] = useState(false);
+  const [quoteMeta, setQuoteMeta] = useState<{ source: string; at: number } | null>(null);
   const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [plannedCodes] = usePlannedCodes();
   const tableScroll = useRef<HTMLDivElement>(null);
   const fetchSeqRef = useRef(0);
+  const batchSeqRef = useRef(0);
   const tabs = [{ id: "all", label: "全部十日" }, ...Array.from({ length: 10 }, (_, index) => ({ id: `T+${index + 1}`, label: `T+${index + 1}` }))];
   const nodeFor = (item: WatchItem) => item.observationNode || (
     Number(item.tradingDaysSince) >= 1 && Number(item.tradingDaysSince) <= 10
@@ -1222,29 +1241,77 @@ export function WatchlistView({
       (!filter.trim() || `${item.name} ${item.code}`.toLowerCase().includes(filter.trim().toLowerCase()))),
     [items, activeNode, filter]
   );
+  const mergedQuotes = useMemo(() => ({ ...(quotes || {}), ...fetchedQuotes }), [quotes, fetchedQuotes]);
+  const displayedItems = useMemo(() => sortWatchItems(visibleItems, mergedQuotes, sort), [visibleItems, mergedQuotes, sort]);
   const virtual = useVirtualWindow({
-    itemCount: visibleItems.length,
+    itemCount: displayedItems.length,
     rowHeight: 29,
     overscan: 10,
     threshold: 80,
     containerRef: tableScroll
   });
   const windowedItems = virtual.enabled
-    ? visibleItems.slice(virtual.startIndex, virtual.endIndex)
-    : visibleItems;
+    ? displayedItems.slice(virtual.startIndex, virtual.endIndex)
+    : displayedItems;
   const windowedKey = useMemo(
     () => windowedItems.slice(0, 60).map(item => item.code).join(","),
     [windowedItems]
   );
   const windowedRef = useRef(windowedItems);
   windowedRef.current = windowedItems;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const allCodesKey = useMemo(() => [...new Set(items.map(item => item.code))].sort().join(","), [items]);
 
-  useEffect(() => { tableScroll.current?.scrollTo({ top: 0, left: 0 }); }, [activeNode, filter]);
+  useEffect(() => { tableScroll.current?.scrollTo({ top: 0, left: 0 }); }, [activeNode, filter, sort]);
+
+  useEffect(() => {
+    const api = typeof window !== "undefined" ? (window.stockApi as unknown as OptionalQuoteApi | undefined) : undefined;
+    const getBatchQuotes = api?.getBatchQuotes;
+    if (typeof getBatchQuotes !== "function" || !allCodesKey) return undefined;
+    let active = true;
+    const runBatch = async () => {
+      const seq = ++batchSeqRef.current;
+      const seen = new Set<string>();
+      const securities: BatchQuoteRequest[] = [];
+      for (const item of itemsRef.current) {
+        if (seen.has(item.code) || securities.length >= 1200) continue;
+        seen.add(item.code);
+        securities.push({
+          code: item.code,
+          secid: item.secid || inferSecid(item.code),
+          ...(item.thscode ? { thscode: item.thscode } : {}),
+          assetType: item.assetType || "stock"
+        });
+      }
+      try {
+        const result = await getBatchQuotes(securities);
+        if (!active || batchSeqRef.current !== seq) return;
+        setFetchedQuotes(prev => ({ ...prev, ...toWatchQuotes(result) }));
+        setQuoteMeta({ source: result?.source || "腾讯行情", at: Date.now() });
+        setBatchFailed(false);
+      } catch {
+        if (active && batchSeqRef.current === seq) setBatchFailed(true);
+      }
+    };
+    void runBatch();
+    if (!live) return () => { active = false; batchSeqRef.current += 1; };
+    const stop = startVisibleInterval(() => { void runBatch(); }, 15_000);
+    return () => {
+      active = false;
+      batchSeqRef.current += 1;
+      stop();
+    };
+  }, [allCodesKey, live]);
+
+  const batchApiMissing = typeof window !== "undefined" &&
+    typeof (window.stockApi as unknown as OptionalQuoteApi | undefined)?.getBatchQuotes !== "function";
+  const fallbackActive = batchApiMissing || batchFailed;
 
   useEffect(() => {
     const api = typeof window !== "undefined" ? (window.stockApi as unknown as OptionalQuoteApi | undefined) : undefined;
     const fetchOne = api?.getQuote ?? api?.getQuoteSnapshot;
-    if (typeof fetchOne !== "function" || !windowedKey) return undefined;
+    if (!fallbackActive || typeof fetchOne !== "function" || !windowedKey) return undefined;
     let active = true;
     const runFetch = async () => {
       const seq = ++fetchSeqRef.current;
@@ -1285,6 +1352,7 @@ export function WatchlistView({
         }
         return next;
       });
+      setQuoteMeta({ source: "同花顺", at: Date.now() });
     };
     void runFetch();
     if (!live) return () => { active = false; fetchSeqRef.current += 1; };
@@ -1294,9 +1362,14 @@ export function WatchlistView({
       fetchSeqRef.current += 1;
       stop();
     };
-  }, [windowedKey, live]);
+  }, [windowedKey, live, fallbackActive]);
 
-  const mergedQuotes = useMemo(() => ({ ...(quotes || {}), ...fetchedQuotes }), [quotes, fetchedQuotes]);
+  const quoteStats = useMemo(() => watchQuoteStats(visibleItems, mergedQuotes), [visibleItems, mergedQuotes]);
+  const quoteStatusText = batchFailed
+    ? "批量行情暂时没取到，正在逐只读取前 60 只"
+    : !quoteMeta && quoteStats.quoted === 0
+      ? "正在读取行情…"
+      : `行情 ${quoteStats.quoted}/${visibleItems.length} 只${quoteMeta ? `（${quoteMeta.source} ${formatShanghaiTime(quoteMeta.at)}）` : ""} · 上涨 ${quoteStats.up} · 下跌 ${quoteStats.down} · 平 ${quoteStats.flat} · 涨停 ${quoteStats.limitUp}`;
 
   return (
     <div className="ten-day-workspace">
@@ -1306,6 +1379,7 @@ export function WatchlistView({
       </header>
       <MonitorSubTabs active="watchlist" onNavigate={onNavigate} />
       <p className="watch-table-guide" id="watch-observation-guide">当前显示 {visibleItems.length} / {items.length} 只 · T+1 为涨停后的第 1 个交易日，依次观察至 T+10；连板为涨停日记录。</p>
+      <p className="watch-quote-status" role="status">{quoteStatusText}</p>
       <div className="watch-node-tabs" role="group" aria-label="观察交易日">
         {tabs.map(tab => (
           <button key={tab.id} className={activeNode === tab.id ? "active" : ""} aria-pressed={activeNode === tab.id} onClick={() => onNodeChange(tab.id)}>
@@ -1324,7 +1398,7 @@ export function WatchlistView({
             >
               <table className="watch-stock-table" aria-describedby="watch-observation-guide">
                 <colgroup><col className="watch-col-index" /><col className="watch-col-name" /><col className="watch-col-code" /><col className="watch-col-price" /><col className="watch-col-change" /><col className="watch-col-node" /><col className="watch-col-date" /><col className="watch-col-boards" /><col className="watch-col-actions" /></colgroup>
-                <thead><tr><th scope="col">序号</th><th scope="col">股票</th><th scope="col">代码</th><th scope="col">现价</th><th scope="col">涨跌幅</th><th scope="col">观察日</th><th scope="col">涨停日期</th><th scope="col">连板</th><th scope="col">操作</th></tr></thead>
+                <thead><tr><th scope="col">序号</th><th scope="col">股票</th><th scope="col">代码</th><th scope="col" aria-sort={sort?.key === "latest" ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}><button type="button" className="watch-sort-btn" onClick={() => setSort(nextWatchSort(sort, "latest"))}>现价{sort?.key === "latest" ? <span className="watch-sort-arrow">{sort.dir === "desc" ? "▼" : "▲"}</span> : null}</button></th><th scope="col" aria-sort={sort?.key === "changePct" ? (sort.dir === "desc" ? "descending" : "ascending") : "none"}><button type="button" className="watch-sort-btn" onClick={() => setSort(nextWatchSort(sort, "changePct"))}>涨跌幅{sort?.key === "changePct" ? <span className="watch-sort-arrow">{sort.dir === "desc" ? "▼" : "▲"}</span> : null}</button></th><th scope="col">观察日</th><th scope="col">涨停日期</th><th scope="col">连板</th><th scope="col">操作</th></tr></thead>
                 <tbody>
                   {virtual.enabled && virtual.topSpacerHeight > 0 && (
                     <tr aria-hidden="true"><td colSpan={9} style={{ height: virtual.topSpacerHeight, padding: 0, border: 0 }} /></tr>
@@ -1332,8 +1406,9 @@ export function WatchlistView({
                   {windowedItems.map((item, offset) => {
                     const rowIndex = (virtual.enabled ? virtual.startIndex : 0) + offset;
                     const q = mergedQuotes[item.code];
-                    const latest = typeof q?.latest === "number" && Number.isFinite(q.latest) && q.latest > 0 ? q.latest : null;
-                    const chg = typeof q?.changePct === "number" && Number.isFinite(q.changePct) ? q.changePct : null;
+                    const suspended = q?.tradeStatus === "suspended";
+                    const latest = !suspended && typeof q?.latest === "number" && Number.isFinite(q.latest) && q.latest > 0 ? q.latest : null;
+                    const chg = !suspended && typeof q?.changePct === "number" && Number.isFinite(q.changePct) ? q.changePct : null;
                     const isFav = Boolean(favoriteCodes?.has(item.code));
                     const sec: Security = {
                       code: item.code,
@@ -1353,7 +1428,7 @@ export function WatchlistView({
                       <button className="watch-stock-open" aria-label={`${item.name} ${item.code}`} onClick={() => onOpen(item)}><strong>{item.name}</strong></button>
                     </td>
                     <td className="watch-security-code">{item.code}<small>{item.thscode?.split(".")[1] || "A"}</small></td>
-                    <td>{latest !== null ? fmt(latest) : "—"}</td>
+                    <td>{suspended ? <span className="bond-status-tag">停牌</span> : latest !== null ? fmt(latest) : "—"}</td>
                     <td className={chg === null ? "" : chg >= 0 ? "up" : "down"}>{chg !== null ? `${chg >= 0 ? "+" : ""}${fmt(chg)}%` : "—"}</td>
                     <td><span className="watch-day-badge">{nodeFor(item)}</span></td>
                     <td>{item.limitDate || (item.createdAt ? new Date(item.createdAt).toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai" }) : "—")}</td>
@@ -1363,6 +1438,7 @@ export function WatchlistView({
                         <StockRowActions
                           security={sec}
                           isFavorite={isFav}
+                          isPlanned={plannedCodes.has(item.code)}
                           onToggleFavorite={handleFav}
                           onOpenMonitor={onOpenMonitor}
                           onAddPlan={() => setPlanTarget({
@@ -1370,6 +1446,7 @@ export function WatchlistView({
                             name: item.name,
                             secid: sec.secid,
                             referencePrice: latest,
+                            source: "观察池",
                             defaultNote: `十日观察 ${nodeFor(item)}${item.limitDate ? ` · 涨停日 ${item.limitDate}` : ""}`
                           })}
                           compact

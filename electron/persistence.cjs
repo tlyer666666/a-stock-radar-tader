@@ -218,6 +218,13 @@ function writeJsonAtomic(filePath, backupPath, value, validator, onBackupError, 
   };
   try {
     const serialized = JSON.stringify(value, null, 2);
+    try {
+      if (fs.existsSync(filePath) && fs.existsSync(backupPath)
+        && fs.readFileSync(filePath, "utf8") === serialized
+        && fs.readFileSync(backupPath, "utf8") === serialized) {
+        return value;
+      }
+    } catch { /* Unreadable files fall through to the normal atomic write. */ }
     fs.writeFileSync(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
     safeChmod(temporaryPath, 0o600);
     const handle = fs.openSync(temporaryPath, "r+");
@@ -380,6 +387,13 @@ async function performWriteJsonAtomicAsync(filePath, backupPath, value, serializ
     }
   };
   try {
+    try {
+      if ((await existsAsync(filePath)) && (await existsAsync(backupPath))
+        && (await fs.promises.readFile(filePath, "utf8")) === serialized
+        && (await fs.promises.readFile(backupPath, "utf8")) === serialized) {
+        return value;
+      }
+    } catch { /* Unreadable files fall through to the normal atomic write. */ }
     await fs.promises.writeFile(temporaryPath, serialized, { encoding: "utf8", mode: 0o600 });
     await safeChmodAsync(temporaryPath, 0o600);
     await fsyncFileAsync(temporaryPath);

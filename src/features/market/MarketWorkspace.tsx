@@ -8,7 +8,7 @@ import LimitEcologyPanel from "../dashboard/LimitEcologyPanel";
 import ConsecutiveBoardLadder from "./ConsecutiveBoardLadder";
 import { WorkspaceErrorBoundary } from "../../components/AppErrorBoundary";
 import StockMonitorEditor from "../../components/StockMonitorEditor";
-import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
+import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
 import { buildStopLossMonitorConfig, computeMonitorStopPrice, maskSensitiveText } from "../collections/holdingsLedger";
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type CSSProperties, type FormEvent, type MouseEvent, type ReactNode } from "react";
 import type { ChartCandleRow } from "../../shared/ipc-contract";
@@ -45,6 +45,7 @@ import { formatShanghaiDateTime } from "../../dateUtils";
 import { averageAt, calculateBollingerBands, calculatePriceMovingAverages } from "../../priceChartSeries";
 import TimeShareChart from "./TimeShareChart";
 import QuickNote from "../notes/QuickNote";
+import { userErrorText } from "../../userErrorText";
 
 function MiniBar({ label, value }: { label: string; value: number }) {
   return <div className="mini-bar"><span>{label}<b>{value}</b></span><i><em style={{ width: `${value}%` }} /></i></div>;
@@ -198,6 +199,7 @@ export function Dashboard({
   const [quickTradePrice, setQuickTradePrice] = useState("");
   const [quickTradeSubmitting, setQuickTradeSubmitting] = useState(false);
   const [quickPlanTarget, setQuickPlanTarget] = useState<QuickPlanTarget | null>(null);
+  const [plannedCodes] = usePlannedCodes();
   const agentTriggerRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     setQuickTradeOpen(false);
@@ -288,7 +290,7 @@ export function Dashboard({
           description={limitPoolMeta?.dataDate
             ? `数据日 ${limitPoolMeta.dataDate} · ${limitPoolMeta.count}只 · 最近核对 ${new Date(limitPoolMeta.checkedAt).toLocaleTimeString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" })} · ${limitPoolProviderLabel(limitPoolMeta.providers)}`
             : "每只涨停股同步显示实时行情、封板质量与结构判断；点击“分析”进入完整个股复盘。"}
-          actions={<button className="primary-btn" onClick={onDiscover} disabled={discovering}>{discovering ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}刷新涨停池</button>}
+          actions={<button className="primary-btn" onClick={onDiscover} disabled={discovering} title="强制重新读取涨停池，同时刷新上方涨停生态（龙虎榜、连板天梯、涨停原因等）">{discovering ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />}刷新涨停池</button>}
         />
         {/* 涨停生态各块（涨停结构、连板天梯、涨停原因、热榜、龙虎榜、异动、AI 解读）放在最上面一字排开，点开看详情。 */}
         <LimitEcologyPanel onOpen={onOpen} live={live} />
@@ -773,13 +775,14 @@ export function Dashboard({
                         secid: security.secid,
                         referencePrice: refPrice,
                         atr: derivedAtr,
-                        defaultNote: "个股分析工作台次日观察计划"
+                        source: "个股详情",
+                        defaultNote: "个股详情加入驾驶舱"
                       });
                     }}
-                    title="编辑参考入场区间、止损与目标位，保存后次日早盘进入今日驾驶舱竞价对账"
+                    title={plannedCodes.has(activeCode) ? "已在今日驾驶舱，点击可调整买点与止损" : "一键加入今日驾驶舱（按现价设买入区 -1%~+2%、止损 -6%，保留 5 个交易日）"}
                   >
                     <ClipboardPlus size={14} />
-                    +次日计划
+                    {plannedCodes.has(activeCode) ? "已在驾驶舱" : "+驾驶舱"}
                   </button>
                 )}
                 {onTransferToT && (
@@ -900,14 +903,14 @@ export function Dashboard({
                 <button
                   type="button"
                   className="secondary-btn executive-synthesis-btn"
-                  onClick={() => openAgentFor({ code: activeCode, name: activeName }, "full", agentContext)}
+                  onClick={() => openAgentFor({ code: activeCode, name: activeName, assetType: security.assetType }, "full", agentContext)}
                 >
                   <MessagesSquare size={15} />
                   AI 问股深挖
                 </button>
               )}
             </section>
-            <AiStockReviewPanel security={{ code: activeCode, name: activeName }} agentContext={agentContext} />
+            <AiStockReviewPanel security={{ code: activeCode, name: activeName, assetType: security.assetType }} agentContext={agentContext} />
 
             {agentDrawerOpen && canOpenAgent() && (
               <aside id="mw-agent-drawer" className="panel mw-agent-drawer" role="dialog" aria-label="个股侧边 AI 问股">
@@ -920,7 +923,7 @@ export function Dashboard({
                     <button
                       type="button"
                       className="secondary-btn"
-                      onClick={() => openAgentFor({ code: activeCode, name: activeName }, "full", agentContext)}
+                      onClick={() => openAgentFor({ code: activeCode, name: activeName, assetType: security.assetType }, "full", agentContext)}
                     >
                       全屏对话
                     </button>
@@ -1794,7 +1797,7 @@ function TrendChartPanel({
     } catch (reason) {
       if (requestId !== chartRequest.current) return;
       // Keep the last successful snapshot for this context during refresh failures.
-      setChartFailure({ context: chartContext, message: reason instanceof Error ? reason.message : String(reason) });
+      setChartFailure({ context: chartContext, message: userErrorText(reason) });
     } finally {
       if (chartPending.current === requestId) chartPending.current = null;
       if (requestId === chartRequest.current) setChartLoading(false);

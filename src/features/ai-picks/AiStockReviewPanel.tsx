@@ -12,7 +12,7 @@ const stamp = (value: AiRanking) => `${value.model} · 数据日 ${value.asOfDat
  * 打开时只读本机已保存的点评，点按钮才调用模型。价位由软件按均线和区间高低点算出，AI 只引用。
  */
 export function AiStockReviewPanel({ security, context, agentContext }: {
-  security: { code: string; name: string };
+  security: { code: string; name: string; assetType?: string | undefined };
   context?: string[] | undefined;
   agentContext?: Record<string, unknown> | undefined;
 }) {
@@ -85,7 +85,7 @@ export function AiStockReviewPanel({ security, context, agentContext }: {
         {frameworks.available && <AiFrameworkPicker inline catalog={frameworks.catalog} onChoose={id => void frameworks.choose(id)} disabled={busy} />}
         {(api.mutateCustomList || (api.customList && api.saveCustomList)) && <button type="button" className="secondary-btn" onClick={() => void addToList()}><ListPlus size={15} />加入我的股票</button>}
         {api.agent && canOpenAgent() && <button type="button" className="secondary-btn" disabled={!configured} title="打开 AI 问股，让 AI 自己查数据做全面分析，可以继续追问"
-          onClick={() => openAgentFor({ code: security.code, name: security.name }, "full", agentContext)}><MessagesSquare size={15} />AI 问股深入分析</button>}
+          onClick={() => openAgentFor({ code: security.code, name: security.name, assetType: security.assetType }, "full", agentContext)}><MessagesSquare size={15} />AI 问股深入分析</button>}
         <button type="button" className="primary-btn" onClick={() => void run()} disabled={busy || !configured}>
           {busy ? <LoaderCircle size={15} className="spin" /> : review ? <RefreshCw size={15} /> : <Sparkles size={15} />}{busy ? "AI 点评中…" : review ? "重新点评" : "AI 点评"}</button>
       </div>

@@ -91,7 +91,7 @@ export function buildStockReviewDecision(rawPayload: unknown, marketSnapshot?: R
   const belowAnchor = close !== null && eventLow !== null && close < eventLow;
   if (belowAnchor && !intraday && !stale) vetoes.push(`收盘低于同一日线口径的涨停锚点低点 ${price(eventLow)}，原结构失效。`);
   const sectorRs = finite(analysis.rsSector);
-  const stage = !usable ? "阶段不可判断" : close! < ma20! ? "趋势转弱观察" : rising && recentEvent ? "趋势延续观察" : rising ? "上升趋势，涨停锚点待确认" : "整理等待确认";
+  const stage = !usable ? "走势阶段暂时判断不了" : close! < ma20! ? "趋势转弱观察" : rising && recentEvent ? "趋势延续观察" : rising ? "上升趋势，涨停锚点待确认" : "整理等待确认";
   const sourceNature = /preview|synthetic|demo/i.test(String(payload.actualProvider || "")) || payload.isPreview ? "合成 / 预览资料，不是实盘验证" : `行情来源：${payload.actualProvider || "未标明"}`;
   const limitations = ["尚未逐日核对交易所日历与停牌记录；日线条数不等于已确认的市场交易日覆盖。", "涨停锚点来自上游识别，未提供官方当日限价与证券状态的独立复核。", "日线用于结构观察；复权口径未独立核验，次日成交价、限价与止损必须在同一明确口径重新核验。"];
   if (intraday) limitations.unshift("最新日线尚在盘中，本次阶段是临时观察，须以收盘数据复核。");
@@ -101,12 +101,12 @@ export function buildStockReviewDecision(rawPayload: unknown, marketSnapshot?: R
   if (belowAnchor && stale) conflicts.push(`历史日线低于锚点低点 ${price(eventLow)}，当前结构需要更新资料后复核。`);
   conflicts.push(...reportedRisks.map((risk) => `上游风险提示：${risk}`));
   if (sectorRs !== null && sectorRs < 0) conflicts.push(`个股相对板块偏弱（${sectorRs.toFixed(2)}），与上升趋势可能冲突；窗口沿用上游，未当作第二张趋势赞成票。`);
-  if (!recentEvent) conflicts.push(eventAge === null ? "缺少可对应到日线的近期涨停锚点。" : `涨停锚点距今 ${eventAge} 根日线，已超出最近 15 根范围。`);
-  if (!conflicts.length) conflicts.push("已取到的结构证据未触发上述否决；这不代表公告与交易限制已全部排除。");
+  if (!recentEvent) conflicts.push(eventAge === null ? "近期没有找到能对应上的涨停日。" : `涨停锚点距今 ${eventAge} 根日线，已超出最近 15 根范围。`);
+  if (!conflicts.length) conflicts.push("目前没发现走势上的风险信号；但公告和交易限制还要自己再看一眼。");
   const status = !usable ? "insufficient" : vetoes.length ? "blocked" : rising && recentEvent && marketGate === "open" && !intraday && !stale ? "conditional" : "watch";
   // 复盘页只陈述观察事实，不输出「规则不通过」这类校验口径的判定语。
   // 复核仍照常进行（vetoes 仍参与 status 计算），只是不再把它当作给用户看的结论标题。
-  const headline = !usable ? "数据不足，阶段暂不可判" : vetoes.length ? `${stage} · 存在待核实事项` : stale ? `${stage} · 资料陈旧待更新` : `${stage} · 交易条件待核验`;
+  const headline = !usable ? "数据不足，暂时判断不了走势阶段" : vetoes.length ? `${stage} · 存在待核实事项` : stale ? `${stage} · 资料陈旧待更新` : `${stage} · 买卖条件还要核对`;
   const plan = analysis.tradePlan || payload.tradePlan || {};
   const distance = (value: number | null, base: number | null) => value !== null && base !== null && base > 0 ? (value / base - 1) * 100 : null;
   const last20 = rows.slice(-20), prior20 = rows.slice(-21, -1);
@@ -149,7 +149,7 @@ export function buildStockReviewDecision(rawPayload: unknown, marketSnapshot?: R
   if (sectorRs !== null && sectorRs < 0) addEvidence("sector-relative", "相对板块偏弱", "risk", 3, `上游相对板块值 ${sectorRs.toFixed(2)} 与个股上行假设形成分歧。`, "窗口 / 板块覆盖未确认，不重复计票");
   if (marketGate === "unknown") addEvidence("market-gap", "同日市场条件缺口", "missing", 4, "未取得同日、有效、完成收盘的市场关口。", "有个股结构不等于入场环境已通过");
   if (volumeRatio20 === null || amount20 === null) addEvidence("flow-gap", "量额资料不完整", "missing", 4, "缺少完整同源量额，不能确认放量或流动性。", "缺数不按零量或中性强度处理");
-  addEvidence("execution-gap", "执行条件尚未冻结", "missing", 4, "官方限价、证券当日状态与价格复权口径尚未独立确认；本复盘没有生成委托。", "观察价位不自动变成止损、目标或仓位");
+  addEvidence("execution-gap", "还没有定好买卖计划", "missing", 4, "涨跌停价、当天是否停牌、价格是否复权都还没单独核对；复盘不会帮你下单。", "观察价位不自动变成止损、目标或仓位");
   if (rising) addEvidence("trend", "均线结构向上", "support", 5, "价格在 MA20 上方，MA20 高于 MA60 且较 5 根前抬升。", "一个趋势证据组，不是三项独立胜算");
   if (recentEvent) addEvidence("event", "近期事件可定位", "neutral", 5, `${eventDate} 对应实际日线，距今 ${eventAge} 根，低点 ${price(eventLow)}。`, "仅定位上游事件，官方限价与证券状态另核");
   evidence.sort((a,b) => a.priority - b.priority);
@@ -163,10 +163,10 @@ export function buildStockReviewDecision(rawPayload: unknown, marketSnapshot?: R
     levels: { close, ma20, ma60, eventLow, prior20High: recentHigh, stop: positive(plan.stopPrice), target: positive(plan.takeProfitPrice || plan.targetPrice) }, limitations,
     steps: [
       { id: "data", title: "数据是否可用", state: !usable ? "不可判" : stale ? "陈旧 / 历史观察" : intraday ? "盘中待确认" : "可观察", facts: usable ? [`截至 ${asOf}，${rows.length} 根日线顺序与 OHLC 校验通过。`, sourceNature, ...(intraday || stale ? [limitations[0]!] : [])] : errors },
-      { id: "market", title: "市场与板块", state: marketGate === "blocked" ? "不通过" : marketGate === "open" ? "市场通过 / 板块另核" : "市场不可判", facts: [marketGate === "unknown" ? "缺少同日中证全指 MA60 复盘，保留个股观察但不能确认市场条件。" : marketGate === "open" ? "同日中证全指高于 MA60，只通过市场趋势一项。" : "同日中证全指低于 MA60，不新增本策略计划。", sectorRs === null ? "板块相对强弱未提供；行业名称不能代替板块走势。" : `${payload?.sector?.name || "所属板块"}相对强弱 ${sectorRs.toFixed(2)}（上游口径），只作背景，不重复累计趋势分数。`] },
-      { id: "stock", title: "阶段与关键证据", state: stage, facts: usable ? [`${intraday ? "盘中暂价" : stale ? "历史收盘" : "收盘"} ${price(close)}；MA20 ${price(ma20)}；MA60 ${price(ma60)}；MA20 相比 5 根前${ma20! > previousMa20! ? "上升" : "未上升"}。`, eventIndex >= 0 ? `上游涨停锚点 ${eventDate}，距最新日线 ${eventAge} 根；该日日线低点 ${price(eventLow)}。` : "日线中未找到可核对的涨停锚点。", `前 20 根最高价 ${price(recentHigh)} 是观察位，不是自动委托价。`] : ["补齐可信日线后再判断均线、阶段与锚点，旧评分不替代这些数据。"] },
-      { id: "conflicts", title: "冲突与失效", state: vetoes.length ? "存在待核实事项" : "逐项核验", facts: conflicts },
-      { id: "next", title: "次日条件情景", state: "尚未形成可执行计划", facts: ["先核验收盘数据、同日市场、证券状态与官方限价，再使用趋势策略页已冻结的次日条件计划。", "复盘不补造止损、目标或仓位；2–6 周观察期间按原计划的失效条件与时间退出规则复核。"] }
+      { id: "market", title: "市场与板块", state: marketGate === "blocked" ? "不通过" : marketGate === "open" ? "市场通过 / 板块另核" : "大盘待定", facts: [marketGate === "unknown" ? "缺少同日中证全指 MA60 复盘，保留个股观察但不能确认市场条件。" : marketGate === "open" ? "同日中证全指高于 MA60，只通过市场趋势一项。" : "同日中证全指低于 MA60，不新增本策略计划。", sectorRs === null ? "板块相对强弱未提供；行业名称不能代替板块走势。" : `${payload?.sector?.name || "所属板块"}相对强弱 ${sectorRs.toFixed(2)}（上游口径），只作背景，不重复累计趋势分数。`] },
+      { id: "stock", title: "阶段与关键证据", state: stage, facts: usable ? [`${intraday ? "盘中暂价" : stale ? "历史收盘" : "收盘"} ${price(close)}；MA20 ${price(ma20)}；MA60 ${price(ma60)}；MA20 相比 5 根前${ma20! > previousMa20! ? "上升" : "未上升"}。`, eventIndex >= 0 ? `上游涨停锚点 ${eventDate}，距最新日线 ${eventAge} 根；该日日线低点 ${price(eventLow)}。` : "日线中未找到可核对的涨停锚点。", `前 20 根最高价 ${price(recentHigh)} 是参考价位，不会自动下单。`] : ["补齐可信日线后再判断均线、阶段与锚点，旧评分不替代这些数据。"] },
+      { id: "conflicts", title: "冲突与失效", state: vetoes.length ? "存在待核实事项" : "逐条看", facts: conflicts },
+      { id: "next", title: "次日条件情景", state: "尚未形成可执行计划", facts: ["先确认收盘数据、当天大盘、是否停牌和涨跌停价，再按你在驾驶舱里定好的买点和止损执行。", "复盘不补造止损、目标或仓位；2–6 周观察期间按原计划的失效条件与时间退出规则复核。"] }
     ],
     scenarios: [
       { name: "延续", condition: `下一完整收盘保持在 MA20（本次 ${price(ma20)}）之上，并观察能否越过前20根高点 ${price(recentHigh)}。`, confirmation: "市场关口通过、锚点有效；突破后的回落承接和同源全天量额须再核对。", invalidation: "仅盘中冲高后回落、收盘失守均线或风险否决，均不构成延续确认。", response: "继续跟踪；只有冻结计划的次日价格和成交条件同时满足，才进入执行检查。" },

@@ -46,6 +46,7 @@ import {
   toBacktestStrategyProfile,
   toSafeBacktestSettings
 } from "./executionGovernance";
+import { userErrorText } from "../../userErrorText";
 
 export type BacktestOrigin = {
   view: View;
@@ -253,7 +254,7 @@ export function useBacktestWorkspace({
         [record, ...current.filter(item => item.id !== record.id)].slice(0, BACKTEST_HISTORY_LIMIT)
       );
     } catch (reason) {
-      if (requestId === backtestRequestId.current) setBacktestError(reason instanceof Error ? reason.message : String(reason));
+      if (requestId === backtestRequestId.current) setBacktestError(userErrorText(reason));
     } finally {
       if (requestId === backtestRequestId.current) setBacktestLoading(false);
     }
@@ -293,7 +294,7 @@ export function useBacktestWorkspace({
         nextItem = {
           profile: preset.id,
           loading: false,
-          error: error instanceof Error ? error.message : "风险档位回测失败",
+          error: userErrorText(error, "风险档位回测失败"),
           record: null
         };
       }

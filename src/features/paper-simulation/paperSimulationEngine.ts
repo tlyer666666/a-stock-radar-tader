@@ -12,7 +12,7 @@ import type {
   PaperSimulationState, PaperStrategyGovernance, PaperStrategyStage, PaperTradeAction
 } from "./paperSimulationTypes";
 
-import { calcAshareBuyFee, calcAshareSellFee, paperDate, paperEffectiveQuoteIso, paperMatchBlock, paperQuoteEvidence, paperCorporateActionBlock, paperLotRule, paperRoundShares } from "./paperTradingRules";
+import { calcAshareBuyFee, calcAshareSellFee, paperDate, paperEffectiveQuoteIso, paperMatchBlock, paperQuoteEvidence, paperCorporateActionBlock, paperLotRule, paperRoundShares, paperSessionBlock } from "./paperTradingRules";
 
 import { closeStats, compactClosedHistory } from "./paperClosedHistory";
 
@@ -608,6 +608,11 @@ export const evaluatePaperExecutionReadinessLocal = (
   }
   reasonList.push(...marketReadiness.hard);
   softReasonList.push(...marketReadiness.soft);
+  const rawQuoteAt = typeof payload.quote?.quoteAt === "string" ? payload.quote.quoteAt.trim() : "";
+  if (rawQuoteAt && Number.isFinite(Date.parse(rawQuoteAt))) {
+    const quoteSessionBlock = paperSessionBlock(new Date(rawQuoteAt));
+    if (quoteSessionBlock) reasonList.push(quoteSessionBlock);
+  }
 
   if (sectorName) {
     if (sectorExposurePercent > maxSectorExposurePercent) {
@@ -902,12 +907,15 @@ export const closePaperAllSimulationByCode = (
 
   const remain: PaperPosition[] = [];
   const blocks: string[] = [];
+  // 熔断/一键平仓是此刻发起的动作：当前处于交易时段时按当前时间判定时段，
+  // 不让持仓上较早的报价时间（如盘前 9:20 的快照）把盘中强平误判为非交易时段。
+  const forceAt = paperSessionBlock(new Date()) === "" ? new Date() : undefined;
   for (const position of normalized.openPositions) {
-    let block = paperMatchBlock(position, "sell", position.latestPrice * (1 - (settings.slippageBps || 0) / 10000));
+    let block = paperMatchBlock(position, "sell", position.latestPrice * (1 - (settings.slippageBps || 0) / 10000), forceAt);
     // 紧急风控熔断或一键平仓时，若仅因未单独浏览该股导致缺少今日行情，只要满足T+1且有有效最新价，允许按最新价强平
     // 但停牌、跌停等规则仍按最后一次行情检查：最后一次行情是停牌或跌停价的，不强平。
     if (block === "缺少今日有效行情，暂停撮合" && position.latestPrice > 0 && !position.settlementBlockedReason) {
-      block = paperMatchBlock({ ...position, quoteDate: shanghaiDateTag() }, "sell", position.latestPrice * (1 - (settings.slippageBps || 0) / 10000));
+      block = paperMatchBlock({ ...position, quoteDate: shanghaiDateTag() }, "sell", position.latestPrice * (1 - (settings.slippageBps || 0) / 10000), forceAt);
     }
     if (block) { remain.push(position); blocks.push(`${position.code} ${block}`); continue; }
     const closePrice = position.latestPrice;

@@ -1,6 +1,6 @@
 "use strict";
 
-const test = require("node:test");
+const { test, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const { registerTypeScript } = require("../qa/register-typescript.cjs");
 const restore = registerTypeScript();
@@ -115,7 +115,10 @@ test("R3-05 & R3-06: quoteAt date precedence, multi-day history gap bridge, manu
   assert.equal(paperCorporateActionBlock(missedDayPos, wedPayload), "");
 
   // Cleared corporateBlock unblocks closePaperSimulationByCode, and manual confirm clears blocked state
-  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+  // 撮合只在交易时段放行：冻结到北京 2026-11-18（周三）10:00，任何日子跑都走同一条路径。
+  mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-11-18T02:00:00Z") });
+  try {
+  const today = "2026-11-18";
   const blockedState = normalizePaperState({
     initialCapital: 100000,
     cash: 90000,
@@ -169,6 +172,9 @@ test("R3-05 & R3-06: quoteAt date precedence, multi-day history gap bridge, manu
   // maxRiskMoney = 1000; stopLossPrice = 16 -> 4 RMB/share loss -> at most 200 shares (800 + fees <= 1000), not 5000 shares!
   assert.equal(wideStopRes.changed, true);
   assert.ok(wideStopRes.state.openPositions[0].shares <= 200);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 test("R3-08, R3-09 & R3-10: T-Assistant partial-fill round counting, STAR lot rules, rollover idempotence & lunch-break freshness", () => {

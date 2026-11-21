@@ -3,6 +3,7 @@ import { Archive, CircleAlert, Cloud, FolderOpen, KeyRound, LoaderCircle, Rotate
 import { PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
 import { backupApi, collectLocalData, restoreBackup, type BackupFile, type BackupStatus } from "./backupClient";
+import { userErrorText } from "../../userErrorText";
 
 const CLOUD_SYNC_SEGMENT_RE =
   /\/mobile documents\/|\/icloud|\/onedrive|\/dropbox|\/google drive|\/坚果云|\/nutstore|\/baidunetdisk/i;
@@ -21,7 +22,7 @@ export function isCloudSyncFolder(folder: string, suggestions: Array<{ path: str
   return CLOUD_SYNC_SEGMENT_RE.test(`${normalized}/`);
 }
 
-const cleanError = (error: unknown) => (error instanceof Error ? error.message : String(error))
+const cleanError = (error: unknown) => (userErrorText(error))
   .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "").replace(/^\[[A-Z_]+\]\s*/, "");
 const sizeText = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 const timeText = (iso: string) => {

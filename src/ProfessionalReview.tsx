@@ -23,6 +23,7 @@ import {
   TrendingUp,
   X
 } from "lucide-react";
+import { userErrorText } from "./userErrorText";
 import { FormEvent, useEffect, useRef, useState, type ComponentType, type CSSProperties, type ReactNode } from "react";
 import type {
   AnalysisHistoricalEdge,
@@ -1267,7 +1268,7 @@ export default function ProfessionalReview({
     if (onAddQuickPlan) {
       onAddQuickPlan(sec, latestPrice);
       setPlanVersion(v => v + 1);
-      notify(`已将 ${sec.name} 加入次日观察计划`);
+      notify(`${sec.name} 已加入今日驾驶舱`);
       return;
     }
     if (typeof window === "undefined" || !window.localStorage) {
@@ -1280,14 +1281,15 @@ export default function ProfessionalReview({
       secid: sec.secid,
       referencePrice: latestPrice ?? null,
       asOf: stock?.updatedAt?.slice(0, 10),
-      reason: stock?.decision?.headline || stock?.verdict || "专业复盘转入次日观察"
+      reason: stock?.decision?.headline || stock?.verdict || "专业复盘转入次日观察",
+      source: "专业复盘"
     });
     if (!res.ok) {
-      notify(`加入计划失败：${res.error}`);
+      notify(`加入驾驶舱失败：${res.error}`);
       return;
     }
     setPlanVersion(v => v + 1);
-    notify(res.created ? "已加入次日观察计划" : "该标的已在次日观察计划中");
+    notify(res.created ? "已加入今日驾驶舱" : "该股票已在今日驾驶舱");
   };
 
   const loadMarket = async (refresh = false) => {
@@ -1303,7 +1305,7 @@ export default function ProfessionalReview({
         setMarket(result);
       }
     } catch (error) {
-      if (requestId === marketRequestId.current) setMarketError(error instanceof Error ? error.message : "市场复盘生成失败");
+      if (requestId === marketRequestId.current) setMarketError(userErrorText(error, "市场复盘生成失败"));
     } finally {
       if (requestId === marketRequestId.current) setMarketLoading(false);
     }
@@ -1386,7 +1388,7 @@ export default function ProfessionalReview({
       setStockNote("");
     } catch (error) {
       if (requestId === stockRequestId.current) {
-        setStockError(error instanceof Error ? error.message : "个股复盘生成失败");
+        setStockError(userErrorText(error, "个股复盘生成失败"));
       }
     } finally {
       if (requestId === stockRequestId.current) setStockLoading(false);
@@ -1508,7 +1510,7 @@ export default function ProfessionalReview({
             title={openReviewWindow ? "在新窗口打开只读复盘" : "当前环境不支持独立窗口"}
             onClick={() => {
               if (!openReviewWindow) return;
-              void openReviewWindow().catch((error: unknown) => notify(error instanceof Error ? error.message : '独立复盘窗口打开失败'));
+              void openReviewWindow().catch((error: unknown) => notify(userErrorText(error, '独立复盘窗口打开失败')));
             }}
           >
             独立窗口
@@ -1622,9 +1624,9 @@ export default function ProfessionalReview({
 export function DecisionReview({ decision, journal }: { decision: ReviewDecision; journal?: ReactNode }) {
   return <section className={`review-decision status-${decision.status}`} aria-label="有序证据复盘">
     <header className="review-decision-heading">
-      <div><span>有序证据 · 2–6 周观察</span><h2>{decision.headline}</h2><p>{decision.sourceNature} · 日线截至 {decision.asOf || "待补"}</p></div>
+      <div><span>大盘复盘 · 看 2–6 周趋势</span><h2>{decision.headline}</h2><p>{decision.sourceNature} · 数据截至 {decision.asOf || "未取到"}</p></div>
       {/* 复盘页不展示「规则不通过」这类校验判定；这里只标注资料完备程度 */}
-      <span className="review-decision-status">{decision.status === "insufficient" ? "数据不可判" : decision.status === "blocked" ? "资料待补" : "条件观察"}</span>
+      <span className="review-decision-status">{decision.status === "insufficient" ? "数据不全" : decision.status === "blocked" ? "偏弱" : "可观察"}</span>
     </header>
     <div className="review-decision-workspace">
     <aside className="review-evidence-rail" aria-label="证据顺序与复盘记录">
@@ -1635,17 +1637,17 @@ export function DecisionReview({ decision, journal }: { decision: ReviewDecision
     {journal}
     </aside>
     <div className="review-decision-data">
-      {!!decision.metrics?.length && <section className="review-measurements" aria-label="结构实测">
-      <div className="review-section-label"><h3>结构实测</h3><span>原始观察值 · 不换算胜算</span></div>
-      <div className="review-observation-table-wrap"><table className="review-observation-table"><thead><tr><th>实测指标</th><th>观察值</th><th>口径 / 说明</th></tr></thead><tbody>{decision.metrics.map(metric => <tr key={metric.id}>
-        <th scope="row">{metric.label}</th><td className="review-observation-value">{metric.value === null ? "待补" : metric.unit === "元" && metric.value >= 10000 ? money(metric.value) : `${fmt(metric.value, metric.unit === "家" || metric.unit === "根" || metric.unit === "条" || metric.unit === "板" ? 0 : 2)}${metric.unit}`}</td><td>{metric.detail}</td>
+      {!!decision.metrics?.length && <section className="review-measurements" aria-label="关键数据">
+      <div className="review-section-label"><h3>关键数据</h3><span>实际数值，只作参考，不是预测</span></div>
+      <div className="review-observation-table-wrap"><table className="review-observation-table"><thead><tr><th>指标</th><th>数值</th><th>说明</th></tr></thead><tbody>{decision.metrics.map(metric => <tr key={metric.id}>
+        <th scope="row">{metric.label}</th><td className="review-observation-value">{metric.value === null ? "未取到" : metric.unit === "元" && metric.value >= 10000 ? money(metric.value) : `${fmt(metric.value, metric.unit === "家" || metric.unit === "根" || metric.unit === "条" || metric.unit === "板" ? 0 : 2)}${metric.unit}`}</td><td>{metric.detail}</td>
       </tr>)}</tbody></table></div>
     </section>}
       {!!decision.context?.length && <section className="review-context" aria-label="市场与板块背景"><h4>市场与板块背景</h4><div>{decision.context.map(item => <article key={item.id}><header><b>{item.label}</b><span>{item.state}</span></header>{item.facts.map((fact,i)=><p key={i}>{fact}</p>)}</article>)}</div></section>}
-      {!!decision.observedLevels?.length && <section className="review-observations" aria-label="观察价位"><h4>观察价位 <span>同一日线口径 · 不自动转成委托价</span></h4><div className="review-observation-table-wrap"><table className="review-observation-table"><thead><tr><th>观察位置</th><th>价位</th><th>现价相对该位</th><th>日期 / 依据</th></tr></thead><tbody>{decision.observedLevels.map(level => <tr key={level.id}><th scope="row"><span>{level.role}</span><b>{level.label}</b></th><td className="review-observation-value">{level.price === null ? "待补" : fmt(level.price,2)}</td><td>{level.distancePct === null ? "待补" : pct(level.distancePct,2)}</td><td>{level.asOf || "日期待补"} · {level.basis}</td></tr>)}</tbody></table></div></section>}
-      {!!decision.evidence?.length && <section className="review-evidence" aria-label="反证优先"><h4>反证优先 <span>按规则否决、结构冲突、资料缺口、支持事实排列</span></h4>{decision.evidence.map(item => <article key={item.id} data-tone={item.tone}><span>{item.tone === "risk" ? "反证" : item.tone === "missing" ? "待补" : item.tone === "support" ? "支持" : "事实"}</span><div><b>{item.title}</b><p>{item.detail}</p><small>{item.basis}</small></div></article>)}</section>}
-    {decision.scenarios.length > 0 && <div className="review-decision-scenarios">{decision.scenarios.map(s => <article key={s.name}><h3>{s.name}</h3><p>{s.condition}</p>{s.confirmation && <p className="review-scenario-condition"><b>确认依据</b>{s.confirmation}</p>}{s.invalidation && <p className="review-scenario-condition"><b>失效观察</b>{s.invalidation}</p>}<small>{s.response}</small></article>)}</div>}
-    <details className="review-decision-boundaries"><summary>本次数据边界与口径</summary><ul>{decision.limitations.map(item => <li key={item}>{item}</li>)}</ul></details>
+      {!!decision.observedLevels?.length && <section className="review-observations" aria-label="参考价位"><h4>参考价位 <span>按日线算，只作参考，不会自动下单</span></h4><div className="review-observation-table-wrap"><table className="review-observation-table"><thead><tr><th>观察位置</th><th>价位</th><th>现价相对该位</th><th>日期 / 依据</th></tr></thead><tbody>{decision.observedLevels.map(level => <tr key={level.id}><th scope="row"><span>{level.role}</span><b>{level.label}</b></th><td className="review-observation-value">{level.price === null ? "待补" : fmt(level.price,2)}</td><td>{level.distancePct === null ? "待补" : pct(level.distancePct,2)}</td><td>{level.asOf || "日期待补"} · {level.basis}</td></tr>)}</tbody></table></div></section>}
+      {!!decision.evidence?.length && <section className="review-evidence" aria-label="先看风险"><h4>先看风险 <span>风险在前，没取到的数据其次，有利因素最后</span></h4>{decision.evidence.map(item => <article key={item.id} data-tone={item.tone}><span>{item.tone === "risk" ? "风险" : item.tone === "missing" ? "缺数据" : item.tone === "support" ? "有利" : "事实"}</span><div><b>{item.title}</b><p>{item.detail}</p><small>{item.basis}</small></div></article>)}</section>}
+    {decision.scenarios.length > 0 && <div className="review-decision-scenarios">{decision.scenarios.map(s => <article key={s.name}><h3>{s.name}</h3><p>{s.condition}</p>{s.confirmation && <p className="review-scenario-condition"><b>怎么确认</b>{s.confirmation}</p>}{s.invalidation && <p className="review-scenario-condition"><b>什么情况说明判断错了</b>{s.invalidation}</p>}<small>{s.response}</small></article>)}</div>}
+    <details className="review-decision-boundaries"><summary>这次复盘的局限</summary><ul>{decision.limitations.map(item => <li key={item}>{item}</li>)}</ul></details>
     </div>
     </div>
   </section>;
@@ -2001,7 +2003,8 @@ function StockReview({
       referencePrice: round2(entry),
       asOf: data?.updatedAt?.slice(0, 10),
       reason: trimmedNote,
-      stopPercent
+      stopPercent,
+      source: "专业复盘"
     });
     if (!res.ok) {
       setPlanDialogError(res.error);
@@ -2019,7 +2022,7 @@ function StockReview({
           candidate: {
             ...plan.candidate,
             evidence: [{
-              label: "次日观察计划",
+              label: "驾驶舱观察计划",
               passed: true,
               value: trimmedNote.slice(0, 60),
               rule: `参考入场 ${round2(entry).toFixed(2)} · 止损 ${round2(stop).toFixed(2)}`
@@ -2042,7 +2045,7 @@ function StockReview({
       writeTrendPlans(window.localStorage, updated);
     }
     setQuickPlanOpen(false);
-    onPlanSaved?.(res.created ? `已将 ${stockSecurity.name} 加入次日观察计划` : `已更新 ${stockSecurity.name} 次日观察计划`);
+    onPlanSaved?.(res.created ? `${stockSecurity.name} 已加入今日驾驶舱` : `已更新 ${stockSecurity.name} 的驾驶舱计划`);
   };
 
   const planTone = (status: string) =>
@@ -2104,7 +2107,7 @@ function StockReview({
                   className="review-link-btn"
                   onClick={openQuickPlanDialog}
                 >
-                  {planRows.some(r => !r.plan.archivedAt) ? "已在次日计划" : "+加入次日计划"}
+                  {planRows.some(r => !r.plan.archivedAt) ? "已在驾驶舱" : "+驾驶舱"}
                 </button>
               )}
               {canCustomMonitor && (
@@ -2166,13 +2169,13 @@ function StockReview({
           <dialog
             ref={quickPlanDialogRef}
             className="review-quick-plan-dialog"
-            aria-label={stockSecurity ? `加入次日计划 · ${stockSecurity.name}` : "加入次日计划"}
+            aria-label={stockSecurity ? `加入今日驾驶舱 · ${stockSecurity.name}` : "加入今日驾驶舱"}
             onCancel={event => { event.preventDefault(); setQuickPlanOpen(false); }}
           >
             {stockSecurity && (
               <form className="review-quick-plan-form" onSubmit={submitQuickPlanDialog}>
                 <header>
-                  <h3>加入次日计划 · {stockSecurity.name} <small>{stockSecurity.code}</small></h3>
+                  <h3>加入今日驾驶舱 · {stockSecurity.name} <small>{stockSecurity.code}</small></h3>
                   <button type="button" className="secondary-btn" onClick={() => setQuickPlanOpen(false)} aria-label="关闭弹窗">
                     <X size={15} />
                   </button>
@@ -2215,7 +2218,7 @@ function StockReview({
                 {planDialogError && <p className="review-quick-plan-error" role="alert">{planDialogError}</p>}
                 <footer>
                   <button type="button" className="secondary-btn" onClick={() => setQuickPlanOpen(false)}>取消</button>
-                  <button type="submit" className="primary-btn">保存次日计划</button>
+                  <button type="submit" className="primary-btn">保存到驾驶舱</button>
                 </footer>
               </form>
             )}

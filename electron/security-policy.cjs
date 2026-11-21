@@ -344,7 +344,8 @@ function withIpcResult(handler, report) {
         if (typeof reason?.code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(reason.code)) code = reason.code;
         else if (reason?.name === "AbortError") code = "JOB_CANCELLED";
         else if (reason?.name === "TimeoutError") code = "JOB_TIMEOUT";
-        if (typeof reason?.message === "string") message = redactRuntimeText(reason.message).slice(0, 512) || message;
+        const internalBug = code === "IPC_FAILED" && ["TypeError", "ReferenceError", "RangeError", "SyntaxError"].includes(reason?.name);
+        if (!internalBug && typeof reason?.message === "string") message = redactRuntimeText(reason.message).slice(0, 512) || message;
       } catch { /* Error accessors may themselves throw; use the safe defaults. */ }
       const retryable = ["SERVICE_BUSY", "QUEUE_TIMEOUT", "QUEUE_FULL", "JOB_TIMEOUT", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN"].includes(code);
       try { if (code !== "JOB_CANCELLED") report?.(code); } catch { /* Isolate the diagnostic sink. */ }

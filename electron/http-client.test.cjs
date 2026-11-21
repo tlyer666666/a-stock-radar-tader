@@ -247,3 +247,16 @@ test('1.6.52: a request timeout is reported as a retryable timeout, not as a use
     assert.deepEqual([result.error.code, result.error.retryable], ['ETIMEDOUT', true]);
   } finally { server.closeAllConnections?.(); server.close(); }
 });
+
+test("market reads ask intermediate caches to revalidate so a manual refresh is never served a stale CDN copy", async (t) => {
+  const originalFetch = global.fetch;
+  const seen = [];
+  global.fetch = async (_url, options) => { seen.push(options.headers); return new Response("{}", { status: 200 }); };
+  t.after(() => { global.fetch = originalFetch; });
+  const { fetchJsonWithPolicy } = require("./http-client.cjs");
+  await fetchJsonWithPolicy("https://data.example.test/limit_up_pool", {}, { retries: 0 });
+  await fetchJsonWithPolicy("https://data.example.test/explicit", { headers: { "Cache-Control": "max-age=30" } }, { retries: 0 });
+  assert.equal(seen[0]["cache-control"], "no-cache");
+  assert.equal(seen[0].pragma, "no-cache");
+  assert.equal(seen[1]["cache-control"], "max-age=30");
+});

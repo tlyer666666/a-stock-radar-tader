@@ -41,24 +41,180 @@ test("a bond snapshot keeps price, change, volume in 张, amount and the quote d
   assert.throws(() => bonds.normalizeBondQuote("123288", quotePayload("123288", { 10: "" })), /有效价格/);
 });
 
-function source({ active = ["113052", "128136"], stale = ["113001"], store, feed, failAll = false } = {}) {
+function source({ active = ["113052", "128136"], stale = ["113001"], store, feed, failAll = false, readBatch, feedReads } = {}) {
   const calls = [];
   const s = bonds.createConvertibleSource({
     now: () => NOW,
     store,
     probeConcurrency: 6,
     concurrency: 4,
-    readFeed: async () => { if (feed instanceof Error) throw feed; return feed || { list: [feedRow()] }; },
+    readFeed: async () => { if (feedReads) feedReads.count += 1; if (feed instanceof Error) throw feed; return feed || { list: [feedRow()] }; },
     readQuote: async (market, code) => {
       calls.push(`${market}_${code}`);
       if (failAll) throw Object.assign(new Error("HTTP 403"), { status: 403 });
       if (code === "123288" || active.includes(code)) return bonds.normalizeBondQuote(code, quotePayload(code));
       if (stale.includes(code)) return bonds.normalizeBondQuote(code, quotePayload(code, { updateTime: "2025-06-30 15:00" }));
       throw Object.assign(new Error("HTTP 404"), { status: 404 });
-    }
+    },
+    ...(readBatch === undefined ? {} : { readBatch })
   });
   return { s, calls };
 }
+
+// 与腾讯批量接口一致的行情形状（volumeLots 为手，转债 1 手 = 10 张）。
+const batchQuote = (code, patch = {}) => ({ code, name: `转债${code}`, latest: 131.551, preClose: 130.9, open: 130.2,
+  high: 132.663, low: 130.1, change: 0.651, changePct: 0.5, volumeLots: 96593.3, amount: 126835806,
+  turnover: 10.062, amplitude: 1.95, floatMarketCap: null, totalMarketCap: null, limitUp: 157.08, limitDown: 104.72,
+  quoteAt: "2026-10-22T07:00:00.000Z", quoteDate: "2026-10-22", tradeStatus: "trading", source: "腾讯行情", ...patch });
+const freshStore = (bonds = [{ code: "113052", name: "旧券", market: 19, stockCode: "", stockName: "", listingDate: "", expireDate: "", source: "discovered" }]) => (
+  { schema: 1, discoveredAt: new Date(NOW).toISOString(), bonds });
+
+test("a batch that answers every bond skips per-bond THS reads and reports 腾讯行情 source", async () => {
+  const { s, calls } = source({
+    store: { read: () => freshStore(), write: () => {} },
+    readBatch: async (targets) => new Map(targets.map((bond) => [bond.code, batchQuote(bond.code)]))
+  });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.deepEqual(calls, [], "批量行情覆盖全部在市债时不再逐只读同花顺");
+  assert.equal(snapshot.quoteCoverage.complete, true);
+  assert.equal(snapshot.quoteCoverage.source, "腾讯行情");
+  assert.equal(snapshot.source, "腾讯批量行情；名单来自同花顺");
+  const member = snapshot.members.find((bond) => bond.code === "123288");
+  assert.equal(member.volume, 965933, "手 × 10 = 张");
+  assert.equal(member.tradeStatus, "trading");
+});
+
+test("delisted batch quotes exclude the bond, persist the code and are never re-quoted", async () => {
+  let saved = null;
+  const store = { read: () => saved ?? freshStore(), write: (value) => { saved = value; } };
+  const { s, calls } = source({
+    store,
+    readBatch: async (targets) => new Map(targets.map((bond) => [bond.code,
+      bond.code === "123288" ? batchQuote(bond.code, { tradeStatus: "delisted", latest: 135.998 }) : batchQuote(bond.code)]))
+  });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.deepEqual(snapshot.members.map((bond) => bond.code), ["113052"]);
+  assert.equal(snapshot.summary.count, 1);
+  assert.equal(snapshot.roster.delistedCount, 1);
+  assert.deepEqual(saved.delisted, ["123288"]);
+  assert.ok(!calls.some((call) => call.endsWith("_123288")), "已摘牌券不再逐只读同花顺");
+  let batchTargets = [];
+  const second = source({ store, readBatch: async (targets) => { batchTargets = targets.map((bond) => bond.code); return new Map(); } });
+  const again = await second.s.load({ waitForQuotes: true });
+  assert.ok(batchTargets.includes("123288"), "已存摘牌码也会再向批量接口核对一次");
+  assert.deepEqual(again.members.map((bond) => bond.code), ["113052"], "批量没答到的摘牌码仍按摘牌保留");
+  assert.ok(!second.calls.some((call) => call.endsWith("_123288")));
+});
+
+test("a stored delisted code that trades again is re-listed and dropped from the store", async () => {
+  let saved = null;
+  const stored = { ...freshStore(), delisted: ["113052"] };
+  const store = { read: () => stored, write: (value) => { saved = value; } };
+  const { s } = source({ store, readBatch: async (targets) => new Map(targets.map((bond) => [bond.code, batchQuote(bond.code)])) });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.equal(snapshot.members.find((bond) => bond.code === "113052")?.tradeStatus, "trading");
+  assert.equal(snapshot.roster.delistedCount, 0);
+  assert.deepEqual(saved.delisted, []);
+});
+
+test("a suspended bond stays listed with a 停牌 tag status", async () => {
+  const { s } = source({
+    store: { read: () => freshStore(), write: () => {} },
+    readBatch: async (targets) => new Map(targets.map((bond) => [bond.code,
+      bond.code === "123288" ? batchQuote(bond.code, { tradeStatus: "suspended", volumeLots: 0, amount: 0, changePct: 0 }) : batchQuote(bond.code)]))
+  });
+  const snapshot = await s.load({ waitForQuotes: true });
+  const member = snapshot.members.find((bond) => bond.code === "123288");
+  assert.equal(member.tradeStatus, "suspended");
+  assert.equal(member.quoteStatus, "ready");
+});
+
+test("a bond missing from the batch falls back to the per-bond THS read", async () => {
+  const { s, calls } = source({
+    store: { read: () => freshStore(), write: () => {} },
+    readBatch: async (targets) => new Map(targets.filter((bond) => bond.code !== "123288").map((bond) => [bond.code, batchQuote(bond.code)]))
+  });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.equal(snapshot.members.find((bond) => bond.code === "123288").quoteStatus, "ready");
+  assert.ok(calls.includes("35_123288"), "批量缺口的券走同花顺逐只快照");
+  assert.equal(snapshot.quoteCoverage.source, "腾讯行情、同花顺");
+  assert.equal(snapshot.source, "腾讯批量行情，个别用同花顺逐券快照补齐；名单来自同花顺");
+});
+
+test("a rejected batch falls back to per-bond reads and stored delisted codes still apply", async () => {
+  const stored = { ...freshStore(), delisted: ["123288"] };
+  const { s, calls } = source({
+    store: { read: () => stored, write: () => {} },
+    readBatch: async () => { throw new Error("批量接口限流"); }
+  });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.deepEqual(snapshot.members.map((bond) => bond.code), ["113052"]);
+  assert.equal(snapshot.quoteCoverage.source, "同花顺");
+  assert.ok(!calls.some((call) => call.endsWith("_123288")), "已存摘牌码在批量失败时仍被跳过");
+  assert.ok(calls.includes("19_113052"), "其余券回落到逐只读取");
+});
+
+test("a feed whose earliest listing is beyond the max bond term skips range probing entirely", async () => {
+  let saved = null;
+  const store = { read: () => null, write: (value) => { saved = value; } };
+  const { s, calls } = source({ store, feed: { list: [feedRow({ listing_date: "2019-01-01" })] } });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.deepEqual(snapshot.members.map((bond) => bond.code), ["123288"]);
+  assert.ok(calls.length <= 2, `完整历史名单下不再探测代码段，实际 ${calls.length} 次读取`);
+  assert.ok(Date.parse(saved.discoveredAt) === NOW);
+});
+
+test("the roster file is only rewritten when the bond or delisted sets change", async () => {
+  const writes = [];
+  const store = { read: () => writes.at(-1) ?? null, write: (value) => { writes.push(value); } };
+  const { s } = source({ store, feed: { list: [feedRow({ listing_date: "2019-01-01" })] } });
+  await s.load({ waitForQuotes: true });
+  await s.load({ forceRefresh: true, waitForQuotes: true });
+  assert.equal(writes.length, 1, "名单与摘牌集合都没变时第二次刷新不再写盘");
+});
+
+test("a feed outage falls back to the stored roster's feed bonds and still applies batch quotes", async () => {
+  const stored = { schema: 1, discoveredAt: new Date(NOW).toISOString(), bonds: [
+    { code: "113052", name: "在市旧券", market: 19, stockCode: "", stockName: "", listingDate: "2023-01-01", expireDate: "2029-01-01", source: "feed" },
+    { code: "128136", name: "到期旧券", market: 35, stockCode: "", stockName: "", listingDate: "2020-01-01", expireDate: "2026-01-01", source: "feed" }
+  ], delisted: [] };
+  const { s, calls } = source({ store: { read: () => stored, write: () => {} }, feed: new Error("HTTP 502"),
+    readBatch: async (targets) => new Map(targets.map((bond) => [bond.code, batchQuote(bond.code)])) });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.deepEqual(snapshot.members.map((bond) => bond.code), ["113052"]);
+  assert.match(snapshot.warnings.join(), /同花顺发行名单暂不可用，先用上次保存的名单/);
+  assert.equal(snapshot.quoteCoverage.source, "腾讯行情");
+  assert.deepEqual(calls, []);
+});
+
+test("the feed payload is cached for 30 minutes and read again after it expires", async () => {
+  let time = NOW;
+  const feedReads = { count: 0 };
+  const s = bonds.createConvertibleSource({
+    now: () => time,
+    store: { read: () => freshStore(), write: () => {} },
+    concurrency: 4,
+    readFeed: async () => { feedReads.count += 1; return { list: [feedRow()] }; },
+    readQuote: async (market, code) => bonds.normalizeBondQuote(code, quotePayload(code))
+  });
+  await s.load({ waitForQuotes: true });
+  time = NOW + 61 * 1000;
+  await s.load({ waitForQuotes: true });
+  assert.equal(feedReads.count, 1, "30 分钟内新券名单只读一次");
+  time = NOW + 31 * 60 * 1000;
+  await s.load({ waitForQuotes: true });
+  assert.equal(feedReads.count, 2);
+  const fresh = await s.load({ forceRefresh: true, waitForQuotes: true });
+  assert.equal(feedReads.count, 3, "手动强制刷新不受 30 分钟名单缓存影响");
+  assert.ok(fresh.members.length > 0);
+});
+
+test("parseFeed reports the earliest listing date across all convertible rows", () => {
+  const feed = bonds.parseFeed({ list: [feedRow(), feedRow({ bond_code: "113001", listing_date: "2019-05-06", expire_date: "2026-01-01" }),
+    feedRow({ bond_code: "127120", listing_date: "0" })] }, "2026-10-23");
+  assert.equal(feed.earliestListingDate, "2019-05-06");
+  assert.equal(bonds.parseFeed({ list: [] }, "2026-10-23").earliestListingDate, "");
+});
 
 test("first use discovers listed older bonds by code, drops stale codes, and caches the roster", async () => {
   let saved = null;
@@ -99,6 +255,18 @@ test("progress is published before all quotes are read", async () => {
   assert.equal(done.quoteCoverage.pending, false);
 });
 
+test("polling again while quotes are still loading returns the latest progress instead of throwing", async () => {
+  const { s } = source({});
+  const first = await s.load({ waitForQuotes: false });
+  assert.equal(first.quoteCoverage.pending, true);
+  const again = await s.load({ waitForQuotes: false, signal: new AbortController().signal });
+  assert.ok(Array.isArray(again.members));
+  const unsignalled = await s.load({ waitForQuotes: false });
+  assert.ok(Array.isArray(unsignalled.members));
+  const done = await s.load({ waitForQuotes: true });
+  assert.equal(done.quoteCoverage.pending, false);
+});
+
 test("remaining years are measured from today", () => {
   assert.equal(bonds.remainingYears("2027-10-23", "2026-10-23"), 1);
   assert.equal(bonds.remainingYears("", "2026-10-23"), null);
@@ -127,4 +295,11 @@ test("no older bonds beyond the feed is a finished check, not a failure: it is c
   const second = source({ store, active: [], stale: [] });
   await second.s.load({ waitForQuotes: true });
   assert.ok(second.calls.length <= 2, "codes are not probed again within 7 days");
+});
+
+test("a snapshot with no ready quote reports an empty coverage source", async () => {
+  const { s } = source({ failAll: true });
+  const snapshot = await s.load({ waitForQuotes: true });
+  assert.equal(snapshot.quoteCoverage.loaded, 0);
+  assert.equal(snapshot.quoteCoverage.source, "");
 });

@@ -39,6 +39,15 @@ function run(command, args) {
 }
 const node = args => run(process.execPath, args);
 
+const GATE_LABELS = Object.freeze({ typecheck: "类型检查", lint: "lint", test: "全量单测" });
+
+function releaseGateSummary(raw = process.env.ASTOCK_RELEASE_GATE) {
+  const steps = String(raw || "").split(",").map(step => step.trim()).filter(step => Object.hasOwn(GATE_LABELS, step));
+  if (!steps.length) return "本次部署未运行测试（直接调用了部署脚本）";
+  const at = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 16).replace("T", " ");
+  return `已通过（本次部署前运行：${steps.map(step => GATE_LABELS[step]).join("、")}，${at}）`;
+}
+
 function resolveExecutablePath(file) {
   const resolved = path.resolve(String(file || "").trim());
   try { return fs.realpathSync(resolved); } catch { return resolved; }
@@ -228,7 +237,7 @@ async function main() {
   };
   meta.verification = {
     previousVerification,
-    unitTests: "已通过（见 corepack pnpm verify）",
+    unitTests: releaseGateSummary(),
     coverage: "见 corepack pnpm test:coverage",
     browserSuites: "见 corepack pnpm qa:fullstack:ui",
     packageVersionTriple,
@@ -335,4 +344,4 @@ if (require.main === module) main().catch(error => {
   process.exitCode = 1;
 });
 
-module.exports = { main, targetDirectory, verifyBuildReceipt, pidsUsingExecutable };
+module.exports = { main, targetDirectory, verifyBuildReceipt, pidsUsingExecutable, releaseGateSummary };

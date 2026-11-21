@@ -13,6 +13,7 @@ import { overfitRiskLabel } from "./backtestLabels";
 import type { BacktestExecutionReadiness } from "../../domain/executionReadiness";
 import type { StrategyDefinitionItem } from "../../shared/ipc-contract";
 import type { BacktestBenchmark, BacktestDraft, BacktestHistoryRecord, BacktestViewProps } from "./backtestTypes";
+import { userErrorText } from "../../userErrorText";
 
 export function BacktestView({
   draft,
@@ -218,7 +219,7 @@ export function BacktestView({
         }
       })
       .catch((error) => {
-        if (active) setStrategyDefinitionError(error instanceof Error ? error.message : "策略定义加载失败");
+        if (active) setStrategyDefinitionError(userErrorText(error, "策略定义加载失败"));
       });
     return () => {
       active = false;

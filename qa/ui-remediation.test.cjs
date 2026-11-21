@@ -224,3 +224,43 @@ test('six-stock comparison retains MA20 and AVWAP without ellipses', async () =>
     await page.screenshot({ path: path.join(output, 'compare-six-light.png'), fullPage: true, animations: 'disabled' }); assert.deepEqual(errors, []);
   } finally { await page.close(); }
 });
+
+test('sidebar focus toggle renders inline without vertical text wrapping or overflowing the header row', async () => {
+  const { page, errors } = await fixture();
+  try {
+    const checkHeader = async () => page.evaluate(() => {
+      const top = document.querySelector('.workspace-nav-top');
+      const focus = document.querySelector('.sidebar-focus-toggle');
+      const label = focus?.querySelector('small');
+      const collapse = document.querySelector('.workspace-nav-top-actions > button:last-child');
+      const topBox = top.getBoundingClientRect();
+      const focusBox = focus.getBoundingClientRect();
+      const labelBox = label.getBoundingClientRect();
+      const collapseBox = collapse.getBoundingClientRect();
+      return {
+        display: getComputedStyle(focus).display,
+        focusWidth: focusBox.width,
+        focusHeight: focusBox.height,
+        labelHeight: labelBox.height,
+        overflowsBottom: focusBox.bottom > topBox.bottom + 1 || labelBox.bottom > topBox.bottom + 1,
+        overflowsRight: collapseBox.right > topBox.right + 1,
+        overlapsCollapse: focusBox.right > collapseBox.left + 1
+      };
+    });
+    const coreState = await checkHeader();
+    assert.equal(coreState.display, 'flex');
+    assert.ok(coreState.focusWidth >= 44, `focus pill width ${coreState.focusWidth}`);
+    assert.ok(coreState.focusHeight <= 30 && coreState.labelHeight <= 20, `single-line pill ${JSON.stringify(coreState)}`);
+    assert.equal(coreState.overflowsBottom, false);
+    assert.equal(coreState.overflowsRight, false);
+    assert.equal(coreState.overlapsCollapse, false);
+
+    await page.locator('.sidebar-focus-toggle').click();
+    const expandedState = await checkHeader();
+    assert.ok(expandedState.focusHeight <= 30 && expandedState.labelHeight <= 20, `expanded single-line pill ${JSON.stringify(expandedState)}`);
+    assert.equal(expandedState.overflowsBottom, false);
+    assert.equal(expandedState.overflowsRight, false);
+    assert.equal(expandedState.overlapsCollapse, false);
+    assert.deepEqual(errors, []);
+  } finally { await page.close(); }
+});

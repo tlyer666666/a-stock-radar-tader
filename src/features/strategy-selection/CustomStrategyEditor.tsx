@@ -4,6 +4,7 @@ import {
   CUSTOM_CATALOG, conditionLabel, isExternalRef, isGateRef, validateCustomStrategy,
   type CustomStrategy, type CustomStrategyFilters, type CustomUniverse, type PatternOption
 } from "./customStrategyModel";
+import { userErrorText } from "../../userErrorText";
 
 const familyNames: Record<string, string> = { bottom_trend: "底部趋势", first_board: "首板", relay: "接力", breakout: "突破", pullback: "回踩", contraction: "收缩", repair: "修复" };
 
@@ -52,7 +53,7 @@ export function CustomStrategyEditor({ initial, initialAiText = "", patterns, ot
         setAiNote({ ok: false, text: result.clarification || "描述中的条件暂无法直接映射，请结合下方替代方案调整描述后再试。" });
       }
     } catch (error) {
-      setAiNote({ ok: false, text: (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "") });
+      setAiNote({ ok: false, text: (userErrorText(error)).replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "") });
     } finally { setAiBusy(false); }
   };
   // 从「AI 选股」页带来的描述：等策略目录加载好后自动让 AI 配一次条件。

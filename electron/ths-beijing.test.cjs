@@ -91,6 +91,70 @@ test("the entire roster is returned before background quotes finish, with monoto
   const final = await source.load();
   assert.equal(final.members.length, 351); assert.equal(final.quoteCoverage.loaded, 351); assert.equal(final.quoteCoverage.pending, false);
 });
+test("polling again while quotes are still loading returns the latest progress instead of throwing", async () => {
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const source = createBeijingSectorSource({ readUniverse: async () => roster(3), readQuote: async code => { await barrier; return quote(code); } });
+  const first = await source.load({ waitForQuotes: false });
+  assert.equal(first.quoteCoverage.pending, true);
+  const again = await source.load({ waitForQuotes: false, signal: new AbortController().signal });
+  assert.ok(Array.isArray(again.members));
+  const unsignalled = await source.load({ waitForQuotes: false });
+  assert.ok(Array.isArray(unsignalled.members));
+  release();
+  const done = await source.load({ waitForQuotes: true });
+  assert.equal(done.quoteCoverage.pending, false);
+});
+
+const batchQuote = (code, patch = {}) => ({ code, name: `北交股${code}`, latest: 10, preClose: 10, open: 10, high: 10.2, low: 9.8,
+  change: 0.2, changePct: 2, volumeLots: 100, amount: 1000, turnover: 1, amplitude: 4, quoteAt: "2026-10-20T06:20:00.000Z",
+  floatMarketCap: 7.78e8, totalMarketCap: 14.69e8, tradeStatus: "trading", source: "腾讯行情", ...patch });
+
+test("a batch that answers every member skips per-stock THS reads and reports 腾讯行情", async () => {
+  let thsCalls = 0;
+  const source = createBeijingSectorSource({
+    readUniverse: async () => roster(3),
+    readQuote: async code => { thsCalls += 1; return quote(code); },
+    readBatch: async (members) => new Map(members.map(m => [m.code,
+      m.code === "920000" ? batchQuote(m.code, { latest: 13, preClose: 10, changePct: 30 }) : batchQuote(m.code)]))
+  });
+  const result = await source.load();
+  assert.equal(thsCalls, 0);
+  assert.equal(result.quoteCoverage.complete, true);
+  assert.equal(result.quoteCoverage.source, "腾讯行情");
+  const row = result.members.find(m => m.code === "920000");
+  assert.equal(row.isLimitUp, true, "腾讯快照带昨收，同样能算 30% 涨停");
+  assert.equal(row.quoteAsOf, "2026-10-20 14:20:00");
+  assert.equal(row.quoteSource, "腾讯行情");
+  assert.equal(row.floatMarketCap, 7.78e8);
+  assert.equal(row.totalMarketCap, 14.69e8);
+});
+
+test("a partial batch leaves the gap to per-stock THS reads and names both sources", async () => {
+  const source = createBeijingSectorSource({
+    readUniverse: async () => roster(3),
+    readQuote: async code => quote(code),
+    readBatch: async (members) => new Map(members.filter(m => m.code !== "920001").map(m => [m.code, batchQuote(m.code)]))
+  });
+  const result = await source.load();
+  assert.equal(result.quoteCoverage.complete, true);
+  assert.equal(result.quoteCoverage.source, "腾讯行情、同花顺");
+  assert.equal(result.members.find(m => m.code === "920001").quoteSource, "同花顺");
+});
+
+test("a rejected batch falls back to per-stock THS reads", async () => {
+  let thsCalls = 0;
+  const source = createBeijingSectorSource({
+    readUniverse: async () => roster(3),
+    readQuote: async code => { thsCalls += 1; return quote(code); },
+    readBatch: async () => { throw new Error("批量接口限流"); }
+  });
+  const result = await source.load();
+  assert.equal(result.quoteCoverage.complete, true);
+  assert.equal(result.quoteCoverage.source, "同花顺");
+  assert.ok(thsCalls >= 3);
+});
+
 test("Beijing limit-up status comes from the 30% limit price when THS gives the previous close", async () => {
   const result = await createBeijingSectorSource({ readUniverse: async () => ({ ...roster(3), members: [member(0), member(1), { ...member(2), name: "N北交新" }] }), readQuote: async code => (
     code === "920000" ? { ...quote(code), latest: 13, preClose: 10, changePct: 30 }
@@ -100,4 +164,26 @@ test("Beijing limit-up status comes from the 30% limit price when THS gives the 
   assert.equal(row("920000").isLimitUp, true); assert.equal(row("920000").limitStatusKnown, true);
   assert.equal(row("920001").isLimitUp, false); assert.equal(row("920001").limitStatusKnown, true);
   assert.equal(row("920002").limitStatusKnown, false, "new listings have no price limit");
+});
+
+test("empty quote coverage reports an honest empty source instead of 同花顺", async () => {
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const pendingSource = createBeijingSectorSource({ readUniverse: async () => roster(3), readQuote: async code => { await barrier; return quote(code); } });
+  const pending = await pendingSource.load({ waitForQuotes: false });
+  assert.equal(pending.quoteCoverage.loaded, 0);
+  assert.equal(pending.quoteCoverage.source, "");
+  assert.equal(pending.source, "北交所行情读取中；新浪财经北交所股票名录");
+  release();
+  const done = await pendingSource.load({ waitForQuotes: true });
+  assert.equal(done.quoteCoverage.source, "同花顺");
+});
+
+test("a fully failed quote round shows no empty parentheses in the warning", async () => {
+  const source = createBeijingSectorSource({ readUniverse: async () => roster(3), readQuote: async () => { throw new Error("HTTP 502"); } });
+  const result = await source.load();
+  assert.equal(result.quoteCoverage.loaded, 0);
+  assert.equal(result.quoteCoverage.source, "");
+  assert.equal(result.warning.includes("（）"), false);
+  assert.match(result.warning, /行情 0\/3 只，/);
 });

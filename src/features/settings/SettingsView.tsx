@@ -20,11 +20,12 @@ import {
   UI_SCALE_PRESETS,
   UI_SCALE_STORAGE_KEY
 } from "../../domain/visualPreferences";
+import { userErrorText } from "../../userErrorText";
 
 export { applySavedVisualPreferences, COLOR_VISION_STORAGE_KEY, UI_SCALE_STORAGE_KEY };
 
 const cleanSecurityError = (error: unknown) =>
-  (error instanceof Error ? error.message : String(error))
+  (userErrorText(error))
     .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z]*Error: )?/, "")
     .replace(/^\[[A-Z_]+\]\s*/, "");
 
@@ -184,7 +185,7 @@ export function SettingsView({
         setTestResult({
           signature: testedSignature,
           ok: false,
-          message: error instanceof Error ? error.message : "连接测试失败，请检查网络或数据源设置"
+          message: userErrorText(error, "连接测试失败，请检查网络或数据源设置")
         });
       }
     } finally {
@@ -279,7 +280,7 @@ export function SettingsView({
       });
     } catch (error) {
       if (settingsMounted.current) {
-        setSaveError(`${error instanceof Error ? error.message : "设置保存失败"}；当前运行仍使用上次成功保存的设置，草稿已保留，可重试。`);
+        setSaveError(`${userErrorText(error, "设置保存失败")}；当前运行仍使用上次成功保存的设置，草稿已保留，可重试。`);
       }
     } finally {
       if (settingsMounted.current) setSaving(false);

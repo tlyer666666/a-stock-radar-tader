@@ -5,6 +5,7 @@ export type PaperPosition = {
   shares: number;
   sectorName?: string;
   quoteDate?: string;
+  quoteAt?: string | undefined;
   quoteVolume?: number;
   quotePreClose?: number;
   quoteName?: string;

@@ -141,7 +141,7 @@ export function previousOpenT(store: TStore, code: string, day: string) {
   const item = store.items.find(entry => entry.code === code);
   const date = Object.keys(store.trades).filter(date => date < day && store.trades[date]?.[code]?.length).sort().at(-1);
   if (!item || !date) return null;
-  const { open } = settleTrades(store.trades[date]?.[code] || [], item.config);
+  const { open } = settleTrades(store.trades[date]?.[code] || [], item.config, code);
   return open ? { date, open } : null;
 }
 

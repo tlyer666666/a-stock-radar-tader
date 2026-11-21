@@ -57,6 +57,6 @@ test('rendering 800 stocks keeps the full accessible row count and only mounts t
   const html = renderToStaticMarkup(React.createElement(Pool,{items,onAdd(){},onOpen(){}}));
   assert.match(html,/aria-rowcount="801"/);
   assert.ok((html.match(/aria-rowindex=/g)||[]).length <= 30);
-  assert.match(html,/aria-label="监控股票0"/);
-  assert.doesNotMatch(html,/aria-label="监控股票799"/);
+  assert.match(html,/aria-label="加入自选 股票0"/);
+  assert.doesNotMatch(html,/aria-label="加入自选 股票799"/);
 });

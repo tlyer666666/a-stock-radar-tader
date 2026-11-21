@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { createServiceJobScope } from "../../serviceJobClient";
 import { TREND_QUALITY_PRESETS, TREND_STRATEGY_CHOICES, validQualityConfig } from "../../trendStrategyConfig";
 import type { TrendQualityConfig, TrendStrategyId } from "../../trendScreenerTypes";
+import { userErrorText } from "../../userErrorText";
 
 type JsonRecord = Record<string, unknown>;
 const record = (value: unknown): value is JsonRecord => Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -52,7 +53,7 @@ export function trendResearchReportSummary(value: unknown) {
 
 type EvaluationInput = { requestId: string; dataset: JsonRecord; from: string; to: string; splitDate: string; advancedStrategyId: TrendStrategyId; advancedConfig?: Record<string, number> };
 type ResearchBridge = { evaluateTrendResearch?: (input: EvaluationInput) => Promise<unknown>; cancelServiceJob?: (requestId: string) => Promise<unknown> };
-const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+const message = (error: unknown) => userErrorText(error);
 const display = (value: number | null) => value === null ? "未知" : value.toLocaleString("zh-CN");
 
 export default function TrendResearchTools({ qualityConfig = TREND_QUALITY_PRESETS.robust }: { qualityConfig?: TrendQualityConfig }) {

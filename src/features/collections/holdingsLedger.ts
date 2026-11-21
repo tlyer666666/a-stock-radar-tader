@@ -2,11 +2,13 @@ import {
   normalizeStockMonitorConfig,
   type StockMonitorConfig
 } from "../../stockMonitorRules";
+import { userErrorText } from "../../userErrorText";
 
 export type HoldingTradeSide = "buy" | "sell";
 
 export const HOLDING_TRADES_STORAGE_KEY = "a-stock-radar:holding-trades:v1";
-export const MAX_HOLDING_TRADES = 300;
+export const MAX_HOLDING_TRADES = 1000;
+export const MAX_HOLDINGS_COUNT = 80;
 
 export type HoldingTradeRecord = {
   id: string;
@@ -17,8 +19,13 @@ export type HoldingTradeRecord = {
   shares: number;
   price: number;
   realizedPnl: number | null;
+  dilutedPnl?: number | undefined;
   note?: string | undefined;
 };
+
+export type HoldingTradeArchive = { count: number; sellCount: number; winCount: number; realizedPnl: number; dilutedPnl: number };
+export type HoldingTradeLedger = { records: HoldingTradeRecord[]; archived: HoldingTradeArchive };
+const EMPTY_ARCHIVE: HoldingTradeArchive = { count: 0, sellCount: 0, winCount: 0, realizedPnl: 0, dilutedPnl: 0 };
 
 export type HoldingTradeInput = {
   items: HoldingItem[];
@@ -43,6 +50,7 @@ export type HoldingTradeResult =
       remainingShares: number;
       costPrice: number;
       realizedPnl: number | null;
+      dilutedPnl?: number | undefined;
       summary: string;
     }
   | { ok: false; error: string };
@@ -73,6 +81,11 @@ export function maskSensitiveText(value: string, masked: boolean, fallback = "**
 const roundPrice = (value: number): number => Math.round(value * 1000) / 1000;
 const round2 = (value: number): number => Math.round(value * 100) / 100;
 
+export function clampHoldingCostPrice(value: number): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? Math.max(0.001, roundPrice(numeric)) : 0.001;
+}
+
 /**
  * 按真实交易记录重算持仓数量与加权摊薄成本价：
  * - 加仓：合并原有持仓与本次买入股数，重新计算每股持仓成本。
@@ -98,16 +111,18 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
   const noteTrimmed = typeof input.note === "string" ? input.note.trim().slice(0, 160) : "";
 
   if (input.side === "buy") {
+    if (!existing && input.items.length >= MAX_HOLDINGS_COUNT) {
+      return { ok: false, error: `最多保存 ${MAX_HOLDINGS_COUNT} 只持仓，请先清仓移除部分股票后再添加` };
+    }
     const meta = inferSecurityMeta(code);
     const totalShares = existing ? existing.shares + shares : shares;
     if (!Number.isSafeInteger(totalShares) || totalShares <= 0) {
       return { ok: false, error: "合并后持仓股数超出安全整数范围" };
     }
-    const weightedCost = Math.max(
-      0.001,
+    const weightedCost = clampHoldingCostPrice(
       existing
-        ? roundPrice((existing.shares * existing.costPrice + shares * price) / totalShares)
-        : roundPrice(price)
+        ? (existing.shares * existing.costPrice + shares * price) / totalShares
+        : price
     );
     const resolvedName = String(input.name || existing?.name || code).trim().slice(0, 24) || code;
     const resolvedThscode = existing?.thscode || input.thscode || meta.thscode;
@@ -168,7 +183,7 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
 
   const rawNextCost = (existing.shares * existing.costPrice - shares * price) / remainingShares;
   const nextCost = input.diluteCost
-    ? Math.max(0.001, roundPrice(rawNextCost))
+    ? clampHoldingCostPrice(rawNextCost)
     : existing.costPrice;
   const realizedPnl = input.diluteCost
     ? (rawNextCost >= 0.001 ? 0 : round2((0.001 - rawNextCost) * remainingShares))
@@ -177,6 +192,9 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
   const nextItem: HoldingItem = {
     ...existing,
     shares: remainingShares,
+    ...(typeof existing.sellableShares === "number" && Number.isFinite(existing.sellableShares)
+      ? { sellableShares: Math.max(0, Math.min(remainingShares, existing.sellableShares - shares)) }
+      : {}),
     costPrice: nextCost,
     note: noteTrimmed || existing.note || "",
     updatedAt: now
@@ -195,6 +213,7 @@ export function applyHoldingTrade(input: HoldingTradeInput): HoldingTradeResult 
     remainingShares,
     costPrice: nextCost,
     realizedPnl,
+    ...(input.diluteCost ? { dilutedPnl: round2(fullClosePnl - realizedPnl) } : {}),
     summary
   };
 }
@@ -225,25 +244,53 @@ function isValidHoldingTradeRecord(value: unknown): value is HoldingTradeRecord 
     typeof r.price === "number" &&
     Number.isFinite(r.price) &&
     r.price > 0 &&
-    (r.realizedPnl === null || (typeof r.realizedPnl === "number" && Number.isFinite(r.realizedPnl)))
+    (r.realizedPnl === null || (typeof r.realizedPnl === "number" && Number.isFinite(r.realizedPnl))) &&
+    (r.dilutedPnl === undefined || (typeof r.dilutedPnl === "number" && Number.isFinite(r.dilutedPnl)))
   );
 }
 
-export function loadHoldingTrades(storage: Pick<Storage, "getItem"> | null = defaultTradeStorage()): HoldingTradeRecord[] {
-  if (!storage) return [];
+const finiteOr = (value: unknown, fallback = 0) => (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+const countOr = (value: unknown) => Math.max(0, Math.trunc(finiteOr(value)));
+
+function normalizeArchive(value: unknown): HoldingTradeArchive {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { ...EMPTY_ARCHIVE };
+  const raw = value as Record<string, unknown>;
+  return { count: countOr(raw.count), sellCount: countOr(raw.sellCount), winCount: countOr(raw.winCount),
+    realizedPnl: round2(finiteOr(raw.realizedPnl)), dilutedPnl: round2(finiteOr(raw.dilutedPnl)) };
+}
+
+const isSettledSell = (r: HoldingTradeRecord) => r.side === "sell" && (typeof r.realizedPnl === "number" || typeof r.dilutedPnl === "number");
+
+function foldIntoArchive(archive: HoldingTradeArchive, dropped: HoldingTradeRecord[]): HoldingTradeArchive {
+  const next = { ...archive };
+  for (const r of dropped) {
+    next.count += 1;
+    if (!isSettledSell(r)) continue;
+    next.sellCount += 1;
+    if (finiteOr(r.realizedPnl) + finiteOr(r.dilutedPnl) > 0) next.winCount += 1;
+    next.realizedPnl = round2(next.realizedPnl + finiteOr(r.realizedPnl));
+    next.dilutedPnl = round2(next.dilutedPnl + finiteOr(r.dilutedPnl));
+  }
+  return next;
+}
+
+export function loadHoldingTradeLedger(storage: Pick<Storage, "getItem"> | null = defaultTradeStorage()): HoldingTradeLedger {
+  if (!storage) return { records: [], archived: { ...EMPTY_ARCHIVE } };
   try {
     const raw = storage.getItem(HOLDING_TRADES_STORAGE_KEY);
-    if (!raw) return [];
+    if (!raw) return { records: [], archived: { ...EMPTY_ARCHIVE } };
     const parsed: unknown = JSON.parse(raw);
-    const list = Array.isArray(parsed)
-      ? parsed
-      : parsed && typeof parsed === "object" && Array.isArray((parsed as { records?: unknown }).records)
-        ? (parsed as { records: unknown[] }).records
-        : [];
-    return list.filter(isValidHoldingTradeRecord).slice(0, MAX_HOLDING_TRADES);
+    const container = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as { records?: unknown; archived?: unknown } : null;
+    const list = Array.isArray(parsed) ? parsed : Array.isArray(container?.records) ? container.records : [];
+    const valid = list.filter(isValidHoldingTradeRecord);
+    return { records: valid.slice(0, MAX_HOLDING_TRADES), archived: foldIntoArchive(normalizeArchive(container?.archived), valid.slice(MAX_HOLDING_TRADES)) };
   } catch {
-    return [];
+    return { records: [], archived: { ...EMPTY_ARCHIVE } };
   }
+}
+
+export function loadHoldingTrades(storage: Pick<Storage, "getItem"> | null = defaultTradeStorage()): HoldingTradeRecord[] {
+  return loadHoldingTradeLedger(storage).records;
 }
 
 export function appendHoldingTradeRecord(
@@ -262,20 +309,22 @@ export function appendHoldingTradeRecord(
     realizedPnl: typeof input.realizedPnl === "number" && Number.isFinite(input.realizedPnl)
       ? Math.round(input.realizedPnl * 100) / 100
       : null,
+    ...(typeof input.dilutedPnl === "number" && Number.isFinite(input.dilutedPnl) ? { dilutedPnl: round2(input.dilutedPnl) } : {}),
     ...(input.note ? { note: String(input.note).trim().slice(0, 160) } : {})
   };
   if (!isValidHoldingTradeRecord(record)) return loadHoldingTrades(storage);
-  const previous = loadHoldingTrades(storage).filter(item => item.id !== record.id);
-  const next = [record, ...previous].slice(0, MAX_HOLDING_TRADES);
-  if (storage) {
-    try {
-      storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify(next));
-      if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
-        window.dispatchEvent(new CustomEvent("a-stock-radar:holding-trades-updated"));
-      }
-    } catch {
-      // ignore storage quota or synthetic test environment restrictions
-    }
+  const ledger = loadHoldingTradeLedger(storage);
+  const combined = [record, ...ledger.records.filter(item => item.id !== record.id)];
+  const next = combined.slice(0, MAX_HOLDING_TRADES);
+  const archived = foldIntoArchive(ledger.archived, combined.slice(MAX_HOLDING_TRADES));
+  if (!storage) return next;
+  try {
+    storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify({ records: next, archived }));
+  } catch (error) {
+    throw new Error(`持仓已更新，但这笔成交流水未能保存（${userErrorText(error)}），请勿重复提交本笔交易`, { cause: error });
+  }
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
+    window.dispatchEvent(new CustomEvent("a-stock-radar:holding-trades-updated"));
   }
   return next;
 }
@@ -283,7 +332,7 @@ export function appendHoldingTradeRecord(
 export function clearHoldingTrades(storage: Pick<Storage, "setItem"> | null = defaultTradeStorage()): void {
   if (!storage) return;
   try {
-    storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify([]));
+    storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify({ records: [], archived: EMPTY_ARCHIVE }));
     if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
       window.dispatchEvent(new CustomEvent("a-stock-radar:holding-trades-updated"));
     }
@@ -292,27 +341,20 @@ export function clearHoldingTrades(storage: Pick<Storage, "setItem"> | null = de
   }
 }
 
-export function summarizeHoldingTrades(records: HoldingTradeRecord[]): {
+export function summarizeHoldingTrades(records: HoldingTradeRecord[], archived: HoldingTradeArchive = EMPTY_ARCHIVE): {
   totalCount: number;
   sellCount: number;
   winCount: number;
   cumulativeRealizedPnl: number;
+  cumulativeDilutedPnl: number;
 } {
-  let sellCount = 0;
-  let winCount = 0;
-  let cumulativeRealizedPnl = 0;
-  for (const r of records) {
-    if (r.side === "sell" && typeof r.realizedPnl === "number" && Number.isFinite(r.realizedPnl)) {
-      sellCount += 1;
-      if (r.realizedPnl > 0) winCount += 1;
-      cumulativeRealizedPnl += r.realizedPnl;
-    }
-  }
+  const total = foldIntoArchive(normalizeArchive(archived), records);
   return {
-    totalCount: records.length,
-    sellCount,
-    winCount,
-    cumulativeRealizedPnl: Math.round(cumulativeRealizedPnl * 100) / 100
+    totalCount: total.count,
+    sellCount: total.sellCount,
+    winCount: total.winCount,
+    cumulativeRealizedPnl: total.realizedPnl,
+    cumulativeDilutedPnl: total.dilutedPnl
   };
 }
 
@@ -558,7 +600,7 @@ function tryParseWithHeaderMap(
     name: name || code,
     shares,
     ...(availableShares !== undefined ? { availableShares } : {}),
-    costPrice: Math.max(0.001, roundPrice(costPrice)),
+    costPrice: clampHoldingCostPrice(costPrice),
     note
   };
 }
@@ -742,7 +784,7 @@ export function parseHoldingsPaste(rawText: string): HoldingsPasteParseResult {
       name: name || code,
       shares,
       ...(availableShares !== undefined ? { availableShares } : {}),
-      costPrice: Math.max(0.001, roundPrice(costPrice)),
+      costPrice: clampHoldingCostPrice(costPrice),
       note
     });
   });
@@ -786,6 +828,9 @@ export function mergeImportedHoldings(
       updatedAt: now
     };
     byCode.set(row.code, merged);
+  }
+  if (byCode.size > MAX_HOLDINGS_COUNT) {
+    throw new Error(`最多保存 ${MAX_HOLDINGS_COUNT} 只持仓（合并后共 ${byCode.size} 只），请分批或先清理已清仓股票`);
   }
   return [...byCode.values()].sort((left, right) => left.code.localeCompare(right.code));
 }

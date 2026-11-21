@@ -1,4 +1,5 @@
 import { createServiceJobScope } from '../../serviceJobClient';
+import { userErrorText } from "../../userErrorText";
 export type SelectionCandle = { date: string; open: number; high: number; low: number; close: number; volume: number | null; volumeUnit: string };
 export type SelectionChart = { rows: SelectionCandle[]; source: string; adjustment: string; updatedAt: string; note: string };
 const cache = new Map<string, { data: SelectionChart; at: number; sequence: number }>();
@@ -47,7 +48,7 @@ function pump() {
       while (cache.size > 100) cache.delete(cache.keys().next().value!);
       for (const listener of watchers.get(job.cacheKey) || []) listener(data, '');
     }).catch((error: unknown) => {
-      if (!timedOut) for (const listener of job.listeners) listener(null, error instanceof Error ? error.message : 'K线加载失败');
+      if (!timedOut) for (const listener of job.listeners) listener(null, userErrorText(error, 'K线加载失败'));
     }).finally(() => { clearTimeout(timer); if (jobs.get(key) === job) jobs.delete(key); running--; pump(); });
   }
 }

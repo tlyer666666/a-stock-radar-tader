@@ -147,7 +147,7 @@ test("invalid prices never leak into richer observations and an adverse structur
 });
 test("rich decision UI exposes actual evidence and observations outside legacy score details",()=>{
   const html=renderToStaticMarkup(React.createElement(DecisionReview,{decision:buildStockReviewDecision(stockFixture())}));
-  for(const text of ['结构实测','观察价位','反证优先','市场与板块背景','20 根涨跌','涨停锚点低点','确认依据','失效观察'])assert.ok(html.includes(text),text);
+  for(const text of ['关键数据','参考价位','先看风险','市场与板块背景','20 根涨跌','涨停锚点低点','怎么确认','什么情况说明判断错了'])assert.ok(html.includes(text),text);
   assert.doesNotMatch(html,/胜率|建议仓位|\/100/);
 });
 

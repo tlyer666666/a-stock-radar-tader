@@ -1,6 +1,7 @@
 /** 数据备份的渲染进程部分：收集 / 写回本软件在浏览器本地存储里的数据，并定时自动备份。 */
 import { useEffect } from "react";
 import { pauseSafeLocalWrites } from "../../safeStorage";
+import { userErrorText } from "../../userErrorText";
 
 export type BackupFile = { name: string; size: number };
 export type BackupStatus = {
@@ -85,7 +86,7 @@ const rollbackAppLocalKeys = (storage: Storage, previous: Array<[string, string]
 
 function localRestoreFailure(storage: Storage, previous: Array<[string, string]>, cause: unknown) {
   const restored = rollbackAppLocalKeys(storage, previous);
-  const reason = cause instanceof Error ? cause.message : String(cause);
+  const reason = userErrorText(cause);
   return new Error(`恢复本地数据失败，${restored ? "已回滚原数据" : "还原原数据失败，请保留备份文件"}：${reason}`, { cause });
 }
 

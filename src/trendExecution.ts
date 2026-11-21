@@ -1,4 +1,5 @@
 import type { TrendCandidate, TrendExecutionCheck } from "./trendScreenerTypes";
+import { userErrorText } from "./userErrorText";
 
 export const TREND_EXECUTION_TTL_MS = 60_000;
 export const trendBoardQuantity = (board: TrendCandidate["board"]) => ({
@@ -21,7 +22,7 @@ export async function requestTrendExecution(api: unknown, request: TrendExecutio
     const result = await bridge.checkTrendExecution(request);
     return result && Array.isArray(result.reasons) ? result : unknownCheck(request.signalDate, "执行检查返回数据不完整");
   } catch (reason) {
-    return unknownCheck(request.signalDate, `执行检查失败：${reason instanceof Error ? reason.message : String(reason)}`);
+    return unknownCheck(request.signalDate, `执行检查失败：${userErrorText(reason)}`);
   }
 }
 

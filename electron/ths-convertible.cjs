@@ -1,17 +1,19 @@
 "use strict";
 
 /**
- * 可转债行情 —— 全部来自同花顺免费接口。
+ * 可转债 —— 名单来自同花顺发行名单，行情优先用腾讯批量快照一次读完。
  *
- *   新券名单（含正股）  https://data.10jqka.com.cn/ipo/kzz/           JSON，只含近一年多发行的约 80+ 只
+ *   名单（含正股）      https://data.10jqka.com.cn/ipo/kzz/           JSON，全部发行历史（含已到期/已强赎）
  *   逐券实时快照        https://d.10jqka.com.cn/v6/realhead/{市场}_{代码}/last.js
  *                        市场号：19 = 上交所债券（110/111/113/118 开头），35 = 深交所债券（123/127/128 开头）
+ *   批量快照            https://qt.gtimg.cn/q=sh110079,sz123288        每请求约 200 个代码（tencent-batch-quote.cjs）
  *
- * 同花顺没有免费的「全部在市可转债」名单，所以名单分两步建立：
- *   1. 新券：直接取同花顺新券名单（带正股代码、上市/到期日）；
- *   2. 老券：按交易所可转债代码段逐个查询同花顺快照，近 20 天内仍有成交行情的才算在市（已到期、
- *      已强赎摘牌的代码不再有新行情，自然被排除）。结果存到本机，每 7 天重新核对一次。
- * 之后每次刷新只逐只读取在市债券的同花顺快照，渐进返回（与北交所页面一致）。
+ * 名单处理：
+ *   1. 发行名单按「已上市、未到期」过滤出在市转债；
+ *   2. 已摘牌（强赎或到期）的券由腾讯批量快照的 D/U 状态识别，代码存进本机名单 delisted，之后既不再请求也不再展示；
+ *   3. 发行名单是最早上市日超过转债最长存续期（6 年，按 6.5 年取整）的完整历史时，证明没有名单之外的活券，
+ *      跳过按代码段逐个探测的每周核对；否则沿用旧逻辑逐码核对，结果存本机，每 7 天重新核对一次。
+ * 行情：批量快照覆盖不到的券才逐只读同花顺，渐进返回（与北交所页面一致）。
  */
 
 const { fetchArrayBufferWithPolicy } = require("./http-client.cjs");
@@ -67,11 +69,13 @@ function parseBeijingTime(value) {
 
 const isoDate = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : "";
 
-/** 同花顺新券名单 → 名单条目（只保留已上市、未到期的；未上市的单独返回供提示）。 */
+/** 同花顺新券名单 → 名单条目（只保留已上市、未到期的；未上市的单独返回供提示）。
+ *  earliestListingDate 是全部可转债行（含已过期）里最早的上市日，用来判断名单是不是完整历史。 */
 function parseFeed(payload, today) {
   const list = Array.isArray(payload?.list) ? payload.list : [];
   const listed = [];
   const upcoming = [];
+  let earliestListingDate = "";
   for (const row of list) {
     const code = String(row?.bond_code || "");
     if (!isConvertibleCode(code)) continue;
@@ -85,11 +89,12 @@ function parseFeed(payload, today) {
       expireDate: isoDate(row?.expire_date),
       source: "feed"
     };
+    if (entry.listingDate && (!earliestListingDate || entry.listingDate < earliestListingDate)) earliestListingDate = entry.listingDate;
     if (entry.expireDate && entry.expireDate < today) continue;
     if (entry.listingDate && entry.listingDate <= today) listed.push(entry);
     else upcoming.push(entry);
   }
-  return { listed, upcoming };
+  return { listed, upcoming, earliestListingDate };
 }
 
 /** realhead items → 债券快照；同时给出行情时间，用于判断是否仍在交易。 */
@@ -123,6 +128,31 @@ function normalizeBondQuote(code, payload) {
   };
 }
 
+/** 腾讯批量快照 → 与 normalizeBondQuote 相同的债券快照形状（量单位：手 × 10 = 张）。 */
+function bondQuoteFromBatch(bond, quote) {
+  return {
+    code: bond.code,
+    name: quote.name || bond.name || bond.code,
+    latest: quote.latest,
+    preClose: quote.preClose,
+    open: quote.open,
+    high: quote.high,
+    low: quote.low,
+    changePct: quote.changePct,
+    change: quote.change,
+    volume: quote.volumeLots !== null ? quote.volumeLots * 10 : null,
+    amount: quote.amount,
+    turnover: quote.turnover,
+    amplitude: quote.amplitude,
+    limitUp: quote.limitUp,
+    limitDown: quote.limitDown,
+    quoteAt: quote.quoteAt,
+    quoteDate: quote.quoteDate,
+    tradeStatus: quote.tradeStatus === "suspended" ? "suspended" : "trading",
+    source: "腾讯行情"
+  };
+}
+
 async function defaultReadQuote(market, code, signal, policy = QUOTE_POLICY) {
   const bytes = await fetchArrayBufferWithPolicy(`${QUOTE_HOST}/v6/realhead/${market}_${code}/last.js`,
     { headers: headers("https://stockpage.10jqka.com.cn/"), signal }, policy);
@@ -147,6 +177,7 @@ function remainingYears(expireDate, today) {
 function createConvertibleSource({
   readFeed = defaultReadFeed,
   readQuote = defaultReadQuote,
+  readBatch = null,
   store = null,
   now = () => Date.now(),
   concurrency = 4,
@@ -157,7 +188,8 @@ function createConvertibleSource({
   let pending = null;
   let pendingFirst = null;
   let progress = null;
-  let roster = null; // { schema, discoveredAt, bonds: [{code,name,market,stockCode,stockName,listingDate,expireDate,source}] }
+  let feedCache = null;
+  let roster = null;
 
   function loadStoredRoster() {
     if (roster) return roster;
@@ -225,10 +257,10 @@ function createConvertibleSource({
     return { found, checked, total: candidates.length };
   }
 
-  function snapshot({ bonds, quotes, upcoming, discovery, warnings, pending: isPending }) {
+  function snapshot({ bonds, quotes, upcoming, discovery, delisted = new Set(), warnings, pending: isPending }) {
     const today = beijingDate(now());
     const cutoff = beijingDate(now() - ACTIVE_WITHIN_DAYS * 86400000);
-    const members = bonds.map((bond) => {
+    const members = bonds.filter((bond) => !delisted.has(bond.code)).map((bond) => {
       const quote = quotes.get(bond.code);
       const status = !quote ? "unavailable" : quote.quoteDate < cutoff ? "inactive" : "ready";
       return {
@@ -245,6 +277,7 @@ function createConvertibleSource({
         low: quote?.low ?? null,
         quoteAt: quote?.quoteAt || "",
         quoteStatus: status,
+        tradeStatus: quote?.tradeStatus === "suspended" ? "suspended" : "trading",
         remainingYears: remainingYears(bond.expireDate, today),
         secid: `${bond.market === 19 ? 1 : 0}.${bond.code}`,
         thscode: `${bond.code}.${bond.market === 19 ? "SH" : "SZ"}`
@@ -256,8 +289,15 @@ function createConvertibleSource({
     const falling = ready.filter((member) => member.changePct < 0).length;
     const changes = ready.map((member) => member.changePct).filter(Number.isFinite).sort((a, b) => a - b);
     const median = changes.length ? (changes.length % 2 ? changes[(changes.length - 1) / 2] : (changes[changes.length / 2 - 1] + changes[changes.length / 2]) / 2) : null;
+    const readySources = [...new Set(ready.map((member) => quotes.get(member.code)?.source || "同花顺"))]
+      .sort((a, b) => (a === "腾讯行情" ? -1 : b === "腾讯行情" ? 1 : 0));
+    const coverageSource = readySources.length ? readySources.join("、") : "";
+    const batchReady = ready.filter((member) => quotes.get(member.code)?.source === "腾讯行情").length;
+    const sourceText = batchReady === 0 ? "同花顺可转债行情（新券名单 + 逐券快照）"
+      : batchReady === ready.length ? "腾讯批量行情；名单来自同花顺"
+        : "腾讯批量行情，个别用同花顺逐券快照补齐；名单来自同花顺";
     return {
-      source: "同花顺可转债行情（新券名单 + 逐券快照）",
+      source: sourceText,
       fetchedAt: new Date(now()).toISOString(),
       asOf,
       members,
@@ -271,19 +311,24 @@ function createConvertibleSource({
         medianChangePct: median === null ? null : Number(median.toFixed(2)),
         amount: ready.reduce((sum, member) => sum + (Number.isFinite(member.amount) ? member.amount : 0), 0)
       },
-      quoteCoverage: { loaded: ready.length, total: members.length, pending: Boolean(isPending), complete: !isPending && ready.length === members.length },
+      quoteCoverage: { loaded: ready.length, total: members.length, pending: Boolean(isPending), complete: !isPending && ready.length === members.length, source: coverageSource },
       roster: { discoveredAt: discovery?.discoveredAt || null, feedCount: bonds.filter((bond) => bond.source === "feed").length,
-        discoveredCount: bonds.filter((bond) => bond.source === "discovered").length, discovering: discovery?.discovering || null },
+        discoveredCount: bonds.filter((bond) => bond.source === "discovered").length,
+        delistedCount: bonds.filter((bond) => delisted.has(bond.code)).length,
+        discovering: discovery?.discovering || null },
       warnings
     };
   }
 
-  async function build(signal, publish) {
+  async function build(signal, publish, freshFeed = false) {
     const warnings = [];
     const today = beijingDate(now());
-    let feed = { listed: [], upcoming: [] };
+    let feed = { listed: [], upcoming: [], earliestListingDate: "" };
+    let feedOk = false;
     try {
-      feed = parseFeed(await readFeed(signal), today);
+      if (freshFeed || !feedCache || feedCache.expiresAt <= now()) feedCache = { payload: await readFeed(signal), expiresAt: now() + 30 * 60 * 1000 };
+      feed = parseFeed(feedCache.payload, today);
+      feedOk = true;
     } catch (error) {
       signal.throwIfAborted();
       warnings.push(`同花顺新券名单暂不可用：${String(error?.message || error).slice(0, 80)}`);
@@ -291,26 +336,71 @@ function createConvertibleSource({
     const stored = loadStoredRoster();
     let discovered = stored?.bonds?.filter((bond) => bond.source === "discovered") || [];
     let discoveredAt = stored?.discoveredAt || null;
+    if (!feedOk) {
+      const storedFeed = (stored?.bonds || []).filter((bond) => bond.source === "feed" && (!bond.expireDate || bond.expireDate >= today));
+      if (storedFeed.length) {
+        feed = { ...feed, listed: storedFeed };
+        warnings.push("同花顺发行名单暂不可用，先用上次保存的名单");
+      }
+    }
+    const delisted = new Set(Array.isArray(stored?.delisted) ? stored.delisted.filter((code) => isConvertibleCode(code)) : []);
     const quotes = new Map();
     const bondsNow = () => {
       const byCode = new Map(discovered.map((bond) => [bond.code, bond]));
       for (const bond of feed.listed) byCode.set(bond.code, { ...byCode.get(bond.code), ...bond });
       return [...byCode.values()].sort((a, b) => a.code.localeCompare(b.code));
     };
-    const needsDiscovery = !discoveredAt || now() - Date.parse(discoveredAt) > DISCOVERY_TTL_MS;
-    // 逐只读行情：已有行情的跳过；先用较高并发读一遍，再用 2 个并发补一遍失败的。
+    const persistedDelisted = () => {
+      if (!feedOk) return [...delisted];
+      const codes = new Set(bondsNow().map((bond) => bond.code));
+      return [...delisted].filter((code) => codes.has(code));
+    };
+    const saveNow = () => saveRoster({ schema: ROSTER_SCHEMA, discoveredAt, bonds: bondsNow(), delisted: persistedDelisted() });
+    const rosterChanged = () => {
+      const savedBonds = new Set((roster?.bonds || []).map((bond) => bond.code));
+      const current = bondsNow();
+      if (savedBonds.size !== current.length || current.some((bond) => !savedBonds.has(bond.code))) return true;
+      const kept = persistedDelisted();
+      const savedDelisted = new Set(Array.isArray(roster?.delisted) ? roster.delisted : []);
+      return kept.length !== savedDelisted.size || kept.some((code) => !savedDelisted.has(code));
+    };
+    const feedIsCompleteHistory = Boolean(feed.earliestListingDate) && feed.earliestListingDate <= beijingDate(now() - 2372 * 86400000);
+    const needsDiscovery = !feedIsCompleteHistory && (!discoveredAt || now() - Date.parse(discoveredAt) > DISCOVERY_TTL_MS);
     const loadQuotes = async (bonds, discovery, note = "") => {
-      const progress = () => publish(snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery, pending: true,
-        warnings: [...warnings, `正在逐只读取同花顺可转债行情：${quotes.size}/${bonds.length}${note}`] }));
+      const activeCount = () => bonds.filter((bond) => !delisted.has(bond.code)).length;
+      const progress = () => publish(snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery, delisted, pending: true,
+        warnings: [...warnings, `正在读取可转债行情：${quotes.size}/${activeCount()}${note}`] }));
+      if (readBatch) {
+        const targets = bonds.filter((bond) => !quotes.has(bond.code));
+        if (targets.length) {
+          try {
+            const batchQuotes = await readBatch(targets, signal);
+            signal.throwIfAborted();
+            for (const bond of targets) {
+              const batchQuote = batchQuotes?.get?.(bond.code);
+              if (!batchQuote) continue;
+              if (batchQuote.tradeStatus === "delisted" || batchQuote.tradeStatus === "unlisted") {
+                delisted.add(bond.code);
+                continue;
+              }
+              delisted.delete(bond.code);
+              quotes.set(bond.code, bondQuoteFromBatch(bond, batchQuote));
+            }
+          } catch (error) {
+            signal.throwIfAborted();
+          }
+        }
+      }
       progress();
       let cursor = 0;
       let finished = 0;
       const worker = async () => {
         while (!signal.aborted && cursor < bonds.length) {
           const bond = bonds[cursor++];
-          if (quotes.has(bond.code)) continue;
+          if (quotes.has(bond.code) || delisted.has(bond.code)) continue;
           try {
-            quotes.set(bond.code, await readQuote(bond.market, bond.code, signal));
+            const quote = await readQuote(bond.market, bond.code, signal);
+            quotes.set(bond.code, { ...quote, tradeStatus: quote.tradeStatus || "trading", source: quote.source || "同花顺" });
           } catch {
             signal.throwIfAborted();
           }
@@ -327,30 +417,35 @@ function createConvertibleSource({
       // 先把手头名单（上次核对的 + 新券）的行情读出来，再去核对在市老券；核对要 2–3 分钟，不能让行情一直空着等它。
       if (bondsNow().length) await loadQuotes(bondsNow(), { discoveredAt }, discoveredAt ? "；随后重新核对在市名单（每 7 天一次）" : "；随后核对在市老券");
       const discovering = { checked: 0, total: 0, found: 0 };
-      publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, pending: true,
+      publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, delisted, pending: true,
         warnings: [...warnings, discoveredAt ? "正在用同花顺重新核对在市可转债（每 7 天一次），先显示上次名单" : "首次使用：正在用同花顺逐个核对在市可转债代码，约需 2–3 分钟；新券已先显示"] }));
       try {
         const result = await discover(feed.listed, signal, (checked, total, found) => {
           Object.assign(discovering, { checked, total, found });
-          publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, pending: true, warnings }));
+          publish(snapshot({ bonds: bondsNow(), quotes, upcoming: feed.upcoming, discovery: { discoveredAt, discovering }, delisted, pending: true, warnings }));
         });
         discovered = result.found;
         discoveredAt = new Date(now()).toISOString();
-        saveRoster({ schema: ROSTER_SCHEMA, discoveredAt, bonds: bondsNow() });
+        saveNow();
       } catch (error) {
         signal.throwIfAborted();
         warnings.push(`在市可转债核对未完成（${String(error?.message || error).slice(0, 60)}），${discovered.length ? "沿用上次名单" : "暂只显示新券"}`);
       }
-    } else if (feed.listed.length) {
-      saveRoster({ schema: ROSTER_SCHEMA, discoveredAt, bonds: bondsNow() });
+    } else if (feedIsCompleteHistory) {
+      discovered = [];
+      discoveredAt = new Date(now()).toISOString();
+      if (rosterChanged() || !roster?.discoveredAt || now() - Date.parse(roster.discoveredAt) > 86400000) saveNow();
+    } else if (rosterChanged()) {
+      saveNow();
     }
     const bonds = bondsNow();
     await loadQuotes(bonds, { discoveredAt });
     signal.throwIfAborted();
-    const missing = bonds.length - quotes.size;
-    if (missing > 0) warnings.push(`${missing} 只可转债本轮未取到同花顺行情，仍保留在列表中`);
+    if (rosterChanged()) saveNow();
+    const missing = bonds.filter((bond) => !delisted.has(bond.code)).length - quotes.size;
+    if (missing > 0) warnings.push(`${missing} 只可转债本轮未取到行情，仍保留在列表中`);
     if (!bonds.length) warnings.push("暂无可显示的可转债：同花顺名单与代码核对都没有结果");
-    return snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery: { discoveredAt }, pending: false, warnings });
+    return snapshot({ bonds, quotes, upcoming: feed.upcoming, discovery: { discoveredAt }, delisted, pending: false, warnings });
   }
 
   let runController = null;
@@ -394,7 +489,7 @@ function createConvertibleSource({
           cached = null;
           return this.load({ forceRefresh: true, signal, waitForQuotes });
         }
-        return attachCallerSignal(waitForQuotes ? pending : (progress || pendingFirst || pending), signal);
+        return attachCallerSignal(waitForQuotes ? pending : progress ? Promise.resolve(progress) : (pendingFirst || pending), signal);
       }
       if (!forceRefresh && cached && cached.expiresAt > now()) return cached.value;
       runController = new AbortController();
@@ -403,7 +498,7 @@ function createConvertibleSource({
       progress = null;
       let resolveFirst;
       const first = new Promise((resolve) => { resolveFirst = resolve; });
-      const request = build(bounded, (value) => { progress = value; resolveFirst(value); }).then((value) => {
+      const request = build(bounded, (value) => { progress = value; resolveFirst(value); }, forceRefresh).then((value) => {
         cached = { value, expiresAt: now() + (value.quoteCoverage.complete ? 60000 : 20000) };
         progress = value;
         return value;

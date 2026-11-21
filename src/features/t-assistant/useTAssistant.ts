@@ -7,6 +7,8 @@ import {
   EMPTY_T_STORE, MAX_T_ITEMS, T_STORE_KEY, collectRolledTradeIdsThrough, inTradingSession, normalizeTStore, rolloverTStoreForDay, secidForCode, shanghaiClock, shanghaiDay, isFreshTQuote, previousOpenT, shouldAlert, withTrades,
   type AlertMemory, type TItem, type TStore
 } from "./tStore";
+import { userErrorText } from "../../userErrorText";
+import { inferAssetType } from "../../domain/securityIdentifiers";
 
 export type TRuntime = {
   share: TimeShare | null;
@@ -86,17 +88,26 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
   }, []);
 
   const busy = useRef(new Set<string>());
-  const loadOne = useCallback(async (item: Pick<TItem, "code" | "name" | "secid">, silent: boolean) => {
-    if (busy.current.has(item.code) || !window.stockApi?.getChart) return;
+  const queuedManual = useRef(new Map<string, Pick<TItem, "code" | "name" | "secid">>());
+  const loadOne = useCallback(async (item: Pick<TItem, "code" | "name" | "secid">, silent: boolean): Promise<void> => {
+    if (!window.stockApi?.getChart) return;
+    if (busy.current.has(item.code)) {
+      if (!silent) {
+        queuedManual.current.set(item.code, item);
+        setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: true, error: "" } }));
+      }
+      return;
+    }
     busy.current.add(item.code);
     if (!silent) setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: true, error: "" } }));
     try {
-      const security: Security = { code: item.code, name: item.name, secid: item.secid, assetType: "stock" };
+      const assetType = inferAssetType(item.code) === "etf" ? "etf" : "stock";
+      const security: Security = { code: item.code, name: item.name, secid: item.secid, assetType };
       const response = await window.stockApi.getChart(security, "time", { forceRefresh: true });
       const rows = Array.isArray(response) ? response : response?.rows || [];
       const preClose = Number(response?.preClose);
       const volumeUnit = response?.volumeUnit === "lots" || response?.volumeUnit === "shares" ? response.volumeUnit : undefined;
-      const share = buildTimeShare(rows, { preClose: Number.isFinite(preClose) && preClose > 0 ? preClose : null, assetType: "stock", unitsPerLot: response?.unitsPerLot, volumeUnit });
+      const share = buildTimeShare(rows, { preClose: Number.isFinite(preClose) && preClose > 0 ? preClose : null, assetType, unitsPerLot: response?.unitsPerLot, volumeUnit });
       if (!share) throw new Error("暂无分时数据");
       if (mountedRef.current) {
         setShares(current => ({ ...current, [item.code]: { share, loading: false, error: "", updatedAt: Date.now(), source: String(response?.source || "") } }));
@@ -119,13 +130,20 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       }
     } catch (reason) {
       if (mountedRef.current) {
-        const message = reason instanceof Error ? reason.message : String(reason);
+        const message = userErrorText(reason);
         setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: false, error: message || "分时读取失败" } }));
       }
     } finally {
       busy.current.delete(item.code);
+      const pendingItem = queuedManual.current.get(item.code);
+      if (pendingItem) {
+        queuedManual.current.delete(item.code);
+        if (mountedRef.current) void loadOneRef.current(pendingItem, false);
+      }
     }
   }, []);
+  const loadOneRef = useRef(loadOne);
+  loadOneRef.current = loadOne;
 
   const loadAll = useCallback(async (silent: boolean) => {
     const queue = [...storeRef.current.items];
@@ -200,7 +218,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
         if (share && dayKey === share.date) continue;
         const list = dayMap?.[item.code];
         if (!Array.isArray(list) || !list.length) continue;
-        const settled = settleTrades(list, item.config).stats;
+        const settled = settleTrades(list, item.config, item.code).stats;
         priorRounds += settled.rounds;
         priorWins += settled.wins ?? 0;
       }
@@ -279,7 +297,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
 
   const addStock = useCallback((security: { code: string; name: string; secid?: string }, config?: Partial<TConfig>) => {
     const code = String(security.code || "");
-    if (!/^\d{6}$/.test(code)) return "只支持 6 位代码的 A 股";
+    if (!/^\d{6}$/.test(code)) return "只支持 6 位代码的 A 股或 ETF";
     const exists = storeRef.current.items.find(item => item.code === code);
     if (!exists && storeRef.current.items.length >= MAX_T_ITEMS) return `最多同时跟踪 ${MAX_T_ITEMS} 只`;
     commit(current => {
@@ -332,7 +350,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       commit(current => withTrades(current, day, code, list => [...list, { ...trade, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}` }]));
       return "";
     } catch (error) {
-      return error instanceof Error ? error.message : "成交登记失败";
+      return userErrorText(error, "成交登记失败");
     }
   }, [commit]);
 

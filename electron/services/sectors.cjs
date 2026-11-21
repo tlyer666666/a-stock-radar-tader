@@ -3,6 +3,7 @@
 // services.cjs 通过顶部解构回本模块并继续按原契约 re-export，勿在这里引入
 // 对 services.cjs 的反向依赖。
 const { createBeijingSectorSource, isBeijingSector, BEIJING_BOARD } = require("../ths-beijing.cjs");
+const { readTencentBatchQuotes } = require("../tencent-batch-quote.cjs");
 const { BoundedCache, credentialFingerprint } = require("../bounded-cache.cjs");
 const { fetchArrayBufferWithPolicy, fetchWithPolicy } = require("../http-client.cjs");
 // 同花顺免费网关的个股报价与日K线（不需要 QuantAPI Token），以及三路行情的健康度/熔断。
@@ -42,7 +43,10 @@ function getFuyaoReviewSnapshot(...args) { return _fuyao_review.getFuyaoReviewSn
 
 const EAST_DELAY_QUOTE = "https://push2delay.eastmoney.com/api/qt";
 
-const beijingSectorSource = createBeijingSectorSource();
+const beijingSectorSource = createBeijingSectorSource({
+  readBatch: (members, signal) => readTencentBatchQuotes(members.map((member) => ({ code: member.code, thscode: `${member.code}.BJ` })), { signal })
+    .then((result) => result.quotes)
+});
 
 const marketSnapshotCache = { value: null, expiresAt: 0, promise: null };
 
@@ -1326,7 +1330,7 @@ async function loadBeijingSector(options = {}, context = {}) {
     state: snapshot.complete && snapshot.quoteCoverage.complete ? "成分等权涨幅" : "部分成分 · 涨幅待补",
     scoreMode: snapshot.quoteBasis,
     leaderName: built.leaders[0]?.name || "",
-    sourceState: snapshot.complete ? `北交所名录 ${snapshot.members.length} 只 · 同花顺行情 ${snapshot.quoteCoverage.loaded} 只` : "上次核验名录 · 最新总数待核验"
+    sourceState: snapshot.complete ? `北交所名录 ${snapshot.members.length} 只 · ${snapshot.quoteCoverage.source ? `${snapshot.quoteCoverage.source} ${snapshot.quoteCoverage.loaded} 只` : snapshot.quoteCoverage.pending ? "行情读取中" : "行情暂未取到"}` : "上次核验名录 · 最新总数待核验"
   };
 }
 

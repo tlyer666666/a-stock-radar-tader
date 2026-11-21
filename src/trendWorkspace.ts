@@ -1,6 +1,7 @@
 import type { TrendCandidate, TrendScanStatus, TrendScanRequest } from "./trendScreenerTypes";
 import { validStrategySnapshot, libraryDefinition, strategyName, sameTrendStrategy } from "./trendStrategyConfig";
 import { inferSecid } from "./domain/securityIdentifiers";
+import { isTradingDay } from "./features/notes/notesModel";
 
 export const TREND_PLAN_STORAGE_KEY = "a-stock-radar:trend-plans:v1";
 export type TrendReviewDraft = { fields: Record<string, string>; checks: Record<string, boolean> };
@@ -14,6 +15,9 @@ export type SavedTrendPlan = {
   candidate: TrendCandidate;
   reviewDraft?: TrendReviewDraft;
   archivedAt?: string;
+  archivedReason?: string;
+  restoredAt?: string;
+  source?: string;
 };
 
 type PlanStorage = Pick<Storage, "getItem" | "setItem">;
@@ -129,6 +133,9 @@ function validPlan(value: unknown): value is SavedTrendPlan {
     typeof value.savedAt === "string" && !Number.isNaN(Date.parse(value.savedAt)) &&
     value.id === trendPlanId(value.candidate, value.isPreview) &&
     (value.archivedAt === undefined || (typeof value.archivedAt === "string" && !Number.isNaN(Date.parse(value.archivedAt)))) &&
+    (value.archivedReason === undefined || (typeof value.archivedReason === "string" && value.archivedReason.length <= 40)) &&
+    (value.restoredAt === undefined || (typeof value.restoredAt === "string" && !Number.isNaN(Date.parse(value.restoredAt)))) &&
+    (value.source === undefined || (typeof value.source === "string" && value.source.length <= 24)) &&
     (value.reviewDraft === undefined || (record(value.reviewDraft) && record(value.reviewDraft.fields) && record(value.reviewDraft.checks) &&
       Object.values(value.reviewDraft.fields).every((item) => typeof item === "string") &&
       Object.values(value.reviewDraft.checks).every((item) => typeof item === "boolean")));
@@ -177,6 +184,46 @@ export function writeTrendPlans(storage: PlanStorage, plans: SavedTrendPlan[]): 
   }
 }
 
+export const PLAN_COCKPIT_TRADING_DAYS = 5;
+
+function shanghaiDate(value: string | number | Date): string {
+  return new Date(new Date(value).getTime() + 8 * 3600_000).toISOString().slice(0, 10);
+}
+
+function tradingDaysAfter(from: string, to: string): number {
+  let count = 0;
+  for (let day = Date.parse(`${from}T00:00:00Z`) + 86_400_000, end = Date.parse(`${to}T00:00:00Z`); day <= end; day += 86_400_000) {
+    if (isTradingDay(new Date(day).toISOString().slice(0, 10))) count += 1;
+  }
+  return count;
+}
+
+export function expireStaleTrendPlans(storage: PlanStorage, today = shanghaiDate(Date.now()), now = new Date().toISOString(), keep = PLAN_COCKPIT_TRADING_DAYS): number {
+  const read = readTrendPlans(storage);
+  if (read.error) return 0;
+  const stale = new Set(read.plans.filter(plan => !plan.archivedAt && tradingDaysAfter(shanghaiDate(plan.restoredAt || plan.savedAt), today) > keep).map(plan => plan.id));
+  if (!stale.size) return 0;
+  const ok = writeTrendPlans(storage, read.plans.map(plan => stale.has(plan.id) ? { ...plan, archivedAt: now, archivedReason: "到期自动移出" } : plan));
+  return ok ? stale.size : 0;
+}
+
+export function restoreTrendPlan(plan: SavedTrendPlan, now = new Date().toISOString()): SavedTrendPlan {
+  const { archivedAt: _archivedAt, archivedReason: _archivedReason, ...rest } = plan;
+  return { ...rest, restoredAt: now };
+}
+
+export function archiveTrendPlan(storage: PlanStorage, id: string, now = new Date().toISOString()): boolean {
+  const read = readTrendPlans(storage);
+  if (read.error || !read.plans.some(plan => plan.id === id && !plan.archivedAt)) return false;
+  return writeTrendPlans(storage, read.plans.map(plan => plan.id === id ? { ...plan, archivedAt: now, archivedReason: "手动移出驾驶舱" } : plan));
+}
+
+export function isQuickObservationCandidate(candidate: TrendCandidate): boolean {
+  const { metrics } = candidate;
+  return candidate.stage === "watch" && candidate.limitDate === null && candidate.patterns.length === 0 && !candidate.strategy &&
+    metrics.avgAmount20 === 0 && metrics.ma20 === metrics.close && metrics.ma60 === metrics.close && metrics.deviationPercent === 0;
+}
+
 export function csvCell(value: unknown): string {
   const original = value == null ? "" : String(value);
   // Quoting alone does not prevent spreadsheet programs from evaluating formulas.
@@ -194,8 +241,8 @@ export function trendCandidatesCsv(rows: CandidateExport[]): string {
     /^\d+$/.test(candidate.security.code) ? `'${candidate.security.code}` : candidate.security.code,
     candidate.security.name, candidate.asOf, savedAt || "", candidate.board, candidate.security.industry || "",
     candidate.stage === "signal" ? "收盘信号" : "趋势观察", candidate.patterns.join("+"), candidate.limitDate, candidate.daysSinceLimit,
-    candidate.metrics.close, candidate.metrics.ma20, candidate.metrics.ma60, candidate.metrics.deviationPercent,
-    candidate.metrics.avgAmount20, candidate.metrics.relativeStrength20,
+    candidate.metrics.close, ...(isQuickObservationCandidate(candidate) ? ["", "", "", "", ""] : [candidate.metrics.ma20, candidate.metrics.ma60, candidate.metrics.deviationPercent,
+    candidate.metrics.avgAmount20, candidate.metrics.relativeStrength20]),
     candidate.plan?.stop, candidate.plan?.maxEntry, candidate.plan?.maxRiskPercent,
     gateNames[marketGate], coverageComplete ? "完整" : "未完成 / 待核验",
     candidate.evidence.map((item) => `${item.passed ? "通过" : "未满足"} ${item.label}：${item.value}；规则：${item.rule}`).join(" | "),
@@ -260,6 +307,7 @@ type QuickObservationPlanInput = {
   asOf?: string | undefined;
   reason?: string | undefined;
   stopPercent?: number | undefined;
+  source?: string | undefined;
 };
 
 function buildQuickObservationPlan(input: QuickObservationPlanInput): { ok: true; plan: SavedTrendPlan } | { ok: false; error: string; missingPrice?: boolean } {
@@ -326,7 +374,9 @@ function buildQuickObservationPlan(input: QuickObservationPlanInput): { ok: true
     warnings: ["由快捷入口转入观察计划，请结合开盘承接与预设止损人工复核"]
   };
 
-  return { ok: true, plan: createSavedTrendPlan(candidate, { isPreview: false, coverageComplete: true, marketGate: "open" }) };
+  const source = typeof input.source === "string" ? input.source.trim().slice(0, 24) : "";
+  const plan = createSavedTrendPlan(candidate, { isPreview: false, coverageComplete: true, marketGate: "open" });
+  return { ok: true, plan: source ? { ...plan, source } : plan };
 }
 
 /**

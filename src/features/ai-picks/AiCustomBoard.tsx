@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Bookmark, Briefcase, Eye, LoaderCircle, Plus, RefreshCw, Search, Settings, Sparkles, Target, Trash2 } from "lucide-react";
 import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
 import { saveQuickObservationPlansBatch } from "../../trendWorkspace";
+import { cockpitBatchMessage, emitAppToast, COCKPIT_TOAST_ACTION } from "../cockpit/cockpitAdd";
 import { useSelectionQuotes } from "../strategy-selection/useSelectionQuotes";
 import { SelectionQuoteControls, SelectionQuotePrice } from "../strategy-selection/SelectionQuoteCells";
 import { SelectionKline } from "../strategy-selection/SelectionKline";
@@ -204,7 +205,8 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
         secid: secidFor(code),
         referencePrice: refPrice,
         asOf: shown?.asOfDate,
-        reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "我的股票关注")
+        reason: aiItem?.highlights || (aiItem ? `AI评分 ${aiItem.score} (${aiItem.rating})` : "我的股票关注"),
+        source: "AI 打分"
       };
     });
     const res = saveQuickObservationPlansBatch(window.localStorage, inputs);
@@ -214,12 +216,8 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
       onShowToast?.(res.storageError);
       return;
     }
-    const parts = [
-      res.created.length ? `新增 ${res.created.length} 只观察计划` : "",
-      res.existing.length ? `${res.existing.length} 只已在计划中` : "",
-      res.missingPrice.length ? `${res.missingPrice.length} 只暂缺参考价` : ""
-    ].filter(Boolean);
-    const msg = parts.length ? `批量流转完成：${parts.join("，")}。` : "未生成新的观察计划。";
+    const msg = cockpitBatchMessage(res);
+    if (res.created.length + res.existing.length > 0) emitAppToast(msg, COCKPIT_TOAST_ACTION);
     setNotice(msg);
     onShowToast?.(msg);
   };
@@ -285,7 +283,7 @@ export function AiCustomBoard({ configured, reload, expectedModels = 1, historyR
       <div className="ai-board-toolbar">
       {!isHistory && !!list.length && <AiSelectionBar selection={selection} removeLabel="删除" hint="勾选几只可以只给它们打分；点行首 × 从清单删除"
         onRemoveSelected={() => remove(selection.list, true)} />}
-      {!isHistory && selection.list.length > 0 && <button type="button" className="secondary-btn" disabled={busy} onClick={batchAddPlans}><Target size={14} />批量+观察计划（{selection.list.length} 只）</button>}
+      {!isHistory && selection.list.length > 0 && <button type="button" className="secondary-btn" disabled={busy} onClick={batchAddPlans}><Target size={14} />批量加入驾驶舱（{selection.list.length} 只）</button>}
       {!isHistory && !!pageRows.length && <SelectionQuoteControls total={pageRows.length} loading={quotes.loading} live={live} seconds={quotes.refreshSeconds} failed={Object.values(quotes.entries).filter(entry => entry.error).length} onRefresh={quotes.refresh} />}
       </div>
       {!!pageRows.length && <div className="strategy-stock-table" tabIndex={0} role="region" aria-label="我的股票打分表格，可横向滚动">

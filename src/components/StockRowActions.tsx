@@ -70,15 +70,15 @@ export default function StockRowActions({
         <button
           type="button"
           className={`table-action${isPlanned ? " active" : ""}`}
-          aria-label={isPlanned ? `编辑 ${security.name} ${security.code} 次日观察计划` : `将 ${security.name} ${security.code} 加入次日观察计划`}
-          title={isPlanned ? "已在次日观察计划中，点击可调整参数" : "设定买点与止损并加入次日观察计划"}
+          aria-label={isPlanned ? `调整 ${security.name} ${security.code} 的驾驶舱计划` : `将 ${security.name} ${security.code} 加入今日驾驶舱`}
+          title={isPlanned ? "已在今日驾驶舱，点击可调整买点与止损" : "一键加入今日驾驶舱（按现价设买入区 -1%~+2%、止损 -6%，保留 5 个交易日）"}
           onClick={event => {
             event.stopPropagation();
             onAddPlan(security);
           }}
         >
           <ClipboardPlus size={iconSize} />
-          {isPlanned ? "已计划" : "+计划"}
+          {isPlanned ? "已在驾驶舱" : "+驾驶舱"}
         </button>
       )}
     </div>

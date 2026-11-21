@@ -1,7 +1,13 @@
 /** AI 问股页面的纯逻辑：快捷问题、立场配色、步骤摘要、跨页面带股票过来。 */
 
 export type QuickTaskContext = { costPrice?: number | null | undefined };
-export type QuickTask = { id: string; label: string; hint: string; needsStock: boolean; send: boolean; prompt: (focus: AgentFocus | null, context?: QuickTaskContext) => string };
+export type FocusKind = "stock" | "etf" | "sector" | "market" | "none";
+export type QuickTask = { id: string; label: string; hint: string; needsStock: boolean; send: boolean; kinds?: FocusKind[]; prompt: (focus: AgentFocus | null, context?: QuickTaskContext) => string };
+
+export const MARKET_FOCUS: AgentFocus = { kind: "market", code: "", name: "大盘" };
+export const focusKind = (focus: AgentFocus | null | undefined): FocusKind => focus ? focus.kind || "stock" : "none";
+export const hasSecurity = (focus: AgentFocus | null | undefined) => Boolean(focus && /^\d{6}$/.test(focus.code) && (focusKind(focus) === "stock" || focusKind(focus) === "etf"));
+export const focusLabel = (focus: AgentFocus | null | undefined) => !focus ? "" : focus.kind === "market" ? "大盘" : focus.kind === "sector" ? `${focus.name} 板块` : `${focus.name} ${focus.code}`;
 
 const nameOf = (focus: AgentFocus | null) => focus ? focus.name || focus.code : "这只股票";
 
@@ -27,9 +33,33 @@ export const QUICK_TASKS: QuickTask[] = [
       : `我持有${nameOf(focus)}，成本价 元，帮我诊断一下现在该怎么办：继续持有、减仓还是止损，依据是什么？` },
   { id: "intraday", label: "做T思路", hint: "结合分时给出高抛低吸价位", needsStock: true, send: true,
     prompt: focus => `我持有${nameOf(focus)}的底仓，想今天做T。结合今天的分时走势、均价线、量能和关键价位，告诉我今天更适合倒T（先卖后买）还是正T（先买后卖），高抛和低吸的参考价位，以及什么情况下今天不要做T。` },
-  { id: "market", label: "今日市场", hint: "情绪、主线、强弱板块", needsStock: false, send: true,
-    prompt: () => "今天A股短线情绪怎么样？主线题材是什么，最强的板块和龙头是谁，接下来要注意什么？" }
+  { id: "market", label: "今日市场", hint: "情绪、主线、强弱板块", needsStock: false, send: true, kinds: ["none", "market"],
+    prompt: () => "今天A股短线情绪怎么样？主线题材是什么，最强的板块和龙头是谁，接下来要注意什么？" },
+  { id: "market_regime", label: "大盘研判", hint: "进攻、均衡还是防守", needsStock: false, send: true, kinds: ["none", "market"],
+    prompt: () => "现在大盘应该进攻、均衡还是防守？看上证、创业板、沪深300、中证全指相对 20/60 日线的位置，涨跌停家数和领涨板块，给出关键点位和判断失效的条件。" },
+  { id: "sentiment", label: "情绪周期", hint: "冰点、发酵、高潮、退潮", needsStock: false, send: true, kinds: ["none", "market"],
+    prompt: () => "短线情绪现在处在冰点、发酵、高潮还是退潮？用涨停跌停家数、炸板、封板率和最高连板说明依据，接下来要盯哪些转折信号？" },
+  { id: "style", label: "风格切换", hint: "大小盘、成长价值谁强", needsStock: false, send: true, kinds: ["none", "market"],
+    prompt: () => "最近是大盘股强还是小盘股强、成长还是价值强？对比创业板指、沪深300 和中证全指，再看领涨行业和主题 ETF，风格可能怎么切换？" },
+  { id: "etf_pick", label: "挑 ETF", hint: "按主题挑规模大、溢价低的", needsStock: false, send: true, kinds: ["none", "market"],
+    prompt: () => "今天最强的主题 ETF 有哪些？帮我挑出规模大、成交活跃、溢价不高的，说明各自的风险。" },
+  { id: "sector_view", label: "板块怎么看", hint: "强弱、涨停、龙头、是否主线", needsStock: true, send: true, kinds: ["sector"],
+    prompt: focus => `${nameOf(focus)}板块今天强不强？成分股涨跌家数和涨停家数、龙头是谁、是不是市场主线，接下来怎么看，什么情况说明它走弱了？` },
+  { id: "sector_etf", label: "对应 ETF", hint: "有没有跟踪这个方向的 ETF", needsStock: true, send: true, kinds: ["sector"],
+    prompt: focus => `有没有跟踪${nameOf(focus)}方向的 ETF？比较规模、成交额和溢价率，哪只更合适？` },
+  { id: "etf_buy", label: "能不能买", hint: "溢价、规模、流动性、所处位置", needsStock: true, send: true, kinds: ["etf"],
+    prompt: focus => `${nameOf(focus)}现在能买吗？看溢价率、规模和成交额、近期走势和跟踪方向的位置，给出合适的买入价位或条件，以及放弃的条件。` },
+  { id: "etf_compare", label: "同类比较", hint: "同方向 ETF 选哪只", needsStock: true, send: true, kinds: ["etf"],
+    prompt: focus => `和${nameOf(focus)}跟踪同一方向的 ETF 有哪些？比较规模、成交额和溢价率，哪只更合适？` }
 ];
+
+const STOCK_ONLY = new Set(["full", "plan", "emotion", "news", "sector", "signals", "holding", "intraday"]);
+
+/** 按分析对象挑快捷问题：个股、ETF、板块、大盘或还没选。 */
+export function tasksFor(focus: AgentFocus | null): QuickTask[] {
+  const kind = focusKind(focus);
+  return QUICK_TASKS.filter(task => task.kinds ? task.kinds.includes(kind) : kind === "stock" || (kind === "etf" && !STOCK_ONLY.has(task.id)));
+}
 
 export function stanceTone(stance: AgentStance | undefined): "up" | "down" | "flat" | "warn" | "" {
   if (stance === "偏多") return "up";
@@ -68,8 +98,9 @@ export function shortTime(iso: string, now = new Date()): string {
 /** 只认 6 位代码的 A 股。 */
 export function focusFromSecurity(security: { code?: string; name?: string; assetType?: string | undefined } | null | undefined): AgentFocus | null {
   const code = String(security?.code || "");
-  if (!/^\d{6}$/.test(code) || (security?.assetType && security.assetType !== "stock")) return null;
-  return { code, name: String(security?.name || code).replace(/\s+/g, "").slice(0, 12) || code };
+  if (!/^\d{6}$/.test(code) || (security?.assetType && security.assetType !== "stock" && security.assetType !== "etf")) return null;
+  const name = String(security?.name || code).replace(/\s+/g, "").slice(0, 12) || code;
+  return security?.assetType === "etf" ? { kind: "etf", code, name } : { code, name };
 }
 
 /** 失败那条回答对应的提问（「重试」用）。 */
@@ -87,10 +118,17 @@ export function registerAgentOpener(open: (() => void) | null) { opener = open; 
 export function canOpenAgent() { return Boolean(opener); }
 /** 只切到 AI 问股页（要打开哪段对话由调用方事先记好）。 */
 export function openAgentPage() { if (!opener) return false; opener(); return true; }
-export function openAgentFor(security: { code: string; name: string }, task = "full", userContext?: Record<string, unknown>) {
-  const focus = focusFromSecurity({ ...security, assetType: "stock" });
+export function openAgentFor(security: { code: string; name: string; assetType?: string | undefined }, task = "full", userContext?: Record<string, unknown>) {
+  // ETF 详情页带过来的要保留 etf 类型，走 etf_quote 预读和 ETF 快捷问题；其余按个股处理。
+  const focus = focusFromSecurity({ code: security.code, name: security.name, assetType: security.assetType === "etf" ? "etf" : "stock" });
   if (!focus || !opener) return false;
   pending = { focus, task, ...(userContext && Object.keys(userContext).length ? { userContext } : {}) };
+  opener();
+  return true;
+}
+export function openAgentForMarket(task = "market_regime") {
+  if (!opener) return false;
+  pending = { focus: MARKET_FOCUS, task };
   opener();
   return true;
 }

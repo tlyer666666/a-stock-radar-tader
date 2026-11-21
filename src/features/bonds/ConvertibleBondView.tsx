@@ -6,6 +6,7 @@ import { useVirtualWindow } from "../../components/useVirtualWindow";
 import { PageHeading, PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { whenVisible } from "../../visiblePolling";
 import { bondSortState, selectBonds, toggleBondSort, type BondMarketFilter, type BondPriceFilter, type BondSort, type BondSortColumn, type ConvertibleBond, type ConvertibleBondSnapshot } from "./bondTypes";
+import { userErrorText } from "../../userErrorText";
 
 const PAGE = 50;
 const sortOptions: { id: BondSort; label: string }[] = [
@@ -101,7 +102,7 @@ export function ConvertibleBondTable({
             const bSec = bondSecurity(bond);
             const isFav = Boolean(favoriteCodes?.has(bond.code));
             return <tr key={bond.code}>
-              <th scope="row"><button type="button" className="bond-identity" onClick={() => onOpenBond(bSec)} aria-label={`查看 ${bond.name} ${bond.code}`}><b>{bond.name}</b><code>{bond.code}</code><ChevronRight size={12} /></button></th>
+              <th scope="row"><button type="button" className="bond-identity" onClick={() => onOpenBond(bSec)} aria-label={`查看 ${bond.name} ${bond.code}`}><b>{bond.name}</b>{bond.tradeStatus === "suspended" && <em className="bond-status-tag">停牌</em>}<code>{bond.code}</code><ChevronRight size={12} /></button></th>
               <td>{fixed(bond.latest)}</td>
               <td className={tone(bond.changePct)}>{signed(bond.changePct)}</td>
               <td>{amountText(bond.amount)}</td>
@@ -236,7 +237,7 @@ export default function ConvertibleBondView({
       const value = await api.getConvertibleBonds({ forceRefresh, waitForQuotes: false });
       if (alive.current && requestSeq.current === seq && value) { setSnapshot(value); setError(""); }
     } catch (reason) {
-      if (alive.current && requestSeq.current === seq) setError(reason instanceof Error ? reason.message : String(reason));
+      if (alive.current && requestSeq.current === seq) setError(userErrorText(reason));
     } finally {
       if (requestSeq.current === seq) {
         busy.current = false;
@@ -263,11 +264,11 @@ export default function ConvertibleBondView({
   const discovering = snapshot?.roster.discovering;
   return <div className="bond-workspace">
     <PageHeading eyebrow="CONVERTIBLE BONDS" title="可转债"
-      description="名单与行情全部来自同花顺：新券名单含正股信息；在市老券按交易所代码段逐个核对同花顺行情（每 7 天一次，结果存在本机）；行情逐只读取。"
+      description="名单来自同花顺发行名单，已摘牌（强赎或到期）的转债自动排除；行情用腾讯批量快照一次读完，个别取不到的再逐只读同花顺。"
       actions={<button className="primary-btn" onClick={() => void load(true)} disabled={loading && !pending}><RefreshCw size={17} className={loading || pending ? "spin" : ""} />刷新可转债行情</button>} />
     {error && <div className="test-result fail" role="alert"><span />{error}</div>}
     <section className="panel bond-summary" aria-label="可转债市场概况">
-      <div><span>在市可转债</span><b>{summary ? summary.count : "--"}</b><small>{coverage ? `同花顺行情 ${coverage.loaded}/${coverage.total}${coverage.pending ? " · 读取中" : ""}` : "读取中"}</small></div>
+      <div><span>在市可转债</span><b>{summary ? summary.count : "--"}</b><small>{coverage ? `行情 ${coverage.loaded}/${coverage.total}${coverage.source ? `（${coverage.source}）` : ""}${coverage.pending ? " · 读取中" : ""}` : "读取中"}</small></div>
       <div><span>上涨 / 下跌 / 平</span><b><em className="rise">{summary?.rising ?? "--"}</em> / <em className="fall">{summary?.falling ?? "--"}</em> / {summary?.flat ?? "--"}</b><small>按已取到行情的转债统计</small></div>
       <div><span>涨跌幅中位数</span><b className={tone(summary?.medianChangePct)}>{signed(summary?.medianChangePct)}</b><small>等权中位数，非指数</small></div>
       <div><span>合计成交额</span><b>{amountText(summary?.amount)}</b><small>行情日期 {snapshot?.asOf || "--"}</small></div>
@@ -325,6 +326,7 @@ export default function ConvertibleBondView({
           secid: bond.secid,
           referencePrice: bond.latest ?? null,
           asOf: snapshot?.asOf,
+          source: "可转债",
           defaultNote: bond.stockName ? `正股 ${bond.stockName} ${bond.stockCode}` : "可转债观察计划"
         })}
       />
@@ -335,7 +337,7 @@ export default function ConvertibleBondView({
       <summary>待上市新券 {snapshot.upcoming.length} 只</summary>
       <ul>{snapshot.upcoming.map((bond) => <li key={bond.code}><b>{bond.name}</b> <code>{bond.code}</code><span>正股 {bond.stockName || "--"} {bond.stockCode}</span><span>{bond.listingDate ? `上市 ${bond.listingDate}` : "上市日期待定"}</span></li>)}</ul>
     </details>}
-    <p className="bond-source">数据：{snapshot?.source || "同花顺"} · 更新 {timeText(snapshot?.fetchedAt)}{snapshot?.roster.discoveredAt ? ` · 在市名单核对于 ${timeText(snapshot.roster.discoveredAt)}` : ""}</p>
+    <p className="bond-source">数据：{snapshot?.source || "同花顺"} · 更新 {timeText(snapshot?.fetchedAt)}{snapshot?.roster.discoveredAt ? ` · 在市名单核对于 ${timeText(snapshot.roster.discoveredAt)}` : ""}{(snapshot?.roster.delistedCount ?? 0) > 0 ? ` · 已排除 ${snapshot?.roster.delistedCount} 只已摘牌转债` : ""}</p>
     <QuickPlanModal
       target={planTarget}
       onClose={() => setPlanTarget(null)}

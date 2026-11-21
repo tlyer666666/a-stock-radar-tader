@@ -169,7 +169,7 @@ type SectorViewRow = {
   warning?: string | undefined;
   quoteBasis?: string | undefined;
   memberCoverage?: { complete?: boolean | undefined; loaded?: number | undefined; total?: number | undefined } | undefined;
-  quoteCoverage?: { loaded?: number | undefined; total?: number | undefined; pending?: boolean | undefined; asOf?: string | undefined } | undefined;
+  quoteCoverage?: { loaded?: number | undefined; total?: number | undefined; pending?: boolean | undefined; asOf?: string | undefined; source?: string | undefined } | undefined;
   fundFlow?: SectorFundFlowInfo | undefined;
   ladder?: SectorLadderData | undefined;
   breadthDiagnostics: Record<string, unknown> | null;
@@ -1069,14 +1069,16 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
 
   const memberPanel = sector ? (
 <div className="panel sector-members-panel">
-              <PanelTitle title={dedicatedSector ? "北交所个股行情" : `${sector.name} 成分股明细`} subtitle={dedicatedSector ? "名单：新浪财经北交所名录 · 行情：实时行情优先，取不到时用同花顺逐股快照 · 涨停按 30% 涨停价判断 · 可搜索全部股票" : "按个股涨幅排序；点击股票打开分析"} icon={LayoutDashboard} badge={sector.quoteCoverage ? `名单 ${sector.constituents.length}${sector.memberCoverage?.complete ? `/${sector.memberCoverage.total}` : " · 最新总数待核验"} 只 · 同花顺行情 ${sector.quoteCoverage.loaded}/${sector.quoteCoverage.total} 只${sector.quoteCoverage.pending ? " · 读取中" : ""}` : sector.memberCoverage && !sector.memberCoverage.complete
+              <PanelTitle title={dedicatedSector ? "北交所个股行情" : `${sector.name} 成分股明细`} subtitle={dedicatedSector ? "名单：新浪财经北交所名录 · 行情：腾讯批量快照，取不到的用同花顺逐股补齐 · 涨停按 30% 涨停价判断 · 可搜索全部股票" : "按个股涨幅排序；点击股票打开分析"} icon={LayoutDashboard} badge={sector.quoteCoverage ? `名单 ${sector.constituents.length}${sector.memberCoverage?.complete ? `/${sector.memberCoverage.total}` : " · 最新总数待核验"} 只 · 行情 ${sector.quoteCoverage.loaded}/${sector.quoteCoverage.total} 只${sector.quoteCoverage.source ? `（${sector.quoteCoverage.source}）` : ""}${sector.quoteCoverage.pending ? " · 读取中" : ""}` : sector.memberCoverage && !sector.memberCoverage.complete
                 ? `已加载 ${sector.constituents.length} 只 · 非全量`
                 : `已加载 ${sector.constituents.length} 只${(sector.memberCount ?? 0) > sector.constituents.length ? ` / 板块 ${sector.memberCount} 只` : ""}`} />
               {sector.boardType === "exchange" && <div className={`beijing-coverage-note ${sector.warning ? "warning-banner" : "sector-fund-flow-source"}`} role="status">{sector.warning || `名单总数及全部分页已核验。${sector.quoteBasis}`} {sector.quoteCoverage?.asOf && `行情日期：${sector.quoteCoverage.asOf}。`}</div>}
               {sector.fundFlow?.quotes && <p className="sector-fund-flow-source" role="status">
                 {sector.fundFlow.quotes.loaded > 0
-                  ? `个股行情：${sector.fundFlow.quotes.source} 实时 · ${sector.fundFlow.quotes.loaded}/${sector.fundFlow.quotes.total} 只 · 行情时间 ${formatFundFlowTime(sector.fundFlow.quotes.asOf)}${sector.fundFlow.quotes.loaded < sector.fundFlow.quotes.total ? "；其余股票显示同花顺成分页数据（开盘前可能是上一交易日）" : ""}`
-                  : "个股行情：实时行情本次没取到，显示的是同花顺成分页数据，集合竞价和开盘前可能还是上一交易日的成交额与换手，可点「刷新个股数据」重试。"}
+                  ? `个股行情：${sector.fundFlow.quotes.source} 实时 · ${sector.fundFlow.quotes.loaded}/${sector.fundFlow.quotes.total} 只 · 行情时间 ${formatFundFlowTime(sector.fundFlow.quotes.asOf)}${sector.fundFlow.quotes.loaded < sector.fundFlow.quotes.total ? dedicatedSector ? "；其余股票显示上方批量行情" : "；其余股票显示同花顺成分页数据（开盘前可能是上一交易日）" : ""}`
+                  : dedicatedSector
+                    ? "个股行情：东方财富实时行情本次没取到，表格显示上方批量行情，可点「刷新个股数据」重试。"
+                    : "个股行情：实时行情本次没取到，显示的是同花顺成分页数据，集合竞价和开盘前可能还是上一交易日的成交额与换手，可点「刷新个股数据」重试。"}
               </p>}
               {sector.fundFlow && (sector.fundFlow.loaded > 0 ? <p className="sector-fund-flow-source" role="status">
                 主力净流入：{sector.fundFlow.source} · {sector.fundFlow.loaded}/{sector.fundFlow.total} 只 · 源数据 {formatFundFlowTime(sector.fundFlow.asOf)} · 展开或刷新时读取，缓存 {sector.fundFlow.cacheSeconds || 60} 秒。
@@ -1112,6 +1114,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
                     name: member.name,
                     secid: member.secid || inferSecid(member.code),
                     referencePrice: member.latest ?? null,
+                    source: "板块",
                     defaultNote: `${sector.name} 成分股观察`
                   })}
                 />

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, Scale } from "lucide-react";
 import { ratingTone } from "../strategy-selection/aiSelectionModel";
+import { userErrorText } from "../../userErrorText";
 
 const dimTone = (score: number) => score >= 75 ? "strong" : score >= 60 ? "good" : score >= 40 ? "neutral" : "weak";
 
@@ -18,7 +19,7 @@ export function useAiFrameworks(onChanged?: () => void) {
   const choose = useCallback(async (id: AiFrameworkInfo["id"]) => {
     if (!api?.saveFramework) return;
     try { setCatalog(await api.saveFramework({ active: id })); setError(""); onChanged?.(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    catch (reason) { setError(userErrorText(reason)); }
   }, [api, onChanged]);
   return { catalog, choose, error, available: Boolean(api?.frameworks) };
 }

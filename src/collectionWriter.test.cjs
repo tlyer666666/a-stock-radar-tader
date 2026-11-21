@@ -26,3 +26,12 @@ test('an unchanged collection is neither persisted nor re-accepted',async()=>{
  assert.equal(writes,0);assert.equal(accepts,0);
  await write(items=>[...items,'C']);assert.equal(writes,1);assert.deepEqual(state,['A','B','C']);
 });
+test('a custom comparator can skip persistence while a JSON-equal save is not re-accepted',async()=>{
+ let state=[{code:'A'}],writes=0,accepts=0;
+ const write=createCollectionWriter({read:()=>state,persist:async()=>{writes++;return[{code:'A'}];},accept:items=>{accepts++;state=items;},same:(next,current)=>next.length===current.length&&next[0].code===current[0].code});
+ const skipped=await write(()=>[{code:'A',extra:1}]);
+ assert.equal(writes,0);assert.equal(accepts,0);assert.equal(skipped,state);
+ const saved=await write(()=>[{code:'B'}]);
+ assert.equal(writes,1);assert.equal(accepts,0);
+ assert.deepEqual(saved,[{code:'A'}]);assert.deepEqual(state,[{code:'A'}]);
+});

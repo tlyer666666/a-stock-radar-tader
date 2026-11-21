@@ -20,7 +20,7 @@ const DEFAULT_KEEP = 30;
 const BACKUP_STORES = Object.freeze(["settings", "watchlist", "holdings", "custom-strategies", "ai-profiles", "ai-framework", "ai-custom-stocks", "ai-selection", "stock-agent"]);
 const SECRET_SETTING_KEYS = Object.freeze(["refreshToken", "tushareToken", "fuyaoApiKey", "aiApiKey"]);
 /** 浏览器本地存储里属于本软件的键。 */
-const isAppLocalKey = key => typeof key === "string" && (key.startsWith("a-stock-radar") || key === "ai-picks-excluded");
+const isAppLocalKey = key => typeof key === "string" && (key.startsWith("a-stock-radar") || key === "ai-picks-excluded" || key === "astock:display-density:v1");
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const MIN_PASSWORD_LENGTH = 8;
 
@@ -196,7 +196,7 @@ function suggestFolders({ home = os.homedir(), platform = process.platform, exis
 /**
  * 备份服务：readStore/writeStore 读写 userData 里的 JSON（带校验），config 记文件夹、自动备份开关、密码（已加密）。
  */
-function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, getStorageSummary, now = Date.now, fsApi = fs }) {
+function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, getStorageSummary, localMirror = null, now = Date.now, fsApi = fs }) {
   const config = () => {
     const value = readConfig();
     return { folder: "", auto: true, keep: DEFAULT_KEEP, lastBackupAt: "", lastError: "", password: "", ...(isRecord(value) ? value : {}) };
@@ -300,6 +300,26 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     return { ...backup, local };
   }
 
+  function syncLocalMirror(local) {
+    if (!localMirror) return;
+    const keys = localMirror.keys().filter(isAppLocalKey);
+    const previous = keys.map(key => [key, localMirror.get(key)]);
+    const restore = () => {
+      for (const [key, value] of previous) {
+        try { if (typeof value === "string") localMirror.set(key, value); else localMirror.remove(key); } catch { /* 尽力回滚 */ }
+      }
+    };
+    try {
+      for (const key of keys) {
+        if (typeof local[key] === "string") localMirror.set(key, local[key]);
+        else localMirror.remove(key);
+      }
+    } catch (error) {
+      restore();
+      throw error;
+    }
+  }
+
   async function applyRestore(backup) {
     const plan = planStores(backup);
     const written = [];
@@ -309,6 +329,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
         else writeStore(item.store, item.merged);
         written.push(item);
       }
+      syncLocalMirror(backup.local);
     } catch (error) {
       for (let i = written.length - 1; i >= 0; i -= 1) {
         const item = written[i];

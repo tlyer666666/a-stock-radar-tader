@@ -16,6 +16,7 @@ import type { WorkspaceView as View } from "../workspaceView";
 import type { ExecutionDecisionLog, PaperSimulationState } from "../features/paper-simulation/paperSimulationTypes";
 import type { PaperClosedPosition } from "../domain/paperSimulationTypes";
 import { inferSecid } from "../domain/securityIdentifiers";
+import { clampHoldingCostPrice } from "../features/collections/holdingsLedger";
 import type { useWorkspaceCollections } from "../features/collections/useWorkspaceCollections";
 import type { usePaperTrading } from "../features/paper-simulation/usePaperTrading";
 import type { BacktestHistoryRecord } from "../features/backtest/backtestTypes";
@@ -34,6 +35,7 @@ const SettingsView = lazy(() => import("../features/settings/SettingsView").then
 const Dashboard = lazy(() => import("../features/market/MarketWorkspace").then(module => ({ default: module.Dashboard })));
 const SectorView = lazy(() => import("../features/sectors/SectorView").then(module => ({ default: module.SectorView })));
 const ConvertibleBondView = lazy(() => import("../features/bonds/ConvertibleBondView"));
+const EtfView = lazy(() => import("../features/etf/EtfView"));
 const HsgtWebView = lazy(() => import("../features/hsgt/HsgtWebView"));
 const AiPicksView = lazy(() => import("../features/ai-picks/AiPicksView"));
 const AiAgentView = lazy(() => import("../features/ai-agent/AiAgentView"));
@@ -528,6 +530,20 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
           </Suspense>
         </WorkspaceErrorBoundary>
       )}
+      {view === "etf" && (
+        <WorkspaceErrorBoundary key={view} label="ETF" onReturnHome={returnToSignals}>
+          <Suspense fallback={<LoadingState />}>
+            <EtfView
+              onOpenSecurity={(security: Security) => openAnalysis(security, { view: "etf", label: "返回 ETF" })}
+              favoriteCodes={favoriteCodes}
+              onToggleFavorite={handleToggleFavoriteSecurity}
+              onOpenMonitor={onOpenMonitor}
+              onShowToast={showToast}
+              live={live}
+            />
+          </Suspense>
+        </WorkspaceErrorBoundary>
+      )}
       {view === "sectors" && <>
         {/* 板块强度：榜单（按涨幅排名）是主视图。
             原来这里放的是板块目录浏览，榜单被藏在默认收起的折叠块里，
@@ -650,7 +666,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               holdings={holdings}
               live={live}
               onSyncCostToHolding={(code, shares, newCost, name) => {
-                const clampedCost = Number(Math.max(0.001, newCost).toFixed(3));
+                const clampedCost = clampHoldingCostPrice(newCost);
                 const safeShares = Math.max(1, Math.round(shares));
                 void saveHoldings(items => {
                   const nowIso = new Date().toISOString();

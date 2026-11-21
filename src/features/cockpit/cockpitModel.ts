@@ -567,3 +567,120 @@ export function buildMorningPriorities(input: {
 
   return priorities.slice(0, 3);
 }
+
+export type MarketPulseTone = "attack" | "warning" | "repair" | "defense" | "neutral";
+
+export interface MarketPulse {
+  date: string;
+  session: string;
+  generatedAt: string;
+  tone: MarketPulseTone;
+  regimeName: string;
+  headline: string;
+  posture: string;
+  provisional: boolean;
+  stale: boolean;
+  breadth: { up: number; down: number; flat: number; upRatio: number } | null;
+  averageReturn: number | null;
+  limit: { up: number; down: number; failedRate: number | null; maxHeight: number | null } | null;
+  indices: Array<{ name: string; close: number; changePct: number | null; trend: string }>;
+  sectors: Array<{ name: string; leaderName: string }>;
+  risks: string[];
+}
+
+const PULSE_TONES = new Set<string>(["attack", "warning", "repair", "defense", "neutral"]);
+const PULSE_INDEX_ORDER = ["上证指数", "深证成指", "创业板指", "沪深300", "中证全指"];
+
+const pulseRecord = (value: unknown): Record<string, unknown> | null =>
+  value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+const pulseNumber = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) ? value : null;
+const pulseText = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+export function buildMarketPulse(review: unknown, today?: string): MarketPulse | null {
+  const root = pulseRecord(review);
+  if (!root) return null;
+  const regime = pulseRecord(root.regime);
+  const regimeName = pulseText(regime?.name);
+  const posture = pulseText(regime?.posture);
+  const market = pulseRecord(root.market);
+  const up = pulseNumber(market?.upCount);
+  const down = pulseNumber(market?.downCount);
+  const marketUsable = market !== null && market.available !== false && up !== null && down !== null && up + down > 0;
+  if (!regimeName && !marketUsable) return null;
+
+  const toneRaw = pulseText(regime?.tone);
+  const tone: MarketPulseTone = PULSE_TONES.has(toneRaw) ? toneRaw as MarketPulseTone : "neutral";
+  const decision = pulseRecord(root.decision);
+  const stale = Boolean(today && pulseText(root.date) && pulseText(root.date) < today);
+  let provisional = decision?.status === "watch";
+  let headline = provisional && regimeName
+    ? `盘中暂看「${regimeName}」：${posture}`
+    : pulseText(decision?.headline) || (regimeName ? `${regimeName}：${posture}` : "");
+  if (stale) {
+    provisional = false;
+    headline = headline.startsWith("今天") ? `上个交易日${headline.slice(2)}` : `上个交易日：${headline}`;
+  }
+
+  const flat = pulseNumber(market?.flatCount);
+  const breadth = marketUsable
+    ? { up: up as number, down: down as number, flat: flat ?? 0, upRatio: (up as number) / ((up as number) + (down as number) + (flat ?? 0)) }
+    : null;
+  const averageReturn = market !== null && market.available !== false ? pulseNumber(market.averageReturn) : null;
+
+  const ecology = pulseRecord(root.ecology);
+  const ecoUp = pulseNumber(ecology?.limitUpCount);
+  const ecoDown = pulseNumber(ecology?.limitDownCount);
+  const emotion = pulseRecord(root.emotion);
+  const emoUp = pulseNumber(emotion?.limitUpCount);
+  const emoDown = pulseNumber(emotion?.limitDownCount);
+  const limit = ecology !== null && ecology.available !== false && ecoUp !== null && ecoDown !== null
+    ? { up: ecoUp, down: ecoDown, failedRate: pulseNumber(ecology?.failedRate), maxHeight: pulseNumber(ecology?.maxHeight) }
+    : emoUp !== null && emoDown !== null
+      ? { up: emoUp, down: emoDown, failedRate: null, maxHeight: null }
+      : null;
+
+  const indices = (Array.isArray(root.indices) ? root.indices : [])
+    .map((entry) => {
+      const row = pulseRecord(entry);
+      const name = pulseText(row?.name);
+      const close = pulseNumber(row?.close);
+      if (!row || row.available === false || close === null || !name) return null;
+      const returns = pulseRecord(row.returns);
+      return { name, close, changePct: pulseNumber(returns?.r1), trend: pulseText(row?.trend) };
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null)
+    .sort((a, b) => {
+      const indexOf = (name: string) => { const i = PULSE_INDEX_ORDER.indexOf(name); return i === -1 ? PULSE_INDEX_ORDER.length : i; };
+      return indexOf(a.name) - indexOf(b.name);
+    });
+
+  const sectors = (Array.isArray(root.focusSectors) ? root.focusSectors : [])
+    .map((entry) => {
+      const row = pulseRecord(entry);
+      const name = pulseText(row?.name);
+      return name ? { name, leaderName: pulseText(row?.leaderName) } : null;
+    })
+    .filter((row): row is NonNullable<typeof row> => row !== null)
+    .slice(0, 3);
+
+  const risks = (Array.isArray(root.riskSignals) ? root.riskSignals : []).map(pulseText).filter(Boolean).slice(0, 3);
+
+  return {
+    date: pulseText(root.date),
+    session: pulseText(root.session),
+    generatedAt: pulseText(root.generatedAt),
+    tone,
+    regimeName,
+    headline,
+    posture,
+    provisional,
+    stale,
+    breadth,
+    averageReturn,
+    limit,
+    indices,
+    sectors,
+    risks
+  };
+}

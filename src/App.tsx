@@ -37,6 +37,7 @@ import {
   LayoutDashboard,
   Landmark,
   Coins,
+  PieChart,
   ArrowLeftRight,
   ArrowDownUp,
   NotebookPen,
@@ -64,6 +65,8 @@ import { useReportHsgtOverlay } from "./features/hsgt/overlayContext";
 import { applySavedVisualPreferences, applyUiScale, normalizeSettingsCategory, normalizeUiScale, stepUiScale, UI_SCALE_STORAGE_KEY } from "./domain/visualPreferences";
 import { initialSettings, normalizeSettings } from "./domain/settings";
 import { saveSafeLocalJson } from "./safeStorage";
+import { COCKPIT_TOAST_EVENT, type AppToastAction } from "./features/cockpit/cockpitAdd";
+import { expireStaleTrendPlans } from "./trendWorkspace";
 import { isUsableSecurityCollection, uniqueSecurities } from "./securitySelection";
 
 export {
@@ -158,7 +161,7 @@ function App() {
   const [isOffline, setIsOffline] = useState<boolean>(() => typeof navigator !== "undefined" && navigator.onLine === false);
   const reconnectRefreshRef = useRef<() => void>(() => {});
 
-  type ToastEntry = { id: number; text: string; tone: "info" | "warn" | "error"; durationMs: number; expiresAt: number };
+  type ToastEntry = { id: number; text: string; tone: "info" | "warn" | "error"; durationMs: number; expiresAt: number; action?: AppToastAction | undefined };
   const [toasts, setToasts] = useState<ToastEntry[]>([]);
   const toastHoverAtRef = useRef<number | null>(null);
   const toastTimersRef = useRef<Map<number, number>>(new Map());
@@ -169,7 +172,7 @@ function App() {
     toastTimersRef.current.delete(id);
     setToasts(current => current.filter(item => item.id !== id));
   }, []);
-  const showToast = useCallback((message: string) => {
+  const showToast = useCallback((message: string, action?: AppToastAction) => {
     const text = String(message || "").trim();
     if (!text) return;
     const tone: ToastEntry["tone"] = /失败|错误|异常|无效|不能|拒绝|受限|不可用|超限/.test(text)
@@ -177,13 +180,32 @@ function App() {
       : /注意|提示|警告|暂停|脱敏|已关闭/.test(text)
         ? "warn"
         : "info";
-    const durationMs = tone === "error" ? 5600 : tone === "warn" ? 3800 : 2600;
     const id = ++toastSeqRef.current;
     const now = Date.now();
-    setToasts(current => [
-      ...current.filter(item => item.text !== text).slice(-2),
-      { id, text, tone, durationMs, expiresAt: now + durationMs }
-    ]);
+    setToasts(current => {
+      const linked = action || current.find(item => item.text === text)?.action;
+      const durationMs = tone === "error" ? 5600 : tone === "warn" ? 3800 : linked ? 4600 : 2600;
+      return [
+        ...current.filter(item => item.text !== text).slice(-2),
+        { id, text, tone, durationMs, expiresAt: now + durationMs, ...(linked ? { action: linked } : {}) }
+      ];
+    });
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onToast = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: unknown; action?: AppToastAction }>).detail;
+      if (typeof detail?.text === "string") showToast(detail.text, detail.action);
+    };
+    window.addEventListener(COCKPIT_TOAST_EVENT, onToast);
+    return () => window.removeEventListener(COCKPIT_TOAST_EVENT, onToast);
+  }, [showToast]);
+  useEffect(() => {
+    try {
+      if (typeof window !== "undefined" && window.localStorage) expireStaleTrendPlans(window.localStorage);
+    } catch {
+      return;
+    }
   }, []);
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
@@ -757,6 +779,7 @@ function App() {
     { id: "sectors" as View, label: "板块强度", icon: Layers3 },
     { id: "beijing" as View, label: "北交所", icon: Landmark },
     { id: "bonds" as View, label: "可转债", icon: Coins },
+    { id: "etf" as View, label: "ETF", icon: PieChart },
     { id: "hsgt" as View, label: "沪深港通", icon: ArrowLeftRight },
     { id: "news" as View, label: "资讯中心", icon: Newspaper },
     { id: "notes" as View, label: "随心记", icon: NotebookPen },
@@ -818,7 +841,7 @@ function App() {
       <WorkspaceNavigation
         items={navItems}
         active={view}
-        counts={{ favorites: favoriteItems.length, holdings: holdings.length, watchlist: observationItems.length, notes: notes.awaitingCount }}
+        counts={{ favorites: favoriteItems.length, holdings: holdings.length, notes: notes.awaitingCount }}
         collapsed={navigationCollapsed}
         coreOnly={sidebarCoreOnly}
         onToggleCoreOnly={toggleSidebarCoreOnly}
@@ -1084,6 +1107,7 @@ function App() {
             >
               {item.tone === "error" || item.tone === "warn" ? <CircleAlert size={17} /> : <ShieldCheck size={17} />}
               <span>{item.text}</span>
+              {item.action && <button type="button" className="toast-action-btn" onClick={() => { dismissToast(item.id); navigateTo(item.action!.view as View); }}>{item.action.label}</button>}
               <button type="button" className="toast-close-btn" aria-label="关闭提示" onClick={() => dismissToast(item.id)}><X size={14} /></button>
             </div>
           ))}

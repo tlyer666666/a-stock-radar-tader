@@ -11,6 +11,8 @@ function registerMarketIpc({
   getMarketSourceHealth,
   resetMarketSourceHealth = () => ({ ok: true }),
   getConvertibleBonds,
+  getEtfMarket,
+  getBatchQuotes,
   getFuyaoReviewData,
   getDataFederation,
   getChart,
@@ -33,6 +35,8 @@ function registerMarketIpc({
   handleTrustedIpc("market:source-health", () => getMarketSourceHealth());
   handleTrustedIpc("market:source-reset", () => resetMarketSourceHealth());
   handleTrustedIpc("bond:list", (_, options = {}) => getConvertibleBonds(options));
+  handleTrustedIpc("etf:list", (_, options = {}) => getEtfMarket({ forceRefresh: options?.forceRefresh === true }));
+  handleTrustedIpc("market:batch-quotes", (_, securities) => getBatchQuotes(securities));
   // 沪深港通：同花顺数据中心网页嵌入（独立会话，用户自行登录同花顺账号）。
   handleTrustedIpc("ths-web:show", (_, options = {}) =>
     thsWebView().show({

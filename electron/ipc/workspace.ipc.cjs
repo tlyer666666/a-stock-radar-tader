@@ -16,6 +16,7 @@ function registerWorkspaceIpc({
   backupJsonPath,
   normalizeWatchlist,
   normalizeHoldings,
+  normalizeHoldingsForSave = normalizeHoldings,
   usableWatchlist,
   usableHoldings,
   getCorruptedOnLoad,
@@ -41,6 +42,7 @@ function registerWorkspaceIpc({
   cleanupStorageCache = async () => ({ ok: false, message: "未启用缓存清理" }),
   kvGet = () => null,
   kvSet = () => false,
+  localKvMirror = null,
   getMasterPasswordStatus = () => ({ enabled: false, locked: false }),
   setMasterPassword = async () => { throw new Error("未启用主密码模块"); },
   unlockMasterPassword = async () => { throw new Error("未启用主密码模块"); },
@@ -72,7 +74,7 @@ function registerWorkspaceIpc({
   handleTrustedIpc("holdings:save", (_, items) => {
     if (!Array.isArray(items)) throw Object.assign(new TypeError("持仓保存参数必须为数组"), { code: "INVALID_IPC_PAYLOAD" });
     if (!usableHoldings(items)) throw Object.assign(new Error("持仓列表没有有效股票"), { code: "INVALID_IPC_PAYLOAD" });
-    return writeJson("holdings", normalizeHoldings(items), usableHoldings);
+    return writeJson("holdings", normalizeHoldingsForSave(items), usableHoldings);
   });
   handleTrustedIpc("settings:get", () => publicSettings());
   handleTrustedIpc("settings:save", (_, next) => {
@@ -144,7 +146,8 @@ function registerWorkspaceIpc({
     readConfig: () => readMigratedBackupConfig(),
     writeConfig: value => writeJson("backup-config", value, isSettingsRecord, true),
     encryptSecret, decryptSecret, appVersion: app.getVersion(),
-    ...(typeof getStorageSummary === "function" ? { getStorageSummary } : {})
+    ...(typeof getStorageSummary === "function" ? { getStorageSummary } : {}),
+    ...(localKvMirror ? { localMirror: localKvMirror } : {})
   });
   const backupStatus = () => ({ ...backup.status(), suggestions: backup.suggestions() });
   const backupLocal = input => {

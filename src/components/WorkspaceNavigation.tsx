@@ -3,7 +3,7 @@ import { PanelLeftClose, PanelLeftOpen, Settings as SettingsIcon, Star, type Luc
 type Item = { id: string; label: string; icon: LucideIcon };
 const groups = [
   { label: '选股研究', ids: ['cockpit', 'signals', 'ai-picks', 'ai-agent', 'sectors'] },
-  { label: '行情跟踪', ids: ['dashboard', 't-assistant', 'beijing', 'bonds', 'hsgt', 'previous-limit-up-failed', 'watchlist', 'favorites', 'holdings'] },
+  { label: '行情跟踪', ids: ['dashboard', 't-assistant', 'beijing', 'bonds', 'etf', 'hsgt', 'previous-limit-up-failed', 'watchlist', 'favorites', 'holdings'] },
   { label: '复盘与信息', ids: ['notes', 'review', 'compare', 'backtest', 'news'] }
 ];
 const CORE_IDS = new Set(['cockpit', 'signals', 'ai-picks', 'ai-agent', 'dashboard', 't-assistant', 'favorites', 'holdings', 'notes', 'review', 'news']);
@@ -26,11 +26,11 @@ export default function WorkspaceNavigation({
             className={`sidebar-collapse sidebar-focus-toggle${coreOnly ? ' active' : ''}`}
             aria-pressed={coreOnly}
             aria-label={coreOnly ? '显示全部模块' : '只看核心模块'}
-            title={coreOnly ? '已精简为核心模块，点击恢复全部 19 个工具' : '精简侧边栏：只看高频核心模块'}
+            title={coreOnly ? `已精简为核心模块，点击恢复全部 ${items.length} 个工具` : '精简侧边栏：只看高频核心模块'}
             onClick={onToggleCoreOnly}
           >
             <Star size={13} />
-            <small>{coreOnly ? '展开全部 19 个工具' : '精简'}</small>
+            <small>{coreOnly ? `全部 (${items.length})` : '精简'}</small>
           </button>
         )}
         <button className="sidebar-collapse" aria-label={collapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!collapsed} title={collapsed ? '展开导航栏' : '收起导航栏'} onClick={onCollapse}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>

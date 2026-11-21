@@ -9,7 +9,7 @@ import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import { useAgentConversation } from "./useAgentConversation";
 import { AgentMarkdown } from "./AnswerMarkdown";
 import { markdownToPlainText } from "./agentMarkdown";
-import { QUICK_TASKS, focusFromSecurity, formatDuration, questionBefore, shortTime, stanceTone, stepsSummary, type QuickTask } from "./agentModel";
+import { MARKET_FOCUS, focusFromSecurity, focusKind, focusLabel, formatDuration, hasSecurity, questionBefore, shortTime, stanceTone, stepsSummary, tasksFor, type QuickTask } from "./agentModel";
 import { NOTES_KEY, type Note } from "../notes/notesModel";
 
 const PERSONAL_CTX_KEY = "a-stock-radar:agent-personal-ctx:v1";
@@ -26,10 +26,11 @@ const readLocalNotes = (): Note[] => {
 };
 
 import { inferSecid } from "../../domain/securityIdentifiers";
+import CockpitAddButton from "../../components/CockpitAddButton";
 
 const errorText = (reason: unknown) => aiErrorMessage(reason).replace(/^\[[A-Z_]+\]\s*/, "").replace(/（可重试）$/, "");
 const secidFor = inferSecid;
-const toSecurity = (focus: AgentFocus): Security => ({ code: focus.code, name: focus.name, secid: secidFor(focus.code), assetType: "stock" });
+const toSecurity = (focus: AgentFocus): Security => ({ code: focus.code, name: focus.name, secid: focus.kind === "etf" ? `${/^[59]/.test(focus.code) ? 1 : 0}.${focus.code}` : secidFor(focus.code), assetType: focus.kind === "etf" ? "etf" : "stock" });
 
 /**
  * AI 问股：像 OpenClaw 一样单独和 AI 对话分析个股。AI 自己决定查哪些数据（行情、日线体检、K线、分时、策略信号、
@@ -192,7 +193,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
           {filteredConversations.map(item => <div role="listitem" key={item.id} className={`ai-agent-thread ${item.id === activeId ? "active" : ""}`}>
             <button type="button" className="ai-agent-thread-open" aria-current={item.id === activeId ? "true" : undefined} onClick={() => void openConversation(item.id)} title={item.title}>
               <span className="ai-agent-thread-title">{item.running && <LoaderCircle size={13} className="spin" aria-label="分析中" />}{item.title}</span>
-              <small>{item.focus ? `${item.focus.code} · ` : ""}{item.turns} 问 · {shortTime(item.updatedAt)}{hasDraft(item.id) && " · 有草稿"}{item.stance && item.stance !== "不适用" && <em className={`agent-stance-dot ${stanceTone(item.stance)}`}>{item.stance}</em>}</small>
+              <small>{item.focus ? `${item.focus.code || focusLabel(item.focus)} · ` : ""}{item.turns} 问 · {shortTime(item.updatedAt)}{hasDraft(item.id) && " · 有草稿"}{item.stance && item.stance !== "不适用" && <em className={`agent-stance-dot ${stanceTone(item.stance)}`}>{item.stance}</em>}</small>
             </button>
             <button type="button" className={`ai-agent-thread-delete ${confirmDelete === item.id ? "confirm" : ""}`} aria-label={confirmDelete === item.id ? `确认删除「${item.title}」` : `删除「${item.title}」`}
               title={confirmDelete === item.id ? "再点一次确认删除" : "删除对话"} onClick={() => void remove(item.id)}>{confirmDelete === item.id ? "确认" : <Trash2 size={14} />}</button>
@@ -229,7 +230,8 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
             <input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />
             读取持仓/计划/随心记
           </label>
-          {focus && onOpenStock && <button type="button" className="link-btn ai-agent-open-stock" onClick={() => onOpenStock(toSecurity(focus))}><ExternalLink size={14} />看个股详情</button>}
+          {focus && hasSecurity(focus) && onOpenStock && <button type="button" className="link-btn ai-agent-open-stock" onClick={() => onOpenStock(toSecurity(focus))}><ExternalLink size={14} />{focus.kind === "etf" ? "看 ETF 详情" : "看个股详情"}</button>}
+          {focus && hasSecurity(focus) && <CockpitAddButton security={toSecurity(focus)} source="AI 问股" />}
         </div>}
 
         {state?.skills && <SkillBar catalog={state.skills} tools={state.tools} selected={skillIds || []} disabled={running} onChange={chooseSkills}
@@ -241,7 +243,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
             skills={(skillIds || []).map(id => state?.skills?.skills.find(skill => skill.id === id)?.name).filter((name): name is string => Boolean(name))} />}
           {messages.map(message => message.role === "user"
             ? <div className="ai-agent-msg user" key={message.id}><div className="ai-agent-bubble">{message.content}</div>
-              <small>{[message.focus ? `${message.focus.name} ${message.focus.code}` : "", message.skills?.length ? `打法：${message.skills.map(skill => skill.name).join("、")}` : ""].filter(Boolean).join(" · ")}</small></div>
+              <small>{[message.focus ? focusLabel(message.focus) : "", message.skills?.length ? `打法：${message.skills.map(skill => skill.name).join("、")}` : ""].filter(Boolean).join(" · ")}</small></div>
             : <AnswerCard key={message.id} message={message} latest={message.id === lastAnswer?.id && !running} disabled={running || sending || !state?.configured}
               savedMemory={state?.memory || ""} onSaveMemory={saveMemoryCandidate}
               onFollowUp={text => void send(text, effectiveContext ? { userContext: effectiveContext } : undefined)}
@@ -257,8 +259,8 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
 
         {error && <div className="warning-banner ai-agent-error" role="alert"><CircleAlert size={16} /><span>{error}</span>{openAiSettings && /Key|密钥|鉴权|401|402|403|404|余额|模型|配置/i.test(error) && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={14} />前往 AI 设置</button>}<button type="button" className="link-btn" onClick={() => setError("")}>关闭</button></div>}
         {messages.length > 0 && !running && <div className="ai-agent-quick" aria-label="快捷问题">
-          {QUICK_TASKS.filter(task => task.id !== "full" || !lastAnswer || lastAnswer.focus?.code !== focus?.code).slice(0, 6).map(task => <button type="button" key={task.id} className="ai-agent-chip"
-            disabled={(task.needsStock && !focus) || !state?.configured || sending} title={task.hint} onClick={() => useTask(task)}>{task.label}</button>)}
+          {tasksFor(focus).filter(task => task.id !== "full" || !lastAnswer || lastAnswer.focus?.code !== focus?.code).slice(0, 6).map(task => <button type="button" key={task.id} className="ai-agent-chip"
+            disabled={!state?.configured || sending} title={task.hint} onClick={() => useTask(task)}>{task.label}</button>)}
         </div>}
         <Composer refEl={composerRef} value={draft} onChange={setDraft} focus={focus} running={running} sending={sending} disabled={!state?.configured}
           onSend={() => void send(draft, { fromDraft: true, ...(effectiveContext ? { userContext: effectiveContext } : {}) })} onStop={() => void stop()} />
@@ -278,11 +280,11 @@ function ModelPicker({ state, onChoose, onOpenSettings }: { state: AgentState; o
 
 function Welcome({ focus, tools, disabled, onTask, skills }: { focus: AgentFocus | null; tools: { id: string; name: string }[]; disabled: boolean; onTask: (task: QuickTask) => void; skills: string[] }) {
   return <div className="ai-agent-welcome">
-    <div className="ai-agent-welcome-head"><MessagesSquare size={26} /><div><h2>{focus ? `想了解 ${focus.name} 的什么？` : "先选一只股票，或直接问"}</h2>
-      <p>{focus ? "点一个快捷问题，或在下面输入你自己的问题。" : "在上方输入代码、名称或拼音选股票；也可以直接问「今天市场怎么样」「宁德时代能不能买」。"}
+    <div className="ai-agent-welcome-head"><MessagesSquare size={26} /><div><h2>{focus ? `想了解${focusKind(focus) === "market" ? "大盘" : ` ${focusKind(focus) === "sector" ? focusLabel(focus) : focus.name} `}的什么？` : "选一个对象，或直接问"}</h2>
+      <p>{focus ? "点一个快捷问题，或在下面输入你自己的问题。" : "在上方输入股票、ETF 或板块名称，或点「问大盘」；也可以直接问「今天市场怎么样」「半导体 ETF 哪只好」。"}
         {skills.length ? ` 这次按${skills.map(name => `「${name}」`).join("")}的打法分析。` : " 想按某种打法分析，在上方「分析打法」里选。"}</p></div></div>
     <div className="ai-agent-tasks">
-      {QUICK_TASKS.map(task => <button type="button" key={task.id} className="ai-agent-task" disabled={disabled || (task.needsStock && !focus)} onClick={() => onTask(task)}>
+      {tasksFor(focus).map(task => <button type="button" key={task.id} className="ai-agent-task" disabled={disabled} onClick={() => onTask(task)}>
         <b>{task.label}{!task.send && <PenLine size={13} aria-label="填入输入框" />}</b><small>{task.hint}</small></button>)}
     </div>
     {tools.length > 0 && <p className="ai-agent-tools"><Wrench size={13} />AI 能查的数据：{tools.map(tool => tool.name).join("、")}</p>}
@@ -344,7 +346,7 @@ function AnswerCard({ message, latest, disabled, savedMemory, onSaveMemory, onFo
     <header>
       {message.stance && message.stance !== "不适用" && <span className={`agent-stance ${tone}`}>{message.stance}</span>}
       {message.confidence && message.stance !== "不适用" && <span className="agent-confidence">把握{message.confidence}</span>}
-      <small>{[message.focus ? `${message.focus.name} ${message.focus.code}` : "", message.model, formatDuration(message.durationMs) ? `用时 ${formatDuration(message.durationMs)}` : "", shortTime(message.at)].filter(Boolean).join(" · ")}</small>
+      <small>{[message.focus ? focusLabel(message.focus) : "", message.model, formatDuration(message.durationMs) ? `用时 ${formatDuration(message.durationMs)}` : "", shortTime(message.at)].filter(Boolean).join(" · ")}</small>
       <button type="button" className="link-btn ai-agent-copy" onClick={() => void copy()} aria-label="复制回答">{copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "已复制" : "复制"}</button>
     </header>
     {summary && <details className="ai-agent-steps-box"><summary><Wrench size={13} />{summary}<ChevronDown size={13} /></summary><StepList steps={steps} live={false} /></details>}
@@ -416,9 +418,11 @@ function MemoryEditor({ value, onSave }: { value: string; onSave: (text: string)
 }
 
 /** 选股票：输入代码、名称或拼音，从下拉里选；只列 A 股。 */
+type PickerOption = { focus: AgentFocus; label: string; sub: string };
+
 function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; onChange: (focus: AgentFocus | null) => void; disabled: boolean }) {
   const [query, setQuery] = useState("");
-  const [options, setOptions] = useState<Security[]>([]);
+  const [options, setOptions] = useState<PickerOption[]>([]);
   const [suggestionQuery, setSuggestionQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -428,6 +432,7 @@ function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; 
   queryRef.current = query;
   const composingRef = useRef(false);
   const search = typeof window === "undefined" ? undefined : window.stockApi?.search;
+  const searchSectors = typeof window === "undefined" ? undefined : window.stockApi?.searchSectors;
   const quoteApi = typeof window === "undefined" ? undefined : window.stockApi?.getQuoteSnapshot;
 
   useEffect(() => {
@@ -438,25 +443,30 @@ function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; 
     if (!text || !search) return;
     let cancelled = false;
     const timer = window.setTimeout(() => {
-      void search(text).then(rows => {
-        if (cancelled || searchSeq.current !== current || queryRef.current.trim() !== text) return;
-        setOptions((rows || []).filter(row => !row.assetType || row.assetType === "stock").slice(0, 8));
-        setSuggestionQuery(text);
+      const live = () => !cancelled && searchSeq.current === current && queryRef.current.trim() === text;
+      let securities: PickerOption[] = [];
+      let sectorOptions: PickerOption[] = [];
+      const publish = () => { setOptions([...securities, ...sectorOptions]); setSuggestionQuery(text); };
+      void search(text).catch(() => [] as Security[]).then(rows => {
+        if (!live()) return;
+        securities = (rows || []).map(row => ({ row, focus: focusFromSecurity(row) })).filter((item): item is { row: Security; focus: AgentFocus } => Boolean(item.focus)).slice(0, 7)
+          .map(({ row, focus: next }) => ({ focus: next, label: next.name, sub: `${next.code}${next.kind === "etf" ? " · ETF" : row.marketName ? ` · ${row.marketName}` : ""}` }));
+        publish();
         setActive(0);
-      }).catch(() => {
-        if (!cancelled && searchSeq.current === current) {
-          setOptions([]);
-          setSuggestionQuery("");
-        }
+      });
+      if (typeof searchSectors === "function") void searchSectors(text).catch(() => []).then(sectors => {
+        if (!live()) return;
+        sectorOptions = (Array.isArray(sectors) ? sectors : []).map(item => String(item?.name || "").trim()).filter(Boolean).slice(0, 3)
+          .map(name => ({ focus: { kind: "sector" as const, code: "", name: name.slice(0, 12) }, label: name, sub: "板块" }));
+        publish();
       });
     }, 220);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [query, search]);
+  }, [query, search, searchSectors]);
 
-  // 选中股票的现价：选中时读一次，之后每 30 秒（页面可见时）刷新。
   useEffect(() => {
     setQuote(null);
-    if (!focus || !quoteApi) return;
+    if (!focus || !hasSecurity(focus) || !quoteApi) return;
     let cancelled = false;
     const stop = startVisibleInterval(() => {
       void quoteApi(toSecurity(focus)).then(value => {
@@ -468,10 +478,9 @@ function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; 
   }, [focus, quoteApi]);
 
   const visibleOptions = suggestionQuery === query.trim() ? options : [];
-  const choose = (security: Security | undefined) => {
-    const next = focusFromSecurity(security);
-    if (!next) return;
-    onChange(next); setQuery(""); setOptions([]); setSuggestionQuery(""); setOpen(false);
+  const choose = (option: PickerOption | undefined) => {
+    if (!option) return;
+    onChange(option.focus); setQuery(""); setOptions([]); setSuggestionQuery(""); setOpen(false);
   };
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key === "ArrowDown") { event.preventDefault(); setActive(index => Math.min(Math.max(0, visibleOptions.length - 1), index + 1)); }
@@ -485,20 +494,21 @@ function StockPicker({ focus, onChange, disabled }: { focus: AgentFocus | null; 
   };
   const tone = quote?.changePct === null || quote?.changePct === undefined || quote.changePct === 0 ? "" : quote.changePct > 0 ? "up" : "down";
   return <div className="ai-agent-picker">
-    {focus && <span className="ai-agent-focus" aria-label={`当前股票 ${focus.name} ${focus.code}`}>
-      <b>{focus.name}</b><small>{focus.code}</small>
-      {quote?.latest != null && <em className={tone}>{quote.latest.toFixed(2)}{quote.changePct != null ? ` ${quote.changePct > 0 ? "+" : ""}${quote.changePct.toFixed(2)}%` : ""}</em>}
-      <button type="button" aria-label="不针对某只股票" disabled={disabled} onClick={() => onChange(null)}><X size={13} /></button>
+    {focus && <span className="ai-agent-focus" aria-label={`当前分析对象 ${focusLabel(focus)}`}>
+      <b>{focus.name}</b>{focus.code ? <small>{focus.code}</small> : <small>{focusKind(focus) === "sector" ? "板块" : "指数与情绪"}</small>}
+      {quote?.latest != null && <em className={tone}>{quote.latest.toFixed(focus.kind === "etf" ? 3 : 2)}{quote.changePct != null ? ` ${quote.changePct > 0 ? "+" : ""}${quote.changePct.toFixed(2)}%` : ""}</em>}
+      <button type="button" aria-label="不针对具体对象" disabled={disabled} onClick={() => onChange(null)}><X size={13} /></button>
     </span>}
+    {focusKind(focus) !== "market" && <button type="button" className="secondary-btn ai-agent-market-btn" disabled={disabled} onClick={() => onChange(MARKET_FOCUS)}>问大盘</button>}
     <div className="ai-agent-search" role="combobox" aria-expanded={open && visibleOptions.length > 0} aria-haspopup="listbox">
       <Search size={15} />
-      <input value={query} disabled={disabled} aria-label="选择要分析的股票" placeholder={focus ? "换一只：代码 / 名称 / 拼音" : "选择股票：代码 / 名称 / 拼音"}
+      <input value={query} disabled={disabled} aria-label="选择要分析的股票、ETF 或板块" placeholder={focus ? "换一个：股票 / ETF / 板块" : "选择股票、ETF 或板块：代码 / 名称 / 拼音"}
         onChange={event => { searchSeq.current += 1; setQuery(event.target.value); setOptions([]); setSuggestionQuery(""); setOpen(true); }}
         onCompositionStart={() => { composingRef.current = true; }}
         onCompositionEnd={() => { composingRef.current = false; }}
         onFocus={() => setOpen(true)} onBlur={() => window.setTimeout(() => setOpen(false), 150)} onKeyDown={onKeyDown} />
-      {open && visibleOptions.length > 0 && <ul role="listbox" className="ai-agent-options">{visibleOptions.map((option, index) => <li key={option.code} role="option" aria-selected={index === active}>
-        <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => choose(option)}><b>{option.name}</b><small>{option.code}{option.marketName ? ` · ${option.marketName}` : ""}</small></button>
+      {open && visibleOptions.length > 0 && <ul role="listbox" className="ai-agent-options">{visibleOptions.map((option, index) => <li key={`${option.focus.kind || "stock"}:${option.focus.code || option.focus.name}`} role="option" aria-selected={index === active}>
+        <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => choose(option)}><b>{option.label}</b><small>{option.sub}</small></button>
       </li>)}</ul>}
     </div>
   </div>;

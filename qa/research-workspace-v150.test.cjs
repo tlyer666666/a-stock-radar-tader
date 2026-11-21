@@ -107,7 +107,7 @@ describe('v1.5 research workspace in an isolated real renderer', () => {
     // 收起/重开会新建 DOM，所以这里校验「草稿被重新水合」：数值与测算器展开状态都要恢复。
     assert.equal(await nav.inputValue(), '123456');
     assert.equal(await card.locator('.trend-calculator').evaluate(element => element.open), true, '重新展开后测算器应保持展开');
-    await card.getByRole('button', { name: '加入我的计划', exact: true }).click();
+    await card.getByRole('button', { name: '+驾驶舱', exact: true }).click();
     await page.getByRole('button', { name: /^我的计划/ }).click();
     // 候选行与计划行共用同一份行工作区（rowWorkspaces 按计划 id 命中），
     // 所以切到「我的计划」时这一行通常已经带着候选页的展开状态，按钮是「收起」。

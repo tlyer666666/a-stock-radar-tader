@@ -5,6 +5,7 @@ import TimeShareChart from '../market/TimeShareChart';
 import { calculatePriceMovingAverages } from '../../priceChartSeries';
 import { startVisibleInterval } from '../../visiblePolling';
 import { subscribeSelectionChart, type SelectionChart, type SelectionCandle } from './selectionChartData';
+import { userErrorText } from "../../userErrorText";
 
 const number = (value: number | null | undefined) => value == null || !Number.isFinite(value) ? '—' : value.toFixed(2);
 const volume = (value: number | null) => value === null ? '未提供' : value >= 1e8 ? `${(value / 1e8).toFixed(2)}亿` : value >= 1e4 ? `${(value / 1e4).toFixed(2)}万` : String(value);
@@ -141,7 +142,7 @@ function Detail({ security, signalDate, data, error, loading, refresh, close }: 
       setTsState(prev => ({
         ...prev,
         loading: false,
-        error: err instanceof Error ? err.message : '当日分时加载失败'
+        error: userErrorText(err, '当日分时加载失败')
       }));
     }
   };

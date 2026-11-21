@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld("stockApi", {
   getMarketSourceHealth: () => invoke("market:source-health"),
   resetMarketSourceHealth: () => invoke("market:source-reset"),
   getConvertibleBonds: (options = {}) => invoke("bond:list", options),
+  getEtfMarket: (options = {}) => invoke("etf:list", options),
+  getBatchQuotes: (securities) => invoke("market:batch-quotes", securities),
   getLimitEcology: (options = {}) => invoke("market:limit-ecology", options),
   ai: {
     status: () => invoke("ai:status"),

@@ -2,9 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createCollectionWriter } from "../../collectionWriter";
 import { initialSettings, normalizeSettings } from "../../domain/settings";
 import { createLatestSettingsWriter } from "../../latestSettingsWriter";
-import { mergeObservationPool } from "../../observationPool";
+import { mergeObservationPool, sameWatchlist } from "../../observationPool";
 import type { AnalysisPayload } from "../market/analysisTypes";
 import { appendHoldingTradeRecord, applyHoldingTrade, type HoldingTradeSide } from "./holdingsLedger";
+import { userErrorText } from "../../userErrorText";
 
 type UseWorkspaceCollectionsOptions = {
   payload: AnalysisPayload | null;
@@ -36,6 +37,7 @@ export function useWorkspaceCollections({
   if (!watchlistWriter.current) {
     watchlistWriter.current = createCollectionWriter<WatchItem>({
       read: () => watchlistRef.current,
+      same: sameWatchlist,
       persist: next => window.stockApi.saveWatchlist(next),
       accept: saved => {
         watchlistRef.current = saved;
@@ -303,6 +305,7 @@ export function useWorkspaceCollections({
     }
     let feedback = preview.summary;
     let settledRealizedPnl: number | null = preview.realizedPnl;
+    let settledDilutedPnl: number | undefined = preview.dilutedPnl;
     let settledName = input.name || holdingsRef.current.find(item => item.code === input.code)?.name || input.code;
     let validationMessage = "";
     try {
@@ -324,24 +327,32 @@ export function useWorkspaceCollections({
         }
         feedback = outcome.summary;
         settledRealizedPnl = outcome.realizedPnl;
+        settledDilutedPnl = outcome.dilutedPnl;
         settledName = input.name || prevItem?.name || outcome.nextItems.find(item => item.code === input.code)?.name || input.code;
         return outcome.nextItems;
       });
       if (saved && feedback) {
-        appendHoldingTradeRecord({
-          code: input.code,
-          name: settledName,
-          side: input.side,
-          shares: input.shares,
-          price: input.price,
-          realizedPnl: settledRealizedPnl
-        });
-        showToast(feedback);
+        // 持仓已落盘：流水写失败只提示并照常返回 true（关闭弹窗），避免用户重复提交造成重复记账。
+        let ledgerWarning = "";
+        try {
+          appendHoldingTradeRecord({
+            code: input.code,
+            name: settledName,
+            side: input.side,
+            shares: input.shares,
+            price: input.price,
+            realizedPnl: settledRealizedPnl,
+            dilutedPnl: settledDilutedPnl
+          });
+        } catch (ledgerError) {
+          ledgerWarning = userErrorText(ledgerError, "持仓已更新，但这笔成交流水未能保存，请勿重复提交本笔交易");
+        }
+        showToast(ledgerWarning ? `${feedback}；${ledgerWarning}` : feedback);
         return true;
       }
       return false;
     } catch (error) {
-      showToast(validationMessage || (error instanceof Error ? error.message : "加减仓记账失败"));
+      showToast(validationMessage || (userErrorText(error, "加减仓记账失败")));
       return false;
     }
   }, [saveHoldings, showToast]);

@@ -134,3 +134,18 @@ test('in-tree patched picomatch advisory is verified dynamically and blocks unpa
     /GHSA-fc5q-39xc-vjpf/
   );
 });
+
+test('spawnPnpmAudit falls back to corepack pnpm when global pnpm is not on PATH', () => {
+  const { spawnPnpmAudit } = require('./verify-dependencies.cjs');
+  const calls = [];
+  const res = spawnPnpmAudit('/tmp/fake-root', {
+    platform: 'darwin',
+    spawnImpl: (cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === 'pnpm') return { error: Object.assign(new Error('spawnSync pnpm ENOENT'), { code: 'ENOENT' }) };
+      return { status: 0, stdout: '{"advisories":{},"metadata":{"vulnerabilities":{"info":0,"low":0,"moderate":0,"high":0,"critical":0}}}' };
+    }
+  });
+  assert.deepEqual(calls, [['pnpm', ['audit', '--json']], ['corepack', ['pnpm', 'audit', '--json']]]);
+  assert.equal(res.status, 0);
+});

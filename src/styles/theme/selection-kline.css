@@ -5,7 +5,7 @@
 :root .terminal-shell .strategy-result-col-2 { width: 19%; }
 :root .terminal-shell .strategy-result-col-3 { width: 15%; }
 :root .terminal-shell .strategy-result-col-4 { width: 16%; }
-:root .terminal-shell .strategy-result-table .stock-row-actions { margin-top: 3px; flex-wrap: nowrap; white-space: nowrap; }
+:root .terminal-shell .strategy-result-table .stock-row-actions { margin-top: 3px; max-width: 100%; }
 :root .terminal-shell .strategy-result-table .stock-row-actions .table-action { min-height: 20px; height: 20px; padding: 0 5px; font-size: var(--fs-2xs); line-height: 18px; white-space: nowrap; }
 :root .terminal-shell .strategy-summary-table .strategy-result-col-3 { width: 14%; }
 :root .terminal-shell .strategy-summary-table .strategy-result-col-4 { width: auto; }
