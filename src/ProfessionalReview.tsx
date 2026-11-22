@@ -1220,9 +1220,17 @@ export default function ProfessionalReview({
 
   useEffect(() => {
     let active = true;
-    void hydrateFromNativeKv(archiveKey, isReviewArchiveList).then(hydrated => {
-      if (!active || !hydrated || hydrated.length === 0) return;
-      setArchive(loadCurrentArchive(previewMode));
+    void hydrateFromNativeKv(archiveKey, isReviewArchiveList, undefined, { isEmpty: list => list.length === 0 }).then(hydrated => {
+      if (!active || !Array.isArray(hydrated) || hydrated.length === 0) return;
+      const existing = loadArchive(archiveKey);
+      if (existing.length === 0) {
+        saveSafeLocalJson(archiveKey, hydrated.slice(0, MAX_REVIEW_RECORDS), isReviewArchiveList);
+      }
+      const next = loadCurrentArchive(previewMode);
+      const fallbackHydrated = previewMode
+        ? hydrated.slice(0, MAX_REVIEW_RECORDS)
+        : hydrated.filter(record => !isPreviewReviewSnapshot(record.snapshot)).slice(0, MAX_REVIEW_RECORDS);
+      setArchive(prev => (next.length > 0 ? next : prev.length === 0 ? fallbackHydrated : prev));
     });
     return () => { active = false; };
   }, [archiveKey, previewMode]);

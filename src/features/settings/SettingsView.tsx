@@ -71,12 +71,22 @@ export function SettingsView({
     const canReadStatus = typeof window !== "undefined" && typeof window.stockApi?.getMasterPasswordStatus === "function";
     if (!canReadStatus) return undefined;
     let active = true;
-    void window.stockApi.getMasterPasswordStatus!()
-      .then(status => {
-        if (active && settingsMounted.current) setMasterStatus(status);
-      })
-      .catch(() => undefined);
-    return () => { active = false; };
+    const readStatus = () => {
+      void window.stockApi.getMasterPasswordStatus!()
+        .then(status => {
+          if (active && settingsMounted.current) setMasterStatus(status);
+        })
+        .catch(() => undefined);
+    };
+    readStatus();
+    const canListen = typeof window.addEventListener === "function";
+    if (canListen) window.addEventListener("a-stock-radar:master-unlocked", readStatus);
+    return () => {
+      active = false;
+      if (canListen && typeof window.removeEventListener === "function") {
+        window.removeEventListener("a-stock-radar:master-unlocked", readStatus);
+      }
+    };
   }, []);
   useEffect(() => {
     if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
@@ -823,7 +833,7 @@ export function SettingsView({
               return (
                 <button key={item.id} disabled={item.id === "riskVeto"} className={`${selected ? "selected" : ""} ${item.id === "riskVeto" ? "locked" : ""}`} onClick={() => toggleStrategy(item.id)}>
                   <span>{selected ? "✓" : "+"}</span>
-                  <div><b>{item.name}{item.id === "riskVeto" ? " · 始终启用" : ""}</b><small>{item.detail}</small></div>
+                  <div><b>{item.name}{item.id === "riskVeto" ? " · 始终启用" : ""}{"measured" in item && item.measured ? <em className="strategy-measured-tag" title="阈值来自 2021–2026 全A日线回放">实测</em> : null}</b><small>{item.detail}</small></div>
                 </button>
               );
             })}
@@ -831,7 +841,7 @@ export function SettingsView({
           <div className="strategy-presets">
             <span>快捷组合 · {strategyPresets.length} 套</span>
             {strategyPresets.map((preset) => (
-              <button key={preset.id} aria-pressed={sameStrategySet(draft.selectedStrategies || [], preset.strategies)} onClick={() => setDraft({ ...draft, selectedStrategies: preset.strategies })}><b>{preset.name}</b><small>{preset.detail}</small></button>
+              <button key={preset.id} aria-pressed={sameStrategySet(draft.selectedStrategies || [], preset.strategies)} onClick={() => setDraft({ ...draft, selectedStrategies: preset.strategies })}><b>{preset.name}{preset.measured ? <em className="strategy-measured-tag" title="必要条件只用实测因子">实测</em> : null}</b><small>{preset.detail}</small></button>
             ))}
             <button onClick={() => setDraft({ ...draft, selectedStrategies: strategyOptions.map((item) => item.id) })}>全部条件</button>
           </div>

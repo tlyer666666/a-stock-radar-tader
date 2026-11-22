@@ -32,6 +32,26 @@ type UseWorkspaceCopilotParams = {
   onNavigateView: (next: View) => void;
 };
 
+export function buildNoteToTConfig(
+  matchedHolding: Pick<HoldingItem, "shares" | "costPrice" | "sellableShares"> | undefined,
+  existingT: { config: { sellableShares: number } } | undefined
+) {
+  if (!matchedHolding) return undefined;
+  const defaultSellable =
+    typeof matchedHolding.sellableShares === "number" && Number.isFinite(matchedHolding.sellableShares)
+      ? Math.max(0, Math.min(matchedHolding.shares || 0, Math.floor(matchedHolding.sellableShares)))
+      : 0;
+  return {
+    ...(matchedHolding.costPrice ? { costPrice: matchedHolding.costPrice } : {}),
+    ...(matchedHolding.shares
+      ? {
+          baseShares: matchedHolding.shares,
+          sellableShares: existingT?.config.sellableShares ?? defaultSellable
+        }
+      : {})
+  };
+}
+
 export function useWorkspaceCopilot({
   view,
   live,
@@ -263,17 +283,7 @@ export function useWorkspaceCopilot({
     const existingT = tAssistant.store.items.find(item => item.code === security.code);
     const problem = tAssistant.addStock(
       { code: security.code, name: matchedHolding?.name || security.name, secid: security.secid },
-      matchedHolding
-        ? {
-            ...(matchedHolding.costPrice ? { costPrice: matchedHolding.costPrice } : {}),
-            ...(matchedHolding.shares
-              ? {
-                  baseShares: matchedHolding.shares,
-                  sellableShares: existingT?.config.sellableShares ?? matchedHolding.shares
-                }
-              : {})
-          }
-        : undefined
+      buildNoteToTConfig(matchedHolding, existingT)
     );
     if (problem) {
       showToast(problem);

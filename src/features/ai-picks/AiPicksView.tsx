@@ -200,6 +200,20 @@ export default function AiPicksView({
   }, [api, input, picks.length, reload]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onMasterUnlocked = () => {
+      bumpReload();
+      loadHistory();
+    };
+    window.addEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+      }
+    };
+  }, [bumpReload, loadHistory]);
+
+  useEffect(() => {
     if (viewing.kind !== "history" || !api?.historyDay) { setHistoryDay(null); return; }
     let active = true;
     setHistoryDay(null);

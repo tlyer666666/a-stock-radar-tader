@@ -2035,3 +2035,42 @@ test('Sina minute fallback keeps every intraday timestamp instead of deduplicati
   assert.equal(rows.dataSource, 'sina_5m');
   assert.equal(rows.actualAdjustment, 0);
 });
+
+test('strategyHitsForStock falls back to observed benchmark sessions when bundled calendar coverage has expired', async () => {
+  const { createTradingCalendar } = require('./trend-trading-calendar.cjs');
+  const { strategyHitsForStock } = require('./services/strategy-validation.cjs');
+  const expiredCalendar = createTradingCalendar({
+    version: 'expired-fixture',
+    coveredFrom: '2026-01-01',
+    coveredTo: '2026-06-30',
+    closedRanges: []
+  });
+  // Generate weekdays from 2026-01-05 through 2026-07-10 (> 120 sessions, extending beyond expired coveredTo 2026-06-30)
+  const weekdays = [];
+  for (let ts = Date.parse('2026-01-05T00:00:00Z'); ts <= Date.parse('2026-07-10T00:00:00Z'); ts += 86400000) {
+    const day = new Date(ts).getUTCDay();
+    if (day !== 0 && day !== 6) weekdays.push(new Date(ts).toISOString().slice(0, 10));
+  }
+  const bars = weekdays.map(date => ({
+    date, open: 10, high: 10.2, low: 9.8, close: 10, volume: 100000, amount: 100000000, isST: false
+  }));
+  let benchmarkCalls = 0;
+  let historyCalls = 0;
+  const result = await strategyHitsForStock(
+    { code: '600001', name: '过期日历样本' },
+    {
+      calendar: expiredCalendar,
+      now: () => new Date('2026-07-10T08:00:00Z'), // 16:00 Shanghai (after close)
+      marketData: {
+        fetchBenchmark: async () => { benchmarkCalls += 1; return bars; },
+        fetchHistory: async () => { historyCalls += 1; return { rows: bars }; }
+      }
+    }
+  );
+  assert.equal(benchmarkCalls, 1, 'benchmark fetched once for calendar inference and reused for engine evaluation');
+  assert.equal(historyCalls, 1);
+  assert.equal(result.asOfDate, '2026-07-10');
+  assert.equal(result.evaluated, true);
+  assert.equal(result.skippedReason, '');
+  assert.ok(Array.isArray(result.hits));
+});

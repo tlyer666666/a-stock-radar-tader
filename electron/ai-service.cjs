@@ -26,7 +26,7 @@ function isAiStore(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) && Array.isArray(value.entries);
 }
 
-function createAiService({ getConfig, getRankProfiles = null, getInstructions = () => ({}), getFramework = () => null, store = null, loadMarket = async () => null, resolveStock = null, evaluateOutcomes = null, fetchImpl, now = () => Date.now() } = {}) {
+function createAiService({ getConfig, getRankProfiles = null, getInstructions = () => ({}), getFramework = () => null, store = null, loadMarket = async () => null, resolveStock = null, evaluateOutcomes = null, fetchImpl, now = () => Date.now(), marketTimeoutMs = 8000 } = {}) {
   const controller = new AbortController();
   const runtime = createServiceRuntime({ controller, jobOptions: { maxActive: 2, maxQueued: 4 } });
   // Two admitted calls can each score up to eight configured models. Shared
@@ -42,6 +42,8 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
     ...(config?.baseUrl ? { baseUrl: String(config.baseUrl) } : {})
   });
   const ai = createAiClient({ ...clientOptions, getConfig: activeConfig });
+  let forceSeq = 0;
+  const flightKey = (key, force) => (force === true ? `${key}:force:${++forceSeq}` : key);
   const shared = (key, produce) => {
     const signal = runtime.signal();
     return runtime.track(() => producerContext.run(undefined, () => sharedRuntime.run("scan", key, { signal }, async () => {
@@ -95,21 +97,44 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
     return `${kind}:${String(input?.asOfDate || "")}:${String(config.model || "")}:${digest}`;
   };
 
+  const marketWaitMs = Math.max(10, Number(marketTimeoutMs) || 8000);
   async function marketContext() {
+    const parentSignal = runtime.signal();
+    const childController = new AbortController();
+    const onParentAbort = () => childController.abort(parentSignal?.reason ?? new DOMException("任务已取消", "AbortError"));
+    if (parentSignal) {
+      if (parentSignal.aborted) onParentAbort();
+      else parentSignal.addEventListener("abort", onParentAbort, { once: true });
+    }
     let timer;
     try {
-      return await Promise.race([runtime.track(() => loadMarket({ signal: runtime.signal() })), new Promise(resolve => { timer = setTimeout(() => resolve(null), 8000); timer.unref?.(); })]);
+      const load = runtime.track(() => loadMarket({ signal: childController.signal }));
+      load.catch(() => {});
+      return await Promise.race([
+        load,
+        new Promise(resolve => {
+          timer = setTimeout(() => {
+            childController.abort(Object.assign(new Error("市场背景读取超时"), { name: "TimeoutError", code: "ETIMEDOUT" }));
+            resolve(null);
+          }, marketWaitMs);
+          timer.unref?.();
+        })
+      ]);
     } catch { runtime.checkpoint(); return null; }
-    finally { clearTimeout(timer); }
+    finally {
+      clearTimeout(timer);
+      parentSignal?.removeEventListener("abort", onParentAbort);
+    }
   }
 
   async function cached(kind, input, config, produce, snap = {}) {
     const key = cacheKey(kind, input, config, snap);
-    if (input?.force !== true) {
+    const force = input?.force === true;
+    if (!force) {
       const hit = readEntries().find(entry => entry.key === key);
       if (hit) return { ...hit.value, cached: true };
     }
-    return shared(key, async () => {
+    return shared(flightKey(key, force), async () => {
       const market = await marketContext();
       runtime.checkpoint();
       const value = await produce(market);
@@ -217,9 +242,10 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
       const board = boardView(readBoard(kind, asOfDate, config, snap), display);
       return board ? { ...board, cached: true } : { asOfDate, model: String(config.model || ""), generatedAt: new Date(now()).toISOString(), items: [], evaluated: 0, cached: true };
     }
+    const force = input?.force === true;
     const key = `${boardKey(kind, asOfDate, config, snap)}#${todo.map(item => String(item.code)).sort().join(",")}`;
     const subset = profiled ? { ...input, profiles: todo } : { ...input, picks: todo };
-    const run = await shared(key, async () => {
+    const run = await shared(flightKey(key, force), async () => {
       const market = await marketContext();
       runtime.checkpoint();
       const run = await produceFor(kind, clientFor(config), subset, snap)(market);
@@ -551,7 +577,7 @@ function createAiService({ getConfig, getRankProfiles = null, getInstructions = 
   async function keyedReview(kind, asOfDate, extra, force, produce, snap = {}) {
     const { config, instructions, key } = keyedCacheKey(kind, asOfDate, extra, snap);
     if (!force) { const hit = readEntries().find(entry => entry.key === key); if (hit) return { ...hit.value, cached: true }; }
-    return shared(key, async () => {
+    return shared(flightKey(key, force === true), async () => {
       const value = await produce(createAiReview({ ai: clientFor(config) }), instructions);
       writeEntry(reviewKey(kind, value.asOfDate || asOfDate, config, extra, instructions), kind, value);
       return { ...value, cached: false };

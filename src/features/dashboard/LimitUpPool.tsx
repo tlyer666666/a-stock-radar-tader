@@ -146,7 +146,7 @@ export default memo(function LimitUpPool({
   return <section className="panel discover-panel discover-panel-top compact-limit-pool">
     <PanelTitle title="涨停池" subtitle={meta?.dataDate ? `完整涨停名单 · 数据日 ${meta.dataDate}` : '最近交易日完整涨停名单'} icon={Sparkles} badge={`${items.length} 只`} />
     <div className="limit-pool-tools">
-      <label className="limit-pool-search"><Search size={14} /><input aria-label="筛选涨停池" value={query} onChange={event => {setQuery(event.target.value); if (scroll.current) scroll.current.scrollTop = 0;}} placeholder="筛选股票、代码、板块或原因" />{query && <button aria-label="清除涨停池筛选" onClick={() => setQuery('')}>×</button>}</label>
+      <label className="limit-pool-search"><Search size={14} /><input aria-label="筛选涨停池" value={query} onChange={event => {setQuery(event.target.value); if (scroll.current) scroll.current.scrollTop = 0;}} placeholder="筛选股票、代码、板块或原因" />{query && <button aria-label="清除涨停池筛选" onClick={() => { setQuery(''); if (scroll.current) { scroll.current.scrollTop = 0; measureViewport(); } }}>×</button>}</label>
       <span className="limit-keyboard-hint">↑↓ / Home / End 选择 · 回车打开 · {query.trim() ? `匹配 ${filtered.length}` : `显示 ${visible.length} / ${items.length}`} 只</span>
       <details className="limit-columns-settings" onKeyDown={event => {
         if (event.key !== 'Escape' || !event.currentTarget.open) return;

@@ -523,3 +523,28 @@ test("prepareSingleBacktestRequest injects external factor snapshots and filters
   assert.deepEqual(prepared.options.externalFactorSnapshots, { "2026-11-17": { phase: "主升" } });
   assert.deepEqual(prepared.runtimeInput, { requestId: "req-1", timeoutMs: 9000 });
 });
+
+test("entry-bar corporate action is rejected as corporate_action_on_entry without consuming cash/slot or freezing valuation", () => {
+  const splitOnEntry = history([10, 5, 5.2, 5.4, 5.5, 5.6]).map((row, idx) =>
+    idx === 1 ? { ...row, open: 5, high: 5.1, low: 4.9, close: 5, changePct: 0 } : row
+  );
+  const cleanPeer = history([10, 10, 11, 11, 11, 11]);
+  const result = simulateStrategyPortfolio(
+    [
+      sample("600001", { sampleId: "entry-split", priority: 100, netReturn: -50 }),
+      sample("600002", { sampleId: "clean-peer", priority: 50, netReturn: 10 })
+    ],
+    { "600001": splitOnEntry, "600002": cleanPeer },
+    benchmark(),
+    { startingCapital: 1000, maxPositions: 1, lotSize: 1 }
+  );
+
+  assert.equal(result.holdings.length, 0, "entry-bar corporate action must never open a permanently frozen holding");
+  assert.equal(result.metrics.valuationComplete, true);
+  assert.equal(result.rejections.length, 1);
+  assert.equal(result.rejections[0].sampleId, "entry-split");
+  assert.equal(result.rejections[0].reason, "corporate_action_on_entry");
+  assert.equal(result.trades.length, 1, "the free slot and full cash must remain available to the clean peer");
+  assert.equal(result.trades[0].sampleId, "clean-peer");
+  assert.equal(result.metrics.endingCapital, 1100);
+});

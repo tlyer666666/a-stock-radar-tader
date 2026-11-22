@@ -1,5 +1,6 @@
 const { preLimitRangePosition, LOW_POSITION } = require("./strategy-selection-rules.cjs");
 const { anchoredVwap } = require("./market-history-rules.cjs");
+const { measuredFactorSnapshot } = require("./strategy-field-rules.cjs");
 const { intervalPriceBasisIssue } = require("./quant-history-safety.cjs");
 const {
   isBseAshareCode,
@@ -466,7 +467,20 @@ function featureSnapshot(history, event, evaluationIndex, events) {
     event.index,
     evaluationIndex
   );
+  // 实测因子与实时分析共用 strategy-field-rules 的同一实现。
+  const measured = measuredFactorSnapshot({
+    history,
+    eventIndex: event.index,
+    evaluationIndex,
+    limitIndices: (Array.isArray(events) ? events : []).map((item) => item.index),
+    closePosition,
+    volumeRatio,
+    heldSupport
+  });
   return {
+    notOverheated: measured.notOverheated,
+    lowPositionBoard: measured.lowPositionBoard,
+    deepBase: measured.deepBase,
     heldSupport,
     aboveAvwap: Boolean(avwap && Number(latest.close) >= avwap),
     maBull: ma5 > ma10 && ma10 > ma20,
@@ -516,7 +530,10 @@ const STAT_LABELS = {
   sectorLeader: "板块龙头",
   sectorLadder: "板块梯队",
   information: "资讯确认",
-  marketEmotion: "市场情绪过滤"
+  marketEmotion: "市场情绪过滤",
+  notOverheated: "不过热",
+  lowPositionBoard: "低位涨停",
+  deepBase: "深跌底部"
 };
 
 function strategyMatched(id, feature) {
@@ -534,13 +551,17 @@ function strategyMatched(id, feature) {
     case "secondBreakout": return feature.secondBreakout;
     case "weakToStrong": return feature.weakToStrong;
     case "riskVeto": return feature.riskVeto;
+    case "notOverheated": return feature.notOverheated;
+    case "lowPositionBoard": return feature.lowPositionBoard;
+    case "deepBase": return feature.deepBase;
     default: return null;
   }
 }
 
 /** Settings factor ids replayable from daily bars alone, and those that need sector/news/emotion/seal data. */
 const LEGACY_DAILY_FACTORS = Object.freeze(["support", "avwap", "trend", "contraction", "volatility", "exactNode", "lowFirstBoard",
-  "originBreakout", "vcpCompression", "chipLock", "secondBreakout", "weakToStrong", "riskVeto"]);
+  "originBreakout", "vcpCompression", "chipLock", "secondBreakout", "weakToStrong", "riskVeto",
+  "notOverheated", "lowPositionBoard", "deepBase"]);
 const LEGACY_EXTERNAL_FACTORS = Object.freeze(["sector", "sectorLeader", "sectorLadder", "information", "marketEmotion", "firstBoardQuality"]);
 const limitEventsByHistory = new WeakMap();
 

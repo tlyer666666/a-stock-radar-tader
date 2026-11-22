@@ -8,12 +8,31 @@ import { fmt } from "../../domain/formatters";
 import { clampNumber, riskProfileLabel, strategyOptions } from "../../domain/settings";
 import { executionStatusLabel, tradeSignalLabel } from "../../domain/executionLabels";
 import { shanghaiDateTag as todayTag } from "../../dateUtils";
-import { normalizeBacktestDraft, normalizeBacktestStrategyIds, normalizeBacktestStrategyProfile } from "./backtestModel";
+import { BACKTEST_RANGE_PRESETS, backtestRangeStartDate, describeBacktestOutcome, featuredBacktestStrategyIds, normalizeBacktestDraft, normalizeBacktestStrategyIds, normalizeBacktestStrategyProfile, summarizeBacktestRecord } from "./backtestModel";
 import { overfitRiskLabel } from "./backtestLabels";
 import type { BacktestExecutionReadiness } from "../../domain/executionReadiness";
 import type { StrategyDefinitionItem } from "../../shared/ipc-contract";
-import type { BacktestBenchmark, BacktestDraft, BacktestHistoryRecord, BacktestViewProps } from "./backtestTypes";
+import type { BacktestBenchmark, BacktestDraft, BacktestHistoryRecord, BacktestViewProps, StrategyBacktestRequest } from "./backtestTypes";
 import { userErrorText } from "../../userErrorText";
+
+/** 已验证策略的回测口径：一套时用策略本名，多套时是「任一 / 至少 N 套命中」的投票组合。 */
+function buildVerifiedStrategyContext(
+  strategyIds: string[],
+  minimumVotes: number,
+  nameById: ReadonlyMap<string, string>
+): StrategyBacktestRequest | null {
+  const ids = normalizeBacktestStrategyIds(strategyIds);
+  if (!ids.length) return null;
+  return {
+    source: "single_strategy",
+    strategyEngine: "verified-signal-v2",
+    strategyId: ids.length > 1 ? "custom_strategy_vote" : String(ids[0]),
+    strategyName: ids.length > 1 ? `多策略组合（${ids.length}套）` : String(nameById.get(ids[0]!) || ids[0]),
+    strategyVersion: "robust-v2",
+    strategyIds: ids,
+    minimumVotes: clampNumber(minimumVotes, 1, ids.length, 1)
+  };
+}
 
 export function BacktestView({
   draft,
@@ -43,7 +62,8 @@ export function BacktestView({
   profileDiff,
   evaluateBacktestExecutionReadiness,
   buildBacktestExecutionPlan,
-  onOpenPortfolio
+  onOpenPortfolio,
+  onOpenLeaderboard
 }: BacktestViewProps & { runRecord?: BacktestHistoryRecord | null }) {
   const resultDraft = runRecord?.draft || draft;
   const latestDraft = useRef(draft);
@@ -203,19 +223,11 @@ export function BacktestView({
         setVerifiedStrategies(definitions);
         setStrategyDefinitionError(definitions.length ? "" : "未取得可回放策略定义");
         if (!latestDraft.current.strategyContext && definitions[0]) {
-          const first = definitions[0];
-          onDraftChange((current) => current.strategyContext ? current : ({
-            ...current,
-            strategyContext: {
-              source: "single_strategy",
-              strategyEngine: "verified-signal-v2",
-              strategyId: String(first.id),
-              strategyName: String(first.name),
-              strategyVersion: "robust-v2",
-              strategyIds: [String(first.id)],
-              minimumVotes: 1
-            }
-          }));
+          // 默认勾选全部精选策略、任一命中即买入：单勾一套在单只股票上经常没有样本。
+          const ids = featuredBacktestStrategyIds(definitions);
+          const nameById = new Map(definitions.map((item) => [String(item.id), String(item.name)]));
+          const context = buildVerifiedStrategyContext(ids, 1, nameById);
+          if (context) onDraftChange((current) => current.strategyContext ? current : ({ ...current, strategyContext: context }));
         }
       })
       .catch((error) => {
@@ -449,26 +461,17 @@ export function BacktestView({
     const allowedIds = new Set(verifiedStrategies.map((item) => String(item.id)));
     const nextIds = normalizeBacktestStrategyIds(strategyIds).filter((id) => allowedIds.has(id));
     if (!nextIds.length) return;
-    const names = nextIds.map((id) => verifiedStrategyNameById.get(id) || id);
-    const minimumVotes = clampNumber(
-      requestedMinimumVotes ?? draft.strategyContext?.minimumVotes,
-      1,
-      nextIds.length,
-      1
+    const context = buildVerifiedStrategyContext(
+      nextIds,
+      clampNumber(requestedMinimumVotes ?? draft.strategyContext?.minimumVotes, 1, nextIds.length, 1),
+      verifiedStrategyNameById
     );
-    onDraftChange((current) => ({
-      ...current,
-      strategyContext: {
-        source: "single_strategy",
-        strategyEngine: "verified-signal-v2",
-        strategyId: nextIds.length > 1 ? "custom_strategy_vote" : String(nextIds[0]),
-        strategyName: nextIds.length > 1 ? `多策略组合（${nextIds.length}套）` : String(names[0]),
-        strategyVersion: "robust-v2",
-        strategyIds: nextIds,
-        minimumVotes
-      }
-    }));
+    if (context) onDraftChange((current) => ({ ...current, strategyContext: context }));
   };
+  const featuredStrategyIds = featuredBacktestStrategyIds(verifiedStrategies);
+  const featuredSelected = featuredStrategyIds.length > 0 &&
+    featuredStrategyIds.length === selectedVerifiedStrategyIds.length &&
+    featuredStrategyIds.every((id) => selectedVerifiedStrategyIds.includes(id));
   const toggleVerifiedStrategy = (strategyId: string) => {
     const selected = new Set(selectedVerifiedStrategyIds);
     if (selected.has(strategyId)) {
@@ -502,6 +505,22 @@ export function BacktestView({
     return Number.isFinite(number) ? number.toFixed(digits) : "--";
   };
 
+  const outcome = describeBacktestOutcome(profitSummary, {
+    from: backtestRange?.signalFrom || resultDraft.startDate,
+    to: backtestRange?.signalTo
+  });
+  const resultStrategyIds = normalizeBacktestStrategyIds(resultDraft.strategyContext?.strategyIds);
+  const resultUsesFeatured = featuredStrategyIds.length > 0 && featuredStrategyIds.every((id) => resultStrategyIds.includes(id));
+  const widerStartDate = backtestRangeStartDate(5);
+  /** 没有样本时的一键补救：沿用上次运行的股票和参数，只改策略范围或起始日期后立刻重跑。 */
+  const rerunWith = (patch: (current: BacktestDraft) => BacktestDraft) => {
+    if (loading || comparisonRunning || resolvingSecurity) return;
+    const next = patch(normalizeBacktestDraft(runRecord?.draft || draft));
+    if (!/^\d{6}$/.test(next.securityCode)) return;
+    onDraftChange(() => next);
+    onRun(next);
+  };
+
   const setNumber = (key: keyof BacktestDraft, value: number) => {
     if (!Number.isFinite(value)) return;
     onDraftChange((current) => ({ ...current, [key]: value }));
@@ -519,6 +538,10 @@ export function BacktestView({
             <button className="secondary-btn" onClick={onBack}>
               <ChevronLeft size={17} />
               {backLabel}
+            </button>
+            <button className="secondary-btn" data-backtest-leaderboard-entry onClick={onOpenLeaderboard}>
+              <BarChart3 size={17} />
+              策略实测榜
             </button>
             <button className="secondary-btn" onClick={onOpenPortfolio}>
               <BarChart3 size={17} />
@@ -625,6 +648,13 @@ export function BacktestView({
               <div className="backtest-strategy-picker-head">
                 <span>1. 回测策略 <b>已选 {selectedVerifiedStrategyIds.length} 套</b></span>
                 <div>
+                  <button
+                    type="button"
+                    data-backtest-featured-strategies
+                    title="全A实测留强的精选策略，任一命中即买入"
+                    onClick={() => updateVerifiedStrategySelection(featuredStrategyIds, 1)}
+                    disabled={!featuredStrategyIds.length || featuredSelected}
+                  >精选 {featuredStrategyIds.length} 套</button>
                   <button
                     type="button"
                     onClick={() => updateVerifiedStrategySelection(
@@ -807,8 +837,24 @@ export function BacktestView({
                   onDraftChange((current) => ({ ...current, startDate: event.target.value }));
                 }}
               />
+              <div className="backtest-range-presets" role="group" aria-label="快速选择回测区间">
+                {BACKTEST_RANGE_PRESETS.map((preset) => {
+                  const value = backtestRangeStartDate(preset.years);
+                  return <button
+                    key={preset.id}
+                    type="button"
+                    data-backtest-range={preset.id}
+                    aria-pressed={draft.startDate === value}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setFieldErrors((current) => ({ ...current, startDate: "" }));
+                      onDraftChange((current) => ({ ...current, startDate: value }));
+                    }}
+                  >{preset.label}</button>;
+                })}
+              </div>
               <small id={`${inputId}-date-help`} className={fieldErrors.startDate ? "field-error" : ""} aria-live="polite">
-                {fieldErrors.startDate || "只统计该日期及之后产生的策略信号；系统会自动多取预热行情"}
+                {fieldErrors.startDate || "只统计该日期及之后产生的策略信号；单只股票信号少，建议至少看近3年"}
               </small>
             </label>
             <label className="field backtest-primary-field">
@@ -960,7 +1006,7 @@ export function BacktestView({
               ? `标的 ${result.security?.name || runRecord?.securityName || resultDraft.securityCode || "--"}`
               : "运行后展示样本与收益判断"}
             icon={LineChart}
-            badge={result?.metrics?.accepted ? "预检通过" : result ? "预检未通过" : "等待运行"}
+            badge={!result ? "等待运行" : outcome.tone === "empty" ? "没有成交样本" : result.metrics?.accepted ? "预检通过" : "预检未通过"}
           />
           {error && <ErrorState message={error} />}
           {resultSetupChanged && <div className="warning-banner" role="status">回测条件已更改，当前显示和导出的仍是上次完成的运行快照；应用参数也使用该快照。请重新运行以计算新条件。</div>}
@@ -982,7 +1028,37 @@ export function BacktestView({
           )}
           {result && metrics && (
             <>
-              <div className="backtest-profit-overview" data-backtest-profit-overview>
+              <div className={`backtest-verdict tone-${outcome.tone}`} data-backtest-verdict role="status">
+                <b>{outcome.headline}</b>
+                {outcome.caution && <small>{outcome.caution}</small>}
+                {outcome.tone === "empty" && (
+                  <div className="backtest-verdict-actions">
+                    {!resultUsesFeatured && featuredStrategyIds.length > 1 && (
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        data-backtest-retry-featured
+                        disabled={loading || comparisonRunning}
+                        onClick={() => rerunWith((current) => {
+                          const context = buildVerifiedStrategyContext(featuredStrategyIds, 1, verifiedStrategyNameById);
+                          return context ? { ...current, strategyContext: context } : current;
+                        })}
+                      >换成精选 {featuredStrategyIds.length} 套策略重跑</button>
+                    )}
+                    {resultDraft.startDate > widerStartDate && (
+                      <button
+                        type="button"
+                        className="secondary-btn"
+                        data-backtest-retry-wider
+                        disabled={loading || comparisonRunning}
+                        onClick={() => rerunWith((current) => ({ ...current, startDate: widerStartDate }))}
+                      >把区间拉长到近5年重跑</button>
+                    )}
+                    <button type="button" className="secondary-btn" onClick={onOpenPortfolio}>改用多股组合回测</button>
+                  </div>
+                )}
+              </div>
+              <div className={`backtest-profit-overview tone-${outcome.tone}`} data-backtest-profit-overview>
                 <div className="backtest-profit-range">
                   <span>实际回测区间</span>
                   <b>{backtestRange?.signalFrom || resultDraft.startDate} 至 {backtestRange?.signalTo || "最新交易日"}</b>
@@ -990,7 +1066,7 @@ export function BacktestView({
                     历史行情 {backtestRange?.historyBars ?? result.lookbackBars ?? "--"} 根 · 起始资金 {fmt(typeof profitSummary?.startingCapital === "number" ? profitSummary.startingCapital : null)} 元 · 单次仓位 {format(profitSummary?.positionPercent)}% · {result.entryPriceMode === "custom_limit_price" ? `自定义买入价 ${format(result.customEntryPrice, 3)} 元` : "次日开盘买入"}
                   </small>
                 </div>
-                <div className="backtest-profit-grid">
+                {outcome.tone !== "empty" && <div className="backtest-profit-grid">
                   <div>
                     <span>累计净收益</span>
                     <b className={Number(profitSummary?.totalNetReturnPercent) >= 0 ? "red" : "green"}>
@@ -1007,7 +1083,7 @@ export function BacktestView({
                   <div><span>盈利 / 亏损</span><b>{profitSummary?.profitableTrades ?? 0} / {profitSummary?.losingTrades ?? 0}</b></div>
                   <div><span>交易胜率</span><b>{format(profitSummary?.winRatePercent)}%</b></div>
                   <div><span>资金最大回撤</span><b className="green">{format(profitSummary?.maxDrawdownPercent)}%</b></div>
-                </div>
+                </div>}
               </div>
               {strategyBreakdown.length > 1 && (
                 <div className="backtest-strategy-breakdown" data-backtest-strategy-breakdown>
@@ -1323,39 +1399,46 @@ export function BacktestView({
                       profileDiff(record.strategyProfile),
                       record.rawResult?.tradeExecutionReadiness || record.rawResult?.executionReadiness
                     );
+                    const recordSummary = summarizeBacktestRecord(record);
+                    const recordTrades = recordSummary.tradeCount ?? (typeof record.metrics?.replayableSignals === "number" ? record.metrics.replayableSignals : null);
                     return (
                       <>
                         <div className="backtest-history-meta">
                           <div>
-                            <b>{record.securityCode || "--"}</b>
-                            <small>{record.securityName}</small>
+                            <b>{record.securityName || record.securityCode || "--"}</b>
+                            <small>{record.securityCode || "--"} · {new Date(record.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })}</small>
                           </div>
-                          <span className={`history-state ${record.accepted ? "ok" : "bad"}`}>
-                            {record.accepted ? "预检通过" : "预检未通过"}
-                          </span>
-                          <span className={`history-state ${recordReadiness.level === "pass" ? "ok" : recordReadiness.level === "wait" ? "wait" : "bad"}`}>
-                            {executionStatusLabel(recordReadiness.status)}
+                          <span className={`history-state ${recordSummary.tone === "empty" ? "wait" : record.accepted ? "ok" : "bad"}`}>
+                            {recordSummary.tone === "empty" ? "没有成交样本" : record.accepted ? "预检通过" : "预检未通过"}
                           </span>
                         </div>
-                        <p>执行评分：{recordReadiness.score} / 100</p>
-                        <p>{recordReadiness.recommendation}</p>
-                        <p>
-                          回测时间：{new Date(record.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })} |
-                          净收益：{fmt(typeof record.metrics?.projectedNetEdge === "number" ? record.metrics.projectedNetEdge : null)} | 样本：{record.metrics?.replayableSignals ?? "--"}
-                        </p>
-                        <p>
+                        <div className="backtest-history-stats">
+                          <div><span>完成交易</span><b>{recordTrades ?? "--"} 笔</b></div>
+                          <div><span>胜率</span><b>{recordSummary.winRatePercent === null ? "--" : `${recordSummary.winRatePercent.toFixed(1)}%`}</b></div>
+                          <div><span>累计净收益</span><b className={recordSummary.netReturnPercent === null || recordSummary.netReturnPercent === 0 ? "" : recordSummary.netReturnPercent > 0 ? "red" : "green"}>
+                            {recordSummary.netReturnPercent === null ? "--" : `${recordSummary.netReturnPercent > 0 ? "+" : ""}${recordSummary.netReturnPercent.toFixed(2)}%`}
+                          </b></div>
+                          <div><span>回测区间</span><b>{record.draft.startDate} 起</b></div>
+                        </div>
+                        <p className="backtest-history-strategy">
                           策略：{record.rawResult?.strategyContext?.strategyName || record.strategyProfile?.selectedStrategies?.slice(0, 6).join(" / ") || "--"}
                         </p>
-                        <p>风险档位：{riskProfileLabel(record.strategyProfile.riskProfile)}</p>
-                        <p>
-                          样本外：{record.metrics?.oosSampleCount ?? "--"} 条 |
-                          净边际：{fmt(typeof record.metrics?.oosProjectedNetEdge === "number" ? record.metrics.oosProjectedNetEdge : null)}% |
-                          过拟合风险：{overfitRiskLabel(record.metrics?.overfitRisk)}
-                        </p>
-                        {(() => {
-                          const hot = recordReadiness.reasons.slice(0, 2).join(" / ");
-                          return <p>{`关键风险：${hot}${recordReadiness.reasons.length > 2 ? " ..." : ""}`}</p>;
-                        })()}
+                        <details className="backtest-history-detail">
+                          <summary>验证与风控明细</summary>
+                          <p>
+                            执行评分：{recordReadiness.score} / 100 · {executionStatusLabel(recordReadiness.status)} · 风险档位：{riskProfileLabel(record.strategyProfile.riskProfile)}
+                          </p>
+                          <p>{recordReadiness.recommendation}</p>
+                          <p>
+                            样本外：{record.metrics?.oosSampleCount ?? "--"} 条 |
+                            净边际：{fmt(typeof record.metrics?.oosProjectedNetEdge === "number" ? record.metrics.oosProjectedNetEdge : null)}% |
+                            过拟合风险：{overfitRiskLabel(record.metrics?.overfitRisk)}
+                          </p>
+                          {(() => {
+                            const hot = recordReadiness.reasons.slice(0, 2).join(" / ");
+                            return hot ? <p>{`关键风险：${hot}${recordReadiness.reasons.length > 2 ? " ..." : ""}`}</p> : null;
+                          })()}
+                        </details>
                         <div className="backtest-history-actions">
                           <button className="secondary-btn" onClick={() => onLoadHistory(record)}>载入</button>
                           <button className="secondary-btn" onClick={() => onExportHistory(record, "csv")}>CSV</button>

@@ -27,6 +27,7 @@ import type { WorkspaceView } from "../../workspaceView";
 import type { CopilotAlertItem, MarketSessionPhase } from "../../copilotBriefing";
 import { inferSecid } from "../../domain/securityIdentifiers";
 import { startVisibleInterval } from "../../visiblePolling";
+import { newsTimeText } from "../../dateUtils";
 import type { NotesApi } from "../notes/useNotes";
 import type { TAssistantApi } from "../t-assistant/useTAssistant";
 import type { StockMonitorAlert } from "../../useStockMonitors";
@@ -236,6 +237,14 @@ export default function TodayCockpitView({
       <button type="button" className="table-action" onClick={() => adjustPlan(plan)} aria-label={`调整 ${sec.name} 的买点与止损`}>调整</button>
       <button type="button" className="table-action" onClick={() => removePlan(plan)} aria-label={`把 ${sec.name} 移出今日驾驶舱`}><X size={11} />移出</button>
     </span>;
+  };
+  /** 盘中哨兵表里给观察计划补一个当前状态标签：破止损、在买点区、已高于买点。 */
+  const planStatusChip = (code: string) => {
+    const row = planStatusByCode.get(code);
+    if (!row || row.status === "pending" || row.status === "below-band") return null;
+    const tone = row.status === "stop-hit" ? "danger" : row.status === "in-band" ? "good" : "muted";
+    const label = row.status === "stop-hit" ? "已破止损" : row.status === "in-band" ? "在买点区" : "高于买点";
+    return <span className={`cockpit-chip ${tone}`} title={row.detail}>{label}</span>;
   };
   const planChip = (code: string) => {
     const plan = planByCode.get(code);
@@ -454,6 +463,10 @@ export default function TodayCockpitView({
     () => reconcilePlansAfterClose(activePlans, mergedQuotes),
     [activePlans, mergedQuotes]
   );
+  const planStatusByCode = useMemo(
+    () => new Map(planReconciliation.map(row => [row.plan.candidate.security.code, row])),
+    [planReconciliation]
+  );
 
   const todayDate = todayShanghaiDate();
   const todayTradesByCode = tAssistant.store.trades[todayDate] || {};
@@ -464,7 +477,7 @@ export default function TodayCockpitView({
       const list = todayTradesByCode[item.code] || [];
       if (!list.length) continue;
       count += list.length;
-      realized += settleTrades(list, item.config).stats.realized;
+      realized += settleTrades(list, item.config, item.code).stats.realized;
     }
     return { count, realized };
   }, [tAssistant.store.items, todayTradesByCode]);
@@ -674,7 +687,7 @@ export default function TodayCockpitView({
           <div className="cockpit-kpi">
             <span>模拟盘净值 / 浮盈亏</span>
             <strong>{maskSensitiveText(Number(paperSummary?.equity || 0).toLocaleString("zh-CN", { maximumFractionDigits: 0 }), privacyMask)}</strong>
-            <small className={Number(paperSummary?.openPnl || 0) >= 0 ? "tone-up" : "tone-down"}>
+            <small className={Number(paperSummary?.openPnl || 0) > 0 ? "tone-up" : Number(paperSummary?.openPnl || 0) < 0 ? "tone-down" : ""}>
               持仓 {openPaperPositions.length} 只 · 浮盈亏 {maskSensitiveText(`${Number(paperSummary?.openPnl || 0) >= 0 ? "+" : ""}${Number(paperSummary?.openPnl || 0).toFixed(0)} 元`, privacyMask)}
             </small>
           </div>
@@ -846,7 +859,7 @@ export default function TodayCockpitView({
                   </thead>
                   <tbody>
                     {preopenRows.slice(0, 10).map(row => (
-                      <tr key={row.code}>
+                      <tr key={row.code} className={row.gapTone === "stop-hit" ? "cockpit-row-danger" : undefined}>
                         <td>
                           <button
                             type="button"
@@ -914,7 +927,7 @@ export default function TodayCockpitView({
                     <div className="cockpit-news-meta">
                       <span className="cockpit-chip">{item.type === "announcement" ? "公告" : item.sourceName || "资讯"}</span>
                       {item.confirmation?.label && <span className="cockpit-chip muted">{item.confirmation.label}</span>}
-                      {item.publishedAt && <small>{String(item.publishedAt).slice(5, 16)}</small>}
+                      {item.publishedAt && <small>{newsTimeText(item.publishedAt)}</small>}
                     </div>
                     <p>{item.title}</p>
                   </li>
@@ -1012,7 +1025,7 @@ export default function TodayCockpitView({
                   </thead>
                   <tbody>
                     {sentinels.slice(0, 18).map(row => (
-                      <tr key={row.code}>
+                      <tr key={row.code} className={planStatusByCode.get(row.code)?.status === "stop-hit" ? "cockpit-row-danger" : undefined}>
                         <td>
                           <button
                             type="button"
@@ -1037,7 +1050,7 @@ export default function TodayCockpitView({
                               <Crosshair size={12} /> {row.monitorSummary}
                             </span>
                           ) : row.planBandLabel ? (
-                            <span><Target size={12} /> 计划 {row.planBandLabel}</span>
+                            <span className="cockpit-plan-band"><Target size={12} /> 计划 {row.planBandLabel} {planStatusChip(row.code)}</span>
                           ) : row.holdingPnlPct !== null ? (
                             <span className={row.holdingPnlPct >= 0 ? "tone-up" : "tone-down"}>
                               持仓浮盈亏 {row.holdingPnlPct >= 0 ? "+" : ""}{row.holdingPnlPct.toFixed(1)}%
@@ -1097,7 +1110,7 @@ export default function TodayCockpitView({
                       const sec = item.plan.candidate.security;
                       const p = item.plan.candidate.plan;
                       return (
-                        <tr key={item.plan.id}>
+                        <tr key={item.plan.id} className={item.status === "stop-hit" ? "cockpit-row-danger" : undefined}>
                           <td>
                             <button
                               type="button"

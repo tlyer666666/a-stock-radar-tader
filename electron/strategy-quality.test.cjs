@@ -183,12 +183,22 @@ for (const blockedExit of ['limit-down', 'no-volume']) {
 }
 
 test('historical unbuyable rate counts observed entries before their holding period completes', () => {
-  const rows = pathHistory(Array(100).fill(10));
-  rows[99] = { ...rows[99], open: 11, close: 11, high: 11, low: 11 };
-  const signals = new Set([rows[60].date, rows[96].date, rows[98].date, rows[99].date]);
-  const definition = { id: 'observed_entries', matches: feature => signals.has(feature.date) };
-  const result = engine.buildSelectionHistoricalReview([definition], [{ code: '600001', name: '样本' }],
-    { '600001': rows }, rows, { signalTo: rows.at(-1).date, cooldownDays: 0 });
+  const rowsA = pathHistory(Array(100).fill(10));
+  const rowsB = pathHistory(Array(100).fill(20));
+  rowsB[99] = { ...rowsB[99], open: 22, close: 22, high: 22, low: 22 };
+  const signalsA = new Set([rowsA[60].date, rowsA[96].date]);
+  const signalsB = new Set([rowsB[98].date, rowsB[99].date]);
+  const definition = {
+    id: 'observed_entries',
+    matches: feature => (feature.latest < 15 ? signalsA : signalsB).has(feature.date)
+  };
+  const result = engine.buildSelectionHistoricalReview(
+    [definition],
+    [{ code: '600001', name: '样本甲' }, { code: '600002', name: '样本乙' }],
+    { '600001': rowsA, '600002': rowsB },
+    rowsA,
+    { signalTo: rowsA.at(-1).date, cooldownDays: 0 }
+  );
   assert.equal(result.strategies.observed_entries.sampleCount, 1);
   // Three next opens are observed: one completed, one awaiting exit, one
   // unbuyable. The final signal has no next open and must not dilute the rate.

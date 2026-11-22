@@ -156,6 +156,10 @@ export const strategyOptions = [
   { id: "sectorLadder", name: "板块梯队", detail: "首板、连板、晋级率和炸板率共同确认板块持续性" },
   { id: "weakToStrong", name: "弱转强", detail: "盘中收回关键位，或低开后强势反包" },
   { id: "marketEmotion", name: "市场情绪过滤", detail: "比较涨停、跌停数量和涨停家数变化，过滤退潮期" },
+  // 以下三项是「实测因子」：阈值来自 2021–2026 全A日线回放（electron/strategy-field-rules.cjs），与策略选股的精选策略同一口径。
+  { id: "notOverheated", name: "不过热", detail: "6项过热指标（收盘高位、当日涨超3.5%、高于MA20超12%、量比超1.4、近60日涨停≥3次、近60日涨超40%）满足不到2项", measured: true },
+  { id: "lowPositionBoard", name: "低位涨停", detail: "最近一次涨停是首板，涨停收盘不高于MA20的105%、涨停前60日涨幅不为正，之后没有跌破涨停日最低价", measured: true },
+  { id: "deepBase", name: "深跌底部", detail: "低位涨停成立，且收盘仍低于60日线15%以上：实测离60日线越远，之后20日越强", measured: true },
   { id: "riskVeto", name: "风险否决", detail: "跌破关键位、巨量、过热或弱收盘时直接否决" }
 ];
 

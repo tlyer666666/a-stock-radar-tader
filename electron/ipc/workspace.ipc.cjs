@@ -44,6 +44,7 @@ function registerWorkspaceIpc({
   kvSet = () => false,
   localKvMirror = null,
   getMasterPasswordStatus = () => ({ enabled: false, locked: false }),
+  isSecretLocked = () => Boolean(getMasterPasswordStatus?.()?.locked),
   setMasterPassword = async () => { throw new Error("未启用主密码模块"); },
   unlockMasterPassword = async () => { throw new Error("未启用主密码模块"); },
   clearMasterPassword = async () => { throw new Error("未启用主密码模块"); },
@@ -145,7 +146,7 @@ function registerWorkspaceIpc({
     },
     readConfig: () => readMigratedBackupConfig(),
     writeConfig: value => writeJson("backup-config", value, isSettingsRecord, true),
-    encryptSecret, decryptSecret, appVersion: app.getVersion(),
+    encryptSecret, decryptSecret, isSecretLocked, appVersion: app.getVersion(),
     ...(typeof getStorageSummary === "function" ? { getStorageSummary } : {}),
     ...(localKvMirror ? { localMirror: localKvMirror } : {})
   });

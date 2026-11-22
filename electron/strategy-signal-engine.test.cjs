@@ -1190,3 +1190,41 @@ test('arbitrary custom conditions publish no assumed numeric exit boundary', () 
   assert.equal(custom.strategies[0].stocks.length, 1);
   assert.equal(custom.strategies[0].stocks[0].invalidationPrice, null);
 });
+
+test('cooldownDays === 0 still prevents overlapping same-stock positions when an exit is delayed', () => {
+  const engine = require('./strategy-signal-engine.cjs');
+  const dates = Array.from({ length: 60 }, (_, idx) => dateAt(idx));
+  const rows = dates.map((date, idx) => ({
+    date,
+    open: 10,
+    high: 10.2,
+    low: 9.8,
+    close: 10,
+    // Suspend bars 26..32 so a signal at 22 (entry 23, nominal exit 27) defers exit to bar 33
+    volume: idx >= 26 && idx <= 32 ? 0 : 100000,
+    amount: idx >= 26 && idx <= 32 ? 0 : 10000000,
+    isST: false
+  }));
+  const def = {
+    id: 'zero_cooldown_overlap_probe',
+    name: '零冷却防重叠探针',
+    matches: feature => feature.date === dates[22] || feature.date === dates[24] || feature.date === dates[33]
+  };
+  const replay = engine.__test.replayStrategy(
+    def,
+    '600001',
+    '零冷却样本',
+    rows,
+    new Map(rows.map(row => [row.date, row])),
+    engine.__test.resolvedOptions({ horizonDays: 5, cooldownDays: 0 }),
+    { featureTimeline: rows.map(row => ({ date: row.date })) }
+  );
+  // Signal at 22 enters at 23 and exits at 33 (delayed by suspension).
+  // Signal at 24 is strictly inside [23..33] and must NOT open an overlapping position even with cooldownDays === 0.
+  // Signal at 33 enters at 34 (after 33 close exit) and is allowed.
+  assert.equal(replay.samples.length, 2);
+  assert.equal(replay.samples[0].signalDate, dates[22]);
+  assert.equal(replay.samples[0].exitDate, dates[33]);
+  assert.equal(replay.samples[1].signalDate, dates[33]);
+  assert.equal(replay.samples[1].entryDate, dates[34]);
+});

@@ -43,6 +43,7 @@ export function ConvertibleBondTable({
   onOpenStock,
   sort,
   onSort,
+  resetKey,
   favoriteCodes,
   plannedCodes,
   onToggleFavorite,
@@ -55,6 +56,7 @@ export function ConvertibleBondTable({
   onOpenStock: (security: Security) => void;
   sort?: BondSort;
   onSort?: (column: BondSortColumn) => void;
+  resetKey?: string | undefined;
   favoriteCodes?: ReadonlySet<string> | undefined;
   plannedCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((security: Security) => void) | undefined;
@@ -68,7 +70,8 @@ export function ConvertibleBondTable({
     rowHeight: 44,
     overscan: 8,
     threshold: 80,
-    containerRef: scrollRef
+    containerRef: scrollRef,
+    resetKey: `${resetKey ?? ""}|${sort ?? ""}`
   });
   const visibleBonds = virtual.enabled ? bonds.slice(virtual.startIndex, virtual.endIndex) : bonds;
   const handleFav = onToggleFavorite ?? (onAddFavorite ? (sec: Security) => {
@@ -278,7 +281,7 @@ export default function ConvertibleBondView({
     <section className="panel bond-panel">
       <PanelTitle title="可转债行情" subtitle="点击转债查看行情与K线，点击正股打开个股分析；点表头切换从大到小 / 从小到大" icon={Coins} badge={`${rows.length} 只`} />
       <div className="bond-toolbar">
-        <label className="bond-search"><Search size={15} /><input aria-label="搜索可转债" placeholder="转债或正股 名称 / 代码" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(PAGE); }} />{query && <button type="button" aria-label="清空可转债搜索" onClick={() => setQuery("")}><X size={13} /></button>}</label>
+        <label className="bond-search"><Search size={15} /><input aria-label="搜索可转债" placeholder="转债或正股 名称 / 代码" value={query} onChange={(event) => { setQuery(event.target.value); setLimit(PAGE); }} />{query && <button type="button" aria-label="清空可转债搜索" onClick={() => { setQuery(""); setLimit(PAGE); }}><X size={13} /></button>}</label>
         <div className="bond-segments" role="group" aria-label="交易所">{(["all", "sh", "sz"] as const).map((id) => <button type="button" key={id} aria-pressed={market === id} onClick={() => { setMarket(id); setLimit(PAGE); }}>{id === "all" ? "全部" : id === "sh" ? "沪市" : "深市"}</button>)}</div>
         <select aria-label="价格区间" value={price} onChange={(event) => { setPrice(event.target.value as BondPriceFilter); setLimit(PAGE); }}>{priceOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
         <select aria-label="可转债排序" value={sort} onChange={(event) => { setSort(event.target.value as BondSort); setLimit(PAGE); }}>{sortOptions.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</select>
@@ -316,6 +319,7 @@ export default function ConvertibleBondView({
         onOpenStock={onOpenSecurity}
         sort={sort}
         onSort={(column) => { setSort((current) => toggleBondSort(current, column)); setLimit(PAGE); }}
+        resetKey={`${query}|${market}|${price}|${sort}`}
         favoriteCodes={effectiveFavCodes}
         plannedCodes={plannedCodes}
         onToggleFavorite={canToggleFav ? handleToggleFav : undefined}

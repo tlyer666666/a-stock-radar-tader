@@ -651,6 +651,7 @@ async function trackedFuyaoHistory(security, options) {
  * 指数基准（中证全指 000985）只有扶摇能提供；没有 Key 时返回 null，由扫描器走应急源。
  */
 const trendThsLane = Object.freeze({
+  preferFuyao: () => fuyaoUsable(),
   quote: (security, options) => thsFreeMarket.thsFreeQuote(security, options),
   history: async (security, options = {}) => {
     if (fuyaoUsable()) {

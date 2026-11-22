@@ -18,7 +18,13 @@ const definitions = [
   ["sectorBreadth", ["sector", "sectorLadder", "marketEmotion", "trend", "volatility"], ["sectorLadder"]],
   ["catalystTrend", ["information", "trend", "avwap", "sector", "support"], ["information", "trend"]],
   ["firstBoardNode", ["firstBoardQuality", "lowFirstBoard", "exactNode", "avwap", "support"], ["firstBoardQuality", "lowFirstBoard"]],
-  ["breakoutFollow", ["secondBreakout", "trend", "avwap", "sectorLeader", "volatility", "support"], ["secondBreakout"]]
+  ["breakoutFollow", ["secondBreakout", "trend", "avwap", "sectorLeader", "volatility", "support"], ["secondBreakout"]],
+  // 实测方向的组合（2026-11-21）：必要条件只用实测因子，见 strategy-field-rules.measuredFactorSnapshot。
+  ["deepBaseBoard", ["deepBase", "lowPositionBoard", "support", "notOverheated"], ["deepBase", "lowPositionBoard"]],
+  ["baseQuietPullback", ["lowPositionBoard", "contraction", "chipLock", "support", "notOverheated"], ["lowPositionBoard", "contraction"]],
+  ["deepBaseReclaim", ["deepBase", "weakToStrong", "avwap", "notOverheated"], ["deepBase", "weakToStrong"]],
+  ["coolSupport", ["notOverheated", "support", "avwap", "contraction"], ["notOverheated", "support"]],
+  ["coolSector", ["notOverheated", "sector", "sectorLadder", "support", "marketEmotion"], ["notOverheated", "sector"]]
 ];
 
 function selectionKey(ids) {

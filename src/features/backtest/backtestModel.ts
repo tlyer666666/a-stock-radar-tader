@@ -6,7 +6,94 @@ export const MIN_SINGLE_BACKTEST_BARS = 120;
 export const MAX_SINGLE_BACKTEST_BARS = 2500;
 export const DEFAULT_SINGLE_BACKTEST_BARS = 120;
 
-export const defaultBacktestStartDate = () => shiftShanghaiDate(-1);
+/**
+ * 单股回测默认看近 3 年：涨停类信号在单只股票上很稀少，只看 1 年经常一笔交易都没有，
+ * 3 年是「样本够看、行情又不算太旧」的折中；界面上可一键切到近 1 年 / 近 5 年。
+ */
+export const DEFAULT_BACKTEST_YEARS = 3;
+export const defaultBacktestStartDate = () => shiftShanghaiDate(-DEFAULT_BACKTEST_YEARS);
+export const BACKTEST_RANGE_PRESETS = [
+  { id: "1y", label: "近1年", years: 1 },
+  { id: "3y", label: "近3年", years: 3 },
+  { id: "5y", label: "近5年", years: 5 }
+] as const;
+export const backtestRangeStartDate = (years: number, date = new Date()) => shiftShanghaiDate(-Math.abs(years), date);
+
+type StrategyLike = { id?: unknown; featured?: unknown; retired?: unknown };
+
+/**
+ * 回测默认勾选的策略：全部「精选」策略（全A实测留强的那几套，未下线），任一命中即买入。
+ * 单独勾一套时单只股票往往没有样本；一起跑既有样本，又能在「各策略独立收益对比」里看出哪套适合这只股票。
+ */
+export function featuredBacktestStrategyIds(definitions: ReadonlyArray<StrategyLike>): string[] {
+  const usable = definitions.filter(item => item && item.id);
+  const featured = usable.filter(item => item.featured === true && item.retired !== true).map(item => String(item.id));
+  if (featured.length) return featured;
+  return usable[0] ? [String(usable[0].id)] : [];
+}
+
+export type BacktestOutcomeTone = "empty" | "profit" | "loss" | "flat";
+export type BacktestOutcome = {
+  tone: BacktestOutcomeTone;
+  tradeCount: number;
+  /** 一句话结论，直接告诉用户赚没赚、赚了几次。 */
+  headline: string;
+  /** 样本太少等需要提醒的话；没有则为空。 */
+  caution: string;
+};
+
+const finiteOrNull = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+};
+const signedPercent = (value: number) => `${value > 0 ? "+" : ""}${value.toFixed(2)}%`;
+
+/** 把回测收益汇总翻译成一句大白话；缺失的数字不编造。 */
+export function describeBacktestOutcome(
+  summary: Record<string, unknown> | null | undefined,
+  range: { from?: unknown; to?: unknown } = {},
+  minReliableTrades = 5
+): BacktestOutcome {
+  const tradeCount = Math.max(0, Math.floor(finiteOrNull(summary?.tradeCount) ?? 0));
+  const period = range.from ? `${String(range.from)} 至${range.to ? ` ${String(range.to)} ` : "今"}` : "所选区间内";
+  if (!tradeCount) {
+    return {
+      tone: "empty",
+      tradeCount: 0,
+      headline: `${period.trim()}，所选策略在这只股票上没有触发过可成交的买入，所以没有收益可算。`,
+      caution: "这不代表策略不好，只是单只股票上这类信号本来就少。"
+    };
+  }
+  const wins = finiteOrNull(summary?.profitableTrades);
+  const losses = finiteOrNull(summary?.losingTrades);
+  const winRate = finiteOrNull(summary?.winRatePercent);
+  const net = finiteOrNull(summary?.totalNetReturnPercent);
+  const drawdown = finiteOrNull(summary?.maxDrawdownPercent);
+  const parts = [`${period}共完成 ${tradeCount} 笔交易`];
+  if (wins !== null && losses !== null) parts.push(`${wins} 笔赚、${losses} 笔亏${winRate !== null ? `（胜率 ${winRate.toFixed(1)}%）` : ""}`);
+  if (net !== null) parts.push(`扣费后累计 ${signedPercent(net)}`);
+  if (drawdown !== null && drawdown !== 0) parts.push(`期间资金最大回撤 ${Math.abs(drawdown).toFixed(2)}%`);
+  const tone: BacktestOutcomeTone = net === null || net === 0 ? "flat" : net > 0 ? "profit" : "loss";
+  return {
+    tone,
+    tradeCount,
+    headline: `${parts.join("，")}。`,
+    caution: tradeCount < minReliableTrades ? `只有 ${tradeCount} 笔交易，样本太少，结论仅供参考；可以把开始日期往前调，或多选几套策略。` : ""
+  };
+}
+
+/** 历史记录卡片用的精简摘要：交易笔数、胜率、累计净收益，取不到的留空。 */
+export function summarizeBacktestRecord(record: { rawResult?: { profitSummary?: Record<string, unknown> | null } | null } | null | undefined): {
+  tradeCount: number | null; winRatePercent: number | null; netReturnPercent: number | null; tone: BacktestOutcomeTone;
+} {
+  const summary = record?.rawResult?.profitSummary;
+  if (!summary || typeof summary !== "object") return { tradeCount: null, winRatePercent: null, netReturnPercent: null, tone: "empty" };
+  const tradeCount = finiteOrNull(summary.tradeCount);
+  const netReturnPercent = finiteOrNull(summary.totalNetReturnPercent);
+  const tone: BacktestOutcomeTone = !tradeCount ? "empty" : netReturnPercent === null || netReturnPercent === 0 ? "flat" : netReturnPercent > 0 ? "profit" : "loss";
+  return { tradeCount, winRatePercent: tradeCount ? finiteOrNull(summary.winRatePercent) : null, netReturnPercent: tradeCount ? netReturnPercent : null, tone };
+}
 
 export const normalizeBacktestStrategyIds = (value: unknown): string[] => {
   if (!Array.isArray(value)) return [];

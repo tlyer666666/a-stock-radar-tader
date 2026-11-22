@@ -32,6 +32,22 @@ export function AiInterpretPanel({ kind, asOfDate, getData, compact = false, dis
   }, [api, kind, asOfDate]);
 
   useEffect(() => {
+    if (!api?.status || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onMasterUnlocked = () => {
+      const current = generation.current;
+      void api.status().then(status => {
+        if (generation.current === current) setConfigured(status.configured);
+      }).catch(() => undefined /* optional AI status */);
+    };
+    window.addEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+      }
+    };
+  }, [api]);
+
+  useEffect(() => {
     if (!busy || !api?.onStream) return;
     return api.onStream(event => {
       if (event.channel === "interpret" && event.kind === kind && event.phase === "token" && typeof event.text === "string" && event.text) {

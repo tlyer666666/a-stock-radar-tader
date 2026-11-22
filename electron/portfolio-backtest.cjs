@@ -133,6 +133,9 @@ function normalizeSample(raw, index, histories, nextMarketDate, cutoffDate, cost
     exitRow = next && next.date <= cutoffDate ? history.byDate.get(next.date) : null;
   }
   const priceBasisIssue = intervalPriceBasisIssue(history.rows, entryRow.index, exitRow?.index ?? observationEnd, code, name);
+  if (priceBasisIssue && priceBasisIssue.date === entryRow.date && !executionRejection) {
+    executionRejection = "corporate_action_on_entry";
+  }
   // Entry eligibility is decided without knowing whether a later exit completes.
   // An unresolved held price basis freezes valuation from that date; it never
   // releases the cash/slot that the position had already reserved.
@@ -490,7 +493,9 @@ function simulateStrategyPortfolio(
       const state = { activePositions: active.size, availableCash: cash };
       if (sample.executionRejection) {
         rejections.push(rejectionFor(sample, sample.executionRejection,
-          sample.executionRejection === "corporate_action_unresolved" ? "价格基准变化缺少可核验的除权结算数据，收益不可结算" : "停牌、封板或退出超出区间，无法按样本撮合", state));
+          sample.executionRejection === "corporate_action_unresolved" || sample.executionRejection === "corporate_action_on_entry"
+            ? "价格基准变化缺少可核验的除权结算数据，收益不可结算"
+            : "停牌、封板或退出超出区间，无法按样本撮合", state));
         continue;
       }
       if (

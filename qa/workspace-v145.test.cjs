@@ -322,7 +322,11 @@ describe('v1.4.6 compact watch workspace and quick combinations in the actual re
     await page.getByRole('button', { name: '数据源设置', exact: true }).click();
     await page.getByRole('navigation', { name: '设置分类' }).getByRole('button', { name: '策略组合', exact: true }).click();
     await page.locator('.strategy-presets').waitFor();
-    assert.equal(await page.locator('.strategy-presets > button').count(), 16, 'fifteen presets plus all factors');
+    assert.equal(await page.locator('.strategy-presets > button').count(), 21, 'twenty presets (five measured + fifteen) plus all factors');
+    // 实测方向的组合排在最前并带「实测」标签；实测因子在条件列表里同样带标签。
+    assert.equal(await page.locator('.strategy-presets > button .strategy-measured-tag').count(), 5);
+    assert.match(await page.locator('.strategy-presets > button').first().innerText(), /深跌底部首板/);
+    assert.equal(await page.locator('.strategy-option-grid .strategy-measured-tag').count(), 3);
 
     // 产品调整：快捷策略组合不再挂在全局顶栏（会出现在所有板块上方），
     // 只保留在「策略选股」模块内。因此设置页不再有 .strategy-quick-trigger。

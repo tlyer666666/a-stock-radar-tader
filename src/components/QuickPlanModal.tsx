@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { ClipboardPlus, X } from "lucide-react";
 import { addToCockpit, emitAppToast, COCKPIT_TOAST_ACTION } from "../features/cockpit/cockpitAdd";
+import { useReportHsgtOverlay } from "../features/hsgt/overlayContext";
 import { inferSecid } from "../domain/securityIdentifiers";
 import {
   TREND_PLAN_STORAGE_KEY,
@@ -310,6 +311,7 @@ export function QuickPlanDialogContent({
     <dialog
       ref={dialogRef}
       className="quick-plan-dialog"
+      data-overlay="open"
       aria-labelledby={titleId}
       style={{
         padding: 0,
@@ -472,6 +474,7 @@ function OneClickCockpitAdd({ target, onClose, onSaved, onError, onNeedDialog }:
 }
 
 function QuickPlanFlow({ target, onClose, onSaved, onError }: QuickPlanModalProps & { target: QuickPlanTarget }) {
+  useReportHsgtOverlay(Boolean(target));
   const [dialog, setDialog] = useState(() => readActivePlan(target.code) !== null);
   const openDialog = useRef(() => setDialog(true)).current;
   if (!dialog) return <OneClickCockpitAdd target={target} onClose={onClose} onSaved={onSaved} onError={onError} onNeedDialog={openDialog} />;

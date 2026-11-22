@@ -26,12 +26,14 @@ import {
   normalizeBacktestStrategyIds
 } from "./backtestModel";
 import {
+  BACKTEST_HISTORY_KEY,
   BACKTEST_HISTORY_LIMIT,
   buildBacktestHistoryRecord,
   hydrateBacktestHistory,
   loadBacktestHistory,
   saveBacktestHistory
 } from "./backtestStorage";
+import { mirrorToNativeKv } from "../../safeStorage";
 import type {
   BacktestDraft,
   BacktestEntryContext,
@@ -105,9 +107,10 @@ export function useBacktestWorkspace({
   onEnterBacktest
 }: UseBacktestWorkspaceOptions) {
   const [backtestReturnMode, setBacktestReturnMode] = useState<"pool" | "analysis">("pool");
-  const [backtestCenterMode, setBacktestCenterMode] = useState<"portfolio" | "single">("single");
+  const [backtestCenterMode, setBacktestCenterMode] = useState<"portfolio" | "single" | "leaderboard">("single");
   const [portfolioMounted, setPortfolioMounted] = useState(false);
   const portfolioActive = view === "backtest" && backtestCenterMode === "portfolio";
+  const openLeaderboard = () => setBacktestCenterMode("leaderboard");
 
   const [backtestDraft, setBacktestDraft] = useState<BacktestDraft>({
     securityCode: "",
@@ -136,6 +139,7 @@ export function useBacktestWorkspace({
   const [backtestEntryContext, setBacktestEntryContext] = useState<BacktestEntryContext | null>(null);
 
   const historySignatureRef = useRef<string | null>(null);
+  const historyMutatedRef = useRef(false);
   const backtestJobs = useRef(createServiceJobScope());
   const comparisonJobs = useRef(createServiceJobScope());
   const backtestRequestId = useRef(0);
@@ -149,8 +153,12 @@ export function useBacktestWorkspace({
     let active = true;
     if (backtestHistory.length > 0) return undefined;
     void hydrateBacktestHistory(initialSettings).then((records) => {
-      if (!active || !records.length) return;
-      setBacktestHistory(current => current.length ? current : records);
+      if (!active || historyMutatedRef.current || !records.length) return;
+      setBacktestHistory(current => {
+        if (current.length) return current;
+        historySignatureRef.current = JSON.stringify(records);
+        return records;
+      });
     }).catch(() => undefined);
     return () => { active = false; };
   }, []);
@@ -250,6 +258,7 @@ export function useBacktestWorkspace({
       const record = await runBacktestWithSettings(draft, settings);
       if (requestId !== backtestRequestId.current) return;
       setBacktestRunRecord(record);
+      historyMutatedRef.current = true;
       setBacktestHistory(current =>
         [record, ...current.filter(item => item.id !== record.id)].slice(0, BACKTEST_HISTORY_LIMIT)
       );
@@ -617,6 +626,10 @@ export function useBacktestWorkspace({
       tone: "danger"
     });
     if (!confirmed) return;
+    historyMutatedRef.current = true;
+    const saved = saveBacktestHistory([]);
+    if (saved) historySignatureRef.current = "[]";
+    else mirrorToNativeKv(BACKTEST_HISTORY_KEY, "[]");
     setBacktestHistory([]);
     showToast("已清空回测历史");
   };
@@ -765,6 +778,7 @@ export function useBacktestWorkspace({
     backtestReturnMode,
     backtestCenterMode,
     setBacktestCenterMode,
+    openLeaderboard,
     portfolioMounted,
     portfolioActive,
     backtestDraft,

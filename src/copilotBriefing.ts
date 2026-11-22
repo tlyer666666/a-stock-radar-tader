@@ -120,13 +120,13 @@ export function buildCopilotAlerts(input: {
   for (const tItem of input.tItems || []) {
     const runtime = input.tRuntimes?.[tItem.code];
     const sig = runtime?.analysis?.signal;
-    if (!sig || !isActionable(sig)) continue;
+    if (!sig || runtime?.signalNote || !isActionable(sig)) continue;
     push({
       id: `t:${tItem.code}:${sig.action}`,
       kind: "t-signal",
       tag: "做T信号",
       title: `${tItem.name}（${tItem.code}）· ${sig.title}`,
-      detail: sig.reasons[0] || runtime?.signalNote || `参考价 ${sig.price.toFixed(2)}`,
+      detail: sig.reasons[0] || `参考价 ${sig.price.toFixed(2)}`,
       targetView: "dashboard",
       stock: { code: tItem.code, name: tItem.name, ...(tItem.secid ? { secid: tItem.secid } : {}) }
     });

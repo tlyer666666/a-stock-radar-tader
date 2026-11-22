@@ -121,7 +121,8 @@ export function mirrorToNativeKv(key: string, serialized: string): void {
 export async function hydrateFromNativeKv<T>(
   key: string,
   validate: (v: unknown) => v is T,
-  storage?: Storage | null
+  storage?: Storage | null,
+  options?: { isEmpty?: (v: T) => boolean }
 ): Promise<T | null> {
   try {
     const kvGet = getNativeKvApi()?.kvGet;
@@ -130,17 +131,32 @@ export async function hydrateFromNativeKv<T>(
     if (typeof raw !== "string" || !raw) return null;
     const parsed = parseStoredValue<T>(raw, validate);
     if (!parsed.ok) return null;
+    const kvEmpty = Boolean(options?.isEmpty?.(parsed.value));
     const targetStorage = storage === undefined ? (typeof window !== "undefined" ? window.localStorage : null) : storage;
     if (targetStorage) {
+      let localValid = false;
+      let localEmpty = false;
+      let localReadOk = false;
       try {
         const localRaw = targetStorage.getItem(key);
-        const localValid = localRaw !== null && parseStoredValue<T>(localRaw, validate).ok;
-        if (!localValid) {
-          targetStorage.setItem(key, raw);
-          rememberVerifiedPrimary(key, raw);
-        }
+        localReadOk = true;
+        const localParsed = parseStoredValue<T>(localRaw, validate);
+        localValid = localRaw !== null && localParsed.ok;
+        localEmpty = localValid && localParsed.ok && Boolean(options?.isEmpty?.(localParsed.value));
       } catch {
         // Storage unavailability should not fail hydration return.
+      }
+      if (localReadOk) {
+        if (localValid && !localEmpty) return null;
+        if (localValid && localEmpty && kvEmpty) return null;
+        if (!localValid || (localEmpty && !kvEmpty)) {
+          try {
+            targetStorage.setItem(key, raw);
+            rememberVerifiedPrimary(key, raw);
+          } catch {
+            // Storage write unavailability should not fail hydration return.
+          }
+        }
       }
     }
     return parsed.value;

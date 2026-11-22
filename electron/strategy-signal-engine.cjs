@@ -1792,7 +1792,7 @@ function replayStrategy(
       : featureSnapshot(history, index, code, code);
     if (history[index].isST === true || !feature || !definition.matches(feature)) continue;
     if (index - lastSignalIndex <= options.cooldownDays) continue;
-    if (options.cooldownDays > 0 && index < lastOccupiedExitIndex) continue;
+    if (index < lastOccupiedExitIndex) continue;
     const signal = history[index];
     if (
       (options.signalFrom && signal.date < options.signalFrom) ||
@@ -3324,6 +3324,79 @@ function buildSelectionHistoricalReview(definitions, candidates, historiesByCode
   };
 }
 
+const LEADERBOARD_HORIZONS = Object.freeze([5, 10, 20]);
+
+/**
+ * 全市场策略实测（回测中心「策略实测榜」）的一批回放。
+ *
+ * 与 buildSelectionHistoricalReview 用同一套撮合：次日开盘买入、固定持有 N 个交易日收盘卖出、扣双边成本、
+ * 同股信号间隔、次日一字涨停买不到、竞价缺口过大不买、退出日跌停顺延。区别是：
+ * - 候选是本机日线库里的全市场股票，而不是本轮选出的股票，避免“只看选中的股票”的偏差；
+ * - 一次算 5 / 10 / 20 日三个持有期；
+ * - 只返回可跨批合并的紧凑样本（[信号日, 净收益, 相对指数超额]），由 strategy-leaderboard.cjs 合并汇总，
+ *   这样主进程按 400 只一批调用计算线程，内存有上限。
+ *
+ * 只统计 signalTo（最近完整交易日）及之前已经走完持有期的信号，不看未来数据；不改变任何选股结果。
+ */
+function buildStrategyLeaderboardChunk(candidates = [], historiesByCode = {}, benchmarkHistory = [], rawOptions = {}) {
+  const signalTo = normalizeDate(rawOptions?.signalTo);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(signalTo)) throw new Error("策略实测缺少有效的截止交易日");
+  const wanted = Array.isArray(rawOptions?.strategyIds) && rawOptions.strategyIds.length ? new Set(rawOptions.strategyIds.map(String)) : null;
+  const definitions = STRATEGY_DEFINITIONS.filter(definition => !wanted || wanted.has(definition.id));
+  const cooldownDays = finite(rawOptions?.cooldownDays) ? Number(rawOptions.cooldownDays) : HISTORICAL_REVIEW_DEFAULTS.cooldownDays;
+  const roundTripCostBps = finite(rawOptions?.roundTripCostBps) ? Number(rawOptions.roundTripCostBps) : HISTORICAL_REVIEW_DEFAULTS.roundTripCostBps;
+  const baselineMaxDaysSinceLimit = HISTORICAL_REVIEW_DEFAULTS.baselineMaxDaysSinceLimit;
+  const benchmark = normalizeHistory(benchmarkHistory);
+  const benchmarkByDate = new Map(benchmark.map(row => [row.date, row]));
+  const marketDates = benchmark.map(row => row.date);
+  const nextMarketDateByDate = new Map(marketDates.slice(0, -1).map((date, index) => [date, marketDates[index + 1]]));
+  const baselineDefinition = {
+    id: "recent_limit_baseline",
+    matches: feature => Number.isInteger(feature.daysSinceLimit) && feature.daysSinceLimit <= baselineMaxDaysSinceLimit
+  };
+  const horizonOptions = LEADERBOARD_HORIZONS.map(horizonDays => resolvedOptions({ horizonDays, cooldownDays, roundTripCostBps, signalTo }));
+  const horizons = Object.fromEntries(LEADERBOARD_HORIZONS.map(horizonDays => [String(horizonDays), {
+    strategies: Object.fromEntries(definitions.map(definition => [definition.id, { samples: [], observedEntries: 0, onePrice: 0, gapSkipped: 0 }])),
+    baseline: []
+  }]));
+  const dataQuality = replayQuality();
+  const compact = value => Math.round(Number(value) * 1000) / 1000;
+  let stockCount = 0;
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const identity = candidateIdentity(candidate);
+    if (!identity.code) { dataQuality.missingCodes++; continue; }
+    const history = normalizeHistory(historyForCode(historiesByCode, identity.code), dataQuality, signalTo);
+    if (history.length < 80) { dataQuality.insufficientHistories++; continue; }
+    stockCount += 1;
+    const featureTimeline = buildFeatureTimeline(history, identity.code, identity.code, benchmark);
+    const policy = { featureTimeline, requireNextMarketDay: marketDates.length > 0, nextMarketDateByDate, entryGapRule: true };
+    horizonOptions.forEach((options, horizonIndex) => {
+      const bucket = horizons[String(LEADERBOARD_HORIZONS[horizonIndex])];
+      for (const definition of definitions) {
+        const replay = replayStrategy(definition, identity.code, identity.name, history, benchmarkByDate, options, policy);
+        const entry = bucket.strategies[definition.id];
+        for (const sample of replay.samples) {
+          entry.samples.push([sample.signalDate, compact(sample.netReturn), finite(sample.excessReturn) ? compact(sample.excessReturn) : null]);
+        }
+        entry.observedEntries += replay.samples.length
+          + replay.pendingSignals.filter(signal => signal.entryDate).length
+          + replay.rejectedSignals.filter(signal => signal.entryDate && signal.reason !== "missingNextMarketDay").length;
+        entry.onePrice += replay.untradeableReasons.nextDayOnePriceLimitUp;
+        entry.gapSkipped += replay.untradeableReasons.entryGapOutOfRange || 0;
+      }
+      const baselineReplay = replayStrategy(baselineDefinition, identity.code, identity.name, history, benchmarkByDate, options, policy);
+      for (const sample of baselineReplay.samples) bucket.baseline.push([sample.signalDate, compact(sample.netReturn)]);
+    });
+  }
+  return {
+    v: 1, signalTo, stockCount, dataQuality, benchmarkReady: marketDates.length > 0,
+    cooldownDays, roundTripCostBps, baselineMaxDaysSinceLimit, entryRule: fieldRules.ENTRY_GAP_TEXT,
+    definitions: definitions.map(definition => ({ id: definition.id, name: definition.name, featured: definition.featured === true,
+      family: definition.family || "", detail: definition.detail || "" })),
+    horizons
+  };
+}
+
 /** Expose only an already-validated support used by this strategy; this never changes qualification. */
 function selectionInvalidation(definition, feature) {
   if (definition.id === "volume_rebound_hold") {
@@ -4083,6 +4156,8 @@ module.exports = {
   strategyDependence,
   robustStrategyScore,
   buildSelectionHistoricalReview,
+  buildStrategyLeaderboardChunk,
+  LEADERBOARD_HORIZONS,
   compileCustomDefinitions,
   __test: {
     selectionExecutionNotes,

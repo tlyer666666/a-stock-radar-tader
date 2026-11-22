@@ -156,6 +156,8 @@ function buildStrategySignalReportInWorker(...args) { return _strategy_scan.buil
 function dailyBarAsOf(...args) { return _strategy_scan.dailyBarAsOf(...args); }
 function configureDailyBarStore(...args) { return _strategy_scan.configureDailyBarStore(...args); }
 function scanStrategySignals(...args) { return _strategy_scan.scanStrategySignals(...args); }
+function strategyLeaderboard(...args) { return _strategy_scan.strategyLeaderboard(...args); }
+function getStrategyLeaderboardProgress(...args) { return _strategy_scan.getStrategyLeaderboardProgress(...args); }
 // ── 提取到 electron/services/fuyao-review.cjs（P0-2b 拆分）；此处回接保持原契约 ──
 const _fuyao_review = require("./services/fuyao-review.cjs");
 const {
@@ -258,6 +260,8 @@ module.exports = {
   discoverLimitUps,
   discoverRecentLimitUps,
   scanStrategySignals,
+  strategyLeaderboard,
+  getStrategyLeaderboardProgress,
   getLimitUpSectorBoard,
   getSectorStrengthBoard,
   getSectorLimitUpCount,

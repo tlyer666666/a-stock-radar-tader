@@ -433,9 +433,14 @@ export function HoldingsView({
       const security = choices.find((item) => item.code === normalizedCode);
       if (!security) throw new Error("未找到该证券，请确认代码后重试");
       const timestamp = new Date().toISOString();
+      const existingSellable =
+        typeof existing?.sellableShares === "number" && Number.isFinite(existing.sellableShares)
+          ? Math.max(0, Math.min(Math.floor(existing.sellableShares), normalizedShares))
+          : undefined;
       const nextItem: HoldingItem = {
         ...security,
         shares: normalizedShares,
+        ...(existingSellable !== undefined ? { sellableShares: existingSellable } : {}),
         costPrice: normalizedCost,
         note: note.trim().slice(0, 160),
         createdAt: existing?.createdAt || timestamp,
@@ -444,9 +449,18 @@ export function HoldingsView({
       if (!await onSave(current => {
         const currentItem = current.find(item => item.code === normalizedCode);
         if (existing && !currentItem) return current;
-        return [...current.filter(item => item.code !== normalizedCode), {
-          ...nextItem, createdAt: currentItem?.createdAt || nextItem.createdAt
-        }].sort((left, right) => left.code.localeCompare(right.code));
+        const preservedSellable =
+          typeof currentItem?.sellableShares === "number" && Number.isFinite(currentItem.sellableShares)
+            ? Math.max(0, Math.min(Math.floor(currentItem.sellableShares), normalizedShares))
+            : undefined;
+        const mergedItem: HoldingItem = {
+          ...nextItem,
+          createdAt: currentItem?.createdAt || nextItem.createdAt
+        };
+        if (preservedSellable !== undefined) mergedItem.sellableShares = preservedSellable;
+        else delete mergedItem.sellableShares;
+        return [...current.filter(item => item.code !== normalizedCode), mergedItem]
+          .sort((left, right) => left.code.localeCompare(right.code));
       })) return;
       if (holdingEditRevision.current !== submittedRevision) return;
       setCode("");
@@ -1049,10 +1063,10 @@ export function HoldingsView({
                 type="button"
                 className="secondary-btn"
                 onClick={() => {
-                  if (monitors?.ackAlert) {
-                    holdingAlerts.forEach(alert => monitors.ackAlert(alert.id));
+                  if (monitors?.clearAlerts) {
+                    monitors.clearAlerts([...holdingCodeSet]);
                   } else {
-                    monitors?.clearAlerts?.();
+                    holdingAlerts.forEach(alert => monitors?.ackAlert?.(alert.id));
                   }
                 }}
               >

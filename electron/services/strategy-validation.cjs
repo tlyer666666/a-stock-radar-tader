@@ -1270,21 +1270,62 @@ const STRATEGY_SKIP_DETAILS = Object.freeze({
  * AI 问股（1.6.53）：用「策略选股」同一套引擎和本地日线，只算一只股票命中了哪些在用策略。
  * 按最近一个完整交易日的收盘数据（盘中看的是上一交易日收盘后的信号），和策略选股页的结果一致。
  */
-async function strategyHitsForStock(input) {
+async function strategyHitsForStock(input, deps = {}) {
   const security = toSecurity(input);
-  const calendar = createTradingCalendar();
-  const expected = calendar.expectedCloseDate(new Date());
-  const marketDates = expected.state === "known" && expected.date ? calendar.sessionsThrough(expected.date, SELECTION_MARKET_SESSIONS) : null;
-  if (!marketDates) throw new Error(expected.reason || "交易日历未覆盖最近交易日，暂时无法计算策略信号");
+  const calendar = deps.calendar || createTradingCalendar();
+  const now = typeof deps.now === "function" ? deps.now() : new Date();
+  const marketData = deps.marketData || strategySelectionMarketData;
   const signal = serviceSignal();
-  const [history, benchmark] = await Promise.all([
-    serviceRuntime.track(() => trackServiceRequest(strategySelectionMarketData.fetchHistory(security, "none", { signal }))),
-    serviceRuntime.track(() => trackServiceRequest(strategySelectionMarketData.fetchBenchmark({ signal }))).catch(() => [])
+  const resolveCalendar = activeCalendar => {
+    const expected = activeCalendar.expectedCloseDate(now);
+    const marketDates = expected?.state === "known" && expected?.date
+      ? activeCalendar.sessionsThrough(expected.date, SELECTION_MARKET_SESSIONS)
+      : null;
+    return { expected, marketDates };
+  };
+  let expected = null;
+  let marketDates = null;
+  let calendarError = null;
+  try {
+    ({ expected, marketDates } = resolveCalendar(calendar));
+  } catch (error) {
+    calendarError = error;
+  }
+  let benchmark = null;
+  if (!marketDates && typeof calendar.withObservedSessions === "function") {
+    let benchmarkError = null;
+    try {
+      benchmark = await serviceRuntime.track(() => trackServiceRequest(marketData.fetchBenchmark({ signal })));
+    } catch (error) {
+      serviceSignal()?.throwIfAborted();
+      benchmarkError = error;
+    }
+    serviceSignal()?.throwIfAborted();
+    if (benchmarkError) {
+      const baseReason = calendarError?.message || expected?.reason || "交易日历未覆盖最近交易日，暂时无法计算策略信号";
+      throw new Error(`${baseReason}；指数行情读取失败，无法推断交易日：${benchmarkError instanceof Error ? benchmarkError.message : String(benchmarkError)}`, { cause: benchmarkError });
+    }
+    const observedDates = (Array.isArray(benchmark) ? benchmark : [])
+      .map(row => String(row?.date ?? ""))
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date));
+    try {
+      ({ expected, marketDates } = resolveCalendar(calendar.withObservedSessions(observedDates)));
+    } catch (error) {
+      calendarError = error;
+      marketDates = null;
+    }
+  }
+  if (!marketDates) throw new Error(calendarError?.message || expected?.reason || "交易日历未覆盖最近交易日，暂时无法计算策略信号");
+  const [history, resolvedBenchmark] = await Promise.all([
+    serviceRuntime.track(() => trackServiceRequest(marketData.fetchHistory(security, "none", { signal }))),
+    benchmark !== null
+      ? Promise.resolve(benchmark)
+      : serviceRuntime.track(() => trackServiceRequest(marketData.fetchBenchmark({ signal }))).catch(() => [])
   ]);
   serviceSignal()?.throwIfAborted();
   const engine = require("../strategy-signal-engine.cjs");
   const report = engine.buildStrategySelectionReport([{ code: security.code, name: String(input?.name || security.code) }], { [security.code]: history?.rows || [] },
-    Array.isArray(benchmark) ? benchmark : [], { selectionOnly: true, minCurrentHistoryBars: SELECTION_MARKET_SESSIONS, asOfDate: expected.date, marketDates,
+    Array.isArray(resolvedBenchmark) ? resolvedBenchmark : [], { selectionOnly: true, minCurrentHistoryBars: SELECTION_MARKET_SESSIONS, asOfDate: expected.date, marketDates,
       universe: "limit_pool", historicalReview: false });
   const quality = report?.dataQuality || {};
   const skipped = ["stale", "missing", "invalid", "excluded"].find(key => Number(quality[key]) > 0);

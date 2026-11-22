@@ -1,6 +1,7 @@
 const MASK_CHARACTER = "•";
 const MAX_EXTERNAL_URL_LENGTH = 2048;
 const SECRET_STORAGE_UNAVAILABLE = "SAFE_STORAGE_UNAVAILABLE";
+const SECRET_STORAGE_LOCKED = "SECRET_STORAGE_LOCKED";
 const BACKTEST_SETTING_KEYS = Object.freeze([
   "selectedStrategies",
   "riskProfile",
@@ -102,9 +103,24 @@ function secretStorageUnavailableError() {
   return error;
 }
 
+function secretStorageLockedError() {
+  const error = new Error("密钥库已锁定，请先输入主密码解锁");
+  error.code = SECRET_STORAGE_LOCKED;
+  return error;
+}
+
+function isStorageLocked(storage) {
+  try {
+    return typeof storage?.isLocked === "function" && Boolean(storage.isLocked());
+  } catch {
+    return false;
+  }
+}
+
 function encryptSecretForStorage(value, storage) {
   const plaintext = typeof value === "string" ? value : "";
   if (!plaintext) return "";
+  if (isStorageLocked(storage)) throw secretStorageLockedError();
   if (!safeStorageIsAvailable(storage)) throw secretStorageUnavailableError();
   try {
     const encrypted = storage.encryptString(plaintext);
@@ -114,7 +130,10 @@ function encryptSecretForStorage(value, storage) {
     const encoded = Buffer.from(encrypted).toString("base64");
     if (!encoded) throw new Error("safeStorage returned an empty encrypted value");
     return `safe:${encoded}`;
-  } catch {
+  } catch (error) {
+    if (error?.code === SECRET_STORAGE_LOCKED || isStorageLocked(storage)) {
+      throw secretStorageLockedError();
+    }
     throw secretStorageUnavailableError();
   }
 }
@@ -374,6 +393,7 @@ function redactRuntimeText(value) {
 
 module.exports = {
   SECRET_STORAGE_UNAVAILABLE,
+  SECRET_STORAGE_LOCKED,
   createTrustedIpcHandler,
   withIpcResult,
   createIpcPayloadBudget,

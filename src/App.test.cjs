@@ -358,3 +358,150 @@ test('research loaders recover semantic backups without writing and keep valid o
   }
  }finally{global.window=previous;}
 });
+
+test("master password unlock refreshes settings, resets source health, and notifies mounted AI views", async () => {
+  const { createHookHarness, text } = require("../qa/research-hook-harness.cjs");
+  const { useWorkspaceCollections } = require("./features/collections/useWorkspaceCollections.ts");
+  const { AiSettingsCard } = require("./features/settings/AiSettingsCard.tsx");
+  const { AiInterpretPanel } = require("./features/ai-review/AiInterpretPanel.tsx");
+  const { useAgentConversation } = require("./features/ai-agent/useAgentConversation.ts");
+  const AiPicksView = require("./features/ai-picks/AiPicksView.tsx").default;
+  const { initialSettings } = require("./domain/settings.ts");
+
+  const prevWindow = global.window;
+  const listeners = new Map();
+  let unlocked = false;
+  let settingsCalls = 0;
+  let profilesCalls = 0;
+  let statusCalls = 0;
+  let agentStateCalls = 0;
+
+  global.window = {
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(fn);
+    },
+    removeEventListener(type, fn) {
+      listeners.get(type)?.delete(fn);
+    },
+    dispatchEvent(event) {
+      for (const fn of [...(listeners.get(event.type) || [])]) fn(event);
+      return true;
+    },
+    stockApi: {
+      getWatchlist: async () => [],
+      getHoldings: async () => [],
+      getVersion: async () => "1.6.75",
+      getSettings: async () => {
+        settingsCalls += 1;
+        return { ...initialSettings, fuyaoApiKey: unlocked ? "unlocked-fuyao-key" : "" };
+      },
+      ai: {
+        status: async () => {
+          statusCalls += 1;
+          return { configured: unlocked, model: unlocked ? "deepseek-chat" : "" };
+        },
+        profiles: async () => {
+          profilesCalls += 1;
+          return {
+            activeId: "p1",
+            rankIds: ["p1"],
+            max: 6,
+            profiles: [{ id: "p1", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", hasKey: unlocked }]
+          };
+        },
+        cached: async () => ({ rank: null, summary: null }),
+        history: async () => [],
+        outcomesLeaderboard: async () => null,
+        cachedInterpret: async () => null,
+        interpret: async () => ({ title: "测试", headline: "", points: [], risks: [], watch: [], model: "m", generatedAt: new Date().toISOString() }),
+        agent: {
+          state: async () => {
+            agentStateCalls += 1;
+            return { configured: unlocked, model: unlocked ? "deepseek-chat" : "", conversations: [], skills: [], skillIds: [] };
+          },
+          conversation: async () => null,
+          start: async () => ({ conversationId: "c1", runId: "r1" }),
+          poll: async () => ({ runId: "r1", conversationId: "c1", status: "done", steps: [], startedAt: "", elapsedMs: 0, model: "" }),
+          cancel: async () => {},
+          remove: async () => ({ configured: unlocked, model: "", conversations: [], skills: [], skillIds: [] }),
+          settings: async () => ({ configured: unlocked, model: "", conversations: [], skills: [], skillIds: [] })
+        }
+      }
+    }
+  };
+
+  try {
+    const colHarness = createHookHarness(() => useWorkspaceCollections({ payload: null, showToast() {} }), { runEffects: true });
+    colHarness.render();
+    await new Promise(r => setTimeout(r, 10));
+    colHarness.render();
+    assert.equal(colHarness.tree.settings.fuyaoApiKey, "");
+
+    const settingsCard = createHookHarness(() => AiSettingsCard({
+      hidden: false,
+      draft: initialSettings,
+      setDraft() {},
+      onSave() {},
+      saving: false,
+      saveError: "",
+      loadState: "ready"
+    }), { runEffects: true });
+    settingsCard.render();
+
+    const interpretPanel = createHookHarness(() => AiInterpretPanel({
+      kind: "sectors",
+      getData: () => ({})
+    }), { runEffects: true });
+    interpretPanel.render();
+
+    const agentHook = createHookHarness(() => useAgentConversation(global.window.stockApi.ai.agent), { runEffects: true });
+    agentHook.render();
+
+    const picksView = createHookHarness(() => AiPicksView({ live: false }), { runEffects: true });
+    picksView.render();
+
+    await new Promise(r => setTimeout(r, 15));
+    settingsCard.render();
+    interpretPanel.render();
+    agentHook.render();
+    picksView.render();
+
+    assert.match(text(settingsCard.tree), /未填 Key/);
+    assert.match(text(interpretPanel.tree), /未配置模型/);
+    assert.equal(agentHook.tree.state.configured, false);
+
+    // Simulate master password unlock event + settings refresh
+    unlocked = true;
+    await colHarness.tree.refreshSettings();
+    global.window.dispatchEvent(new CustomEvent("a-stock-radar:master-unlocked"));
+    await new Promise(r => setTimeout(r, 15));
+
+    colHarness.render();
+    settingsCard.render();
+    interpretPanel.render();
+    agentHook.render();
+    picksView.render();
+
+    assert.equal(colHarness.tree.settings.fuyaoApiKey, "unlocked-fuyao-key");
+    assert.ok(settingsCalls >= 2);
+    assert.ok(profilesCalls >= 2);
+    assert.ok(statusCalls >= 2);
+    assert.ok(agentStateCalls >= 2);
+    assert.doesNotMatch(text(settingsCard.tree), /未填 Key/, "AiSettingsCard must refresh profiles after master unlock");
+    assert.doesNotMatch(text(interpretPanel.tree), /未配置模型/, "AiInterpretPanel must refresh status after master unlock");
+    assert.equal(agentHook.tree.state.configured, true, "useAgentConversation must refresh state after master unlock");
+
+    // Verify cleanup removes event listeners cleanly
+    colHarness.dispose();
+    settingsCard.dispose();
+    interpretPanel.dispose();
+    agentHook.dispose();
+    picksView.dispose();
+    assert.equal((listeners.get("a-stock-radar:master-unlocked") || new Set()).size, 0, "all master-unlocked listeners must clean up on unmount");
+  } finally {
+    if (prevWindow === undefined) delete global.window;
+    else global.window = prevWindow;
+  }
+});

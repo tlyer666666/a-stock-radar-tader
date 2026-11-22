@@ -293,3 +293,49 @@ test("buildMarketPulse prefixes a stale headline without 今天 and clears provi
   assert.equal(pulse.provisional, false);
   assert.equal(pulse.headline, "上个交易日：盘中暂看「退潮防守」：现金优先，等待风险释放");
 });
+
+test("buildUnifiedSentinels maps all T-assistant actions to accurate tTone and ignores stale signalNote", () => {
+  const cases = [
+    ["600001", "buy", "buy"],
+    ["600002", "buyBack", "buy"],
+    ["600003", "closeBuyBack", "buy"],
+    ["600004", "stopBuyBack", "buy"],
+    ["600005", "sell", "sell"],
+    ["600006", "sellBack", "sell"],
+    ["600007", "closeSellBack", "sell"],
+    ["600008", "stopSellBack", "sell"]
+  ];
+  const tItems = cases.map(([code]) => ({ code, name: `股${code}`, secid: `1.${code}`, config: { sellableShares: 500, costPrice: 10 } }));
+  tItems.push({ code: "600009", name: "盘后参考股", secid: "1.600009", config: { sellableShares: 300, costPrice: 10 } });
+
+  const tRuntimes = Object.fromEntries(cases.map(([code, action]) => [
+    code,
+    { signalNote: "", analysis: { deviationPct: 1.2, signal: { action, title: action, shares: 100, price: 10.5 } } }
+  ]));
+  tRuntimes["600009"] = {
+    signalNote: "非交易时段参考：不发实时操作提醒",
+    analysis: { deviationPct: -1.8, signal: { action: "buy", title: "低吸（正T）", shares: 200, price: 9.8 } }
+  };
+
+  const sentinels = model.buildUnifiedSentinels({
+    holdings: [],
+    favorites: [],
+    openPaperPositions: [],
+    plans: [],
+    tItems,
+    tRuntimes,
+    monitorConfigs: {},
+    monitorRuntimes: {},
+    monitorQuotes: {},
+    liveQuotes: {}
+  });
+  const byCode = new Map(sentinels.map((row) => [row.code, row]));
+  for (const [code, action, expectedTone] of cases) {
+    assert.equal(byCode.get(code).tTone, expectedTone, `action ${action} must map to tTone=${expectedTone}`);
+    assert.equal(byCode.get(code).priority, 58, `active action ${action} should boost priority`);
+  }
+  const staleRow = byCode.get("600009");
+  assert.equal(staleRow.tTone, "wait", "stale T signal with signalNote must not appear actionable");
+  assert.equal(staleRow.priority, 18, "stale T signal must not receive +40 active signal priority");
+  assert.match(staleRow.tSummary, /可卖 300股/);
+});

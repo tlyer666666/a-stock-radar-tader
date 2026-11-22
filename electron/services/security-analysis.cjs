@@ -7,6 +7,7 @@ const { anchoredVwap } = require("../market-history-rules.cjs");
 const { computePatternStrategies, scoreFirstBoardQuality, computeRegimeWeightProfile } = require("../strategy-intelligence.cjs");
 const { buildQuoteConsensus } = require("../data-federation.cjs");
 const { evaluateAnalysisPresetRequirements } = require("../analysis-selection-policy.cjs");
+const { measuredFactorSnapshot, OVERHEAT, LOW_FIRST_BOARD, DEEP_BASE } = require("../strategy-field-rules.cjs");
 const _backtest = require("./backtest.cjs");
 const { marketSourceHealth, QUOTE_SOURCE_LABELS } = _backtest;
 function clamp(...args) { return _backtest.clamp(...args); }
@@ -444,6 +445,17 @@ function analyzeHistory(
       ? null
       : nodes.find((n) => n > daysSince) || (daysSince > 9 ? "已过观察窗" : `T+${nodes.at(-1)}`);
 
+  // 实测因子（不过热 / 低位涨停 / 深跌底部）：与历史回放共用 strategy-field-rules 的同一实现。
+  const measured = measuredFactorSnapshot({
+    history,
+    eventIndex: limitEvent ? limitEvent.index : null,
+    evaluationIndex: history.length - 1,
+    limitIndices: events.map((item) => item.index),
+    closePosition,
+    volumeRatio,
+    heldSupport
+  });
+
   let structureScore = 0;
   if (limitEvent) {
     structureScore += heldSupport ? 22 : Math.max(0, 10 + supportDistance * 2);
@@ -531,6 +543,7 @@ function analyzeHistory(
     reclaimedSupport,
     lowOpenRecovery,
     weakToStrong,
+    measured,
     ...patternStrategies,
     benchmarkAvailable: Array.isArray(benchmarkHistory) && benchmarkHistory.length > 0,
     sectorRank,
@@ -554,6 +567,41 @@ function analyzeHistory(
 // 旧代码直接 analysis.rsSector.toFixed(2) 在 null 上会抛 TypeError。
 function relativeSectorText(value) {
   return Number.isFinite(value) ? `${value.toFixed(2)}%` : "未知";
+}
+
+const signedPercentText = (value, digits = 1) => Number.isFinite(value) ? `${value > 0 ? "+" : ""}${value.toFixed(digits)}%` : "--";
+
+/** 三个实测因子的匹配结果与说明（数字取不到时写「--」，不当成 0）。 */
+function measuredStrategyResults(analysis) {
+  const measured = analysis.measured || {};
+  const flags = Array.isArray(measured.overheatFlags) ? measured.overheatFlags : [];
+  const hasEvent = Boolean(analysis.limitEvent);
+  return [
+    {
+      id: "notOverheated",
+      label: "不过热",
+      matched: measured.notOverheated === true,
+      detail: measured.ma20ExtensionPercent === null || measured.ma20ExtensionPercent === undefined
+        ? "历史行情不足，无法判断是否过热"
+        : flags.length
+          ? `过热指标 ${flags.length} 项：${flags.join("、")}（满 ${OVERHEAT.vetoAtCount} 项即视为过热）`
+          : "6 项过热指标均未触发"
+    },
+    {
+      id: "lowPositionBoard",
+      label: "低位涨停",
+      matched: measured.lowPositionBoard === true,
+      detail: hasEvent
+        ? `涨停收盘距MA20 ${signedPercentText(measured.limitMa20ExtensionPercent)}（上限 +${LOW_FIRST_BOARD.maxMa20ExtensionPercent}%）/ 涨停前60日 ${signedPercentText(measured.limitReturn60Percent)}（须不为正）`
+        : "近60日没有涨停"
+    },
+    {
+      id: "deepBase",
+      label: "深跌底部",
+      matched: measured.deepBase === true,
+      detail: `收盘距MA60 ${signedPercentText(measured.ma60GapPercent)}（须低于 ${DEEP_BASE.ma60GapPercent}%）${hasEvent && measured.lowPositionBoard !== true ? " / 最近一次涨停不属于低位涨停" : ""}`
+    }
+  ];
 }
 
 function strategyDefinitionsFor(analysis, quote) {
@@ -718,6 +766,7 @@ function strategyDefinitionsFor(analysis, quote) {
         ? `${emotion.state} ${emotion.score}分 / 涨停${emotion.limitUpCount} 跌停${emotion.limitDownCount}`
         : "市场情绪数据暂不可用"
     },
+    ...measuredStrategyResults(analysis),
     {
       id: "riskVeto",
       label: "风险否决",
@@ -897,7 +946,7 @@ async function analyzeSecurity(input, settings = {}, options = {}) {
     sector,
     marketEmotion,
     replayBenchmarkHistory,
-    safeReplayHistory
+    safeReplayHistory.length ? safeReplayHistory : undefined
   );
   const isSearchOnlyAsset =
     security.assetType === "etf" || security.assetType === "convertibleBond";

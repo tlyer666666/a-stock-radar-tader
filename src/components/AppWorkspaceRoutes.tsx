@@ -24,6 +24,7 @@ import type { BacktestHistoryRecord } from "../features/backtest/backtestTypes";
 const MultiStockCompareView = lazy(() => import("../features/market/MultiStockCompareView"));
 // 两个常驻（hidden keep-alive）的大视图用 memo：根组件每次行情轮询更新时，props 未变就不重渲染。
 const PortfolioBacktestView = lazy(() => import("../features/backtest/PortfolioBacktestView").then((module) => ({ default: memo(module.default) })));
+const StrategyLeaderboardView = lazy(() => import("../features/backtest/StrategyLeaderboardView").then((module) => ({ default: memo(module.default) })));
 const BacktestView = lazy(() =>
   import("../features/backtest/BacktestView").then((module) => ({ default: module.BacktestView }))
 );
@@ -133,8 +134,9 @@ type AppWorkspaceRoutesProps = {
   portfolioOpenSingle: () => void;
   portfolioOpenSecurity: (security: Security) => void;
   openBacktest: (security?: Security | null) => void;
-  backtestCenterMode: "single" | "portfolio";
-  setBacktestCenterMode: React.Dispatch<React.SetStateAction<"single" | "portfolio">>;
+  backtestCenterMode: "single" | "portfolio" | "leaderboard";
+  setBacktestCenterMode: React.Dispatch<React.SetStateAction<"single" | "portfolio" | "leaderboard">>;
+  openLeaderboard: () => void;
   backtestDraft: BacktestViewProps["draft"];
   setBacktestDraft: React.Dispatch<React.SetStateAction<BacktestViewProps["draft"]>>;
   backtestLoading: boolean;
@@ -257,6 +259,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
     openBacktest,
     backtestCenterMode,
     setBacktestCenterMode,
+    openLeaderboard,
     backtestDraft,
     setBacktestDraft,
     backtestLoading,
@@ -668,12 +671,20 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               onSyncCostToHolding={(code, shares, newCost, name) => {
                 const clampedCost = clampHoldingCostPrice(newCost);
                 const safeShares = Math.max(1, Math.round(shares));
-                void saveHoldings(items => {
+                return saveHoldings(items => {
                   const nowIso = new Date().toISOString();
                   if (items.some(item => item.code === code)) {
                     return items.map(item =>
                       item.code === code
-                        ? { ...item, shares: safeShares, costPrice: clampedCost, updatedAt: nowIso }
+                        ? {
+                            ...item,
+                            shares: safeShares,
+                            ...(typeof item.sellableShares === "number" && Number.isFinite(item.sellableShares)
+                              ? { sellableShares: Math.max(0, Math.min(Math.floor(item.sellableShares), safeShares)) }
+                              : {}),
+                            costPrice: clampedCost,
+                            updatedAt: nowIso
+                          }
                         : item
                     );
                   }
@@ -692,6 +703,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
                   ].sort((a, b) => a.code.localeCompare(b.code));
                 }).then(ok => {
                   if (ok) showToast(`已同步 ${code} 做T后成本 ¥${clampedCost.toFixed(3)} 到持仓`);
+                  return ok;
                 });
               }}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "t-assistant", label: "返回做T助手" })}
@@ -745,6 +757,13 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
           </WorkspaceErrorBoundary>
         </div>
       )}
+      {view === "backtest" && backtestCenterMode === "leaderboard" && (
+        <WorkspaceErrorBoundary key="leaderboard" label="策略实测榜" onReturnHome={() => navigateTo("signals")}>
+          <Suspense fallback={<LoadingState />}>
+            <StrategyLeaderboardView onBack={() => setBacktestCenterMode("single")} backLabel="返回单股回测" />
+          </Suspense>
+        </WorkspaceErrorBoundary>
+      )}
       {view === "backtest" && (
         <div hidden={backtestCenterMode !== "single"}>
           <WorkspaceErrorBoundary key={view} label="策略回测" onReturnHome={() => navigateTo("signals")}>
@@ -780,6 +799,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
                 evaluateBacktestExecutionReadiness={evaluateBacktestExecutionReadiness}
                 buildBacktestExecutionPlan={buildBacktestExecutionPlan}
                 onOpenPortfolio={() => setBacktestCenterMode("portfolio")}
+                onOpenLeaderboard={openLeaderboard}
               />
             </Suspense>
           </WorkspaceErrorBoundary>

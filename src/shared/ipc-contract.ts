@@ -126,6 +126,7 @@ export const MAIN_IPC_CHANNELS = [
   "strategy:custom:save",
   "strategy:definitions",
   "strategy:external-archive",
+  "strategy:leaderboard",
   "strategy:scan",
   "ths-web:bounds",
   "ths-web:command",
@@ -230,6 +231,61 @@ export type StrategyDefinitionItem = {
   [key: string]: unknown;
 };
 
+export type StrategyLeaderboardStrategyRow = {
+  id: string;
+  name: string;
+  featured?: boolean | undefined;
+  family?: string | undefined;
+  detail?: string | undefined;
+  rank?: number | undefined;
+  horizons: Record<string, {
+    sampleCount: number;
+    independentSignalDays?: number;
+    winRate: number | null;
+    winRateInterval95?: [number, number] | null | undefined;
+    averageReturn: number | null;
+    medianReturn: number | null;
+    averageExcessReturn?: number | null;
+    edgeVsBaseline: number | null;
+    medianEdgeVsBaseline?: number | null;
+    /** 按信号日等权的优势（策略当日平均 − 基线当日平均，再对信号日取平均），百分点。 */
+    dayWeightedEdge: number | null;
+    comparedSignalDays?: number | undefined;
+    nextDayUnbuyableRate?: number | null;
+    entryGapSkippedRate?: number | null;
+  }>;
+  halves?: Array<{ label: string; from: string; to: string; sampleCount: number; winRate?: number | null | undefined; averageReturn?: number | null | undefined; dayWeightedEdge: number | null; comparedSignalDays?: number | undefined }>;
+  verdict: { level: string; text: string };
+};
+
+export type StrategyLeaderboardReport = {
+  statusOnly?: boolean | undefined;
+  progress?: { active?: boolean; processed?: number; total?: number; startedAt?: string | null; etaSeconds?: number | null } | undefined;
+  v?: number;
+  generatedAt?: string;
+  signalTo?: string;
+  /** 本机日线库里最新一根日线的日期；早于 signalTo 说明库落后，结果里会提示。 */
+  dataThrough?: string | undefined;
+  libraryStale?: boolean | undefined;
+  stockCount?: number;
+  window?: { from: string; to: string };
+  horizons?: number[];
+  primaryHorizon?: number;
+  minSamples?: number;
+  minSignalDays?: number;
+  edgeTolerance?: number;
+  benchmarkReady?: boolean;
+  universe?: { localStocks?: number; readable?: number; replayed?: number; excludedRisk?: number; namesAvailable?: boolean };
+  elapsedSeconds?: number;
+  method?: string;
+  baselineDefinition?: string;
+  edgeDefinition?: string;
+  caveat?: string;
+  baseline?: Record<string, { sampleCount?: number; winRate?: number | null; averageReturn?: number | null; medianReturn?: number | null }>;
+  strategies?: StrategyLeaderboardStrategyRow[];
+  dataQuality?: Record<string, number>;
+};
+
 export type StrategySignalScanResult = Record<string, unknown> & {
   strategies?: Array<Record<string, unknown>>;
   optimizedPortfolio?: {
@@ -250,6 +306,8 @@ export type StockApi = SectorExplorerApi & {
   resetMarketSourceHealth?(): Promise<{ ok: boolean }>;
   getConvertibleBonds?(options?: { forceRefresh?: boolean; waitForQuotes?: boolean }): Promise<ConvertibleBondSnapshot>;
   getEtfMarket?(options?: { forceRefresh?: boolean }): Promise<EtfMarketSnapshot>;
+  /** 策略实测榜（回测中心）：全市场日线按批回放后的排行榜；statusOnly 只取进度。 */
+  getStrategyLeaderboard?(options?: { refresh?: boolean; statusOnly?: boolean }): Promise<StrategyLeaderboardReport>;
   getBatchQuotes?(securities: BatchQuoteRequest[]): Promise<BatchQuoteResult>;
   getLimitEcology?(options?: { forceRefresh?: boolean }): Promise<Record<string, unknown>>;
   ai?: {

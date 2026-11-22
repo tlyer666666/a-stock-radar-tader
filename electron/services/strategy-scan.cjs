@@ -9,6 +9,9 @@ const { DEFAULT_OPERATION_TIMEOUTS } = require("../job-lifecycle.cjs");
 const { fuyaoQuoteSupports } = require("../fuyao-quote.cjs");
 const { createDailyBarStore } = require("../daily-bar-store.cjs");
 const { producerContext } = require("../service-context.cjs");
+const { createStrategyLeaderboardService } = require("../strategy-leaderboard-service.cjs");
+const { isRiskSecurityName } = require("../strategy-intelligence.cjs");
+const { isBseAshareCode } = require("../price-limit-rules.cjs");
 const _runtime = require("./runtime.cjs");
 const { fuyao, stockIndustryIndex, serviceRuntime, workerRunner, strategySignalCache } = _runtime;
 const jobSignalByStore = new WeakMap();
@@ -455,7 +458,10 @@ function scanStrategySignals(rawOptions = {}, runtime = {}) {
   });
 }
 
+
 module.exports = {
+  strategyLeaderboard,
+  getStrategyLeaderboardProgress,
   strategySignalLoads,
   STRATEGY_SIGNAL_MAX_UNIVERSE,
   industryFromIndex,
@@ -479,3 +485,119 @@ module.exports = {
   loadStrategySignals,
   scanStrategySignals
 };
+
+/* 策略实测榜（回测中心）：只读本机日线库，按批回放全市场策略近一年表现；不下载个股日线，不影响选股结果。 */
+
+const leaderboardCodeEligible = code => /^(?:000|001|002|003|600|601|603|605|30[012]|68[89])\d{3}$/.test(code) || isBseAshareCode(code);
+
+/** 代码 → 名称（用于剔除 ST / 退市整理）。名单只是辅助，过期也照用；读不到就返回空表。 */
+async function leaderboardUniverseNames() {
+  const names = new Map();
+  try {
+    const file = selectionUniverseCacheFile();
+    if (!file) return names;
+    const value = JSON.parse(await require("node:fs").promises.readFile(file, "utf8"));
+    if (value?.v !== 1 || !value.boards || typeof value.boards !== "object") return names;
+    for (const rows of Object.values(value.boards)) {
+      if (!Array.isArray(rows)) continue;
+      for (const row of rows) {
+        const code = String(row?.code || "");
+        if (/^\d{6}$/.test(code) && row?.name) names.set(code, String(row.name));
+      }
+    }
+  } catch { /* 名单读不到不影响统计，只是无法按名称剔除 ST */ }
+  return names;
+}
+
+const strategyLeaderboardLoader = createStrategyLeaderboardService({
+  listCodes: () => dailyBarStore.listLocalCodes(),
+  readRows: code => dailyBarStore.readLocal(code),
+  loadNames: leaderboardUniverseNames,
+  loadBenchmark: () => serviceRuntime.track(() => trackServiceRequest(strategySelectionMarketData.fetchBenchmark({ signal: serviceSignal() }))),
+  runChunk: (candidates, histories, benchmark, replay) => buildStrategySignalReportInWorker(candidates, histories, benchmark, replay),
+  resolveSignalTo: () => dailyBarAsOf() || shanghaiDateText(),
+  isEligibleCode: leaderboardCodeEligible,
+  isRiskName: isRiskSecurityName,
+  assertActive: () => serviceSignal()?.throwIfAborted()
+});
+
+function leaderboardReportFile() {
+  const directory = typeof dailyBarDirectory === "function" ? dailyBarDirectory() : dailyBarDirectory;
+  return directory ? require("node:path").join(directory, "leaderboard-report.json") : null;
+}
+
+async function readSavedLeaderboard(cacheKey) {
+  try {
+    const file = leaderboardReportFile();
+    if (!file) return null;
+    const saved = JSON.parse(await require("node:fs").promises.readFile(file, "utf8"));
+    return saved?.v === 1 && saved.cacheKey === cacheKey && Number(saved.expiresAt) > Date.now() && saved.value ? saved : null;
+  } catch { return null; }
+}
+
+let leaderboardWriteChain = Promise.resolve();
+
+function writeSavedLeaderboard(cacheKey, expiresAt, value) {
+  const file = leaderboardReportFile();
+  if (!file) return Promise.resolve(false);
+  const path = require("node:path");
+  const fsPromises = require("node:fs").promises;
+  const run = async () => {
+    const tempFile = path.join(path.dirname(file), `leaderboard-report.json.${process.pid}.${Date.now()}.tmp`);
+    try {
+      await fsPromises.mkdir(path.dirname(file), { recursive: true });
+      await fsPromises.writeFile(tempFile, JSON.stringify({ v: 1, cacheKey, expiresAt, value }), { mode: 0o600 });
+      await fsPromises.rename(tempFile, file);
+      return true;
+    } catch {
+      await fsPromises.rm(tempFile, { force: true }).catch(() => { /* ignore cleanup error */ });
+      return false;
+    }
+  };
+  leaderboardWriteChain = leaderboardWriteChain.then(run, run);
+  return leaderboardWriteChain;
+}
+
+const leaderboardEngineKey = () => {
+  const { STRATEGY_DEFINITIONS } = require("../strategy-signal-engine.cjs");
+  return STRATEGY_DEFINITIONS.map(definition => `${definition.id}@${definition.version || ""}`).join(",");
+};
+
+let leaderboardMemory = null;
+
+function getStrategyLeaderboardProgress() {
+  return strategyLeaderboardLoader.getProgress();
+}
+
+/** 已完成交易日的榜单在下一个交易日 15:10 收盘确认前不会变；日历查不到时保留 6 小时。 */
+function leaderboardExpiresAt(signalTo) {
+  try {
+    const next = dailyBarCalendar.nextSession(signalTo);
+    const cutoff = next ? Date.parse(`${next}T15:10:00+08:00`) : NaN;
+    if (Number.isFinite(cutoff) && cutoff > Date.now()) return cutoff;
+  } catch { /* fall through */ }
+  return Date.now() + 6 * 60 * 60 * 1000;
+}
+
+function strategyLeaderboard(rawOptions = {}, runtime = {}) {
+  const signalTo = dailyBarAsOf() || shanghaiDateText();
+  const forceRefresh = rawOptions?.refresh === true;
+  const cacheKey = JSON.stringify(["leaderboard-v1", signalTo, leaderboardEngineKey()]);
+  return serviceRuntime.run("selection", JSON.stringify([cacheKey, forceRefresh]), runtime, async () => {
+    if (!forceRefresh) {
+      if (leaderboardMemory?.cacheKey === cacheKey && leaderboardMemory.expiresAt > Date.now()) return leaderboardMemory.value;
+      const saved = await readSavedLeaderboard(cacheKey);
+      if (saved) {
+        leaderboardMemory = { cacheKey, expiresAt: Number(saved.expiresAt), value: saved.value };
+        return saved.value;
+      }
+    }
+    const value = await strategyLeaderboardLoader.load({});
+    serviceRuntime.checkpoint();
+    // 日线库落后于最近交易日时，结果可能在用户重新选股后变化：只在内存里留 5 分钟，不落盘。
+    const expiresAt = value.libraryStale ? Date.now() + 5 * 60 * 1000 : leaderboardExpiresAt(signalTo);
+    leaderboardMemory = { cacheKey, expiresAt, value };
+    if (!value.libraryStale) await writeSavedLeaderboard(cacheKey, expiresAt, value);
+    return value;
+  });
+}

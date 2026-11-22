@@ -50,7 +50,9 @@ const UI_TESTS = [
   // qa:ui-remediation
   "qa/ui-remediation.test.cjs",
   // qa:workflow
-  "qa/workspace-v145.test.cjs"
+  "qa/workspace-v145.test.cjs",
+  // qa:leaderboard-ui（策略实测榜）
+  "qa/leaderboard-ui.test.cjs"
 ];
 
 function walk(dir) {

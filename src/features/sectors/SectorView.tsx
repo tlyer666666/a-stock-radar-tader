@@ -424,6 +424,7 @@ export function SectorMemberTable({
   emptyText,
   onOpenStock,
   onLoadMore,
+  resetKey,
   favoriteCodes,
   plannedCodes,
   onToggleFavorite,
@@ -437,6 +438,7 @@ export function SectorMemberTable({
   emptyText: string;
   onOpenStock: (stock: Security) => void;
   onLoadMore: () => void;
+  resetKey?: string | undefined;
   favoriteCodes?: ReadonlySet<string> | undefined;
   plannedCodes?: ReadonlySet<string> | undefined;
   onToggleFavorite?: ((stock: Security) => void) | undefined;
@@ -453,7 +455,8 @@ export function SectorMemberTable({
     rowHeight: 54,
     overscan: 8,
     threshold: 80,
-    containerRef: tbodyRef
+    containerRef: tbodyRef,
+    resetKey: `${resetKey ?? ""}|${sort.key}:${sort.direction}`
   });
   const windowed = virtual.enabled ? visible.slice(virtual.startIndex, virtual.endIndex) : visible;
   // 资金源整体不可用（一只都没取到）时不显示整列「暂缺」。
@@ -1104,6 +1107,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
                   emptyText={sector.constituents.length ? "当前筛选条件下没有成分股" : "本次未取得成分股，请重试"}
                   onOpenStock={onOpenStock}
                   onLoadMore={() => setMemberLimit((current) => current + MEMBER_PAGE_SIZE)}
+                  resetKey={`${sector.name}|${memberFilter}|${memberQuery}`}
                   favoriteCodes={favoriteCodes}
                   plannedCodes={plannedCodes}
                   onToggleFavorite={onToggleFavorite}

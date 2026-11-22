@@ -14,6 +14,26 @@ function sessionNote(date: string) {
   const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date());
   return date === todayCN() && time < '15:00' ? '今日K线未收盘' : '以行情源最后更新为准';
 }
+function readCvdPalette(): boolean {
+  if (typeof document === 'undefined' || !document.documentElement) return false;
+  if (typeof document.documentElement.getAttribute === 'function') {
+    return document.documentElement.getAttribute('data-color-vision') === 'cvd';
+  }
+  return document.documentElement.dataset?.colorVision === 'cvd';
+}
+export function useCvdPalette(enabled = true): boolean {
+  const [isCvd, setIsCvd] = useState<boolean>(readCvdPalette);
+  useEffect(() => {
+    if (!enabled || typeof document === 'undefined' || !document.documentElement) return undefined;
+    const sync = () => setIsCvd(readCvdPalette());
+    sync();
+    if (typeof MutationObserver === 'undefined') return undefined;
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-color-vision'] });
+    return () => observer.disconnect();
+  }, [enabled]);
+  return isCvd;
+}
 function Chart({ data, compact = false, signalDate, sessions = 120 }: { data: SelectionChart; compact?: boolean; signalDate?: string | undefined; sessions?: number }) {
   const [hoverDate, setHoverDate] = useState<string | null>(null);
   const [keyboardDate, setKeyboardDate] = useState<string | null>(null);
@@ -46,7 +66,7 @@ function Chart({ data, compact = false, signalDate, sessions = 120 }: { data: Se
   const pct = previous ? (selected.close / previous.close - 1) * 100 : null;
   const signalIndex = rows.findIndex(row => row.date === signalDate);
   const candleTitle = (row: SelectionCandle) => `${row.date} 开${number(row.open)} 高${number(row.high)} 低${number(row.low)} 收${number(row.close)}`;
-  const isCvdPalette = typeof document !== 'undefined' && document.documentElement?.getAttribute('data-color-vision') === 'cvd';
+  const isCvdPalette = useCvdPalette(!compact);
   return <div className={`selection-chart ${compact ? 'is-mini' : ''}`}>
     {!compact && <>
       <div className="selection-chart-quote" aria-live="polite"><b>{selected.date}</b><span>开 {number(selected.open)}</span><span>高 {number(selected.high)}</span><span>低 {number(selected.low)}</span><span>收 {number(selected.close)}</span><span>涨跌 {pct === null ? '—' : `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`}</span><span>量 {volume(selected.volume)}（{selected.volumeUnit}）</span></div>

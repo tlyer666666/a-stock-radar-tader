@@ -1,6 +1,6 @@
 import { strategyPresets } from "./domain/settings";
 
-export type QuickStrategyPreset = (typeof strategyPresets)[number];
+export type QuickStrategyPreset = (typeof strategyPresets)[number] & { measured?: boolean };
 
 // These select the stock-analysis factors supported by Settings. The analysis
 // engine keeps its percentage score and risk/exact-node gates. Exact named
@@ -12,7 +12,51 @@ const corePresetDetails: Record<string, string> = {
   secondWave: "波动压缩或二次突破至少成立一项，观察整理与突破的不同阶段",
   turnStrong: "弱转强形态为必要条件，辅以承接、情绪与收盘表现"
 };
+/**
+ * 实测方向的快捷组合（2026-11-21）：只用「实测因子」（不过热 / 低位涨停 / 深跌底部）做必要条件，
+ * 不要求均线多头、收盘高位这类在全A回放里对涨停后收益是负贡献的条件。
+ * 说明：因子阈值来自全A日线实测；组合本身的胜率要看个股页的历史回放，不在这里承诺。
+ */
+export const measuredStrategyPresets: QuickStrategyPreset[] = [
+  {
+    id: "deepBaseBoard",
+    name: "深跌底部首板",
+    detail: "深跌底部与低位涨停均为必要条件，叠加涨停低点防守与不过热；对应精选策略「深跌底部首板」",
+    strategies: ["deepBase", "lowPositionBoard", "support", "notOverheated", "riskVeto"],
+    measured: true
+  },
+  {
+    id: "baseQuietPullback",
+    name: "底部首板缩量回踩",
+    detail: "低位涨停与缩量均为必要条件，结合抛压代理与涨停低点防守；对应「首板后缩量回踩 / 温和首板后承接」",
+    strategies: ["lowPositionBoard", "contraction", "chipLock", "support", "notOverheated", "riskVeto"],
+    measured: true
+  },
+  {
+    id: "deepBaseReclaim",
+    name: "深跌后弱转强",
+    detail: "深跌底部与弱转强均为必要条件，结合锚定均价承接与不过热",
+    strategies: ["deepBase", "weakToStrong", "avwap", "notOverheated", "riskVeto"],
+    measured: true
+  },
+  {
+    id: "coolSupport",
+    name: "不追高承接",
+    detail: "不过热与涨停低点防守均为必要条件，结合锚定均价与缩量；避开实测中收益最差的过热追涨",
+    strategies: ["notOverheated", "support", "avwap", "contraction", "riskVeto"],
+    measured: true
+  },
+  {
+    id: "coolSector",
+    name: "强板块不过热",
+    detail: "不过热与强板块共振均为必要条件，结合板块梯队、市场情绪与涨停低点防守",
+    strategies: ["notOverheated", "sector", "sectorLadder", "support", "marketEmotion", "riskVeto"],
+    measured: true
+  }
+];
+
 export const quickStrategyPresets: QuickStrategyPreset[] = [
+  ...measuredStrategyPresets,
   ...strategyPresets.map(preset => ({ ...preset, detail: corePresetDetails[preset.id] || preset.detail })),
   {
     id: "anchoredTrend",

@@ -28,12 +28,17 @@ const requirements = {
   sectorBreadth: ["sectorLadder"],
   catalystTrend: ["information", "trend"],
   firstBoardNode: ["firstBoardQuality", "lowFirstBoard"],
-  breakoutFollow: ["secondBreakout"]
+  breakoutFollow: ["secondBreakout"],
+  deepBaseBoard: ["deepBase", "lowPositionBoard"],
+  baseQuietPullback: ["lowPositionBoard", "contraction"],
+  deepBaseReclaim: ["deepBase", "weakToStrong"],
+  coolSupport: ["notOverheated", "support"],
+  coolSector: ["notOverheated", "sector"]
 };
 const allMatched = preset => preset.strategies.map(id => ({ id, matched: true }));
 
-test("all fifteen actual quick selections resolve to the intended versioned mandatory requirements", () => {
-  assert.equal(presets.length, 15);
+test("all twenty actual quick selections resolve to the intended versioned mandatory requirements", () => {
+  assert.equal(presets.length, 20);
   for (const preset of presets) {
     const actual = evaluateAnalysisPresetRequirements(preset.strategies, allMatched(preset));
     assert.equal(actual.policyVersion, "1.1.0", preset.id);

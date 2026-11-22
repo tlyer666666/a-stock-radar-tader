@@ -137,6 +137,9 @@ test("recognizes daily-bars-only profiles, rejects empty sibling roots, and vali
     assert.equal(isAppDataFileName("settings.json"), true);
     assert.equal(isAppDataFileName("settings.last-good.json"), true);
     assert.equal(isAppDataFileName("local-secret.key"), true);
+    assert.equal(isAppDataFileName("radar-store.sqlite"), true);
+    assert.equal(isAppDataFileName("radar-store.sqlite-wal"), false);
+    assert.equal(isAppDataFileName("radar-store.sqlite-shm"), false);
     assert.equal(isAppDataFileName("Preferences"), false);
     assert.equal(isAppDataDirName("daily-bars"), true);
     assert.equal(isAppDataDirName("Cache"), false);
@@ -149,6 +152,42 @@ test("recognizes daily-bars-only profiles, rejects empty sibling roots, and vali
     assert.equal(migrated.migrated, true);
     assert.equal(migrated.copiedDirs.length, 1);
     assert.equal(fs.existsSync(path.join(emptyTarget, "daily-bars", "600000.json")), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("migrates radar-store.sqlite safely while skipping -wal and -shm sidecar files", () => {
+  const { createLocalKvStore } = require("./local-kv-sqlite.cjs");
+  const root = mkTempRoot("sqlite");
+  try {
+    const legacyDir = path.join(root, "a-stock-monitor");
+    const targetDir = path.join(root, "a-stock-trend-radar");
+
+    const kv = createLocalKvStore({ userDataDir: legacyDir });
+    kv.set("a-stock-radar:notes:v1", JSON.stringify({ notes: [{ id: "n1" }] }));
+    kv.close();
+    // 模拟残留的 WAL/SHM 旁路文件，确认迁移只复制主库文件而不遗留孤立 -wal/-shm
+    write(path.join(legacyDir, "radar-store.sqlite-wal"), "orphan-wal");
+    write(path.join(legacyDir, "radar-store.sqlite-shm"), "orphan-shm");
+
+    assert.equal(hasAppUserData(legacyDir), true);
+    const result = migrateLegacyUserData({ userDataDir: targetDir });
+    assert.equal(result.migrated, true);
+    assert.ok(result.copiedFiles.includes("radar-store.sqlite"));
+    assert.equal(fs.existsSync(path.join(targetDir, "radar-store.sqlite")), true);
+    assert.equal(fs.existsSync(path.join(targetDir, "radar-store.sqlite-wal")), false);
+    assert.equal(fs.existsSync(path.join(targetDir, "radar-store.sqlite-shm")), false);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(path.join(targetDir, "radar-store.sqlite")).mode & 0o777, 0o600);
+    }
+
+    const migratedKv = createLocalKvStore({ userDataDir: targetDir });
+    try {
+      assert.equal(migratedKv.get("a-stock-radar:notes:v1"), JSON.stringify({ notes: [{ id: "n1" }] }));
+    } finally {
+      migratedKv.close();
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

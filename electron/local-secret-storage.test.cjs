@@ -1,5 +1,6 @@
 "use strict";
 const test = require("node:test");
+const { after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -7,7 +8,19 @@ const path = require("node:path");
 const { createLocalSecretStorage } = require("./local-secret-storage.cjs");
 const { encryptSecretForStorage, decryptStoredSecret, migrateLegacyStoredSecrets } = require("./security-policy.cjs");
 
-const tempKey = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "astock-secret-")), "local-secret.key");
+const tempDirs = [];
+const tempKey = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-secret-"));
+  tempDirs.push(dir);
+  return path.join(dir, "local-secret.key");
+};
+after(() => {
+  for (const dir of tempDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {}
+  }
+});
 
 test("secrets round-trip through the local key without the OS keychain, and the settings file never holds plaintext", () => {
   const keyPath = tempKey();
@@ -181,4 +194,111 @@ test("主密码 AS2 信封：设置、重启锁定、错误密码拒绝、解锁
   assert.equal(fourth.isLocked(), false);
   assert.equal(fourth.decryptString(cipherBefore), "sk-secret-before-master-pw");
   assert.equal(fourth.decryptString(cipherAfter), "sk-secret-after-unlock");
+});
+
+test("encryptSecretForStorage 在密钥库锁定时保留 SECRET_STORAGE_LOCKED 而非降级为 SAFE_STORAGE_UNAVAILABLE", async (t) => {
+  const { createLocalFirstSecretStorage } = require("./local-secret-storage.cjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-locked-enc-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const keyPath = path.join(dir, "local-secret.key");
+
+  const setup = createLocalSecretStorage({ keyPath });
+  await setup.setMasterPassword("MasterPass#2026");
+
+  const lockedStorage = createLocalFirstSecretStorage(createLocalSecretStorage({ keyPath }), null);
+  assert.equal(lockedStorage.isLocked(), true);
+  assert.throws(
+    () => encryptSecretForStorage("sk-new-secret", lockedStorage),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED" && err?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+
+  // 即使 isLocked 尚未返回 true，但 encryptString 抛出 SECRET_STORAGE_LOCKED，catch 分支也必须保留锁定错误
+  const throwingStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: () => {
+      throw Object.assign(new Error("locked inside encrypt"), { code: "SECRET_STORAGE_LOCKED" });
+    }
+  };
+  assert.throws(
+    () => encryptSecretForStorage("sk-new-secret", throwingStorage),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED" && err?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+});
+
+test("ai-profile-store 在主密码锁定时推迟旧配置迁移、保留 hasKey 标记且禁止清空已有加密 Key", () => {
+  const { createAiProfileStore } = require("./ai-profile-store.cjs");
+
+  // 1) 锁定期间不触发一次性 legacy 迁移，也不设置 migrated = true；解锁后正常迁移
+  let stored1 = null;
+  let locked = true;
+  let legacyCalls = 0;
+  const migratingStore = createAiProfileStore({
+    read: () => stored1,
+    write: (next) => { stored1 = structuredClone(next); },
+    encrypt: (v) => `safe:${v}`,
+    decrypt: (v) => (locked ? "" : String(v).replace(/^safe:/, "")),
+    isLocked: () => locked,
+    legacy: () => {
+      legacyCalls += 1;
+      return { baseUrl: "https://api.example.com/v1", model: "demo-model", apiKey: "sk-legacy-123" };
+    }
+  });
+  assert.deepEqual(migratingStore.list().profiles, []);
+  assert.equal(legacyCalls, 0, "锁定时不得触发 legacy 迁移");
+  assert.equal(stored1, null);
+
+  locked = false;
+  const afterUnlock = migratingStore.list();
+  assert.equal(legacyCalls, 1, "解锁后应自动补做 legacy 迁移");
+  assert.equal(afterUnlock.profiles.length, 1);
+  assert.equal(afterUnlock.profiles[0].hasKey, true);
+  assert.equal(stored1.profiles[0].apiKey, "safe:sk-legacy-123");
+
+  // 2) 锁定时 hasKey 检查磁盘密文存在性（不误报未填 Key），且阻止空字符串静默清空已有 Key
+  let decryptCalls = 0;
+  let stored2 = {
+    activeId: "p1",
+    rankIds: ["p1"],
+    profiles: [
+      { id: "p1", name: "主模型", baseUrl: "https://api.example.com/v1", model: "m1", apiKey: "safe:CIPHERTEXT" },
+      { id: "p2", name: "本地模型", baseUrl: "http://localhost:11434/v1", model: "qwen", apiKey: "" }
+    ]
+  };
+  let isLocked2 = true;
+  const lockedStore = createAiProfileStore({
+    read: () => stored2,
+    write: (next) => { stored2 = structuredClone(next); },
+    encrypt: (v) => {
+      if (isLocked2) throw Object.assign(new Error("密钥库已锁定，请先输入主密码解锁"), { code: "SECRET_STORAGE_LOCKED" });
+      return `safe:${v}`;
+    },
+    decrypt: (v) => {
+      decryptCalls += 1;
+      return isLocked2 ? "" : String(v).replace(/^safe:/, "");
+    },
+    isLocked: () => isLocked2
+  });
+
+  const listedLocked = lockedStore.list();
+  assert.equal(listedLocked.profiles[0].hasKey, true, "锁定时已有密文应报告 hasKey: true");
+  assert.equal(listedLocked.profiles[1].hasKey, false, "锁定时无密文仍报告 hasKey: false");
+  assert.equal(decryptCalls, 0, "锁定时 publicProfile 不应尝试解密");
+
+  // 试图用空字符串保存覆盖已有密文必须抛出 SECRET_STORAGE_LOCKED 且保留原密文
+  assert.throws(
+    () => lockedStore.save({ id: "p1", name: "主模型", baseUrl: "https://api.example.com/v1", model: "m1-new", apiKey: "" }),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED" && err?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+  assert.equal(stored2.profiles[0].apiKey, "safe:CIPHERTEXT");
+
+  // 锁定时传入掩码或省略 apiKey 修改非密钥字段仍保留原密文
+  const editedMasked = lockedStore.save({ id: "p1", name: "主模型改名", baseUrl: "https://api.example.com/v1", model: "m2", apiKey: "••••••" });
+  assert.equal(editedMasked.saved.hasKey, true);
+  assert.equal(stored2.profiles[0].apiKey, "safe:CIPHERTEXT");
+
+  // 解锁后允许显式清空 Key
+  isLocked2 = false;
+  const cleared = lockedStore.save({ id: "p1", name: "主模型改名", baseUrl: "https://api.example.com/v1", model: "m2", apiKey: "" });
+  assert.equal(cleared.saved.hasKey, false);
+  assert.equal(stored2.profiles[0].apiKey, "");
 });

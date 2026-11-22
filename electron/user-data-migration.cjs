@@ -25,14 +25,18 @@ const SENTINEL_FILES = Object.freeze([
   "custom-strategies.json",
   "backup-config.json",
   "stock-agent.json",
-  "local-secret.key"
+  "local-secret.key",
+  "radar-store.sqlite"
 ]);
 
 const APP_DATA_FILE_RE =
   /^(?:settings|watchlist|holdings|custom-strategies|ai-profiles|ai-selection|ai-custom-stocks|ai-framework|stock-agent|backup-config|external-factors-history|stock-industry-index|convertible-roster|failed-boards|fuyao|strategy-selection)(?:\.last-good)?\.json$/i;
 
 function isAppDataFileName(name) {
-  return name === "local-secret.key" || name === "runtime-errors.log" || APP_DATA_FILE_RE.test(name);
+  return name === "local-secret.key"
+    || name === "runtime-errors.log"
+    || name === "radar-store.sqlite"
+    || APP_DATA_FILE_RE.test(name);
 }
 
 function isAppDataDirName(name) {

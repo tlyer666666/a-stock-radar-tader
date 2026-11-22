@@ -22,13 +22,20 @@ const timeText = (value: string | undefined) => {
 const percent = (value: number | null | undefined) => value === null || value === undefined ? "--" : `${value.toFixed(2)}%`;
 const signature = (snapshot: EtfMarketSnapshot | null) => snapshot ? snapshot.items.map(item => `${item.code}:${item.latest}:${item.amount}`).join("|") : "";
 
-function EtfTable({ items, sort, onSort, threshold, onOpen, favoriteCodes, plannedCodes, onToggleFavorite, onOpenMonitor, onAddPlan }: {
-  items: EtfItem[]; sort: EtfSort; onSort: (column: EtfSortColumn) => void; threshold: number; onOpen: (security: Security) => void;
+function EtfTable({ items, sort, onSort, resetKey, threshold, onOpen, favoriteCodes, plannedCodes, onToggleFavorite, onOpenMonitor, onAddPlan }: {
+  items: EtfItem[]; sort: EtfSort; onSort: (column: EtfSortColumn) => void; resetKey?: string | undefined; threshold: number; onOpen: (security: Security) => void;
   favoriteCodes?: ReadonlySet<string> | undefined; plannedCodes: ReadonlySet<string>;
   onToggleFavorite?: ((security: Security) => void) | undefined; onOpenMonitor?: ((security: Security) => void) | undefined; onAddPlan: (item: EtfItem) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const virtual = useVirtualWindow({ itemCount: items.length, rowHeight: 44, overscan: 8, threshold: 80, containerRef: scrollRef });
+  const virtual = useVirtualWindow({
+    itemCount: items.length,
+    rowHeight: 44,
+    overscan: 8,
+    threshold: 80,
+    containerRef: scrollRef,
+    resetKey: `${resetKey ?? ""}|${sort.column}:${sort.direction}`
+  });
   const visible = virtual.enabled ? items.slice(virtual.startIndex, virtual.endIndex) : items;
   const head = (column: EtfSortColumn, label: string) => {
     const state = sort.column === column ? (sort.direction === "desc" ? "descending" : "ascending") : "none";
@@ -178,11 +185,11 @@ export default function EtfView({ onOpenSecurity, favoriteCodes, onToggleFavorit
     <section className="panel bond-panel">
       <PanelTitle title="ETF 行情" subtitle="点击名称查看行情与K线；点表头切换排序" icon={Layers} badge={`${rows.length} 只`} />
       <div className="bond-toolbar">
-        <label className="bond-search"><Search size={15} /><input aria-label="搜索 ETF" placeholder="ETF 名称 / 代码" value={query} onChange={event => { setQuery(event.target.value); setLimit(PAGE); }} />{query && <button type="button" aria-label="清空 ETF 搜索" onClick={() => setQuery("")}><X size={13} /></button>}</label>
+        <label className="bond-search"><Search size={15} /><input aria-label="搜索 ETF" placeholder="ETF 名称 / 代码" value={query} onChange={event => { setQuery(event.target.value); setLimit(PAGE); }} />{query && <button type="button" aria-label="清空 ETF 搜索" onClick={() => { setQuery(""); setLimit(PAGE); }}><X size={13} /></button>}</label>
         <div className="bond-segments" role="group" aria-label="ETF 类别">{ETF_CATEGORY_FILTERS.map(id => <button type="button" key={id} aria-pressed={category === id} onClick={() => { setCategory(id); setLimit(PAGE); }}>
           {id === "all" ? "全部" : id}{snapshot && id !== "all" ? ` ${countByFilter(snapshot.items, id)}` : ""}</button>)}</div>
       </div>
-      {rows.length ? <EtfTable items={rows.slice(0, limit)} sort={sort} onSort={column => { setSort(current => toggleEtfSort(current, column)); setLimit(PAGE); }} threshold={threshold}
+      {rows.length ? <EtfTable items={rows.slice(0, limit)} sort={sort} onSort={column => { setSort(current => toggleEtfSort(current, column)); setLimit(PAGE); }} resetKey={`${query}|${category}|${sort.column}:${sort.direction}`} threshold={threshold}
         onOpen={onOpenSecurity} favoriteCodes={favoriteCodes} plannedCodes={plannedCodes} onToggleFavorite={onToggleFavorite} onOpenMonitor={onOpenMonitor}
         onAddPlan={item => setPlanTarget({ code: item.code, name: item.name, secid: item.secid, referencePrice: item.latest, source: "ETF", defaultNote: `${item.category} ETF` })} />
         : <div className="bond-empty" role={snapshot ? undefined : "status"}>{snapshot ? "没有符合条件的 ETF。" : "正在读取全市场 ETF 行情…"}</div>}

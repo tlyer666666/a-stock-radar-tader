@@ -43,14 +43,23 @@ export function stepUiScale(current: number, delta: -1 | 1): UiScale {
 export function applyUiScale(scale: number): UiScale {
   const normalized = normalizeUiScale(scale);
   if (typeof window === "undefined" || typeof document === "undefined") return normalized;
-  const setZoomFactor = (
-    window as { stockApi?: { setZoomFactor?: ((factor: number) => Promise<unknown>) | undefined } | undefined }
-  ).stockApi?.setZoomFactor;
+  const stockApi = (
+    window as {
+      stockApi?: {
+        setZoomFactor?: ((factor: number) => Promise<unknown>) | undefined;
+        getReviewTheme?: (() => Promise<unknown>) | undefined;
+      } | undefined;
+    }
+  ).stockApi;
+  const setZoomFactor = stockApi?.setZoomFactor;
   if (typeof setZoomFactor === "function") {
     document.documentElement.style.zoom = "";
     void Promise.resolve(setZoomFactor(normalized / 100)).catch(() => {
       document.documentElement.style.zoom = normalized === 100 ? "" : `${normalized}%`;
     });
+  } else if (typeof stockApi?.getReviewTheme === "function") {
+    // 独立复盘窗口由主进程统一通过 webContents.setZoomFactor 控制缩放，避免叠加 CSS zoom 造成双重放大。
+    document.documentElement.style.zoom = "";
   } else {
     document.documentElement.style.zoom = normalized === 100 ? "" : `${normalized}%`;
   }

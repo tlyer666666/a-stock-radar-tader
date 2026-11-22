@@ -263,3 +263,15 @@ test("saving more than 80 distinct holdings throws explicitly instead of silentl
     assert.equal(h.json("holdings").length, 80);
   } finally { h.cleanup(); }
 });
+
+test("main.cjs cleanupStorageCache uses removedOrphans and master password handlers invalidate caches and wire isLocked", () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  assert.doesNotMatch(mainSource, /removedStale/);
+  assert.match(mainSource, /removedOrphans\s*\?\?\s*0/);
+  assert.match(mainSource, /removedTmp\s*\?\?\s*0/);
+  assert.match(mainSource, /createAiProfileStore\(\{[\s\S]*?isLocked:\s*\(\)\s*=>\s*secretStorage\(\)\.isLocked\(\)/);
+  assert.match(mainSource, /isSecretLocked:\s*\(\)\s*=>\s*secretStorage\(\)\.isLocked\(\)/);
+  assert.match(mainSource, /setMasterPassword:\s*async\s+input\s*=>[\s\S]*?loadStoredSettings\.cached\s*=\s*undefined;[\s\S]*?settingsForService\.cached\s*=\s*undefined;/);
+  assert.match(mainSource, /clearMasterPassword:\s*async\s+input\s*=>[\s\S]*?loadStoredSettings\.cached\s*=\s*undefined;[\s\S]*?settingsForService\.cached\s*=\s*undefined;/);
+  assert.match(mainSource, /unlockMasterPassword:\s*async\s+input\s*=>[\s\S]*?resetMarketSourceHealth\(\)[\s\S]*?resetNewsCache\(\)[\s\S]*?resetProfessionalReviewCache\(\)/);
+});

@@ -432,6 +432,7 @@ function App() {
     settingsRef,
     settingsLoadState,
     version,
+    refreshSettings,
     persistSettings,
     setThemeMode,
     mergeWatchlistObservations,
@@ -627,6 +628,7 @@ function App() {
     backtestReturnMode,
     backtestCenterMode,
     setBacktestCenterMode,
+    openLeaderboard,
     portfolioMounted,
     portfolioActive,
     backtestDraft,
@@ -1029,6 +1031,7 @@ function App() {
           openBacktest,
           backtestCenterMode,
           setBacktestCenterMode,
+          openLeaderboard,
           backtestDraft,
           setBacktestDraft,
           backtestLoading,
@@ -1142,6 +1145,12 @@ function App() {
         open={masterLocked}
         onUnlocked={() => {
           setMasterLocked(false);
+          void Promise.resolve().then(() => window.stockApi?.resetMarketSourceHealth?.()).catch(() => undefined);
+          void refreshSettings();
+          reconnectRefreshRef.current?.();
+          if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
+            window.dispatchEvent(new CustomEvent("a-stock-radar:master-unlocked"));
+          }
           showToast("密钥库已解锁");
         }}
       />

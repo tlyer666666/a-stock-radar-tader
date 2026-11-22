@@ -522,7 +522,28 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     }
   }
 
-  return { prepareDay, history, peek, cleanupStaleBars, clearAllBars, getStorageStats, getCoverageSummary, shutdown, stats: () => ({ ...stats }) };
+  /** 本机已有日线的股票代码（只列目录，不读内容、不联网）。 */
+  async function listLocalCodes() {
+    const base = dir();
+    if (!base) return [];
+    let names;
+    try { names = await fs.promises.readdir(base); }
+    catch { return []; }
+    return names.map(name => /^(\d{6})\.json$/.exec(name)?.[1]).filter(Boolean).sort();
+  }
+
+  /**
+   * 只读本机已存的不复权日线：不联网、不补最新一根、不改文件。读不到或校验不过返回 null。
+   * 供「策略实测榜」这类只做历史统计的功能使用，避免为了统计触发全市场下载。
+   */
+  async function readLocal(code) {
+    const safe = safeCode(code);
+    if (!safe) return null;
+    const entry = await read(safe);
+    return entry ? { rows: entry.rows.map(row => ({ ...row })), lastDate: entry.rows.at(-1)?.date || null, source: entry.source || "local-store" } : null;
+  }
+
+  return { prepareDay, history, peek, listLocalCodes, readLocal, cleanupStaleBars, clearAllBars, getStorageStats, getCoverageSummary, shutdown, stats: () => ({ ...stats }) };
 }
 
 module.exports = { createDailyBarStore, STORE_VERSION, lotsConsistent };

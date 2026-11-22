@@ -181,5 +181,7 @@ export type BacktestViewProps = {
     profile: BacktestStrategyProfile
   ) => BacktestExecutionPlan;
   onOpenPortfolio: () => void;
+  /** 打开「策略实测榜」（全市场回放，主进程长任务）。 */
+  onOpenLeaderboard: () => void;
 };
 

@@ -40,4 +40,30 @@ test("buildCopilotAlerts prioritizes source/risk/note/t-signal/monitor alerts wi
   assert.match(alerts[3].title, /低吸（正T）/);
 });
 
+test("buildCopilotAlerts suppresses stale or after-close T-assistant signals when signalNote is present", () => {
+  const alerts = buildCopilotAlerts({
+    tItems: [
+      { code: "000001", name: "平安银行" },
+      { code: "600519", name: "贵州茅台" }
+    ],
+    tRuntimes: {
+      "000001": {
+        signalNote: "非交易时段参考：不发实时操作提醒",
+        analysis: {
+          signal: { action: "buy", strength: "strong", title: "低吸（正T）", price: 10.2, shares: 200, reasons: ["历史分时回踩"] }
+        }
+      },
+      "600519": {
+        signalNote: "",
+        analysis: {
+          signal: { action: "sell", strength: "normal", title: "高抛（倒T）", price: 1510, shares: 100, reasons: ["冲高拐头"] }
+        }
+      }
+    }
+  });
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].kind, "t-signal");
+  assert.equal(alerts[0].stock.code, "600519");
+});
+
 test.after(() => restore?.());

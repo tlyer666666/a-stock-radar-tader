@@ -24,7 +24,9 @@ const LEGACY_PRESET_NAMES = Object.freeze({
   steady: "稳健趋势", firstBoard: "低位首板", leader: "主线龙头", secondWave: "二波蓄势", turnStrong: "弱转强",
   anchoredTrend: "锚定趋势", volumeSupport: "缩量承接", breakoutOrigin: "突破源头", compressionWatch: "压缩待变",
   lowBaseAccumulation: "低位缩量观察", leaderSupport: "龙头承接", sectorBreadth: "梯队共振", catalystTrend: "催化趋势",
-  firstBoardNode: "首板观察节点", breakoutFollow: "突破跟随"
+  firstBoardNode: "首板观察节点", breakoutFollow: "突破跟随",
+  deepBaseBoard: "深跌底部首板", baseQuietPullback: "底部首板缩量回踩", deepBaseReclaim: "深跌后弱转强",
+  coolSupport: "不追高承接", coolSector: "强板块不过热"
 });
 
 class CustomStrategyError extends Error {

@@ -77,5 +77,89 @@ function entryGapOutOfRange(signalClose, entryOpen) {
 
 const ENTRY_GAP_TEXT = `次日竞价高开超过${ENTRY_GAP.maxGapPercent}%或低开超过${-ENTRY_GAP.minGapPercent}%不买`;
 
-module.exports = { OVERHEAT, LOW_FIRST_BOARD, ENTRY_GAP, ENTRY_GAP_TEXT, overheatFlags, overheatAssessment, isLowPositionBoard,
-  fieldSignalStrength, entryGapOutOfRange };
+/**
+ * 深跌底部：收盘仍低于 60 日线 15% 以上。与策略库「深跌底部首板 / 首板后缩量回踩 / 温和首板后承接」
+ * 用的是同一个阈值（strategy-signal-engine 的 BOTTOM_TREND.deepMa60GapPercent，2026-11-03 全A实测：
+ * 底部首板离 60 日线越远，之后 20 日相对同日涨停股池越强，两段年份一致）。
+ */
+const DEEP_BASE = Object.freeze({ ma60GapPercent: -15 });
+
+function meanCloseAt(history, index, days) {
+  if (!Number.isInteger(index) || index < days - 1 || index >= history.length) return null;
+  let sum = 0;
+  for (let cursor = index - days + 1; cursor <= index; cursor += 1) {
+    const close = Number(history[cursor]?.close);
+    if (!(close > 0)) return null;
+    sum += close;
+  }
+  return sum / days;
+}
+
+/**
+ * 个股分析的三个「实测因子」，直接由日线算出；实时分析（security-analysis）和历史回放
+ * （strategy-intelligence）共用这一个实现，避免两处口径漂移。
+ *
+ * - notOverheated  不过热：6 项过热指标满足不到 2 项（涨停当天不计「收盘高位 / 当日大涨 / 放量」这三项固有特征）。
+ * - lowPositionBoard 低位涨停：最近一次涨停是首板（前一日没有涨停），涨停收盘不高于 MA20 的 105%，
+ *   涨停前 60 日涨幅不为正，之后没有跌破涨停日最低价。与策略库「底部首板」同一口径。
+ * - deepBase 深跌底部：低位涨停成立，且评估日收盘仍低于 MA60 至少 15%。
+ *
+ * @param {object} input
+ * @param {Array<{close:number}>} input.history 时间升序、同一复权口径的日线
+ * @param {number|null} input.eventIndex 最近一次涨停所在下标；没有则为 null
+ * @param {number} input.evaluationIndex 评估日下标
+ * @param {number[]} [input.limitIndices] 已识别的涨停日下标（升序）
+ * @param {number|null} input.closePosition 评估日收盘在当日振幅中的位置（0–1）
+ * @param {number|null} input.volumeRatio 评估日量比（对前 5 日均量）
+ * @param {boolean} input.heldSupport 涨停后是否守住涨停日最低价
+ */
+function measuredFactorSnapshot(input = {}) {
+  const history = Array.isArray(input.history) ? input.history : [];
+  const index = input.evaluationIndex;
+  const empty = { notOverheated: false, overheatFlags: [], lowPositionBoard: false, deepBase: false,
+    ma20ExtensionPercent: null, return60Percent: null, ma60GapPercent: null, limitMa20ExtensionPercent: null, limitReturn60Percent: null };
+  if (!Number.isInteger(index) || index < 1 || index >= history.length) return empty;
+  const close = Number(history[index]?.close);
+  const previousClose = Number(history[index - 1]?.close);
+  if (!(close > 0) || !(previousClose > 0)) return empty;
+  const eventIndex = Number.isInteger(input.eventIndex) && input.eventIndex >= 0 && input.eventIndex <= index ? input.eventIndex : null;
+  const limitIndices = Array.isArray(input.limitIndices) ? input.limitIndices.filter(Number.isInteger) : eventIndex === null ? [] : [eventIndex];
+  const ma20 = meanCloseAt(history, index, 20);
+  const ma60 = meanCloseAt(history, index, 60);
+  const base60 = Number(history[index - 60]?.close);
+  const ma20ExtensionPercent = ma20 ? (close / ma20 - 1) * 100 : null;
+  const return60Percent = base60 > 0 ? (close / base60 - 1) * 100 : null;
+  const ma60GapPercent = ma60 ? (close / ma60 - 1) * 100 : null;
+  const isCurrentLimit = eventIndex === index;
+  const assessment = overheatAssessment({
+    closePosition: finiteNumber(input.closePosition) ? Number(input.closePosition) : null,
+    currentReturn: (close / previousClose - 1) * 100,
+    ma20ExtensionPercent,
+    volumeRatio: finiteNumber(input.volumeRatio) && Number(input.volumeRatio) > 0 ? Number(input.volumeRatio) : null,
+    priorLimitCount60: limitIndices.filter(item => item < index && item >= index - 60).length,
+    return60Percent,
+    isCurrentLimit
+  });
+  // 均线和 60 日涨幅都算不出来时无法判断是否过热，不当作「不过热」。
+  const notOverheated = ma20ExtensionPercent !== null && return60Percent !== null && assessment.count < OVERHEAT.vetoAtCount;
+
+  let limitMa20ExtensionPercent = null;
+  let limitReturn60Percent = null;
+  let lowPositionBoard = false;
+  if (eventIndex !== null) {
+    const boardClose = Number(history[eventIndex]?.close);
+    const boardMa20 = meanCloseAt(history, eventIndex, 20);
+    const boardBase60 = Number(history[eventIndex - 60]?.close);
+    if (boardClose > 0 && boardMa20) limitMa20ExtensionPercent = (boardClose / boardMa20 - 1) * 100;
+    if (boardClose > 0 && boardBase60 > 0) limitReturn60Percent = (boardClose / boardBase60 - 1) * 100;
+    const firstBoard = !limitIndices.includes(eventIndex - 1);
+    lowPositionBoard = firstBoard && input.heldSupport === true &&
+      isLowPositionBoard({ ma20ExtensionPercent: limitMa20ExtensionPercent, return60Percent: limitReturn60Percent });
+  }
+  const deepBase = lowPositionBoard && ma60GapPercent !== null && ma60GapPercent <= DEEP_BASE.ma60GapPercent;
+  return { notOverheated, overheatFlags: assessment.flags, lowPositionBoard, deepBase,
+    ma20ExtensionPercent, return60Percent, ma60GapPercent, limitMa20ExtensionPercent, limitReturn60Percent };
+}
+
+module.exports = { OVERHEAT, LOW_FIRST_BOARD, ENTRY_GAP, ENTRY_GAP_TEXT, DEEP_BASE, overheatFlags, overheatAssessment, isLowPositionBoard,
+  fieldSignalStrength, entryGapOutOfRange, measuredFactorSnapshot };

@@ -29,6 +29,8 @@ export function useWorkspaceCollections({
   const holdingsLoaded = useRef(false);
   const settingsRef = useRef<Settings>(normalizeSettings(initialSettings));
   const settingsLoaded = useRef(false);
+  const settingsMountedRef = useRef(true);
+  const settingsLoadRequestId = useRef(0);
 
   const watchlistWriter = useRef<ReturnType<typeof createCollectionWriter<WatchItem>> | null>(null);
   const holdingsWriter = useRef<ReturnType<typeof createCollectionWriter<HoldingItem>> | null>(null);
@@ -103,20 +105,29 @@ export function useWorkspaceCollections({
     return () => { active = false; };
   }, [showToast]);
 
-  useEffect(() => {
-    let active = true;
-    window.stockApi.getSettings().then(value => {
-      if (!active) return;
+  const refreshSettings = useCallback(() => {
+    const requestId = ++settingsLoadRequestId.current;
+    return Promise.resolve().then(() => window.stockApi.getSettings()).then(value => {
+      if (!settingsMountedRef.current || requestId !== settingsLoadRequestId.current) return null;
       const loaded = normalizeSettings(value);
       settingsRef.current = loaded;
       settingsLoaded.current = true;
       setSettings(loaded);
       setSettingsLoadState("ready");
+      return loaded;
     }).catch(() => {
-      if (active) setSettingsLoadState("failed");
+      if (settingsMountedRef.current && requestId === settingsLoadRequestId.current && !settingsLoaded.current) {
+        setSettingsLoadState("failed");
+      }
+      return null;
     });
-    return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    settingsMountedRef.current = true;
+    void refreshSettings();
+    return () => { settingsMountedRef.current = false; };
+  }, [refreshSettings]);
 
   const persistSettings = useCallback((patch: Partial<Settings> | ((current: Settings) => Partial<Settings>)) => {
     if (!settingsLoaded.current) {
@@ -364,6 +375,7 @@ export function useWorkspaceCollections({
     settingsRef,
     settingsLoadState,
     version,
+    refreshSettings,
     persistSettings,
     setThemeMode,
     mergeWatchlistObservations,

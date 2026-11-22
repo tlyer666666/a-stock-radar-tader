@@ -24,8 +24,13 @@ function profileError(message, field = "") {
   return Object.assign(new TypeError(message), { code: "INVALID_AI_PROFILE", field });
 }
 
-function createAiProfileStore({ read, write, encrypt, decrypt, legacy = () => null }) {
+function lockedStorageError() {
+  return Object.assign(new Error("密钥库已锁定，请先输入主密码解锁"), { code: "SECRET_STORAGE_LOCKED" });
+}
+
+function createAiProfileStore({ read, write, encrypt, decrypt, legacy = () => null, isLocked = () => false }) {
   let migrated = false;
+  const locked = () => Boolean(typeof isLocked === "function" && isLocked());
 
   function load() {
     const value = read();
@@ -35,7 +40,8 @@ function createAiProfileStore({ read, write, encrypt, decrypt, legacy = () => nu
       profiles: value.profiles.filter(item => item && typeof item.id === "string" && typeof item.name === "string").slice(0, MAX_PROFILES)
     } : { activeId: "", rankIds: [], profiles: [] };
     // 只在还没有配置文件时迁移一次；用户删光配置后不会把旧设置里的 Key 又“复活”出来。
-    if (!isAiProfileStore(value) && !migrated) {
+    // 密钥库锁定时推迟迁移，避免把空 Key 写入或提前标记 migrated 导致解锁后无法迁移。
+    if (!isAiProfileStore(value) && !migrated && !locked()) {
       const old = legacy?.() || null;
       if (old && (old.baseUrl || old.model || old.apiKey)) {
         const profile = { id: randomUUID(), name: "默认", baseUrl: String(old.baseUrl || ""), model: String(old.model || ""), apiKey: old.apiKey ? encrypt(String(old.apiKey)) : "" };
@@ -53,7 +59,13 @@ function createAiProfileStore({ read, write, encrypt, decrypt, legacy = () => nu
     return store;
   }
 
-  const publicProfile = item => ({ id: item.id, name: item.name, baseUrl: item.baseUrl, model: item.model, hasKey: Boolean(item.apiKey && decrypt(item.apiKey)) });
+  const publicProfile = item => ({
+    id: item.id,
+    name: item.name,
+    baseUrl: item.baseUrl,
+    model: item.model,
+    hasKey: locked() ? Boolean(item.apiKey) : Boolean(item.apiKey && decrypt(item.apiKey))
+  });
 
   function list() {
     const store = load();
@@ -74,6 +86,9 @@ function createAiProfileStore({ read, write, encrypt, decrypt, legacy = () => nu
     const rawKey = typeof input.apiKey === "string" ? input.apiKey.trim() : undefined;
     // 未修改（掩码或未传）保留原 Key；空字符串表示清除。
     const keepSavedKey = rawKey === undefined || MASK.test(rawKey);
+    if (existing?.apiKey && rawKey === "" && locked()) {
+      throw lockedStorageError();
+    }
     // 换了接口地址的域名却沿用旧 Key，会把旧平台的 Key 发给新地址：此时必须重新填写。
     if (keepSavedKey && existing?.apiKey && !sameOrigin(existing.baseUrl, baseUrl)) throw profileError("更换了接口地址的域名，请重新填写这个平台的 API Key", "apiKey");
     const apiKey = keepSavedKey ? existing?.apiKey || "" : rawKey ? encrypt(rawKey) : "";

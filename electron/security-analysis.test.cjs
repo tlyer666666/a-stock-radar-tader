@@ -99,3 +99,65 @@ test("edgeGateFromStats evaluates sample thresholds, win rate, average return, a
   assert.equal(strong.passed, true);
   assert.equal(strong.penalty, 0);
 });
+
+test("analyzeSecurity still computes limit-up events and AVWAP when unadjusted replayHistory fails and core.history is forward-adjusted", async (t) => {
+  const { resetMarketSourceHealth } = require("./market-source-health.cjs");
+  const originalFetch = global.fetch;
+  resetMarketSourceHealth();
+  t.after(() => {
+    global.fetch = originalFetch;
+    resetMarketSourceHealth();
+  });
+
+  // Build 30 recent weekday trading sessions ending on/near today with a clear +10% limit-up bar on bar 25
+  const dates = [];
+  for (let offset = 60; offset >= 0 && dates.length < 30; offset -= 1) {
+    const d = new Date(Date.now() - offset * 86400000);
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) dates.push(d.toISOString().slice(0, 10));
+  }
+  while (dates.length < 30) {
+    const prev = Date.parse(`${dates[0]}T00:00:00Z`) - 86400000;
+    const d = new Date(prev);
+    if (d.getUTCDay() !== 0 && d.getUTCDay() !== 6) dates.unshift(d.toISOString().slice(0, 10));
+  }
+  const qfqKlines = dates.map((date, i) => {
+    const prev = i < 25 ? 10 : 11;
+    const close = i < 25 ? 10 : 11;
+    const open = i === 25 ? 10.1 : prev;
+    const high = i === 25 ? 11 : close + 0.1;
+    const low = i === 25 ? 10.05 : close - 0.1;
+    const pct = i === 25 ? 10 : 0;
+    const chg = i === 25 ? 1 : 0;
+    return `${date},${open},${close},${high},${low},10000,${close * 10000 * 100},2,${pct},${chg},1.5`;
+  });
+
+  global.fetch = async (url) => {
+    const textUrl = String(url);
+    // Eastmoney stock quote
+    if (textUrl.includes("/api/qt/stock/get")) {
+      return new Response(JSON.stringify({
+        data: { f57: "600999", f58: "回归测试股", f127: "电子", f43: 1100, f46: 1100, f44: 1110, f45: 1090, f60: 1100, f47: 10000, f48: 11000000, f168: 150, f170: 0 }
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    // Eastmoney kline: fqt=1 succeeds (forward-adjusted), fqt=0 fails (simulates unadjusted replayHistory outage)
+    if (textUrl.includes("/api/qt/stock/kline/get")) {
+      const parsed = new URL(textUrl);
+      if (parsed.searchParams.get("fqt") === "1" && parsed.searchParams.get("secid") === "1.600999") {
+        return new Response(JSON.stringify({
+          data: { code: "600999", name: "回归测试股", klines: qfqKlines }
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response("unavailable", { status: 503 });
+    }
+    // All secondary/optional calls fail gracefully
+    return new Response("unavailable", { status: 503 });
+  };
+
+  const result = await securityAnalysis.analyzeSecurity(
+    { code: "600999", secid: "1.600999", name: "回归测试股" },
+    { provider: "eastmoney", fallbackEnabled: true }
+  );
+  assert.ok(result.analysis.limitEvent, "limitEvent must still be detected when unadjusted replayHistory fails");
+  assert.equal(result.analysis.limitEvent.date, dates[25]);
+  assert.ok(Number.isFinite(result.analysis.avwap) && result.analysis.avwap > 0, `AVWAP must be finite and positive, got ${result.analysis.avwap}`);
+});

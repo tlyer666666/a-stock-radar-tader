@@ -131,3 +131,46 @@ test('shutdown aborts loaders and waits for physical completion; concurrency and
   assert.equal(service.getDiagnostics().jobs.active, 0);
   await assert.rejects(service.count(board), /退出|取消|abort/i);
 });
+
+test('sortSectorBoardRows ranks verified 0-limit-up sectors ahead of unmapped null sectors on ties', () => {
+  const { sortSectorBoardRows } = require('./services/sectors.cjs');
+  const sorted = sortSectorBoardRows([
+    { name: '未映射未知', memberAverageReturn: 2.5, poolLimitUps: null },
+    { name: '确认零涨停', memberAverageReturn: 2.5, poolLimitUps: 0 },
+    { name: '两只涨停', memberAverageReturn: 2.5, poolLimitUps: 2 },
+    { name: '无涨幅未知', memberAverageReturn: null, poolLimitUps: null },
+    { name: '无涨幅零涨停', memberAverageReturn: null, poolLimitUps: 0 }
+  ]);
+  assert.deepEqual(
+    sorted.map(row => row.name),
+    ['两只涨停', '确认零涨停', '未映射未知', '无涨幅零涨停', '无涨幅未知']
+  );
+  assert.deepEqual(sorted.map(row => row.rank), [1, 2, 3, 4, 5]);
+});
+
+test('getLimitUpSectorBoardUncached degrades cleanly when discoverLimitUps fails and primary sector table is healthy', async t => {
+  const sectors = require('./services/sectors.cjs');
+  const limitPool = require('./services/limit-pool.cjs');
+  const thsOfficial = require('./ths-quote.cjs');
+  const originalFetch = global.fetch;
+  const originalFundFlow = thsOfficial.fetchThsFundFlow;
+  const originalDiscover = limitPool.discoverLimitUps;
+  sectors.sectorProviderHealth.clear();
+  t.after(() => {
+    global.fetch = originalFetch;
+    thsOfficial.fetchThsFundFlow = originalFundFlow;
+    limitPool.discoverLimitUps = originalDiscover;
+    sectors.sectorProviderHealth.clear();
+  });
+  limitPool.discoverLimitUps = async () => { throw new Error('limit-up pool unavailable'); };
+  thsOfficial.fetchThsFundFlow = async () => [
+    { code: '881121', name: '半导体', changePct: 3.2, inflow: 50, outflow: 30, netInflow: 20, companyCount: 120, leaderName: '中芯国际', leaderChangePct: 6.5, leaderPrice: 90 },
+    { code: '881155', name: '银行', changePct: 1.1, inflow: 20, outflow: 18, netInflow: 2, companyCount: 42, leaderName: '招商银行', leaderChangePct: 2.1, leaderPrice: 38 }
+  ];
+  global.fetch = async () => new Response('upstream failure', { status: 503 });
+  const rows = await sectors.getLimitUpSectorBoardUncached({});
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => row.name), ['半导体', '银行']);
+  assert.equal(rows[0].poolLimitUps, null, 'unknown limit-up count stays null when limit-up pool fails');
+  assert.equal(rows[1].poolLimitUps, null);
+});

@@ -428,3 +428,184 @@ test("incomplete counts show a lower bound and unavailable counts never render z
   }));
   assert.match(emptyChain, /暂未取得可用细分概念/);
 });
+
+test("useVirtualWindow clears stale atBottom on itemCount expansion and resets scrollTop on resetKey change", () => {
+  const { useVirtualWindow } = require("../../components/useVirtualWindow.ts");
+  const prevRaf = global.requestAnimationFrame;
+  const prevCancelRaf = global.cancelAnimationFrame;
+  const rafQueue = [];
+  global.requestAnimationFrame = cb => { rafQueue.push(cb); return rafQueue.length; };
+  global.cancelAnimationFrame = () => {};
+
+  const container = { clientHeight: 400, scrollTop: 2600, scrollHeight: 3000 };
+  const containerRef = { current: container };
+  let itemCount = 100;
+  let resetKey = "sectorA|all|";
+  const harness = createHookHarness(() => useVirtualWindow({
+    itemCount,
+    rowHeight: 30,
+    overscan: 4,
+    threshold: 80,
+    containerRef,
+    resetKey
+  }));
+  try {
+    harness.render();
+    // Scroll to bottom of 100-item list -> atBottom = true, endIndex = 100
+    harness.tree.onScroll({ currentTarget: container });
+    harness.render();
+    assert.equal(harness.tree.endIndex, 100);
+
+    // Click "加载更多": itemCount grows to 150 while resetKey stays identical.
+    // Must NOT jump to row 150 or reset scrollTop to 0.
+    itemCount = 150;
+    container.scrollHeight = 4500;
+    harness.render();
+    assert.equal(container.scrollTop, 2600, "expanding itemCount must preserve scrollTop");
+    assert.ok(harness.tree.endIndex < 120, `expected newly revealed intermediate rows near 100, got endIndex=${harness.tree.endIndex}`);
+    while (rafQueue.length) rafQueue.shift()();
+    harness.render();
+    assert.ok(harness.tree.endIndex < 120, "re-measure after rAF must stay near current scroll offset, not jump to bottom");
+
+    // Changing filter/search/sector/sort via resetKey resets scrollTop to 0.
+    resetKey = "sectorB|up|";
+    harness.render();
+    assert.equal(container.scrollTop, 0, "filter/sector/sort resetKey change must reset scrollTop to 0");
+    assert.equal(harness.tree.startIndex, 0);
+  } finally {
+    harness.dispose();
+    if (prevRaf === undefined) delete global.requestAnimationFrame; else global.requestAnimationFrame = prevRaf;
+    if (prevCancelRaf === undefined) delete global.cancelAnimationFrame; else global.cancelAnimationFrame = prevCancelRaf;
+  }
+});
+
+test("LimitUpPool search clear button resets virtual scrollTop to 0", () => {
+  const LimitUpPool = require("../dashboard/LimitUpPool.tsx").default;
+  const prevWindow = global.window;
+  const prevRO = global.ResizeObserver;
+  const prevLayout = React.useLayoutEffect;
+  React.useLayoutEffect = (...args) => React.useEffect(...args);
+  const scrollNode = { scrollTop: 320, clientHeight: 400 };
+  const headNode = { getBoundingClientRect: () => ({ height: 28 }) };
+  global.window = {
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  global.ResizeObserver = class { observe() {} disconnect() {} };
+  const Component = LimitUpPool.type || LimitUpPool;
+  const harness = createHookHarness(Component, {
+    props: {
+      items: [
+        { code: "600519", name: "贵州茅台", secid: "1.600519", latest: 1500, changePct: 10, consecutiveBoards: 1 }
+      ],
+      onOpen() {},
+      onAdd() {}
+    },
+    bindRefs: tree => {
+      const scrollEl = find(tree, n => n.props?.className === "limit-grid-scroll");
+      if (scrollEl?.props?.ref) scrollEl.props.ref.current = scrollNode;
+      const headEl = find(tree, n => typeof n.props?.className === "string" && n.props.className.includes("limit-analysis-head"));
+      if (headEl?.props?.ref) headEl.props.ref.current = headNode;
+    }
+  });
+  try {
+    harness.render();
+    const input = find(harness.tree, n => n.type === "input" && n.props?.["aria-label"] === "筛选涨停池");
+    input.props.onChange({ target: { value: "茅台" } });
+    harness.render();
+    scrollNode.scrollTop = 240;
+    const clearBtn = find(harness.tree, n => n.type === "button" && n.props?.["aria-label"] === "清除涨停池筛选");
+    assert.ok(clearBtn, "clear button should render when query is non-empty");
+    clearBtn.props.onClick();
+    assert.equal(scrollNode.scrollTop, 0, "clicking × clear button must reset scrollTop to 0");
+  } finally {
+    harness.dispose();
+    React.useLayoutEffect = prevLayout;
+    if (prevWindow === undefined) delete global.window; else global.window = prevWindow;
+    if (prevRO === undefined) delete global.ResizeObserver; else global.ResizeObserver = prevRO;
+  }
+});
+
+test("QuickPlanModal reports HSGT overlay and HsgtWebView observes .mw-agent-drawer and class mutations", async () => {
+  const { HSGT_DOM_OVERLAY_SELECTOR, default: HsgtWebView } = require("../hsgt/HsgtWebView.tsx");
+  assert.ok(HSGT_DOM_OVERLAY_SELECTOR.includes(".mw-agent-drawer"), "HSGT overlay selector must include .mw-agent-drawer");
+
+  const quickPlanSource = fs.readFileSync(path.join(__dirname, "../../components/QuickPlanModal.tsx"), "utf8");
+  assert.match(quickPlanSource, /useReportHsgtOverlay\(Boolean\(target\)\)/, "QuickPlanModal must report active overlay to HSGT");
+
+  const saved = {};
+  for (const key of ["window", "document", "MutationObserver", "ResizeObserver", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"]) {
+    saved[key] = global[key];
+  }
+  const prevLayout = React.useLayoutEffect;
+  React.useLayoutEffect = (...args) => React.useEffect(...args);
+  let mutationOpts = null;
+  const observedResizeTargets = [];
+  const docEl = { tagName: "HTML" };
+  const pageEl = { tagName: "MAIN", className: "page" };
+  const parentEl = { tagName: "DIV", className: "hsgt-workspace" };
+  const frameEl = {
+    parentElement: parentEl,
+    closest: sel => (sel === ".page" ? pageEl : null),
+    getBoundingClientRect: () => ({ left: 100, top: 100, width: 500, height: 400 })
+  };
+  global.getComputedStyle = () => ({ overflow: "visible", overflowY: "visible", overflowX: "visible" });
+  global.window = {
+    innerWidth: 1024,
+    innerHeight: 720,
+    stockApi: {
+      thsWeb: {
+        show: async () => ({ open: true }),
+        hide: async () => ({ open: false }),
+        setBounds: async () => ({ open: true }),
+        state: async () => ({ open: true })
+      }
+    },
+    setInterval: () => 1,
+    clearInterval() {},
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  global.document = {
+    body: {},
+    documentElement: docEl,
+    hidden: false,
+    querySelector: () => null,
+    addEventListener() {},
+    removeEventListener() {}
+  };
+  global.MutationObserver = class {
+    observe(_target, opts) { mutationOpts = opts; }
+    disconnect() {}
+  };
+  global.ResizeObserver = class {
+    observe(target) { observedResizeTargets.push(target); }
+    disconnect() {}
+  };
+  global.requestAnimationFrame = () => 1;
+  global.cancelAnimationFrame = () => {};
+  const harness = createHookHarness(HsgtWebView, {
+    bindRefs: tree => {
+      const node = walk(tree).find(n => n.props?.className === "hsgt-web-frame");
+      if (node?.props?.ref) node.props.ref.current = frameEl;
+    }
+  });
+  try {
+    harness.render();
+    await harness.flush();
+    assert.ok(mutationOpts?.attributeFilter?.includes("class"), "MutationObserver must include 'class' in attributeFilter");
+    assert.ok(observedResizeTargets.includes(frameEl), "ResizeObserver must observe frame");
+    assert.ok(observedResizeTargets.includes(parentEl), "ResizeObserver must observe parent container");
+    assert.ok(observedResizeTargets.includes(pageEl), "ResizeObserver must observe .page ancestor");
+    assert.ok(observedResizeTargets.includes(docEl), "ResizeObserver must observe documentElement");
+  } finally {
+    harness.dispose();
+    React.useLayoutEffect = prevLayout;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete global[key]; else global[key] = value;
+    }
+  }
+});

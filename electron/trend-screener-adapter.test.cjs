@@ -537,3 +537,82 @@ test('A06 Eastmoney index history may omit activity but still rejects invalid OH
   malformed = true;
   await assert.rejects(data.fetchBenchmark(), { code: 'TREND_DATA_UNAVAILABLE' });
 });
+
+test('resetSharedTrendBreakerState resets state in place without splitting WeakMap bindings across adapters', async () => {
+  const { resetSharedTrendBreakerState } = require('./trend-screener-adapter.cjs');
+  let historyCalls = 0;
+  const sharedThs = {
+    quote: async () => null,
+    history: async () => { historyCalls += 1; throw Object.assign(new Error('HTTP 503'), { status: 503 }); }
+  };
+  const eastOk = async url => ({ data: { code: new URL(url).searchParams.get('secid').slice(2), klines: ['2026-10-22,10,11,11,9.9,1234,300000000,11,10,1,2.1'] } });
+  const adapterA = createTrendMarketData({ historyBars: 20, fetchJson: eastOk, ths: sharedThs });
+  for (const code of ['600001', '600002', '600003']) {
+    await adapterA.fetchHistory({ code, secid: `1.${code}` }, 'none');
+  }
+  assert.equal(historyCalls, 3);
+  resetSharedTrendBreakerState();
+  // Create a second adapter bound to the SAME sharedThs provider after reset.
+  const adapterB = createTrendMarketData({ historyBars: 20, fetchJson: eastOk, ths: sharedThs });
+  for (const code of ['600004', '600005', '600006']) {
+    await adapterA.fetchHistory({ code, secid: `1.${code}` }, 'none');
+  }
+  assert.equal(historyCalls, 6);
+  // Because WeakMap was NOT reassigned, adapterB shares the exact same breaker state as adapterA and skips THS!
+  await adapterB.fetchHistory({ code: '600007', secid: '1.600007' }, 'none');
+  assert.equal(historyCalls, 6, 'adapterB must share breaker state with adapterA after reset');
+  resetSharedTrendBreakerState();
+});
+
+test('thsHistory skips ths.quote when preferFuyao is active, survives quote errors, and attributes Fuyao failures accurately', async () => {
+  const { createMarketSourceHealth } = require('./market-source-health.cjs');
+  const health = createMarketSourceHealth();
+
+  // 1) When preferFuyao() is true, ths.quote must not be called at all
+  let quoteCalls = 0;
+  const fuyaoAdapter = createTrendMarketData({
+    historyBars: 20,
+    marketSourceHealth: health,
+    fetchJson: async () => { throw new Error('fallback must not run'); },
+    ths: {
+      preferFuyao: () => true,
+      quote: async () => { quoteCalls += 1; throw new Error('redundant quote called'); },
+      history: async () => Object.assign(thsRows(10), { dataSource: 'fuyao_raw' })
+    }
+  });
+  const fuyaoResult = await fuyaoAdapter.fetchHistory({ code: '600000', secid: '1.600000' }, 'none');
+  assert.equal(fuyaoResult.source, 'ths-fuyao');
+  assert.equal(quoteCalls, 0, 'ths.quote must be skipped when preferFuyao() is true');
+
+  // 2) Synchronous throw in ths.quote must NOT abort ths.history or trip faults
+  let receivedQuote = 'unset';
+  const syncQuoteThrowAdapter = createTrendMarketData({
+    historyBars: 20,
+    marketSourceHealth: health,
+    fetchJson: async () => { throw new Error('fallback must not run'); },
+    ths: {
+      quote: () => { throw new Error('sync quote failure'); },
+      history: async (_sec, opts) => { receivedQuote = opts.quote; return thsRows(10); }
+    }
+  });
+  const okAfterQuoteError = await syncQuoteThrowAdapter.fetchHistory({ code: '600001', secid: '1.600001' }, 'none');
+  assert.equal(okAfterQuoteError.source, 'ths-free');
+  assert.equal(receivedQuote, null);
+
+  // 3) Fuyao error in ths.history must be attributed to fuyao_history, not ths_free_history
+  const fuyaoFailHealth = createMarketSourceHealth();
+  const fuyaoFailAdapter = createTrendMarketData({
+    historyBars: 20,
+    marketSourceHealth: fuyaoFailHealth,
+    fetchJson: async url => ({ data: { code: new URL(url).searchParams.get('secid').slice(2), klines: ['2026-10-22,10,11,11,9.9,1234,300000000,11,10,1,2.1'] } }),
+    ths: {
+      preferFuyao: () => true,
+      history: async () => { throw Object.assign(new Error('fuyao timeout'), { code: 'FUYAO_NETWORK' }); }
+    }
+  });
+  const fallbackRes = await fuyaoFailAdapter.fetchHistory({ code: '600002', secid: '1.600002' }, 'none');
+  assert.equal(fallbackRes.source, 'eastmoney');
+  const snap = fuyaoFailHealth.snapshot(['fuyao_history', 'ths_free_history']);
+  assert.equal(snap.find(item => item.id === 'fuyao_history').failureCount, 1);
+  assert.equal(snap.find(item => item.id === 'ths_free_history').failureCount, 0);
+});

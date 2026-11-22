@@ -72,7 +72,12 @@ export const saveBacktestHistory = (records: BacktestHistoryRecord[]): boolean =
 };
 
 export const hydrateBacktestHistory = async (fallbackSettings: Settings): Promise<BacktestHistoryRecord[]> => {
-  const hydrated = await hydrateFromNativeKv(BACKTEST_HISTORY_KEY, isBacktestHistoryArray);
+  const hydrated = await hydrateFromNativeKv(
+    BACKTEST_HISTORY_KEY,
+    isBacktestHistoryArray,
+    undefined,
+    { isEmpty: list => list.length === 0 }
+  );
   if (hydrated) return normalizeBacktestHistory(hydrated, fallbackSettings);
   return loadBacktestHistory(fallbackSettings);
 };

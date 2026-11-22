@@ -15,7 +15,40 @@ import { DEFAULT_CHART_PREFERENCES, isTChartPreferences } from "./tToolboxModel"
 import { clampHoldingCostPrice, type HoldingItemWithSellable } from "../collections/holdingsLedger";
 
 const CHART_PREFERENCES_KEY = "a-stock-radar:t-toolbox-display:v1";
+const COST_SYNC_STORAGE_KEY = "a-stock-radar:t-cost-synced:v1";
+const MAX_COST_SYNC_ENTRIES = 40;
 const InlineAiAgent = lazy(() => import("../ai-agent/AiAgentView"));
+
+export type TCostSyncRecord = {
+  tradeKey: string;
+  baseCost: number;
+  syncedCost: number;
+  syncedShares: number;
+};
+
+type TCostSyncMap = Record<string, TCostSyncRecord>;
+
+const isCostSyncMap = (value: unknown): value is TCostSyncMap =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+export function buildTTradeSyncKey(trades: ReadonlyArray<Pick<TTrade, "id" | "side" | "price" | "shares" | "time">>): string {
+  return trades
+    .filter(t => t.price > 0 && t.shares > 0)
+    .map(t => `${t.id}:${t.side}:${t.price}:${t.shares}:${t.time}`)
+    .join(",");
+}
+
+export function isTTradeSetAlreadySynced(
+  record: TCostSyncRecord | undefined,
+  tradeKey: string,
+  currentCostPrice: number
+): boolean {
+  if (!record || !tradeKey || record.tradeKey !== tradeKey) return false;
+  return (
+    Math.abs(currentCostPrice - record.baseCost) < 0.0015 ||
+    Math.abs(currentCostPrice - record.syncedCost) < 0.0015
+  );
+}
 
 type Props = {
   api: TAssistantApi;
@@ -23,7 +56,7 @@ type Props = {
   live: boolean;
   onOpenStock: (security: Security) => void;
   onToast: (message: string) => void;
-  onSyncCostToHolding?: ((code: string, shares: number, newCost: number, name?: string) => void) | undefined;
+  onSyncCostToHolding?: ((code: string, shares: number, newCost: number, name?: string) => Promise<boolean> | boolean | void) | undefined;
 };
 
 type TradeDraft = { day: string; side: "buy" | "sell"; price: string; shares: string; time: string };
@@ -97,7 +130,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
       <aside className="panel t-assistant-list" aria-label="跟踪的股票">
         {store.items.map(entry => <StockRow key={entry.code} item={entry} runtime={runtimes[entry.code]} active={entry.code === selected} onSelect={() => setSelected(entry.code)} />)}
       </aside>
-      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} onSyncCostToHolding={onSyncCostToHolding} display={{ preferences, setPreferences }} />}
+      {item && runtime && <StockDetail key={item.code} item={item} runtime={runtime} api={api} live={live} showReplay={store.showReplay} onOpenStock={onOpenStock} onToast={onToast} onSyncCostToHolding={onSyncCostToHolding} display={{ preferences, setPreferences }} />}
     </div>}
   </div>;
 }
@@ -119,7 +152,7 @@ function StockRow({ item, runtime, active, onSelect }: { item: TItem; runtime: T
   </button>;
 }
 
-function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSyncCostToHolding, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; onSyncCostToHolding?: ((code: string, shares: number, newCost: number, name?: string) => void) | undefined; display: TToolboxDisplay }) {
+function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onToast, onSyncCostToHolding, display }: { item: TItem; runtime: TRuntime; api: TAssistantApi; live: boolean; showReplay: boolean; onOpenStock: (security: Security) => void; onToast: (message: string) => void; onSyncCostToHolding?: ((code: string, shares: number, newCost: number, name?: string) => Promise<boolean> | boolean | void) | undefined; display: TToolboxDisplay }) {
   const { analysis, share } = runtime;
   const replay = useMemo(
     () => (showReplay && share ? replayT(share, { code: item.code, name: item.name }, item.config) : runtime.replay ?? null),
@@ -153,6 +186,16 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSync
   const [aiOpened, setAiOpened] = useState(false), [aiVisible, setAiVisible] = useState(false);
   const stale = runtime.signalNote;
   const [tradeError, setTradeError] = useState("");
+  const [syncedCostMap, setSyncedCostMap] = useState<TCostSyncMap>(() =>
+    loadSafeLocalJson<TCostSyncMap>(COST_SYNC_STORAGE_KEY, {}, isCostSyncMap)
+  );
+  const [syncingCost, setSyncingCost] = useState(false);
+  const syncingCostRef = useRef(false);
+  const detailMountedRef = useRef(true);
+  useEffect(() => {
+    detailMountedRef.current = true;
+    return () => { detailMountedRef.current = false; };
+  }, []);
 
   const startDraft = (fromSignal: boolean) => {
     if (!day) return;
@@ -224,6 +267,9 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSync
           const validTrades = trades.filter(t => t.price > 0 && t.shares > 0);
           const netDelta = validTrades.reduce((acc, t) => acc + (t.side === "buy" ? t.shares : -t.shares), 0);
           const postTShares = Math.max(0, item.config.baseShares + netDelta);
+          const syncSlotKey = day ? `${day}:${item.code}` : "";
+          const tradeKey = buildTTradeSyncKey(validTrades);
+          const costSynced = Boolean(syncSlotKey && isTTradeSetAlreadySynced(syncedCostMap[syncSlotKey], tradeKey, item.config.costPrice));
           const canComputeCost = Boolean(
             onSyncCostToHolding &&
             validTrades.length > 0 &&
@@ -233,6 +279,11 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSync
           );
           const handleSyncCost = canComputeCost && onSyncCostToHolding
             ? () => {
+                if (syncingCostRef.current) return;
+                if (costSynced) {
+                  onToast("当前成交记录已同步到持仓，无需重复同步");
+                  return;
+                }
                 let rawPostTCost: number;
                 if (netDelta === 0 && analysis.stats.newCost !== null && Number.isFinite(analysis.stats.newCost)) {
                   rawPostTCost = analysis.stats.newCost;
@@ -250,7 +301,29 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSync
                   rawPostTCost = (item.config.baseShares * item.config.costPrice + buyCashOutflow - sellCashInflow) / postTShares;
                 }
                 const clampedNewCost = clampHoldingCostPrice(rawPostTCost);
-                onSyncCostToHolding(item.code, postTShares, clampedNewCost, item.name);
+                syncingCostRef.current = true;
+                setSyncingCost(true);
+                void Promise.resolve(onSyncCostToHolding(item.code, postTShares, clampedNewCost, item.name))
+                  .then(result => {
+                    if (result === false || !syncSlotKey) return;
+                    const persisted = loadSafeLocalJson<TCostSyncMap>(COST_SYNC_STORAGE_KEY, {}, isCostSyncMap);
+                    const entries = Object.entries({
+                      ...persisted,
+                      [syncSlotKey]: {
+                        tradeKey,
+                        baseCost: item.config.costPrice,
+                        syncedCost: clampedNewCost,
+                        syncedShares: postTShares
+                      }
+                    }).slice(-MAX_COST_SYNC_ENTRIES);
+                    const nextMap = Object.fromEntries(entries);
+                    saveSafeLocalJson(COST_SYNC_STORAGE_KEY, nextMap, isCostSyncMap);
+                    if (detailMountedRef.current) setSyncedCostMap(nextMap);
+                  })
+                  .finally(() => {
+                    syncingCostRef.current = false;
+                    if (detailMountedRef.current) setSyncingCost(false);
+                  });
               }
             : undefined;
           return (
@@ -258,6 +331,8 @@ function StockDetail({ item, runtime, api, live, showReplay, onOpenStock, onSync
               analysis={analysis}
               onSyncCost={handleSyncCost}
               canSyncCost={canComputeCost}
+              costSynced={costSynced}
+              syncingCost={syncingCost}
             />
           );
         })()}
@@ -296,7 +371,7 @@ function SignalCard({ analysis, referenceNote, onRecord }: { analysis: TAnalysis
   </div>;
 }
 
-function LevelsCard({ analysis, onSyncCost, canSyncCost = false }: { analysis: TAnalysis; onSyncCost?: (() => void) | undefined; canSyncCost?: boolean }) {
+function LevelsCard({ analysis, onSyncCost, canSyncCost = false, costSynced = false, syncingCost = false }: { analysis: TAnalysis; onSyncCost?: (() => void) | undefined; canSyncCost?: boolean; costSynced?: boolean; syncingCost?: boolean }) {
   const { levels, open, stats } = analysis;
   const d = analysis.priceDigits ?? 2;
   const rows: Array<[string, number | null, string]> = [
@@ -322,8 +397,14 @@ function LevelsCard({ analysis, onSyncCost, canSyncCost = false }: { analysis: T
     </dl>
     {canSyncCost && onSyncCost && (
       <div className="t-assistant-config-sync">
-        <button type="button" className="secondary-btn" onClick={onSyncCost}>
-          <WalletCards size={14} />同步新成本到持仓
+        <button
+          type="button"
+          className="secondary-btn"
+          disabled={costSynced || syncingCost}
+          title={costSynced ? "当前成交已同步至持仓；新增或调整成交后可再次同步" : undefined}
+          onClick={onSyncCost}
+        >
+          <WalletCards size={14} />{costSynced ? "当前成交已同步到持仓" : syncingCost ? "正在同步…" : "同步新成本到持仓"}
         </button>
       </div>
     )}

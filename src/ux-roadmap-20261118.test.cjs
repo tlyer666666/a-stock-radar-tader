@@ -1181,3 +1181,244 @@ test("QuickPaletteModal, ErrorBoundaries, SettingsView, and CollectionViews rend
   }
 });
 
+test("Track 3: hydrateFromNativeKv respects isEmpty & preserves newer non-empty localStorage; clearBacktestHistory mirrors empty KV", async () => {
+  const { hydrateFromNativeKv, resetSafeStorageCache } = require("./safeStorage.ts");
+  const { BACKTEST_HISTORY_KEY, hydrateBacktestHistory } = require("./features/backtest/backtestStorage.ts");
+  const { useBacktestWorkspace } = require("./features/backtest/useBacktestWorkspace.ts");
+  const { initialSettings } = require("./domain/settings.ts");
+
+  const prevWindow = global.window;
+  const memStorage = createMemoryStorage();
+  const kvMap = new Map();
+  const kvSetLog = [];
+  global.window = {
+    localStorage: memStorage,
+    setTimeout,
+    clearTimeout,
+    addEventListener() {},
+    removeEventListener() {},
+    stockApi: {
+      kvGet: async k => kvMap.get(k) ?? null,
+      kvSet: async (k, v) => { kvMap.set(k, v); kvSetLog.push([k, v]); return true; }
+    }
+  };
+  try {
+    resetSafeStorageCache();
+    const isArr = v => Array.isArray(v);
+    const isEmptyArr = v => v.length === 0;
+
+    // 1. Local is valid EMPTY ([]), KV has non-empty -> hydrates and writes back to localStorage
+    memStorage.setItem("t3-kv", "[]");
+    kvMap.set("t3-kv", JSON.stringify([{ id: "kv-1" }]));
+    const recovered = await hydrateFromNativeKv("t3-kv", isArr, memStorage, { isEmpty: isEmptyArr });
+    assert.deepEqual(recovered, [{ id: "kv-1" }]);
+    assert.equal(memStorage.getItem("t3-kv"), JSON.stringify([{ id: "kv-1" }]));
+
+    // 2. Local already has valid NON-EMPTY data, KV has older data -> returns null & preserves localStorage
+    memStorage.setItem("t3-kv", JSON.stringify([{ id: "local-newer" }]));
+    kvMap.set("t3-kv", JSON.stringify([{ id: "kv-older" }]));
+    const skipped = await hydrateFromNativeKv("t3-kv", isArr, memStorage, { isEmpty: isEmptyArr });
+    assert.equal(skipped, null);
+    assert.equal(memStorage.getItem("t3-kv"), JSON.stringify([{ id: "local-newer" }]));
+
+    // 3. Both local and KV are empty -> returns null
+    memStorage.setItem("t3-kv", "[]");
+    kvMap.set("t3-kv", "[]");
+    assert.equal(await hydrateFromNativeKv("t3-kv", isArr, memStorage, { isEmpty: isEmptyArr }), null);
+
+    // 4. clearBacktestHistory mirrors "[]" to native KV so old SQLite history does not resurrect
+    const sampleRec = { id: "bt-1", securityCode: "600519", securityName: "贵州茅台", createdAt: "2026-11-22T01:00:00Z", draft: { securityCode: "600519" }, metrics: { accepted: true }, strategyIds: ["support"] };
+    memStorage.setItem(BACKTEST_HISTORY_KEY, JSON.stringify([sampleRec]));
+    kvMap.set(BACKTEST_HISTORY_KEY, JSON.stringify([sampleRec]));
+    const btHarness = createHookHarness(() => useBacktestWorkspace({
+      view: "backtest",
+      dashboardMode: "pool",
+      payload: null,
+      settings: initialSettings,
+      persistSettings: async s => s,
+      askConfirm: async () => true,
+      showToast() {},
+      appendExecutionDecisionLog() {},
+      originForView: () => ({ view: "cockpit", label: "返回" }),
+      onEnterBacktest() {}
+    }), { runEffects: true });
+    btHarness.render();
+    assert.equal(btHarness.tree.backtestHistory.length, 1);
+    await btHarness.tree.clearBacktestHistory();
+    btHarness.render();
+    assert.equal(btHarness.tree.backtestHistory.length, 0);
+    assert.equal(kvMap.get(BACKTEST_HISTORY_KEY), "[]", "clearBacktestHistory must mirror [] to native KV");
+    const afterReload = await hydrateBacktestHistory(initialSettings);
+    assert.deepEqual(afterReload, [], "cleared backtest history must not resurrect from SQLite KV");
+    btHarness.dispose();
+  } finally {
+    global.window = prevWindow;
+  }
+});
+
+test("Track 3: T+1 sellableShares consistency across addNoteToT, onSyncCostToHolding, and duplicate T-cost sync guard", async () => {
+  const { buildNoteToTConfig } = require("./features/copilot/useWorkspaceCopilot.ts");
+  const { renderAppWorkspaceRoutes } = require("./components/AppWorkspaceRoutes.tsx");
+  const TAssistantViewMod = require("./features/t-assistant/TAssistantView.tsx");
+  const { buildTTradeSyncKey, isTTradeSetAlreadySynced } = TAssistantViewMod;
+  const { rolloverTStoreForDay, normalizeTStore, withTrades } = require("./features/t-assistant/tStore.ts");
+  const { initialSettings } = require("./domain/settings.ts");
+  const { resolveMarketSessionPhase } = require("./copilotBriefing.ts");
+
+  // 1. addNoteToT config respects explicit sellableShares === 0 (never overwrites with shares)
+  assert.deepEqual(
+    buildNoteToTConfig({ shares: 500, sellableShares: 0, costPrice: 15.2 }, undefined),
+    { costPrice: 15.2, baseShares: 500, sellableShares: 0 }
+  );
+  assert.deepEqual(
+    buildNoteToTConfig({ shares: 500, sellableShares: 200, costPrice: 15.2 }, undefined),
+    { costPrice: 15.2, baseShares: 500, sellableShares: 200 }
+  );
+  assert.deepEqual(
+    buildNoteToTConfig({ shares: 500, costPrice: 15.2 }, undefined),
+    { costPrice: 15.2, baseShares: 500, sellableShares: 0 }
+  );
+  assert.deepEqual(
+    buildNoteToTConfig({ shares: 500, sellableShares: 0, costPrice: 15.2 }, { config: { sellableShares: 300 } }),
+    { costPrice: 15.2, baseShares: 500, sellableShares: 300 }
+  );
+
+  // 2. onSyncCostToHolding clamps sellableShares to safeShares
+  let holdingsState = [{ code: "600519", name: "贵州茅台", secid: "1.600519", shares: 1000, sellableShares: 1000, costPrice: 1500, createdAt: "", updatedAt: "" }];
+  const routeTree = renderAppWorkspaceRoutes({
+    view: "t-assistant",
+    setView() {},
+    researchView: false,
+    dashboardMode: "pool",
+    informationTab: "all",
+    setInformationTab() {},
+    watchlistNode: "all",
+    setWatchlistNode() {},
+    analysisOrigin: null,
+    observationReturnLabel: () => "返回",
+    originForView: () => ({ view: "cockpit", label: "返回" }),
+    navigateTo() {},
+    openAnalysis() {},
+    returnFromAnalysis() {},
+    loadSecurity: async () => {},
+    latestAnalysis: { current: null },
+    analysisRequestId: { current: 0 },
+    payload: null,
+    analysisTarget: null,
+    loading: false,
+    error: "",
+    live: false,
+    privacyMask: false,
+    defaultCockpit: true,
+    toggleDefaultCockpit() {},
+    settings: initialSettings,
+    settingsLoadState: "ready",
+    persistSettings: async s => ({ ...initialSettings, ...s }),
+    watchlist: [],
+    holdings: holdingsState,
+    favoriteItems: [],
+    favoriteCodes: new Set(),
+    observationItems: [],
+    isFavorite: false,
+    toggleFavorite: async () => {},
+    removeObservation: async () => true,
+    saveHoldings: async updater => { holdingsState = updater(holdingsState); return true; },
+    addFavoriteSecurity: async () => {},
+    handleQuickHoldingTrade: async () => true,
+    showToast() {},
+    notes: { store: { notes: [] }, awaitingCount: 0 },
+    tAssistant: { store: { items: [], trades: {}, voice: true, showReplay: true }, runtimes: {} },
+    stockMonitors: { configs: {}, alerts: [], save: () => true, remove() {}, clearAlerts() {}, ackAlert() {} },
+    copilotPhase: resolveMarketSessionPhase(),
+    copilotAlerts: [],
+    newsLiveQuotes: {},
+    addNoteToT() {},
+    addNoteToMonitor: async () => {},
+    discover: async () => {},
+    discovering: false,
+    limitUps: [],
+    limitPoolMeta: { date: "", source: "", updatedAt: "" },
+    failedBoardCache: { current: null },
+    failedBoardViewState: { current: undefined },
+    rememberFailedBoardCache() {},
+    rememberFailedBoardViewState() {},
+    sectorBoard: [],
+    sectorExtra: null,
+    sectorBoardLoading: false,
+    sectorBoardError: "",
+    sectorLegacyOpen: true,
+    setSectorLegacyOpen() {},
+    loadSectorBoard: async () => true,
+    compareCandidates: [],
+    reviewMounted: false,
+    portfolioActive: false,
+    portfolioMounted: false,
+    portfolioInitialSecurities: [],
+    portfolioBack() {},
+    portfolioOpenSingle() {},
+    portfolioOpenSecurity() {},
+    openBacktest() {},
+    backtestCenterMode: "single",
+    setBacktestCenterMode() {},
+    backtestDraft: { securityCode: "" },
+    setBacktestDraft() {},
+    backtestLoading: false,
+    backtestError: "",
+    backtestResult: null,
+    backtestRunRecord: null,
+    backtestHistory: [],
+    backtestProfileComparisons: null,
+    backtestEntryContext: null,
+    invalidateBacktests() {},
+    runBacktest: async () => {},
+    runBacktestProfileComparisons: async () => {},
+    applyBacktestProfileWithGovernance: async () => {},
+    loadBacktestRecord() {},
+    exportBacktestPayload() {},
+    exportCurrentBacktest() {},
+    applyCurrentBacktestToPaper() {},
+    applyHistoryToSettings: async () => {},
+    clearBacktestHistory() {},
+    updateBacktestTargetContext() {},
+    executionDecisionLog: [],
+    clearExecutionDecisionLog() {},
+    paperSummary: { normalized: { cash: 100000, openPositions: [] }, equity: 100000, openValue: 0, openPnl: 0, openPnlPercent: 0, cumulativeRealizedPnl: 0, closedCount: 0, winCount: 0 },
+    paperExecutionReadiness: { level: "ready", score: 80, summary: "", recommendation: "", reasons: [] },
+    paperCurrentPositions: [],
+    canPaperTrade: true,
+    latestExecutionDecision: null,
+    executePaperTrade() {},
+    closePaperTradeForCurrent() {},
+    closePaperTradeForCode() {},
+    closeAllPaperTrades() {},
+    confirmPaperSettlementForCode() {},
+    settingsCategory: "sources",
+    openSettings() {}
+  });
+  const tNode = find(routeTree, n => typeof n.props?.onSyncCostToHolding === "function");
+  assert.ok(tNode, "TAssistantView should receive onSyncCostToHolding");
+  await tNode.props.onSyncCostToHolding("600519", 600, 1485.5, "贵州茅台");
+  assert.equal(holdingsState[0].shares, 600);
+  assert.equal(holdingsState[0].sellableShares, 600, "onSyncCostToHolding must clamp sellableShares to safeShares");
+  assert.equal(holdingsState[0].costPrice, 1485.5);
+
+  // 3. Duplicate T-cost sync guard blocks double-syncing same trades and preserves rolloverTStoreForDay
+  const t1 = [{ id: "s1", side: "sell", price: 10.5, shares: 500, time: "10:00" }, { id: "b1", side: "buy", price: 10.0, shares: 500, time: "10:30" }];
+  const key1 = buildTTradeSyncKey(t1);
+  const syncedRec = { tradeKey: key1, baseCost: 10.0, syncedCost: 9.76, syncedShares: 1000 };
+  assert.equal(isTTradeSetAlreadySynced(syncedRec, key1, 10.0), true, "same trades + original baseCost must be marked already synced");
+  assert.equal(isTTradeSetAlreadySynced(syncedRec, key1, 9.76), true, "same trades + re-imported syncedCost must not double-sync");
+  assert.equal(isTTradeSetAlreadySynced(syncedRec, buildTTradeSyncKey([...t1, { id: "s2", side: "sell", price: 10.6, shares: 200, time: "13:30" }]), 10.0), false, "adding a new trade unlocks re-sync");
+
+  let store = normalizeTStore({
+    lastRolloverDay: "2026-11-22",
+    items: [{ code: "600000", name: "浦发银行", config: { baseShares: 1000, sellableShares: 1000, costPrice: 10.0, tShares: 500 } }]
+  });
+  store = withTrades(store, "2026-11-22", "600000", () => [
+    { id: "s1", side: "sell", price: 10.5, shares: 400, time: "10:00" }
+  ]);
+  const rolled = rolloverTStoreForDay(store, "2026-11-23");
+  assert.equal(rolled.store.items[0].config.baseShares, 600);
+  assert.equal(rolled.store.items[0].config.sellableShares, 600);
+});
+

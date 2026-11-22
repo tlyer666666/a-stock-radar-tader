@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { after } = require("node:test");
 const backup = require("./data-backup.cjs");
 
 const NOW = Date.parse("2026-11-12T16:05:09+08:00");
@@ -21,7 +22,19 @@ function service(stores, { folder, config = {} } = {}) {
   });
   return { api, data, config: () => saved };
 }
-const tempDir = () => fs.mkdtempSync(path.join(os.tmpdir(), "astock-backup-"));
+const tempDirs = [];
+const tempDir = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-backup-"));
+  tempDirs.push(dir);
+  return dir;
+};
+after(() => {
+  for (const dir of tempDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {}
+  }
+});
 const STORES = {
   settings: { provider: "ths", theme: "dark", refreshToken: "safe:REFRESH", aiApiKey: "safe:AI" },
   holdings: [{ code: "600519", shares: 100, costPrice: 1500 }],
@@ -305,7 +318,7 @@ test("缺失或损坏的本地数据段不会被恢复为空快照", async () =>
 });
 
 test("超过 200 字符的备份密码显式报错 BACKUP_PASSWORD_TOO_LONG 而不静默截断", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "backup-pwlen-"));
+  const dir = tempDir();
   const { api } = service({}, { folder: dir });
   assert.throws(
     () => api.configure({ password: "p".repeat(201) }),
@@ -361,4 +374,130 @@ test("前后端对“本软件的本地存储键”判断一致（含显示密�
   for (const key of ["a-stock-radar:notes:v1", "ai-picks-excluded", "astock:display-density:v1"]) assert.equal(backup.isAppLocalKey(key), true, key);
   const client = fs.readFileSync(path.join(__dirname, "..", "src", "features", "backup", "backupClient.ts"), "utf8");
   for (const literal of client.match(/key === "([^"]+)"/g) || []) assert.equal(backup.isAppLocalKey(literal.slice(9, -1)), true, literal);
+});
+
+test("备份时合并 SQLite localMirror 中缺失于 localStorage 的应用键，且渲染进程新值优先", async () => {
+  const dir = tempDir();
+  const kv = mirror({
+    "a-stock-radar:notes:v1": "{\"notes\":[{\"id\":\"sqlite-only\"}]}",
+    "a-stock-radar:review-archive:v2": "[{\"id\":\"from-sqlite\"}]",
+    "unrelated:key": "should-not-backup"
+  });
+  let saved = { folder: dir, auto: true, keep: 30, lastBackupAt: "", lastError: "", password: "" };
+  const api = backup.createBackupService({
+    readStore: name => structuredClone(STORES[name] ?? null),
+    writeStore: () => {},
+    readConfig: () => saved,
+    writeConfig: value => { saved = value; },
+    encryptSecret: value => `enc:${value}`,
+    decryptSecret: value => value.replace(/^enc:/, ""),
+    appVersion: "1.6.71",
+    localMirror: kv,
+    now: () => NOW
+  });
+  const { name } = await api.run({
+    "a-stock-radar:review-archive:v2": "[{\"id\":\"fresh-from-renderer\"}]",
+    "astock:display-density:v1": "compact"
+  });
+  const decoded = await backup.decodeBackup(fs.readFileSync(path.join(dir, name), "utf8"));
+  assert.equal(decoded.local["a-stock-radar:notes:v1"], "{\"notes\":[{\"id\":\"sqlite-only\"}]}");
+  assert.equal(decoded.local["a-stock-radar:review-archive:v2"], "[{\"id\":\"fresh-from-renderer\"}]");
+  assert.equal(decoded.local["astock:display-density:v1"], "compact");
+  assert.equal(decoded.local["unrelated:key"], undefined);
+});
+
+test("恢复时 syncLocalMirror 按并集写入备份新增键，失败时回滚删除新增键并跳过非法键名", async () => {
+  const dir = tempDir();
+  const source = service(STORES, { folder: dir });
+  const { name } = await source.api.run({
+    "a-stock-radar:notes:v1": "{\"notes\":[{\"id\":\"added-from-backup\"}]}",
+    "a-stock-radar:review-archive:v2": "[{\"id\":\"updated\"}]",
+    "a-stock-radar:bad key with spaces": "ignored"
+  });
+
+  // 1) 成功恢复：备份新增键被写入 SQLite mirror，非法键名被安全忽略
+  const kv = mirror({ "a-stock-radar:review-archive:v2": "[{\"id\":\"old\"}]", "a-stock-radar:obsolete": "drop" });
+  const data = structuredClone(STORES);
+  const api = backup.createBackupService({
+    readStore: store => structuredClone(data[store] ?? null),
+    writeStore: (store, value) => { data[store] = value; },
+    readConfig: () => ({ folder: dir }),
+    writeConfig: () => {},
+    encryptSecret: v => v,
+    decryptSecret: v => v,
+    appVersion: "1.6.71",
+    now: () => NOW,
+    localMirror: kv
+  });
+  await api.restore(name);
+  assert.equal(kv.values.get("a-stock-radar:notes:v1"), "{\"notes\":[{\"id\":\"added-from-backup\"}]}");
+  assert.equal(kv.values.get("a-stock-radar:review-archive:v2"), "[{\"id\":\"updated\"}]");
+  assert.equal(kv.values.has("a-stock-radar:obsolete"), false);
+  assert.equal(kv.values.has("a-stock-radar:bad key with spaces"), false);
+
+  // 2) 中途写入失败时：新建的键通过 remove 回滚，既有键恢复旧值
+  const kv2 = mirror({ "a-stock-radar:review-archive:v2": "[{\"id\":\"old\"}]" });
+  const origSet = kv2.set;
+  let sets = 0;
+  kv2.set = (key, value) => {
+    sets += 1;
+    if (sets === 2) throw new Error("sqlite busy");
+    return origSet(key, value);
+  };
+  const data2 = structuredClone(STORES);
+  const api2 = backup.createBackupService({
+    readStore: store => structuredClone(data2[store] ?? null),
+    writeStore: (store, value) => { data2[store] = value; },
+    readConfig: () => ({ folder: dir }),
+    writeConfig: () => {},
+    encryptSecret: v => v,
+    decryptSecret: v => v,
+    appVersion: "1.6.71",
+    now: () => NOW,
+    localMirror: kv2
+  });
+  await assert.rejects(() => api2.restore(name), /sqlite busy/);
+  kv2.set = origSet;
+  assert.equal(kv2.values.has("a-stock-radar:notes:v1"), false, "新增键在回滚时必须被移除");
+  assert.equal(kv2.values.get("a-stock-radar:review-archive:v2"), "[{\"id\":\"old\"}]");
+});
+
+test("主密码锁定时加密备份的 run/inspect/prepareRestore 抛出 SECRET_STORAGE_LOCKED 且不覆盖 lastError", async () => {
+  const dir = tempDir();
+  let locked = false;
+  let saved = { folder: dir, auto: true, keep: 30, lastBackupAt: "", lastError: "保留原有状态", password: "" };
+  const api = backup.createBackupService({
+    readStore: name => structuredClone(STORES[name] ?? null),
+    writeStore: () => {},
+    readConfig: () => saved,
+    writeConfig: value => { saved = value; },
+    encryptSecret: value => `enc:${value}`,
+    decryptSecret: value => (locked ? "" : value.replace(/^enc:/, "")),
+    isSecretLocked: () => locked,
+    appVersion: "1.6.71",
+    now: () => NOW
+  });
+  api.configure({ password: "BackupPass#2026" });
+  const { name } = await api.run({});
+  saved = { ...saved, lastError: "kept-prev-error" };
+
+  locked = true;
+  await assert.rejects(
+    () => api.run({}),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED" && err?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+  assert.equal(saved.lastError, "kept-prev-error", "锁定时不得覆写 lastError 为误导性的重设密码错误");
+
+  await assert.rejects(
+    () => api.inspect(name),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED" && err?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+  await assert.rejects(
+    () => api.prepareRestore(name),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED" && err?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+
+  // 显式传入密码时即使密钥库锁定也可预览/准备恢复
+  assert.equal((await api.inspect(name, "BackupPass#2026")).stores.includes("holdings"), true);
+  assert.equal((await api.prepareRestore(name, "BackupPass#2026")).stores.holdings[0].code, "600519");
 });

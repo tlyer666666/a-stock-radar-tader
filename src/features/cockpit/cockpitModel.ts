@@ -187,9 +187,9 @@ export function buildUnifiedSentinels(input: {
     row.priority += 18;
     const rt = input.tRuntimes[t.code];
     const sig = rt?.analysis?.signal;
-    if (sig && sig.action !== "wait") {
+    if (sig && sig.action !== "wait" && !rt?.signalNote) {
       row.tSummary = `${sig.title} ${sig.shares ? `${sig.shares}股` : ""}@${sig.price.toFixed(2)}`;
-      row.tTone = sig.action === "buy" || sig.action === "buyBack" || sig.action === "closeSellBack" || sig.action === "stopSellBack"
+      row.tTone = sig.action === "buy" || sig.action === "buyBack" || sig.action === "closeBuyBack" || sig.action === "stopBuyBack"
         ? "buy"
         : "sell";
       row.priority += 40;

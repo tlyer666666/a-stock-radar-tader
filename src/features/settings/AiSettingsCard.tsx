@@ -48,6 +48,16 @@ export function AiSettingsCard({ hidden, draft, setDraft, onSave, saving, saveEr
     if (!hidden) void refresh();
     return () => { profileRevision.current += 1; };
   }, [hidden, refresh]);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onMasterUnlocked = () => { if (!hidden) void refresh(); };
+    window.addEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+      }
+    };
+  }, [hidden, refresh]);
 
   const acceptProfiles = (value: AiProfileList) => {
     profileRevision.current += 1; // An acknowledged mutation outranks an earlier list read.

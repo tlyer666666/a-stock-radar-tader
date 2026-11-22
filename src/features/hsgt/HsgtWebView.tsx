@@ -7,6 +7,9 @@ import { useHsgtOverlayCount } from "./overlayContext";
 type Bounds = { x: number; y: number; width: number; height: number };
 type Action = "home" | "login" | "reload" | "back" | "external" | "logout";
 
+export const HSGT_DOM_OVERLAY_SELECTOR =
+  'dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .copilot-popover, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), .mw-agent-drawer, [data-overlay="open"]';
+
 /** 占位区域与可见区域（滚动容器、窗口）的交集：网页视图不会盖到导航栏或标题栏上。 */
 export function visibleBounds(rect: Bounds, clips: Bounds[]): Bounds | null {
   let left = rect.x, top = rect.y, right = rect.x + rect.width, bottom = rect.y + rect.height;
@@ -56,7 +59,7 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
   const sync = useCallback(() => {
     if (!api) return;
     // Native child surfaces sit above HTML regardless of their CSS z-index.
-    const domOverlay = document.querySelector('dialog[open], [aria-modal="true"]:not(dialog):not([hidden]), .suggestions, .copilot-popover, .notes-popup-stack, [role="menu"]:not([hidden]), details[open].limit-columns-settings, details[open].page-heading-help, .ai-framework-picker.is-open, .sector-suggestions:not(:empty), [data-overlay="open"]');
+    const domOverlay = document.querySelector(HSGT_DOM_OVERLAY_SELECTOR);
     const overlay = overlayCountRef.current > 0 || Boolean(domOverlay);
     const bounds = document.hidden || overlay ? null : measure();
     const key = bounds ? JSON.stringify(bounds) : "";
@@ -86,9 +89,19 @@ export default function HsgtWebView({ onOpenStock }: { onOpenStock?: ((code: str
     };
     sync();
     const observer = new ResizeObserver(schedule);
-    if (frame.current) observer.observe(frame.current);
+    const observed = new Set<Element>();
+    const observeTarget = (el: Element | null | undefined) => {
+      if (!el || observed.has(el)) return;
+      observed.add(el);
+      observer.observe(el);
+    };
+    const frameEl = frame.current;
+    observeTarget(frameEl);
+    observeTarget(frameEl?.parentElement);
+    observeTarget(typeof frameEl?.closest === "function" ? frameEl.closest(".page") : null);
+    observeTarget(typeof document !== "undefined" ? document.documentElement : null);
     const overlays = new MutationObserver(schedule);
-    overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "hidden", "aria-modal", "data-overlay"] });
+    overlays.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "hidden", "aria-modal", "data-overlay", "class"] });
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);

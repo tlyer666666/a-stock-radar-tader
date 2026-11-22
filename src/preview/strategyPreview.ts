@@ -10,6 +10,7 @@ import {
   savePreviewCustom
 } from "./shared";
 import { buildPreviewPayload } from "./mockMarketData";
+import type { StrategyLeaderboardStrategyRow } from "../shared/ipc-contract";
 
 export type PreviewStrategyApi = Pick<
   StockApi,
@@ -22,6 +23,7 @@ export type PreviewStrategyApi = Pick<
   | "runBacktest"
   | "runPortfolioBacktest"
   | "scanStrategySignals"
+  | "getStrategyLeaderboard"
   | "startTrendScan"
   | "evaluateTrendResearch"
   | "checkTrendExecution"
@@ -459,6 +461,59 @@ export function createPreviewStrategyMethods(): PreviewStrategyApi {
         compositeStrategyCount: strategies.filter(item => item.type === "composite").length,
         qualifiedCount: new Set(strategies.flatMap(item => item.stocks.map(stock => stock.code))).size,
         strategies
+      };
+    },
+    async getStrategyLeaderboard() {
+      const rows = [
+        ["weak_to_strong", "弱转强修复", "repair", false, [[247, 138, 78.5, 4.82, 3.88, 1.36], [230, 118, 71.3, 6.9, 5.4, 1.02], [198, 96, 66.4, 8.2, 6.1, 0.88]], "strong"],
+        ["post_limit_contraction_resonance", "涨停后缩量共振", "contraction", false, [[173, 113, 54.9, 3.38, 2.96, -0.07], [160, 96, 58.2, 4.1, 3.5, 0.12], [140, 80, 60.1, 5.2, 4.2, 0.35]], "ahead"],
+        ["vcp_compression", "涨停后量价收缩", "contraction", false, [[249, 158, 56.6, 2.98, 0.93, -0.57], [210, 120, 52.4, 3.2, 1.1, -0.62], [172, 94, 48.8, 2.6, 0.5, -0.81]], "behind"],
+        ["high_tight_flag", "涨停后高位窄幅整理", "contraction", false, [[384, 204, 46.4, 1.83, -0.62, -1.74], [310, 150, 42.1, 1.6, -0.8, -1.9], [240, 110, 38.0, 0.9, -1.1, -2.2]], "weak"],
+        ["ma_reclaim_after_limit", "涨停后MA10收复修复", "pullback", false, [[118, 76, 54.2, 1.42, 0.1, -2.07], [96, 60, 50.2, 1.2, -0.2, -1.8], [80, 44, 46.0, 0.6, -0.5, -1.4]], "weak"],
+        ["volume_dryup_rebound", "涨停后缩量阳线修复", "repair", false, [[119, 87, 52.1, 0.96, 0.34, -2.3], [98, 70, 48.4, 0.8, 0.1, -2.0], [75, 50, 44.0, 0.4, -0.3, -1.7]], "weak"],
+        ["bottom_deep_first_board", "深跌底部首板", "bottom_trend", true, [[44, 22, 63.6, 4.9, 3.4, 2.62], [36, 18, 61.1, 5.5, 4.0, 2.9], [30, 14, 60.0, 6.4, 5.1, 3.1]], "ahead"],
+        ["bottom_board_pullback", "深跌首板后缩量回踩", "bottom_trend", true, [[51, 26, 60.8, 4.2, 2.8, 1.9], [44, 20, 59.1, 4.8, 3.3, 2.2], [36, 15, 58.3, 5.9, 4.4, 2.6]], "ahead"],
+        ["bottom_quiet_board_follow", "底部温和首板后承接", "bottom_trend", true, [[62, 33, 58.1, 3.6, 2.4, 1.44], [50, 24, 56.0, 4.0, 2.9, 1.7], [40, 18, 55.0, 4.6, 3.5, 2.0]], "mixed"],
+        ["board_streak_quiet_pullback", "连板后缩量回调", "pullback", true, [[70, 40, 55.7, 3.1, 1.9, 0.6], [58, 30, 53.4, 3.4, 2.2, 0.8], [46, 22, 50.0, 3.0, 1.8, 0.5]], "mixed"],
+        ["volume_rebound_hold", "下跌后放量大阳·次日平量", "repair", true, [[58, 30, 56.9, 2.7, 1.5, 0.4], [46, 22, 52.2, 2.9, 1.7, 0.6], [38, 16, 50.0, 2.4, 1.2, 0.3]], "mixed"],
+        ["limit_gap_hold", "涨停高开支撑守卫", "pullback", true, [[66, 36, 57.6, 2.4, 1.2, 0.1], [54, 28, 53.7, 2.6, 1.4, 0.2], [42, 20, 50.0, 2.0, 1.0, -0.1]], "mixed"],
+        ["first_board_quality_resonance", "首板质量共振", "first_board", false, [[0, 0, null, null, null, null], [0, 0, null, null, null, null], [0, 0, null, null, null, null]], "insufficient"]
+      ];
+      const baselineByHorizon = { "5": { sampleCount: 4126, winRate: 55.2, averageReturn: 2.62, medianReturn: 1.1 }, "10": { sampleCount: 3400, winRate: 56.8, averageReturn: 3.8, medianReturn: 2.2 }, "20": { sampleCount: 2600, winRate: 57.5, averageReturn: 5.1, medianReturn: 3.4 } };
+      const strategies = rows.map((row: unknown, index: number) => {
+        const [id, name, family, featured, hs, verdict] = row as [string, string, string, boolean, [number, number, number | null, number | null, number | null, number | null][], string];
+        const horizons: StrategyLeaderboardStrategyRow["horizons"] = {};
+        ["5", "10", "20"].forEach((key, h) => {
+          const [sampleCount, days, winRate, averageReturn, medianReturn, edge] = hs[h]!;
+          horizons[key] = { sampleCount, independentSignalDays: days, winRate,
+            winRateInterval95: typeof winRate === "number" ? [Math.max(0, Math.round((winRate - 8) * 10) / 10), Math.min(100, Math.round((winRate + 8) * 10) / 10)] : null,
+            averageReturn, medianReturn, averageExcessReturn: averageReturn === null ? null : Math.round((averageReturn - 0.4) * 10) / 10,
+            edgeVsBaseline: edge === null ? null : Math.round((edge - 0.1) * 100) / 100, medianEdgeVsBaseline: edge === null ? null : Math.round(edge * 80) / 100,
+            dayWeightedEdge: edge, comparedSignalDays: days,
+            nextDayUnbuyableRate: sampleCount ? Math.round((index % 3) * 0.4 * 10) / 10 : null,
+            entryGapSkippedRate: sampleCount ? Math.round((index % 4) * 1.2 * 10) / 10 : null };
+        });
+        const edge = hs[0]![5];
+        return { id, name, family, featured, detail: "演示：与策略库同一套冻结规则。",
+          horizons, rank: index + 1,
+          halves: [
+            { label: "前半段", from: "2025-11-24", to: "2026-04-28", sampleCount: Math.round(hs[0]![0] * 0.55), winRate: typeof hs[0]![2] === "number" ? Math.round((hs[0]![2] - 1.4) * 10) / 10 : null, averageReturn: hs[0]![3] === null ? null : Math.round((hs[0]![3] - 0.4) * 10) / 10, dayWeightedEdge: edge === null ? null : Math.round((edge - 0.2) * 100) / 100, comparedSignalDays: Math.round(hs[0]![1] * 0.55) },
+            { label: "后半段", from: "2026-04-29", to: "2026-11-13", sampleCount: Math.round(hs[0]![0] * 0.45), winRate: typeof hs[0]![2] === "number" ? Math.round((hs[0]![2] + 1.1) * 10) / 10 : null, averageReturn: hs[0]![3] === null ? null : Math.round((hs[0]![3] + 0.5) * 10) / 10, dayWeightedEdge: edge === null ? null : Math.round((edge + 0.25) * 100) / 100, comparedSignalDays: Math.round(hs[0]![1] * 0.45) }
+          ],
+          verdict: { level: verdict, text: verdict === "strong" ? "各持有期都跑赢同期涨停股基线，前后两段方向一致" : verdict === "ahead" ? "多数持有期跑赢基线，但不是每段都一致" : verdict === "weak" ? "各持有期都跑输同期涨停股基线，前后两段方向一致" : verdict === "behind" ? "多数持有期跑输基线" : verdict === "insufficient" ? "样本不足（少于 30 笔或 10 个信号日），只能观察" : "与基线大致持平，没有稳定优势" } };
+      });
+      strategies.sort((a, b) => (b.horizons["5"]?.dayWeightedEdge ?? -Infinity) - (a.horizons["5"]?.dayWeightedEdge ?? -Infinity));
+      strategies.forEach((row, index) => { row.rank = index + 1; });
+      return {
+        v: 1, generatedAt: new Date().toISOString(), signalTo: "2026-11-20", dataThrough: "2026-11-20", libraryStale: false,
+        stockCount: 5120, window: { from: "2025-11-24", to: "2026-11-13" }, splitDate: "2026-04-29",
+        horizons: [5, 10, 20], primaryHorizon: 5, minSamples: 30, minSignalDays: 10, edgeTolerance: 0.3, benchmarkReady: true,
+        universe: { localStocks: 5400, readable: 5120, replayed: 5120, excludedRisk: 120, namesAvailable: true }, elapsedSeconds: 96,
+        method: "信号日收盘后确认，次日开盘买入，持有 5 / 10 / 20 个交易日后收盘卖出，扣双边成本 0.23%；同一只股票相邻信号至少间隔 5 个交易日；次日一字涨停买不到的不计入；次日竞价高开超过4%或低开超过5%不买；退出日跌停或无成交则顺延。",
+        baselineDefinition: "基线：同期任意一只近 15 个交易日内涨停过的股票，用同样的买卖规则得到的收益。",
+        edgeDefinition: "优势按信号日等权：每个信号日先算“策略平均收益 − 基线平均收益”，再对所有信号日取平均；某一天成批出信号不会主导结论。",
+        caveat: "浏览器预览演示数据：样本来自本机日线库当前收录的股票（约一年多的日线，扣除指标预热后大约是近一年的信号）。已退市的股票不在其中，ST 按现在的名称剔除，所以结果偏乐观；只说明这套规则近一年在全市场的表现，不代表未来收益，也不参与选股。",
+        baseline: baselineByHorizon, strategies
       };
     },
     async startTrendScan(options) { trendState = await createConfiguredTrendPreviewStatus(options); return structuredClone(trendState); },

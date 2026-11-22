@@ -117,6 +117,98 @@ test("holdings view exposes entry mode tabs, stop-loss banner, and privacy mask 
   assert.equal(markup.includes("300 股"), false, "privacyMask should mask share count");
 });
 
+test("HoldingsView preserves and clamps sellableShares on edit and batch-clears holding alerts via clearAlerts(codes)", async () => {
+  const { createHookHarness, find, walk, text } = require("../../../qa/research-hook-harness.cjs");
+  const prevWindow = global.window;
+  const savedSnapshots = [];
+  const clearAlertsCalls = [];
+  const ackAlertCalls = [];
+  let currentItems = [
+    { code: "600519", name: "贵州茅台", secid: "1.600519", shares: 500, sellableShares: 300, costPrice: 1450, note: "底仓", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }
+  ];
+  global.window = {
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    addEventListener() {},
+    removeEventListener() {},
+    stockApi: {
+      search: async (q) => q === "600519" ? [{ code: "600519", name: "贵州茅台", secid: "1.600519" }] : [],
+      getQuoteSnapshot: async () => ({ quote: { latest: 1500, preClose: 1480, changePct: 1.35 }, updatedAt: "2026-11-22T02:00:00.000Z" })
+    }
+  };
+  try {
+    const harness = createHookHarness(() => HoldingsView({
+      items: currentItems,
+      settings: initialSettings,
+      live: false,
+      monitors: {
+        configs: {},
+        runtimes: {},
+        latestQuotes: {},
+        refreshing: false,
+        storageError: "",
+        save: () => true,
+        remove: () => true,
+        alerts: [
+          { id: "a1", code: "600519", name: "贵州茅台", triggeredAt: "2026-11-22T02:00:00.000Z", detail: "跌破止损" },
+          { id: "a2", code: "600519", name: "贵州茅台", triggeredAt: "2026-11-22T02:05:00.000Z", detail: "涨超 3%" },
+          { id: "a3", code: "000001", name: "平安银行", triggeredAt: "2026-11-22T02:06:00.000Z", detail: "非持仓预警" }
+        ],
+        ackAlert: (id) => ackAlertCalls.push(id),
+        clearAlerts: (codes) => clearAlertsCalls.push(codes)
+      },
+      onSave: async (updater) => {
+        currentItems = updater(currentItems);
+        savedSnapshots.push(currentItems);
+        return true;
+      },
+      onOpen: noop
+    }), { runEffects: false });
+    harness.render();
+
+    // 1. Batch clear holding alerts must use clearAlerts([...holdingCodeSet]) once instead of N ackAlert calls
+    const clearBtn = find(harness.tree, n => n.type === "button" && /清空持仓预警/.test(text(n)));
+    assert.ok(clearBtn, "should render clear holding alerts button");
+    clearBtn.props.onClick();
+    assert.deepEqual(clearAlertsCalls, [["600519"]]);
+    assert.deepEqual(ackAlertCalls, []);
+
+    // 2. Editing cost/note must preserve sellableShares (300)
+    const editBtn = find(harness.tree, n => n.type === "button" && text(n).trim() === "编辑");
+    editBtn.props.onClick();
+    harness.render();
+    const formInputs = walk(harness.tree).filter(n => n.type === "input");
+    const costInput = formInputs.find(n => String(n.props.value) === "1450");
+    assert.ok(costInput, "cost input should be populated");
+    costInput.props.onChange({ target: { value: "1460" } });
+    harness.render();
+    const form = find(harness.tree, n => n.type === "form");
+    await form.props.onSubmit({ preventDefault() {} });
+    assert.equal(savedSnapshots.length, 1);
+    assert.equal(savedSnapshots[0][0].costPrice, 1460);
+    assert.equal(savedSnapshots[0][0].sellableShares, 300, "editing cost must preserve sellableShares");
+
+    // 3. Reducing shares below sellableShares must clamp sellableShares to new shares
+    harness.render();
+    const editBtn2 = find(harness.tree, n => n.type === "button" && text(n).trim() === "编辑");
+    editBtn2.props.onClick();
+    harness.render();
+    const sharesInput = walk(harness.tree).find(n => n.type === "input" && String(n.props.value) === "500");
+    assert.ok(sharesInput, "shares input should be populated");
+    sharesInput.props.onChange({ target: { value: "200" } });
+    harness.render();
+    const form2 = find(harness.tree, n => n.type === "form");
+    await form2.props.onSubmit({ preventDefault() {} });
+    assert.equal(savedSnapshots.length, 2);
+    assert.equal(savedSnapshots[1][0].shares, 200);
+    assert.equal(savedSnapshots[1][0].sellableShares, 200, "reducing shares must clamp sellableShares");
+
+    harness.dispose();
+  } finally {
+    if (prevWindow === undefined) delete global.window;
+    else global.window = prevWindow;
+  }
+});
+
 after(() => {
   restoreTypeScript?.();
   if (previousCssLoader) require.extensions[".css"] = previousCssLoader;

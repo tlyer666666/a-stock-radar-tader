@@ -20,8 +20,8 @@ function defaultThs() {
   }
   return defaultThsSingleton;
 }
-let sharedFailedHostsByTransport = new WeakMap();
-let sharedThsByProvider = new WeakMap();
+const sharedFailedHostsByTransport = new WeakMap();
+const sharedThsByProvider = new WeakMap();
 const trackedFailedHostMaps = new Set();
 const trackedThsStates = new Set();
 const moduleDefaultFailedHosts = new Map();
@@ -59,8 +59,6 @@ function resolveSharedThsState(thsProvider, explicitState) {
 }
 
 function resetSharedTrendBreakerState() {
-  sharedFailedHostsByTransport = new WeakMap();
-  sharedThsByProvider = new WeakMap();
   moduleDefaultFailedHosts.clear();
   for (const map of trackedFailedHostMaps) map.clear();
   moduleDefaultThsState.faults = 0;
@@ -389,11 +387,14 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
     });
   }
   function sharedThsQuote(ctx, security, signal) {
+    if (typeof ths?.quote !== "function") return Promise.resolve(null);
     if (!ctx.quotes.has(security.secid)) {
-      const pending = ths.quote({ code: security.code, secid: security.secid, assetType: "stock" }, { signal }).catch(error => {
-        if (signal?.aborted) throw error;
-        return null; // 没有快照时只用K线文件，不补当日。
-      });
+      const pending = Promise.resolve()
+        .then(() => ths.quote({ code: security.code, secid: security.secid, assetType: "stock" }, { signal }))
+        .catch(error => {
+          if (signal?.aborted) throw error;
+          return null; // 没有快照时只用K线文件，不补当日。
+        });
       ctx.quotes.set(security.secid, pending);
       if (ctx.quotes.size > 24) ctx.quotes.delete(ctx.quotes.keys().next().value);
     }
@@ -415,7 +416,16 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
     const thsStartedAt = clock();
     try {
       signal?.throwIfAborted();
-      const quote = await sharedThsQuote(ctx, security, signal);
+      const preferFuyao = Boolean(typeof ths.preferFuyao === "function" && ths.preferFuyao());
+      let quote = null;
+      if (!preferFuyao) {
+        try {
+          quote = await sharedThsQuote(ctx, security, signal);
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          quote = null;
+        }
+      }
       const fetched = await ths.history({ code: security.code, secid: security.secid, assetType: "stock" },
         { limit: historyBars, fqt: adjustment === "front" ? 1 : 0, signal, now: new Date(now()).getTime(), quote });
       rows = validateRows(fetched.map(row => ({ date: row.date, open: row.open, close: row.close, high: row.high, low: row.low,
@@ -438,7 +448,13 @@ function createTrendMarketData({ sinaPageRetryDelays = [1500, 4000, 8000], fetch
         const faultAt = clock();
         ctx.ths.lastFaultAt = faultAt;
         if (++ctx.ths.faults >= THS_FAULT_LIMIT) ctx.ths.pausedUntil = faultAt + THS_PAUSE_MS;
-        marketSourceHealth?.recordFailure?.("ths_free_history", error, Math.max(0, faultAt - thsStartedAt), signal);
+        const isFuyaoError = String(error?.code || "").startsWith("FUYAO_") || /fuyao|扶摇/i.test(String(error?.source || error?.message || ""));
+        marketSourceHealth?.recordFailure?.(
+          isFuyaoError ? "fuyao_history" : "ths_free_history",
+          error,
+          Math.max(0, faultAt - thsStartedAt),
+          signal
+        );
       }
       record(ctx, stage, "ths-free", false, null, new Error(`同花顺未取到，已改用应急源：${error?.message || error}`));
       return null;

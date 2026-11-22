@@ -15,6 +15,8 @@ function registerStrategyIpc({
   usableHoldings,
   scanStrategySignals,
   getStrategyScanProgress = defaultGetStrategyScanProgress,
+  strategyLeaderboard,
+  getStrategyLeaderboardProgress = null,
   getDailyBarCoverage = null,
   cancelServiceJob,
   getStrategyDefinitions,
@@ -57,6 +59,14 @@ function registerStrategyIpc({
   handleTrustedIpc("service:cancel", (event, requestId) =>
     cancelServiceJob(serviceRequestRuntime(event, { requestId: serviceRequestId(requestId, true) }))
   );
+  handleTrustedIpc("strategy:leaderboard", (event, options = {}) => {
+    const safeOptions = options && typeof options === "object" && !Array.isArray(options) ? options : {};
+    if (safeOptions.statusOnly === true) {
+      return { statusOnly: true, progress: typeof getStrategyLeaderboardProgress === "function" ? getStrategyLeaderboardProgress() : { active: false } };
+    }
+    if (typeof strategyLeaderboard !== "function") throw new Error("策略实测服务未注册");
+    return strategyLeaderboard(safeOptions, serviceRequestRuntime(event, safeOptions));
+  });
   handleTrustedIpc("strategy:definitions", () => getStrategyDefinitions());
   handleTrustedIpc("strategy:external-archive", () => externalArchiveSummary());
   handleTrustedIpc("strategy:custom:list", () => customStrategyStore.list());

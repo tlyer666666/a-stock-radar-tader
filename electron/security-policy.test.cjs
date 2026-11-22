@@ -106,6 +106,20 @@ test("new secrets are never downgraded to plaintext when safeStorage is unavaila
   );
   assert.equal(encryptCalls, 0);
   assert.equal(encryptSecretForStorage("", unavailable), "");
+
+  const locked = {
+    isLocked: () => true,
+    isEncryptionAvailable: () => false,
+    encryptString: () => {
+      encryptCalls += 1;
+      return Buffer.from("must-not-run");
+    }
+  };
+  assert.throws(
+    () => encryptSecretForStorage("new-secret", locked),
+    (error) => error?.code === "SECRET_STORAGE_LOCKED" && error?.message === "密钥库已锁定，请先输入主密码解锁"
+  );
+  assert.equal(encryptCalls, 0);
 });
 
 test("already protected or empty settings never initialize the OS keychain just to inspect migration", () => {

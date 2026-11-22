@@ -284,3 +284,121 @@ test('stockReviewFromPayload maps sectorLadder, marketEmotion, firstBoardQuality
   }));
   assert.ok(emptyArchiveHtml.includes('预览复盘档案'));
 });
+
+test('applyUiScale skips CSS zoom in standalone Electron review window to prevent double zoom', () => {
+  const { applyUiScale, applySavedVisualPreferences, UI_SCALE_STORAGE_KEY } = require('./domain/visualPreferences.ts');
+  const prevWindow = global.window;
+  const prevDocument = global.document;
+  try {
+    const store = new Map([[UI_SCALE_STORAGE_KEY, '120']]);
+    const style = { zoom: '120%' };
+    const dataset = {};
+    global.document = { documentElement: { style, dataset } };
+    global.window = {
+      localStorage: {
+        getItem: k => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => { store.set(k, String(v)); }
+      },
+      stockApi: {
+        getReviewTheme: async () => ({ theme: 'dark' })
+      }
+    };
+    assert.equal(applyUiScale(120), 120);
+    assert.equal(style.zoom, '', 'standalone review window must clear CSS zoom when Electron controls native zoomFactor');
+    applySavedVisualPreferences();
+    assert.equal(style.zoom, '', 'focus/storage preference sync must not re-apply CSS zoom in standalone review window');
+
+    // Pure browser/preview mode without stockApi still falls back to CSS zoom.
+    delete global.window.stockApi;
+    assert.equal(applyUiScale(120), 120);
+    assert.equal(style.zoom, '120%');
+  } finally {
+    if (prevWindow === undefined) delete global.window; else global.window = prevWindow;
+    if (prevDocument === undefined) delete global.document; else global.document = prevDocument;
+  }
+});
+
+test('ProfessionalReview hydrates non-empty native KV archive even when localStorage has an empty array', async () => {
+  const { createHookHarness, text } = require('../qa/research-hook-harness.cjs');
+  const { resetSafeStorageCache } = require('./safeStorage.ts');
+  const prevWindow = global.window;
+  const prevDocument = global.document;
+  const ARCHIVE_KEY = 'a-stock-radar-professional-review-v1';
+  const payload = stockFixture();
+  payload.actualProvider = 'ths';
+  const storedRecord = archiveRecord(stockReviewFromPayload(payload));
+  const map = new Map([[ARCHIVE_KEY, '[]']]);
+  let resolveKv;
+  global.window = {
+    localStorage: {
+      getItem: k => (map.has(k) ? map.get(k) : null),
+      setItem: (k, v) => { map.set(k, String(v)); },
+      removeItem: k => { map.delete(k); }
+    },
+    stockApi: {
+      getProfessionalReview: async () => null,
+      kvGet: key => key === ARCHIVE_KEY ? new Promise(resolve => { resolveKv = resolve; }) : Promise.resolve(null),
+      kvSet: async () => true
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    setTimeout: () => 1,
+    clearTimeout() {}
+  };
+  global.document = { hidden: false, addEventListener() {}, removeEventListener() {} };
+  resetSafeStorageCache();
+  const harness = createHookHarness(ProfessionalReview, { props: {} });
+  try {
+    harness.render();
+    assert.match(text(harness.tree), /复盘档案 0/);
+    resolveKv(JSON.stringify([storedRecord]));
+    await harness.flush();
+    assert.match(text(harness.tree), /复盘档案 1/, 'hydrated KV archive must replace empty local []');
+    assert.equal(JSON.parse(map.get(ARCHIVE_KEY)).length, 1, 'hydrated KV archive must also persist to localStorage');
+  } finally {
+    harness.dispose();
+    resetSafeStorageCache();
+    if (prevWindow === undefined) delete global.window; else global.window = prevWindow;
+    if (prevDocument === undefined) delete global.document; else global.document = prevDocument;
+  }
+});
+
+test('SelectionKline useCvdPalette reacts to data-color-vision mutations without remounting', () => {
+  const { createHookHarness } = require('../qa/research-hook-harness.cjs');
+  const { useCvdPalette } = require('./features/strategy-selection/SelectionKline.tsx');
+  const prevDocument = global.document;
+  const prevMO = global.MutationObserver;
+  let attrValue = 'standard';
+  let observedFilter = null;
+  let notifyMutation = null;
+  let disconnected = false;
+  global.document = {
+    documentElement: {
+      getAttribute: name => (name === 'data-color-vision' ? attrValue : null)
+    }
+  };
+  global.MutationObserver = class {
+    constructor(cb) { notifyMutation = cb; }
+    observe(_target, options) { observedFilter = options.attributeFilter; }
+    disconnect() { disconnected = true; }
+  };
+  const harness = createHookHarness(() => useCvdPalette(true));
+  try {
+    harness.render();
+    assert.equal(harness.tree, false);
+    assert.deepEqual(observedFilter, ['data-color-vision']);
+    attrValue = 'cvd';
+    notifyMutation();
+    harness.render();
+    assert.equal(harness.tree, true, 'legend palette flips to cvd immediately on attribute mutation');
+    attrValue = 'standard';
+    notifyMutation();
+    harness.render();
+    assert.equal(harness.tree, false, 'legend palette flips back to standard immediately');
+  } finally {
+    harness.dispose();
+    assert.equal(disconnected, true);
+    if (prevDocument === undefined) delete global.document; else global.document = prevDocument;
+    if (prevMO === undefined) delete global.MutationObserver; else global.MutationObserver = prevMO;
+  }
+});

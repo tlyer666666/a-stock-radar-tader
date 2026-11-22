@@ -1051,3 +1051,71 @@ test("parseModelJson ignores stray brackets/braces in prose and string literals"
     { items: [{ code: "600519", score: 91 }] }
   );
 });
+
+test('force: true never coalesces onto an in-flight non-forced flight across summary, rank, and marketReview', async t => {
+  for (const mode of ['summary', 'rank', 'marketReview']) {
+    const firstGate = deferred();
+    const firstEntered = deferred();
+    let calls = 0;
+    const service = createAiService({
+      getConfig: () => config,
+      fetchImpl: async () => {
+        const callIndex = ++calls;
+        if (callIndex === 1) {
+          firstEntered.resolve();
+          await firstGate.promise;
+        }
+        if (mode === 'summary') {
+          return reply({ headline: `总结-${callIndex}`, market: '市场', themes: [], focus: [], risks: [] });
+        }
+        if (mode === 'rank') {
+          return reply({ items: [{ code: '600001', score: callIndex === 1 ? 60 : 88 }] });
+        }
+        return reply({ headline: `复盘-${callIndex}`, market: '市场', themes: [], risks: [], nextDay: [] });
+      }
+    });
+    t.after(async () => { firstGate.resolve(); await service.shutdown(); });
+
+    const input = mode === 'marketReview'
+      ? { snapshot: { date: '2026-11-12' } }
+      : { asOfDate: '2026-11-12', picks: [pick('600001', '甲')] };
+    const first = service[mode](input);
+    await firstEntered.promise;
+    const forced = service[mode]({ ...input, force: true });
+    const forcedResult = await forced;
+    firstGate.resolve();
+    const firstResult = await first;
+
+    assert.equal(calls, 2, `${mode}: force: true must launch a fresh flight instead of coalescing onto the in-flight non-forced flight`);
+    if (mode === 'rank') {
+      assert.equal(firstResult.items[0].score, 60);
+      assert.equal(forcedResult.items[0].score, 88);
+    } else {
+      assert.notEqual(forcedResult.headline, firstResult.headline);
+    }
+  }
+});
+
+test('marketContext timeout aborts loadMarket child signal cleanly so resources drain without hanging', async t => {
+  let marketSignal = null;
+  let cleanedUp = false;
+  const service = createAiService({
+    getConfig: () => config,
+    marketTimeoutMs: 30,
+    loadMarket: ({ signal }) => new Promise((_resolve, reject) => {
+      marketSignal = signal;
+      signal.addEventListener('abort', () => {
+        cleanedUp = true;
+        reject(signal.reason);
+      }, { once: true });
+    }),
+    fetchImpl: async () => reply({ headline: '无市场背景总结', market: '中性', themes: [], focus: [], risks: [] })
+  });
+  t.after(() => service.shutdown());
+
+  const result = await service.summary({ asOfDate: '2026-11-12', picks: [pick('600001', '甲')] });
+  assert.equal(result.headline, '无市场背景总结');
+  assert.equal(marketSignal?.aborted, true, 'loadMarket child signal must be aborted when marketContext times out');
+  assert.equal(marketSignal?.reason?.code, 'ETIMEDOUT');
+  assert.equal(cleanedUp, true, 'loadMarket abort listener must run to release resources');
+});

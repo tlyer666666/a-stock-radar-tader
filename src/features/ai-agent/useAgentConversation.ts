@@ -113,6 +113,17 @@ export function useAgentConversation(
     } catch (reason) { if (mounted.current && request === stateRequest.current) setLoadError(errorText(reason)); return null; }
   }, [api]);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const onMasterUnlocked = () => { void refreshState(); };
+    window.addEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+    return () => {
+      if (typeof window.removeEventListener === "function") {
+        window.removeEventListener("a-stock-radar:master-unlocked", onMasterUnlocked);
+      }
+    };
+  }, [refreshState]);
+
   const openConversation = useCallback(async (id: string | null) => {
     const owner = ++generation.current;
     const loading = api && id ? Symbol("history") : null;

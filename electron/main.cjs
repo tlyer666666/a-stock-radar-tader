@@ -106,6 +106,8 @@ const {
   discoverRecentLimitUps,
   getPreviousLimitUpFailedBoardSnapshot,
   scanStrategySignals,
+  strategyLeaderboard,
+  getStrategyLeaderboardProgress,
   checkTrendExecution,
   evaluateTrendResearch,
   getLimitUpSectorBoard,
@@ -1245,11 +1247,13 @@ async function cleanupStorageCache(input) {
   if (target === "stale-bars") {
     const res = typeof dailyBarStore?.cleanupStaleBars === "function"
       ? await dailyBarStore.cleanupStaleBars()
-      : { removedTmp: 0, removedStale: 0 };
+      : { removedTmp: 0, removedOrphans: 0 };
+    const removedTmp = res?.removedTmp ?? 0;
+    const removedOrphans = res?.removedOrphans ?? 0;
     cachedStorageSummary = null;
     return {
       ok: true,
-      message: `已清理 ${res.removedTmp} 个临时文件与 ${res.removedStale} 份过期/退市日线`,
+      message: `已清理 ${removedTmp} 个临时文件与 ${removedOrphans} 份过期/退市日线`,
       summary: computeStorageSummary()
     };
   }
@@ -1322,6 +1326,7 @@ function aiProfiles() {
       return writeJson("ai-profiles", value, isAiProfileStore, true);
     },
     encrypt: encryptSecret, decrypt: decryptSecret,
+    isLocked: () => secretStorage().isLocked(),
     legacy: () => { const settings = settingsForService(); return { baseUrl: settings.aiBaseUrl, model: settings.aiModel, apiKey: settings.aiApiKey }; }
   });
   return aiProfileStore;
@@ -1614,18 +1619,30 @@ if (!hasSingleInstanceLock) {
       set: (key, value) => localKvStore().set(key, value),
       remove: key => localKvStore().remove(key)
     },
+    isSecretLocked: () => secretStorage().isLocked(),
     getMasterPasswordStatus: () => secretStorage().status(),
-    setMasterPassword: input => secretStorage().setMasterPassword(String(input?.newPassword || ""), String(input?.currentPassword || "")),
+    setMasterPassword: async input => {
+      const status = await secretStorage().setMasterPassword(String(input?.newPassword || ""), String(input?.currentPassword || ""));
+      loadStoredSettings.cached = undefined;
+      settingsForService.cached = undefined;
+      return status;
+    },
     unlockMasterPassword: async input => {
       const password = typeof input === "string" ? input : String(input?.password || "");
       const status = await secretStorage().unlockMasterPassword(password);
       loadStoredSettings.cached = undefined;
       settingsForService.cached = undefined;
+      try { resetMarketSourceHealth(); } catch { /* ignore */ }
+      try { resetNewsCache(); } catch { /* ignore */ }
+      try { resetProfessionalReviewCache(); } catch { /* ignore */ }
       return status;
     },
-    clearMasterPassword: input => {
+    clearMasterPassword: async input => {
       const currentPassword = typeof input === "string" ? input : String(input?.currentPassword || "");
-      return secretStorage().clearMasterPassword(currentPassword);
+      const status = await secretStorage().clearMasterPassword(currentPassword);
+      loadStoredSettings.cached = undefined;
+      settingsForService.cached = undefined;
+      return status;
     },
     setAppZoomFactor,
     resetNewsCache,
@@ -1672,6 +1689,8 @@ if (!hasSingleInstanceLock) {
     getConceptChain,
     analyzeSector,
     scanStrategySignals,
+    strategyLeaderboard,
+    getStrategyLeaderboardProgress,
     getDailyBarCoverage: () => dailyBarStore?.getCoverageSummary?.() || null,
     cancelServiceJob,
     getStrategyDefinitions,

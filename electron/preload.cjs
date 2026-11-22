@@ -98,6 +98,7 @@ contextBridge.exposeInMainWorld("stockApi", {
   getPreviousLimitUpFailedBoardSnapshot: (options = {}) =>
     invoke("market:previous-limit-up-failed-boards", options),
   scanStrategySignals: (options = {}) => invoke("strategy:scan", options),
+  getStrategyLeaderboard: (options = {}) => invoke("strategy:leaderboard", options),
   cancelServiceJob: (requestId) => invoke("service:cancel", requestId),
   getStrategyDefinitions: () => invoke("strategy:definitions"),
   listCustomStrategies: () => invoke("strategy:custom:list"),

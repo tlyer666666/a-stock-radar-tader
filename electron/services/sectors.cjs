@@ -1935,7 +1935,7 @@ function preferRicherBoard(candidate, cachedValue) {
 
 async function getLimitUpSectorBoardUncached(options = {}) {
   const [limitUpSnapshot, benchmark, { rows: allMarketHistory, label: marketProxy }, marketSnapshot, ladderPools] = await Promise.all([
-    discoverLimitUps(options),
+    discoverLimitUps(options).catch(() => ({ rows: [], source: "unavailable", degraded: true })),
     hs300History(15, options).catch(() => []),
     marketProxyHistory(15, options),
     // A2-03：快照整体失败 = 市场广度/平均收益未知，不能退化成"广度 50% / 涨幅 0%"。
@@ -2253,16 +2253,29 @@ async function getLimitUpSectorBoardUncached(options = {}) {
   // 从界面上验证排名是否合理；改为按涨幅排序后，排名与「板块涨幅」这一列直接对应。
   // score 仍保留在数据里作为辅助参考（排序不再使用）。
   // 涨幅缺失（-- ）的板块排在最后，并保持涨停家数降序作为次级排序。
-  return rows
+  return sortSectorBoardRows(rows);
+}
+
+function comparePoolLimitUps(a, b) {
+  const leftPool = finiteOrNull(a?.poolLimitUps);
+  const rightPool = finiteOrNull(b?.poolLimitUps);
+  if (leftPool === null && rightPool === null) return 0;
+  if (leftPool === null) return 1;
+  if (rightPool === null) return -1;
+  return rightPool - leftPool;
+}
+
+function sortSectorBoardRows(rows) {
+  return (Array.isArray(rows) ? rows : [])
     .filter(Boolean)
     .sort((a, b) => {
       const left = finiteOrNull(a.memberAverageReturn);
       const right = finiteOrNull(b.memberAverageReturn);
-      if (left === null && right === null) return b.poolLimitUps - a.poolLimitUps;
+      if (left === null && right === null) return comparePoolLimitUps(a, b);
       if (left === null) return 1;
       if (right === null) return -1;
       if (right !== left) return right - left;
-      return b.poolLimitUps - a.poolLimitUps;
+      return comparePoolLimitUps(a, b);
     })
     .map((item, index) => ({ ...item, rank: index + 1 }));
 }
@@ -2330,5 +2343,6 @@ module.exports = {
   getSectorStrengthBoard,
   getIndustrySectorBoard,
   preferRicherBoard,
+  sortSectorBoardRows,
   getLimitUpSectorBoardUncached
 };

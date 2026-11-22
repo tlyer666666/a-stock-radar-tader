@@ -3424,7 +3424,7 @@ html .terminal-shell .member-row.no-funds {
   gap: 5px;
   width: fit-content;
   padding: 2px 8px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
   background: var(--accent-soft);
   color: var(--accent);
   font-size: var(--fs-2xs);
@@ -3921,7 +3921,7 @@ html .terminal-shell .member-row.no-funds {
   display: inline-flex;
   align-items: center;
   padding: 1px 7px;
-  border-radius: var(--radius-pill);
+  border-radius: var(--radius-full);
   font-size: var(--fs-2xs);
   background: var(--accent-soft);
   color: var(--accent);
@@ -5689,7 +5689,7 @@ html .terminal-shell .member-row.no-funds {
 
 .review-quick-plan-form > header small {
   color: var(--ink-3);
-  font-weight: var(--fw-normal);
+  font-weight: var(--fw-regular);
 }
 
 .review-quick-plan-fields {
@@ -5933,4 +5933,698 @@ html .terminal-shell .member-row.no-funds {
 .t-assistant-rule-tag.t0 {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* ============================================================
+ * 今日驾驶舱：布局与视觉整理（2026-11-21）
+ * 之前 .cockpit-hero / .cockpit-card 没有内边距，标题和内容贴着面板边框；
+ * 指标卡的状态色被更高权重的 .cockpit-kpi strong 盖掉。这里统一补齐。
+ * ============================================================ */
+.cockpit-view {
+  gap: var(--space-md);
+}
+
+.cockpit-view > .panel {
+  min-width: 0;
+}
+
+.cockpit-hero {
+  padding: var(--space-lg) var(--space-xl);
+  gap: var(--space-lg);
+  background: linear-gradient(120deg, var(--accent-soft), transparent 46%), var(--surface-1);
+}
+
+.cockpit-hero-head {
+  align-items: center;
+}
+
+.cockpit-hero-title {
+  gap: 6px;
+  min-width: 0;
+}
+
+.cockpit-hero-title :is(h1, h2) {
+  font-size: 22px;
+  line-height: 1.25;
+  letter-spacing: -.01em;
+}
+
+.cockpit-hero-title p {
+  font-size: var(--fs-sm);
+}
+
+.cockpit-kpi-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+
+@media (max-width: 1180px) {
+  .cockpit-kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .cockpit-kpi-strip {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.cockpit-kpi {
+  position: relative;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px 12px 18px;
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.cockpit-kpi::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--line-3);
+}
+
+.cockpit-kpi:has(> strong.tone-ok)::before {
+  background: var(--accent);
+}
+
+.cockpit-kpi:has(> strong.tone-warn)::before {
+  background: var(--warn);
+}
+
+.cockpit-kpi span {
+  font-size: var(--fs-xs);
+}
+
+.cockpit-kpi strong {
+  font-size: var(--fs-xl);
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cockpit-kpi small {
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 状态色要压过 .cockpit-kpi strong / small 的默认墨色。 */
+.cockpit-kpi :is(strong, small).tone-warn { color: var(--warn); }
+.cockpit-kpi :is(strong, small).tone-ok { color: var(--accent); }
+.cockpit-kpi :is(strong, small).tone-up { color: var(--up); }
+.cockpit-kpi :is(strong, small).tone-down { color: var(--down); }
+
+.cockpit-pulse {
+  padding: var(--space-md) var(--space-xl);
+}
+
+.cockpit-priority-strip {
+  padding: var(--space-md) var(--space-xl);
+  margin-bottom: 0;
+}
+
+.cockpit-priority-head {
+  margin-bottom: var(--space-sm);
+}
+
+.cockpit-priority-item {
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+}
+
+.cockpit-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--space-md) var(--space-xl) var(--space-lg);
+}
+
+.cockpit-card-head {
+  flex-wrap: wrap;
+  min-height: 34px;
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--line-1);
+}
+
+.cockpit-card-head > div {
+  gap: 8px;
+  min-width: 0;
+}
+
+.cockpit-card-head > div > svg {
+  flex: none;
+  color: var(--accent);
+}
+
+.cockpit-card-head h3 {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-semibold);
+}
+
+.cockpit-card-head > :is(span, small).cockpit-muted {
+  font-size: var(--fs-xs);
+}
+
+/* 空状态在等高卡片里垂直居中，不再顶在左上角留一大片空白。 */
+.cockpit-card > .cockpit-empty {
+  flex: 1;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg) var(--space-md);
+  text-align: center;
+}
+
+.cockpit-card > .cockpit-empty p {
+  margin: 0;
+  max-width: 46em;
+  line-height: 1.6;
+}
+
+.cockpit-card .cockpit-table-wrap {
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-md);
+}
+
+.cockpit-table th,
+.cockpit-table td {
+  height: 44px;
+  padding: 6px 12px;
+}
+
+.cockpit-table th {
+  height: 36px;
+  background: var(--surface-2);
+  font-size: var(--fs-2xs);
+  white-space: nowrap;
+}
+
+.cockpit-table td {
+  font-variant-numeric: tabular-nums;
+}
+
+.cockpit-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.cockpit-table tbody tr:hover td {
+  background: var(--hover-bg);
+}
+
+.cockpit-table tbody tr.cockpit-row-danger td {
+  background: var(--warn-soft);
+}
+
+.cockpit-table tbody tr.cockpit-row-danger td:first-child {
+  box-shadow: inset 3px 0 0 var(--warn);
+}
+
+.cockpit-table td:last-child {
+  white-space: nowrap;
+}
+
+.cockpit-table td > span > svg {
+  vertical-align: -2px;
+}
+
+.cockpit-plan-band .cockpit-chip {
+  margin-left: 4px;
+}
+
+.cockpit-plan-actions:first-child {
+  margin-left: 0;
+}
+
+.cockpit-chip {
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.cockpit-news-list li,
+.cockpit-note-item,
+.cockpit-link-row,
+.cockpit-alert-row {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.cockpit-news-meta small {
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.cockpit-note-action-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.cockpit-note-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  font-size: var(--fs-xs);
+}
+
+.cockpit-note-text > .link-btn {
+  padding: 0;
+  font-size: var(--fs-2xs);
+}
+
+.cockpit-list-block > b {
+  display: block;
+  margin-top: var(--space-xs);
+  font-size: var(--fs-xs);
+  color: var(--ink-2);
+}
+
+.cockpit-split-lists {
+  gap: var(--space-sm);
+}
+
+.cockpit-quick-tile {
+  gap: 5px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+}
+
+.cockpit-quick-tile > svg {
+  color: var(--accent);
+}
+
+.cockpit-review-box {
+  gap: var(--space-sm);
+  line-height: 1.6;
+}
+
+.cockpit-review-box p {
+  margin: 0;
+}
+
+.cockpit-action-row {
+  margin-top: var(--space-xs);
+}
+
+/* ============================================================
+ * 回测中心：结论先行、空样本补救与历史记录整理（2026-11-21）
+ * ============================================================ */
+.backtest-range-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.backtest-range-presets button {
+  padding: 3px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: var(--radius-full);
+  background: var(--surface-1);
+  color: var(--ink-2);
+  font-size: var(--fs-2xs);
+  cursor: pointer;
+}
+
+.backtest-range-presets button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.backtest-range-presets button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: var(--fw-semibold);
+}
+
+.backtest-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-2);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.backtest-verdict b {
+  color: var(--ink-1);
+  font-size: var(--fs-base);
+  line-height: 1.6;
+}
+
+.backtest-verdict small {
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+
+.backtest-verdict.tone-profit { border-left-color: var(--up); }
+.backtest-verdict.tone-loss { border-left-color: var(--down); }
+.backtest-verdict.tone-empty { border-left-color: var(--warn); background: var(--warn-soft); }
+
+.backtest-verdict-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* 收益概览此前不论盈亏都用涨色底，容易被看成“亏损/失败”；改为中性底，盈亏只体现在数字颜色上。 */
+:root .terminal-shell .backtest-profit-overview {
+  border-color: var(--line-2);
+  background: var(--surface-2);
+}
+
+:root .terminal-shell .backtest-history-panel {
+  min-height: 0;
+  padding: 12px 14px 14px;
+}
+
+:root .terminal-shell .backtest-history-list {
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+  max-height: 520px;
+}
+
+:root .terminal-shell .backtest-history-item {
+  align-content: start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-style: solid;
+  border-color: var(--line-1);
+  background: var(--surface-2);
+}
+
+.backtest-history-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.backtest-history-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.backtest-history-stats span {
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+}
+
+.backtest-history-stats b {
+  overflow: hidden;
+  color: var(--ink-1);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backtest-history-detail summary {
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+  cursor: pointer;
+}
+
+.backtest-history-detail p {
+  margin-top: 4px;
+  line-height: 1.5;
+}
+
+.backtest-history-panel > .backtest-history-actions {
+  margin-top: 10px;
+}
+
+/* 策略选择头部：标题一行，快捷按钮单独一行，不再把按钮挤成竖排。 */
+:root .terminal-shell .backtest-strategy-picker-head {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+:root .terminal-shell .backtest-strategy-picker-head > div {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+:root .terminal-shell .backtest-strategy-picker-head button {
+  white-space: nowrap;
+}
+
+/* 逐笔账本：命中策略列左对齐并允许换行，减少横向滚动。 */
+:root .terminal-shell .backtest-trade-table {
+  min-width: 760px;
+}
+
+:root .terminal-shell .backtest-trade-table :is(th, td):nth-child(2) {
+  text-align: left;
+  white-space: normal;
+}
+
+:root .terminal-shell .backtest-strategy-table :is(th, td):first-child {
+  text-align: left;
+}
+
+:root .terminal-shell .backtest-strategy-table :is(th, td):nth-child(2) {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.backtest-profit-overview.tone-empty .backtest-profit-range {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+/* 设置 · 策略组合：实测因子 / 实测方向组合的标签 */
+.strategy-measured-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-full);
+  color: var(--accent);
+  font-size: var(--fs-2xs);
+  font-style: normal;
+  font-weight: var(--fw-semibold);
+  line-height: 1.4;
+  vertical-align: 1px;
+}
+
+/* ============================================================
+ * 持仓股：明细表按可用宽度伸缩、成交流水面板补内边距（2026-11-21）
+ * 之前各列是固定像素宽（合计至少 960px），1440 宽的窗口里面板只有约 850px，
+ * 最右的「编辑 / 盯盘 / 移除」被裁掉，要横向滚动才点得到。改成弹性列宽后常见窗口宽度下一屏放得下。
+ * ============================================================ */
+:root .terminal-shell .holdings-table[aria-label="持仓明细"] .tr {
+  grid-template-columns: minmax(118px, 1.1fr) minmax(150px, 1.3fr) minmax(118px, 1fr) minmax(64px, .6fr) minmax(128px, 1fr) max-content;
+  min-width: 800px;
+}
+
+:root .terminal-shell .holdings-trades-ledger-panel {
+  margin-top: var(--space-md);
+  padding: var(--space-md) var(--space-lg);
+}
+
+:root .terminal-shell .holdings-trades-ledger-panel > summary {
+  min-height: 28px;
+}
+
+/* 涨停监控：连板梯队没有数据时的说明不要贴着面板边。 */
+:root .terminal-shell .consecutive-board-panel > p,
+:root .terminal-shell .consecutive-board-panel > .empty-inline {
+  margin: 0;
+  padding: var(--space-lg) var(--space-md);
+}
+
+/* 策略选股：「选股条件」折叠条补内边距，不再贴着面板边。 */
+:root .terminal-shell .signal-rule-details > summary {
+  padding: var(--space-sm) var(--space-md);
+  color: var(--ink-1);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+/* ============================================================
+ * 策略实测榜（回测中心，2026-11-21）
+ * ============================================================ */
+.lb-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-lg) var(--space-xl);
+}
+
+.lb-progress small {
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+}
+
+.lb-progress-bar {
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.lb-progress-bar em {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width .4s ease;
+}
+
+.lb-verdict {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: var(--space-md) var(--space-xl);
+}
+
+.lb-verdict > b {
+  font-size: var(--fs-base);
+  line-height: 1.6;
+}
+
+.lb-verdict > small {
+  color: var(--ink-3);
+  font-size: var(--fs-xs);
+}
+
+.lb-method summary {
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+  cursor: pointer;
+}
+
+.lb-method p {
+  margin: 4px 0 0;
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+}
+
+.lb-table-panel {
+  padding: var(--space-sm) var(--space-lg) var(--space-lg);
+}
+
+.lb-table-wrap {
+  border: 1px solid var(--line-1);
+  border-radius: var(--radius-md);
+}
+
+.lb-table td {
+  vertical-align: top;
+}
+
+.lb-table td b {
+  font-variant-numeric: tabular-nums;
+}
+
+.lb-table td small {
+  display: block;
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+}
+
+.lb-rank {
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.lb-star {
+  margin-right: 2px;
+  color: var(--warn);
+}
+
+.lb-featured {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-full);
+  color: var(--warn);
+  font-size: var(--fs-2xs);
+}
+
+.lb-name {
+  text-align: left;
+}
+
+.lb-open td {
+  background: var(--hover-bg);
+}
+
+.lb-detail {
+  margin-top: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border: 1px dashed var(--line-2);
+  border-radius: var(--radius-md);
+}
+
+.lb-detail > p {
+  margin: 0 0 8px;
+  color: var(--ink-2);
+  font-size: var(--fs-xs);
+}
+
+.lb-detail-table td {
+  font-size: var(--fs-2xs);
+}
+
+.lb-detail-table td small {
+  display: block;
+  color: var(--ink-3);
+}
+
+.lb-half td {
+  color: var(--ink-2);
+  background: var(--surface-2);
+}
+
+.lb-detail > small {
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+}
+
+.lb-baseline {
+  margin: var(--space-sm) 0 0;
+  color: var(--ink-3);
+  font-size: var(--fs-2xs);
+}
+
+.lb-table td:last-child {
+  white-space: nowrap;
+}
+
+.lb-table tbody tr {
+  cursor: pointer;
+}
+
+.lb-table tbody tr:hover td {
+  background: var(--hover-bg);
+}
+
+.lb-table tbody tr:focus-visible td {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }

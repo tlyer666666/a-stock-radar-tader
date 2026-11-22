@@ -109,9 +109,12 @@ test("validateIpcPayload enforces structural runtime validation and preserves ty
   assert.throws(() => validateIpcPayload("market:batch-quotes", [[{ code: "600519" }, "bad"]]), { code: "INVALID_IPC_PAYLOAD" });
   assert.throws(() => validateIpcPayload("market:batch-quotes", [[{ code: "12345" }]]), { code: "INVALID_IPC_PAYLOAD" });
   assert.throws(() => validateIpcPayload("market:batch-quotes", [Array.from({ length: 1201 }, (_, i) => ({ code: String(600000 + i) }))]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("strategy:leaderboard", ["bad-options"]), { code: "INVALID_IPC_PAYLOAD" });
 
   assert.doesNotThrow(() => validateIpcPayload("watchlist:get", []));
   assert.doesNotThrow(() => validateIpcPayload("watchlist:save", [[]]));
+  assert.doesNotThrow(() => validateIpcPayload("strategy:leaderboard", []));
+  assert.doesNotThrow(() => validateIpcPayload("strategy:leaderboard", [{ statusOnly: true }]));
   assert.doesNotThrow(() => validateIpcPayload("market:chart", [{ code: "600519", name: "贵州茅台" }, 101]));
   assert.doesNotThrow(() => validateIpcPayload("market:chart", ["600519", "101", { limit: 120 }]));
   assert.doesNotThrow(() => validateIpcPayload("backtest:run-portfolio", [undefined]));

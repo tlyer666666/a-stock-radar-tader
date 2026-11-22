@@ -196,7 +196,16 @@ function suggestFolders({ home = os.homedir(), platform = process.platform, exis
 /**
  * 备份服务：readStore/writeStore 读写 userData 里的 JSON（带校验），config 记文件夹、自动备份开关、密码（已加密）。
  */
-function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, getStorageSummary, localMirror = null, now = Date.now, fsApi = fs }) {
+function createBackupService({ readStore, writeStore, validateStore, removeStore, readConfig, writeConfig, encryptSecret, decryptSecret, appVersion, getStorageSummary, localMirror = null, isSecretLocked = () => false, now = Date.now, fsApi = fs }) {
+  const MIRROR_KEY_RE = /^[a-zA-Z0-9:._-]{1,128}$/;
+  const secretLocked = () => Boolean(typeof isSecretLocked === "function" && isSecretLocked());
+  const lockedError = () => fail("SECRET_STORAGE_LOCKED", "密钥库已锁定，请先输入主密码解锁");
+  const resolveSavedPassword = (current, explicitPassword) => {
+    if (explicitPassword) return explicitPassword;
+    if (!current.password) return "";
+    if (secretLocked()) throw lockedError();
+    return decryptSecret(current.password);
+  };
   const config = () => {
     const value = readConfig();
     return { folder: "", auto: true, keep: DEFAULT_KEEP, lastBackupAt: "", lastError: "", password: "", ...(isRecord(value) ? value : {}) };
@@ -294,7 +303,8 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
   async function prepareRestore(name, password) {
     const current = config();
     const file = safeFile(current.folder, name);
-    const backup = await decodeBackup(readBackupFile(file), password || (current.password ? decryptSecret(current.password) : ""));
+    const text = readBackupFile(file);
+    const backup = await decodeBackup(text, resolveSavedPassword(current, password));
     planStores(backup);
     const local = Object.fromEntries(Object.entries(backup.local).filter(([key, value]) => isAppLocalKey(key) && typeof value === "string"));
     return { ...backup, local };
@@ -302,7 +312,12 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
 
   function syncLocalMirror(local) {
     if (!localMirror) return;
-    const keys = localMirror.keys().filter(isAppLocalKey);
+    const nextLocal = isRecord(local) ? local : {};
+    const existingKeys = localMirror.keys().filter(isAppLocalKey);
+    const incomingKeys = Object.keys(nextLocal).filter(
+      key => isAppLocalKey(key) && typeof nextLocal[key] === "string" && MIRROR_KEY_RE.test(key)
+    );
+    const keys = [...new Set([...existingKeys, ...incomingKeys])];
     const previous = keys.map(key => [key, localMirror.get(key)]);
     const restore = () => {
       for (const [key, value] of previous) {
@@ -311,7 +326,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     };
     try {
       for (const key of keys) {
-        if (typeof local[key] === "string") localMirror.set(key, local[key]);
+        if (typeof nextLocal[key] === "string" && MIRROR_KEY_RE.test(key)) localMirror.set(key, nextLocal[key]);
         else localMirror.remove(key);
       }
     } catch (error) {
@@ -371,13 +386,32 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     async run(local, { reason = "manual" } = {}) {
       const current = config();
       if (!current.folder) throw fail("BACKUP_FOLDER", "还没有选择备份文件夹");
+      if (current.password && secretLocked()) throw lockedError();
       try {
         fsApi.mkdirSync(current.folder, { recursive: true });
         const stores = {};
         for (const name of BACKUP_STORES) stores[name] = readStore(name);
-        const backup = buildBackup({ stores, local, appVersion, now: now() });
+        const mergedLocal = {};
+        if (localMirror) {
+          try {
+            for (const key of localMirror.keys()) {
+              if (!isAppLocalKey(key)) continue;
+              const value = localMirror.get(key);
+              if (typeof value === "string") mergedLocal[key] = value;
+            }
+          } catch {
+            // 读取 SQLite 镜像失败时降级使用渲染进程传入的 local，不阻塞备份
+          }
+        }
+        if (isRecord(local)) {
+          for (const [key, value] of Object.entries(local)) {
+            if (typeof value === "string") mergedLocal[key] = value;
+          }
+        }
+        const backup = buildBackup({ stores, local: mergedLocal, appVersion, now: now() });
         let password = "";
         if (current.password) {
+          if (secretLocked()) throw lockedError();
           password = decryptSecret(current.password);
           if (!password) throw fail("BACKUP_PASSWORD_UNREADABLE", "无法读取已保存的备份密码，请重新设置备份密码后再试");
         }
@@ -401,10 +435,12 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
         writeConfig({ ...current, lastBackupAt: new Date(now()).toISOString(), lastError: "" });
         return { name, size: Buffer.byteLength(content), reason, status: status() };
       } catch (error) {
-        try {
-          writeConfig({ ...current, lastError: String(error?.message || error).slice(0, 200) });
-        } catch {
-          // 写配置失败不能覆盖原始备份错误
+        if (error?.code !== "SECRET_STORAGE_LOCKED") {
+          try {
+            writeConfig({ ...current, lastError: String(error?.message || error).slice(0, 200) });
+          } catch {
+            // 写配置失败不能覆盖原始备份错误
+          }
         }
         throw error;
       }
@@ -414,7 +450,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
       const current = config();
       const file = safeFile(current.folder, name);
       const text = readBackupFile(file);
-      const backup = await decodeBackup(text, password || (current.password ? decryptSecret(current.password) : ""));
+      const backup = await decodeBackup(text, resolveSavedPassword(current, password));
       return { createdAt: backup.createdAt, appVersion: backup.appVersion, stores: Object.keys(backup.stores), localKeys: Object.keys(backup.local).length };
     },
     prepareRestore,

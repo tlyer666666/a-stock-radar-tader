@@ -69,7 +69,9 @@ export function useNotes() {
     } catch {
       localHasNotes = false;
     }
-    void hydrateFromNativeKv(NOTES_KEY, isStore).then(hydrated => {
+    void hydrateFromNativeKv(NOTES_KEY, isStore, undefined, {
+      isEmpty: value => !Array.isArray(value.notes) || value.notes.length === 0
+    }).then(hydrated => {
       if (!active || !mountedRef.current || hasMutatedRef.current || localHasNotes || !hydrated) return;
       const normalized = normalizeNotes(hydrated);
       if (!normalized.notes.length) return;
@@ -87,7 +89,7 @@ export function useNotes() {
     setStore(next);
     const ok = saveSafeLocalJson(NOTES_KEY, next, isStore);
     setSaveError(!ok);
-    if (ok) mirrorToNativeKv(NOTES_KEY, JSON.stringify(next));
+    if (ok || next.notes.length === 0) mirrorToNativeKv(NOTES_KEY, JSON.stringify(next));
   }, []);
   const patchNote = useCallback((id: string, patch: (note: Note) => Note) => commit(current => ({ ...current, notes: current.notes.map(note => note.id === id ? patch(note) : note) })), [commit]);
 
