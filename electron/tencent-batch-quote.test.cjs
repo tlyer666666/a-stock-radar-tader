@@ -191,3 +191,11 @@ test("read makes no request for empty input", async () => {
 test("shared readTencentBatchQuotes exists for service wiring", () => {
   assert.equal(typeof readTencentBatchQuotes, "function");
 });
+
+test("parseTencentBatch skips invalid calendar dates without throwing RangeError", () => {
+  const badDateLine = line("600000", "sh", { 30: "99999999999999" });
+  const goodDateLine = line("600001", "sh");
+  const quotes = parseTencentBatch(`${badDateLine}\n${goodDateLine}`);
+  assert.equal(quotes.has("600000"), false);
+  assert.equal(quotes.has("600001"), true);
+});

@@ -256,12 +256,12 @@ test("R3-Connectors: ths-convertible and ths-beijing honor forceRefresh during p
   const res2 = await p2;
   assert.equal(res2.members[0].latest, 121, "caller 2 must complete despite caller 1 aborting");
 
-  // Trigger in-flight + concurrent forceRefresh
+  // Concurrent forceRefresh calls coalesce into one fresh build instead of running duplicate flights
   const p3 = bondSource.load({ forceRefresh: true });
   const p4 = bondSource.load({ forceRefresh: true });
   const [, res4] = await Promise.all([p3, p4]);
-  assert.equal(bondBuilds, 3, "forceRefresh queued behind pending must run a fresh build instead of returning cached");
-  assert.equal(res4.members[0].latest, 123);
+  assert.equal(bondBuilds, 2, "concurrent forceRefresh calls coalesce into one fresh build");
+  assert.equal(res4.members[0].latest, 122);
 
   let bjBuilds = 0;
   const bjSource = createBeijingSectorSource({

@@ -2,7 +2,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createStockAgentTools, toolCatalogText, securityOf, STOCK_AGENT_TOOLS } = require("./stock-agent-tools.cjs");
-const { normalizeFocus, focusPrefetchCalls, systemPrompt } = require("./stock-agent.cjs");
+const { normalizeFocus, focusPrefetchCalls, systemPrompt, runAgentTurn, isMarketQuestion } = require("./stock-agent.cjs");
 const skillLib = require("./stock-agent-skills.cjs");
 
 const rowsRising = Array.from({ length: 70 }, (_, i) => ({ date: `2026-${String(8 + Math.floor(i / 28)).padStart(2, "0")}-${String((i % 28) + 1).padStart(2, "0")}`, close: 3000 + i * 10 }));
@@ -100,7 +100,7 @@ test("the question can be about the market, a sector, an ETF or a stock, each wi
   assert.equal(normalizeFocus({ kind: "sector", name: "" }), null);
   assert.equal(normalizeFocus({ kind: "etf", code: "abc" }), null);
   const tools = focus => focusPrefetchCalls(focus).map(call => `${call.tool}:${JSON.stringify(call.args)}`);
-  assert.deepEqual(tools({ kind: "market", code: "", name: "大盘" }), ['index_overview:{}', 'market:{}', 'sector_rank:{"kind":"industry","sortBy":"change","top":10}']);
+  assert.deepEqual(tools({ kind: "market", code: "", name: "大盘" }), ['index_overview:{}', 'market:{}', 'sector_rank:{"kind":"industry","sortBy":"change","top":10}', 'global_markets:{}', 'global_news:{}', 'market_news:{}']);
   assert.deepEqual(tools({ kind: "sector", code: "", name: "PCB" }), ['sector_detail:{"name":"PCB"}', 'market:{}']);
   assert.deepEqual(tools({ kind: "etf", code: "510300", name: "沪深300ETF" }), ['etf_quote:{"code":"510300"}', 'kline:{"code":"510300","days":30}', 'index_overview:{}']);
   assert.ok(tools({ code: "600519", name: "贵州茅台" }).includes('quote:{"code":"600519"}'));
@@ -116,7 +116,7 @@ test("six market-level skills exist, use real tools and read data that fits the 
     for (const spec of skill.tools) assert.ok(toolIds.has(skillLib.parseToolSpec(spec).tool), `${id}: ${spec}`);
   }
   const market = skillLib.skillPrefetchCalls(skillLib.resolveSkills(["market_regime"]), { kind: "market", code: "", name: "大盘" });
-  assert.deepEqual(market.map(call => call.tool), ["index_overview", "market", "sector_rank"]);
+  assert.deepEqual(market.map(call => call.tool), ["index_overview", "market", "sector_rank", "global_markets", "global_news"]);
   const etf = skillLib.skillPrefetchCalls(skillLib.resolveSkills(["etf_pick"]), { kind: "etf", code: "513310", name: "中韩半导体ETF" });
   assert.deepEqual(etf.find(call => call.tool === "etf_quote").args, { code: "513310" });
   const stockOnly = skillLib.skillPrefetchCalls(skillLib.resolveSkills(["relay_board"]), { kind: "market", code: "", name: "大盘" });
@@ -142,4 +142,98 @@ test("ETF ranking supports a T+0 board and tells the model which funds can be ro
   assert.equal(t0.data.etfs[0].amplitudePct, 4.2);
   const quote = await tools.runTool("etf_quote", { code: "510300" });
   assert.match(quote.data.etfs[0].tradingRule, /T\+1/);
+});
+
+const globalQuotes = {
+  fetchedAt: "2026-11-24T01:30:00.000Z", summary: "美股 道琼斯-0.85%、标普500-1.12%、纳斯达克-1.60%；亚太 日经225+0.40%；A50期指-0.30%",
+  quotes: [
+    { group: "美股", name: "道琼斯", code: "DJIA", latest: 44210.5, changePct: -0.85, time: "11-24 05:00" },
+    { group: "亚太", name: "韩国KOSPI", code: "KS11", latest: null, changePct: null, time: "" },
+    { group: "A50", name: "富时A50期指", code: "CN00Y", latest: 13500, changePct: -0.3, time: "11-24 08:30" }
+  ],
+  missing: ["韩国KOSPI"], note: "美股为隔夜收盘"
+};
+const globalNews = {
+  items: [
+    { title: "美股收盘：纳指跌1.6%", summary: "", time: "11-24 05:02", category: "overseasMarket", categoryLabel: "外围市场", source: "东方财富7×24" },
+    { title: "彭博：高盛上调中国股市评级", summary: "看好A股", time: "11-24 08:10", category: "aShareView", categoryLabel: "对A股的研判", source: "财联社电报" },
+    { title: "原油跌2%", summary: "", time: "11-24 04:40", category: "commodity", categoryLabel: "大宗商品", source: "财联社电报" }
+  ],
+  byCategory: { overseasMarket: 1, aShareView: 1, commodity: 1 }, windowHours: 18, note: "外媒原文多为付费内容"
+};
+
+test("global markets and overseas news tools give the model numbers with times and A-share views first, never zero-filled", async () => {
+  let newsReads = 0;
+  const { sources: s } = sources({ globalMarkets: () => Promise.resolve(globalQuotes), globalNews: () => { newsReads += 1; return Promise.resolve(globalNews); } });
+  const tools = createStockAgentTools(s);
+  const markets = await tools.runTool("global_markets", {});
+  assert.equal(markets.ok, true);
+  assert.match(markets.summary, /纳斯达克-1\.60%/);
+  assert.deepEqual(markets.data.quotes.map(item => item.name), ["道琼斯", "富时A50期指"], "a quote without a price is left out, not shown as 0");
+  assert.deepEqual(markets.data.missing, ["韩国KOSPI"]);
+  assert.equal(markets.data.quotes[0].time, "11-24 05:00");
+  const news = await tools.runTool("global_news", { hours: 99 });
+  assert.equal(news.ok, true);
+  assert.equal(news.data.windowHours, 36, "hours are clamped");
+  assert.equal(news.data.items[0].category, "对A股的研判");
+  assert.match(news.summary, /A股研判 1/);
+  assert.match(news.data.note, /付费/);
+  const only = await tools.runTool("global_news", { hours: 36, category: "commodity" });
+  assert.deepEqual(only.data.items.map(item => item.title), ["原油跌2%"]);
+  assert.match(only.summary, /外围资讯 1 条（A股研判 0、外媒机构 0、外围市场 0、海外宏观 0）/);
+  assert.equal(newsReads, 1, "same window is served from the 2-minute cache");
+  const missing = await createStockAgentTools(sources().sources).runTool("global_markets", {});
+  assert.equal(missing.ok, false);
+});
+
+test("domestic headlines and short-term market skills are callable tools", async () => {
+  const feed = { items: [
+    { title: "国务院常务会议部署扩大内需", summary: "", eventType: "政策", importanceScore: 86, direction: "positive", publishedAt: "2026-11-24T00:30:00.000Z" },
+    { title: "某公司股东减持", summary: "", eventType: "快讯", importanceScore: 40, direction: "negative", publishedAt: "2026-11-24T00:40:00.000Z" },
+    { title: "沪指高开0.2%", summary: "", eventType: "市场", importanceScore: 50, direction: "neutral", publishedAt: "2026-11-24T01:31:00.000Z" }
+  ] };
+  const { sources: s, calls } = sources({ marketNews: () => Promise.resolve(feed) });
+  const tools = createStockAgentTools(s);
+  const news = await tools.runTool("market_news", {});
+  assert.deepEqual(news.data.items.map(item => item.title), ["国务院常务会议部署扩大内需", "沪指高开0.2%"]);
+  assert.equal(news.data.items[0].direction, "利好");
+  for (const id of ["limit_reasons", "ladder", "broken_boards", "hot_stocks", "dragon_tiger", "anomalies"]) {
+    const result = await tools.runTool(id, { top: 99, period: "hour" });
+    assert.equal(result.ok, true, id);
+  }
+  const forwarded = calls.filter(call => call[0] === "reviewSkill").map(call => [call[1], call[2]]);
+  assert.deepEqual(forwarded.find(([skill]) => skill === "limit_reasons")[1], { top: 20 });
+  assert.deepEqual(forwarded.find(([skill]) => skill === "hot_stocks")[1], { period: "hour" });
+});
+
+test("asking how the market will go without a focus reads A-share and global data first and the prompt demands an overseas section", async () => {
+  assert.ok(isMarketQuestion("今天大盘怎么走"));
+  assert.ok(isMarketQuestion("隔夜美股大跌对A股影响大吗"));
+  assert.ok(isMarketQuestion("日韩股市今天怎么样"));
+  assert.ok(!isMarketQuestion("贵州茅台能买吗"));
+  const { sources: s } = sources({ globalMarkets: () => Promise.resolve(globalQuotes), globalNews: () => Promise.resolve(globalNews), marketNews: () => Promise.resolve({ items: [] }) });
+  const tools = createStockAgentTools(s);
+  const seen = [];
+  const ai = { model: () => "fake", chat: async request => { seen.push(request); return { thought: "够了", final: { answer: "**均衡**\n\n### 外围与外媒\n纳指-1.6%", stance: "中性", confidence: "中", focus: { kind: "market", name: "大盘" }, followUps: [] } }; } };
+  const result = await runAgentTurn({ ai, tools, question: "今天大盘怎么走", focus: null, prefetch: false, marketIntent: true, clock: { text: "2026-11-24 09:00 星期二", session: "盘前" } });
+  assert.equal(result.steps[0].kind, "prefetch");
+  assert.deepEqual(result.steps[0].calls.map(call => call.tool), ["index_overview", "market", "sector_rank", "global_markets", "global_news", "market_news"]);
+  assert.match(seen[0].system, /global_markets/);
+  assert.match(seen[0].system, /外围与外媒/);
+  assert.match(seen[0].system, /彭博/);
+  assert.match(seen[0].messages.at(-1).content, /纳斯达克/);
+  const plain = await runAgentTurn({ ai, tools, question: "随便聊聊", focus: null, prefetch: false, clock: { text: "2026-11-24 09:00 星期二", session: "盘前" } });
+  assert.ok(!plain.steps.some(step => step.kind === "prefetch"));
+});
+
+test("new market skills use real tools and pre-read global data", () => {
+  const toolIds = new Set(STOCK_AGENT_TOOLS.map(tool => tool.id));
+  for (const id of ["global_premarket", "fx_foreign", "policy_news", "theme_ladder", "hot_money"]) {
+    const skill = skillLib.BUILTIN_SKILLS.find(item => item.id === id);
+    assert.ok(skill, id);
+    assert.ok(skillLib.SKILL_GROUPS.includes(skill.group), id);
+    for (const spec of skill.tools) assert.ok(toolIds.has(skillLib.parseToolSpec(spec).tool), `${id}: ${spec}`);
+  }
+  const premarket = skillLib.skillPrefetchCalls(skillLib.resolveSkills(["global_premarket"]), null);
+  assert.deepEqual(premarket.map(call => call.tool), ["global_markets", "global_news", "index_overview", "market_news", "market"]);
 });

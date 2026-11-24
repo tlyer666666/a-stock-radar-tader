@@ -118,3 +118,82 @@ test("持久化后的配置保留交易规则", () => {
   const loaded = store.normalizeTStore({ items: [{ code: "513180", name: "恒生科技ETF", config: { baseShares: 0, tShares: 20000, tradingRule: "t0" } }] });
   assert.equal(loaded.items[0].config.tradingRule, "t0");
 });
+
+test("useTAssistant, TAssistantView and useTToolbox guard stale items, width zero and offline visibility", async () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const hookSrc = fs.readFileSync(path.join(__dirname, "useTAssistant.ts"), "utf8");
+  const viewSrc = fs.readFileSync(path.join(__dirname, "TAssistantView.tsx"), "utf8");
+  const toolboxSrc = fs.readFileSync(path.join(__dirname, "useTToolbox.ts"), "utf8");
+  assert.match(hookSrc, /storeRef\.current\.items\.some\(entry => entry\.code === item\.code\)/);
+  assert.match(hookSrc, /queuedManual\.current\.delete\(code\)/);
+  assert.match(viewSrc, /if \(rect\.width <= 0\) return;/);
+  assert.match(viewSrc, /if \(isNew\)/);
+  assert.match(toolboxSrc, /navigator\.onLine === false\) return;/);
+
+  const { createHookHarness } = require("../../../qa/research-hook-harness.cjs");
+  const { useTToolbox } = require("./useTToolbox.ts");
+  const origWindow = globalThis.window;
+  const origDocument = globalThis.document;
+  const origNavDesc = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  let chartCalls = 0;
+  let visibleListener = null;
+  globalThis.document = {
+    ...(origDocument || {}),
+    hidden: false,
+    visibilityState: "visible",
+    addEventListener: (ev, fn) => { if (ev === "visibilitychange") visibleListener = fn; },
+    removeEventListener: () => {}
+  };
+  globalThis.window = {
+    ...(origWindow || {}),
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    stockApi: {
+      cancelServiceJob: async () => {},
+      getChart: async () => {
+        chartCalls += 1;
+        return { bars: [{ date: "2026-11-24", open: 10, high: 10.5, low: 9.8, close: 10.2, volume: 1000, amount: 10000 }] };
+      }
+    }
+  };
+  Object.defineProperty(globalThis, "navigator", { value: { onLine: false }, configurable: true });
+  const security = { code: "600519", name: "贵州茅台", secid: "1.600519", assetType: "stock" };
+  const h = createHookHarness(() => useTToolbox(security, "60", "front", true));
+  try {
+    h.render();
+    await h.flush();
+    assert.equal(chartCalls, 2);
+    visibleListener?.();
+    await h.flush();
+    assert.equal(chartCalls, 2, "offline visibilitychange skips chart reload");
+    h.tree.refresh();
+    h.render();
+    await h.flush();
+    assert.equal(chartCalls, 4);
+
+    const { useTAssistant } = require("./useTAssistant.ts");
+    const ta = createHookHarness(() => useTAssistant({ live: false, onAlert: () => {} }));
+    try {
+      ta.render();
+      ta.tree.addStock({ code: "600519", name: "贵州茅台" });
+      ta.tree.updateConfig("600519", { tShares: 100 });
+      ta.tree.setVoice(false);
+      ta.tree.setShowReplay(false);
+      ta.tree.removeStock("600519");
+      await ta.flush();
+      assert.equal(ta.tree.store.items.length, 0);
+    } finally {
+      ta.dispose();
+    }
+  } finally {
+    h.dispose();
+    if (origWindow === undefined) delete globalThis.window;
+    else globalThis.window = origWindow;
+    if (origDocument === undefined) delete globalThis.document;
+    else globalThis.document = origDocument;
+    if (origNavDesc) Object.defineProperty(globalThis, "navigator", origNavDesc);
+  }
+});

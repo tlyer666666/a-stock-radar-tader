@@ -86,10 +86,24 @@ function topThemes(items, limit = 5) {
     .map(({ code, name, secid, changePct, amount }) => ({ code, name, secid, changePct, amount }));
 }
 
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason || new DOMException("Aborted", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); }
+    );
+  });
+}
+
 function createEtfMarket({ fetchJson, now = () => Date.now(), concurrency = 3 } = {}) {
   if (typeof fetchJson !== "function") throw new TypeError("fetchJson is required");
   let cached = null;
   let pending = null;
+  let generation = 0;
 
   const pageUrl = (bucket, page) => `${EAST_LIST}?pn=${page}&pz=${PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:${bucket}&fields=${FIELDS}`;
 
@@ -130,13 +144,18 @@ function createEtfMarket({ fetchJson, now = () => Date.now(), concurrency = 3 } 
 
   return {
     async load({ forceRefresh = false, signal } = {}) {
+      signal?.throwIfAborted?.();
       if (!forceRefresh && cached && cached.expiresAt > now()) return cached.value;
-      if (pending) return pending;
-      pending = build(signal).then(value => {
-        if (value.items.length) cached = { value, expiresAt: now() + (value.complete ? CACHE_MS : 10_000) };
+      if (!forceRefresh && pending) return waitWithSignal(pending, signal);
+      const currentGen = ++generation;
+      const flight = build().then(value => {
+        if (currentGen === generation && value.items.length) cached = { value, expiresAt: now() + (value.complete ? CACHE_MS : 10_000) };
         return value;
-      }).finally(() => { pending = null; });
-      return pending;
+      }).finally(() => {
+        if (pending === flight) pending = null;
+      });
+      pending = flight;
+      return waitWithSignal(flight, signal);
     }
   };
 }

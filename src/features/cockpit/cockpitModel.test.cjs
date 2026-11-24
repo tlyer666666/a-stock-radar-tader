@@ -339,3 +339,35 @@ test("buildUnifiedSentinels maps all T-assistant actions to accurate tTone and i
   assert.equal(staleRow.priority, 18, "stale T signal must not receive +40 active signal priority");
   assert.match(staleRow.tSummary, /可卖 300股/);
 });
+
+test("fetchLatestPrice infers ETF and convertibleBond assetType instead of hardcoding stock", async () => {
+  const { fetchLatestPrice } = require("./cockpitAdd.ts");
+  const prevWindow = global.window;
+  const seen = [];
+  global.window = {
+    stockApi: {
+      getQuoteSnapshot: async (security) => {
+        seen.push(security);
+        return { quote: { latest: 3.5 } };
+      }
+    }
+  };
+  try {
+    assert.equal(await fetchLatestPrice({ code: "510300", name: "沪深300ETF" }), 3.5);
+    assert.equal(await fetchLatestPrice({ code: "159915", name: "创业板ETF" }), 3.5);
+    assert.equal(await fetchLatestPrice({ code: "113050", name: "南银转债" }), 3.5);
+    assert.equal(await fetchLatestPrice({ code: "123044", name: "红相转债" }), 3.5);
+    assert.deepEqual(
+      seen.map(s => [s.code, s.assetType]),
+      [
+        ["510300", "etf"],
+        ["159915", "etf"],
+        ["113050", "convertibleBond"],
+        ["123044", "convertibleBond"]
+      ]
+    );
+  } finally {
+    if (prevWindow === undefined) delete global.window;
+    else global.window = prevWindow;
+  }
+});

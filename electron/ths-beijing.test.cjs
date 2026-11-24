@@ -187,3 +187,29 @@ test("a fully failed quote round shows no empty parentheses in the warning", asy
   assert.equal(result.warning.includes("（）"), false);
   assert.match(result.warning, /行情 0\/3 只，/);
 });
+
+test("concurrent forceRefresh calls coalesce into one flight", async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const source = createBeijingSectorSource({
+    readUniverse: async () => {
+      calls += 1;
+      await gate;
+      return {
+        complete: true, total: 1, source: "test", sourceUrl: "https://example.invalid",
+        fetchedAt: "2026-11-24T00:00:00Z", members: [{ code: "830001", name: "测试" }]
+      };
+    },
+    readQuote: async code => ({
+      code, latest: 10, preClose: 10, open: 10, high: 10, low: 10,
+      changePct: 0, amount: 1000, turnover: 1, quoteAsOf: "2026-11-24 10:00:00",
+      quoteSource: "同花顺", quoteStatus: "ready", limitStatusKnown: false
+    })
+  });
+  const p1 = source.load({ forceRefresh: true });
+  const p2 = source.load({ forceRefresh: true });
+  release();
+  await Promise.all([p1, p2]);
+  assert.equal(calls, 1);
+});

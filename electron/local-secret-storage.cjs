@@ -5,6 +5,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { renameWithRetrySync } = require("./persistence.cjs");
 
 const KEY_BYTES = 32;
 const SALT_BYTES = 16;
@@ -70,7 +71,7 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
       fs.closeSync(fd);
     }
     try {
-      fs.renameSync(tmpPath, keyPath);
+      renameWithRetrySync(tmpPath, keyPath);
       if (process.platform !== "win32") {
         try { fs.chmodSync(keyPath, 0o600); } catch { /* 受限文件系统尽力而为 */ }
       }
@@ -143,7 +144,7 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
     fs.mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o700 });
     // 损坏的密钥文件先改名留存（便于排查/恢复），不直接覆盖。
     if (hasCorrupted) {
-      try { fs.renameSync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
+      try { renameWithRetrySync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
       catch (error) { if (error?.code !== "ENOENT") throw error; }
     }
     // 先写临时文件并落盘（fsync），再用硬链接原子地放到正式位置：
@@ -192,7 +193,7 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
         masterKey = state.key;
       } else {
         if (state.kind === "corrupt") {
-          try { fs.renameSync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
+          try { renameWithRetrySync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
           catch (error) { if (error?.code !== "ENOENT") throw error; }
         }
         masterKey = Buffer.from(randomBytes(KEY_BYTES));

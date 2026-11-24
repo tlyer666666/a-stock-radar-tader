@@ -505,3 +505,10 @@ test("master password unlock refreshes settings, resets source health, and notif
     else global.window = prevWindow;
   }
 });
+
+test("App onNotificationClick infers assetType for ETFs and convertible bonds", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "App.tsx"), "utf8");
+  assert.match(source, /assetType:\s*inferAssetType\(clicked\.code\)/);
+});

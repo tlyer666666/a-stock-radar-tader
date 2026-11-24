@@ -186,6 +186,7 @@ function createConvertibleSource({
 } = {}) {
   let cached = null;
   let pending = null;
+  let pendingForced = false;
   let pendingFirst = null;
   let progress = null;
   let feedCache = null;
@@ -484,7 +485,7 @@ function createConvertibleSource({
     async load({ forceRefresh = false, signal, waitForQuotes = true } = {}) {
       signal?.throwIfAborted();
       if (pending) {
-        if (forceRefresh) {
+        if (forceRefresh && !pendingForced) {
           try { await attachCallerSignal(pending, signal); } catch { signal?.throwIfAborted(); }
           cached = null;
           return this.load({ forceRefresh: true, signal, waitForQuotes });
@@ -504,11 +505,12 @@ function createConvertibleSource({
         return value;
       });
       pending = request;
+      pendingForced = Boolean(forceRefresh);
       pendingFirst = Promise.race([first, request]);
       pendingFirst.catch(() => {});
       request.then(
-        () => { if (pending === request) { pending = null; runController = null; } },
-        () => { if (pending === request) { pending = null; runController = null; } }
+        () => { if (pending === request) { pending = null; pendingForced = false; runController = null; } },
+        () => { if (pending === request) { pending = null; pendingForced = false; runController = null; } }
       );
       request.then(resolveFirst, () => {});
       return attachCallerSignal(waitForQuotes ? request : pendingFirst, signal);

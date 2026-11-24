@@ -23,9 +23,9 @@ function closeWindow(platform, tray, quitting = false) {
   callback({ preventDefault: () => { result.prevented = true; } });
   return result;
 }
-test("Windows close retains a reachable visible window when tray creation fails", () => {
-  assert.deepEqual(closeWindow("win32", undefined), { prevented: true, hidden: false, trayCalls: 1 });
-  assert.deepEqual(closeWindow("win32", { isDestroyed: () => true }), { prevented: true, hidden: false, trayCalls: 1 });
+test("Windows close allows window close instead of trapping the user when tray creation fails", () => {
+  assert.deepEqual(closeWindow("win32", undefined), { prevented: false, hidden: false, trayCalls: 1 });
+  assert.deepEqual(closeWindow("win32", { isDestroyed: () => true }), { prevented: false, hidden: false, trayCalls: 1 });
 });
 test("successful Windows tray hiding and ordinary platform shutdown semantics remain intact", () => {
   assert.deepEqual(closeWindow("win32", { isDestroyed: () => false }), { prevented: true, hidden: true, trayCalls: 1 });

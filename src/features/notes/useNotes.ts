@@ -121,10 +121,10 @@ export function useNotes() {
           throw reason;
         });
       if (!mountedRef.current) return;
-      patchNote(id, item => ({ ...item, ai: { ...item.ai!, conversationId: started.conversationId, runId: started.runId } }));
+      patchNote(id, item => item.ai ? { ...item, ai: { ...item.ai, conversationId: started.conversationId, runId: started.runId } } : item);
     } catch (reason) {
       if (!mountedRef.current) return;
-      patchNote(id, item => ({ ...item, ai: { ...item.ai!, status: "error", answer: errorText(reason) || "AI 分析没能开始", runId: null } }));
+      patchNote(id, item => item.ai ? { ...item, ai: { ...item.ai, status: "error", answer: errorText(reason) || "AI 分析没能开始", runId: null } } : item);
     }
   }, [patchNote]);
 
@@ -190,6 +190,7 @@ export function useNotes() {
 
   const syncingIntervals = useRef(false);
   const intervalsDirty = useRef(false);
+  const lastSyncedIntervalsKey = useRef<string | null>(null);
   const syncIntervals = useCallback(async () => {
     const api = window.stockApi?.syncNoteIntervals;
     if (!api || !mountedRef.current) return;
@@ -204,7 +205,10 @@ export function useNotes() {
           if (note.done || note.repeat !== "interval" || !note.remindAt || !note.intervalMinutes) return [];
           return [{ id: note.id, text: brief(note.text, 80), at: Date.parse(note.remindAt), intervalMinutes: note.intervalMinutes }];
         });
+        const payloadKey = JSON.stringify({ items, systemNotify });
+        if (items.length === 0 && lastSyncedIntervalsKey.current === payloadKey) continue;
         const hits = await api({ items, systemNotify });
+        lastSyncedIntervalsKey.current = payloadKey;
         if (!mountedRef.current || !hits.length) continue;
         const expected = new Map(items.map(item => [item.id, item.intervalMinutes]));
         const matches = new Map(hits.map(hit => [hit.id, hit]));

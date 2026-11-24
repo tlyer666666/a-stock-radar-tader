@@ -59,3 +59,11 @@ test('收盘后的真实报价快照不能触发模拟买入或自动止损平�
   assert.equal(stopped.state.closedPositions.length, 0);
   assert.match(stopped.message, /非交易时段|休市/);
 });
+
+test('usePaperTrading refreshPaperPositions infers assetType for ETFs and convertible bonds', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const source = fs.readFileSync(path.join(__dirname, 'usePaperTrading.ts'), 'utf8');
+  assert.match(source, /assetType:\s*inferAssetType\(code\)/);
+  assert.doesNotMatch(source, /assetType:\s*"stock"/);
+});

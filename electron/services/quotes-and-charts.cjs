@@ -79,7 +79,7 @@ function aggregateHistoryRows(rawRows, period = "week") {
         high: Number(row.high),
         low: Number(row.low),
         volume: Number(row.volume || 0),
-        amount: Number.isFinite(Number(row.amount)) ? Number(row.amount) : null,
+        amount: row.amount !== null && row.amount !== undefined && row.amount !== "" && Number.isFinite(Number(row.amount)) ? Number(row.amount) : null,
         amplitude: null,
         changePct: null,
         change: null,
@@ -93,7 +93,7 @@ function aggregateHistoryRows(rawRows, period = "week") {
     current.low = Math.min(current.low, Number(row.low));
     current.volume += Number(row.volume || 0);
     current.amount =
-      current.amount !== null && Number.isFinite(Number(row.amount))
+      current.amount !== null && row.amount !== null && row.amount !== undefined && row.amount !== "" && Number.isFinite(Number(row.amount))
         ? current.amount + Number(row.amount)
         : null;
   }
@@ -241,13 +241,13 @@ async function thsQuote(security, settings) {
   return {
     ...security,
     latest,
-    high: Number(firstValue(t, ["high"])),
-    low: Number(firstValue(t, ["low"])),
-    open: Number(firstValue(t, ["open"])),
-    preClose: Number(firstValue(t, ["preClose", "preclose"])),
-    changePct: Number(monitorValues.changePct),
-    turnover: Number(monitorValues.turnover),
-    amount: Number(monitorValues.amount),
+    high: finiteOrNull(firstValue(t, ["high"])),
+    low: finiteOrNull(firstValue(t, ["low"])),
+    open: finiteOrNull(firstValue(t, ["open"])),
+    preClose: finiteOrNull(firstValue(t, ["preClose", "preclose"])),
+    changePct: finiteOrNull(monitorValues.changePct),
+    turnover: finiteOrNull(monitorValues.turnover),
+    amount: finiteOrNull(monitorValues.amount),
     volume: finiteOrNull(firstValue(t, ["latestVolume", "volume"])) === null ? null : Number(firstValue(t, ["latestVolume", "volume"])) / 100,
     volumeUnit: "lots",
     industry: "",
@@ -429,14 +429,14 @@ function sourceFromQuote(id, name, quote, options = {}) {
     enabled: true,
     ok: Boolean(quote && Number.isFinite(Number(quote.latest)) && Number(quote.latest) > 0),
     realtime: options.realtime !== false,
-    latest: Number(quote?.latest),
-    preClose: Number(quote?.preClose),
-    open: Number(quote?.open),
-    high: Number(quote?.high),
-    low: Number(quote?.low),
-    change: Number(quote?.change),
-    changePct: Number(quote?.changePct),
-    updatedAt: quote?.updatedAt || new Date().toISOString(),
+    latest: finiteOrNull(quote?.latest),
+    preClose: finiteOrNull(quote?.preClose),
+    open: finiteOrNull(quote?.open),
+    high: finiteOrNull(quote?.high),
+    low: finiteOrNull(quote?.low),
+    change: finiteOrNull(quote?.change),
+    changePct: finiteOrNull(quote?.changePct),
+    updatedAt: quote?.quoteAt || quote?.updatedAt || new Date().toISOString(),
     latencyMs: Number.isFinite(options.latencyMs) ? options.latencyMs : null,
     message: options.message || ""
   };

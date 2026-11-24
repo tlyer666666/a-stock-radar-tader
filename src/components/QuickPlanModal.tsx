@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ClipboardPlus, X } from "lucide-react";
 import { addToCockpit, emitAppToast, COCKPIT_TOAST_ACTION } from "../features/cockpit/cockpitAdd";
 import { useReportHsgtOverlay } from "../features/hsgt/overlayContext";
-import { inferSecid } from "../domain/securityIdentifiers";
+import { inferAssetType, inferSecid } from "../domain/securityIdentifiers";
 import {
   TREND_PLAN_STORAGE_KEY,
   readTrendPlans,
@@ -63,6 +63,7 @@ export type QuickPlanTarget = {
   code: string;
   name: string;
   secid?: string | undefined;
+  assetType?: Security["assetType"] | undefined;
   referencePrice?: number | null | undefined;
   atr?: number | null | undefined;
   asOf?: string | undefined;
@@ -165,7 +166,7 @@ export function QuickPlanDialogContent({
       code: target.code,
       name: target.name,
       secid: target.secid || inferSecid(target.code),
-      assetType: "stock"
+      assetType: target.assetType || inferAssetType(target.code)
     };
     void window.stockApi.getQuoteSnapshot(sec).then(snap => {
       if (!active) return;
@@ -179,7 +180,7 @@ export function QuickPlanDialogContent({
       setTargetPrice(prev => prev || next.targetPrice);
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [fetchedRef, target.atr, target.code, target.name, target.secid]);
+  }, [fetchedRef, target.assetType, target.atr, target.code, target.name, target.secid]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -315,10 +316,10 @@ export function QuickPlanDialogContent({
       aria-labelledby={titleId}
       style={{
         padding: 0,
-        border: "1px solid var(--border, rgba(148, 163, 184, 0.28))",
+        border: "1px solid var(--line-2)",
         borderRadius: 12,
-        background: "var(--surface, var(--panel-bg, #161b26))",
-        color: "var(--text, inherit)",
+        background: "var(--surface-1)",
+        color: "var(--ink-1)",
         width: "min(460px, 92vw)",
         maxWidth: "92vw",
         boxShadow: "0 18px 48px rgba(0, 0, 0, 0.35)"

@@ -218,3 +218,78 @@ test("分钟循环的日期限制不会被默默当成一次性或全天提醒",
   assert.equal(model.parseRemind("每15分钟提醒我检查盘中成交量", NOW)?.intervalMinutes, 15);
   assert.equal(model.parseRemind("不用每15分钟提醒我", NOW), null);
 });
+
+test("useNotes askAi guards cleared ai state and syncIntervals avoids empty-list spam", async () => {
+  const { createHookHarness } = require("../../../qa/research-hook-harness.cjs");
+  const { useNotes } = require("./useNotes.ts");
+  let resolveStart;
+  const origWindow = globalThis.window;
+  const origDocument = globalThis.document;
+  let intervalSyncCalls = 0;
+  globalThis.document = {
+    ...(origDocument || {}),
+    visibilityState: "visible",
+    addEventListener: () => {},
+    removeEventListener: () => {}
+  };
+  globalThis.window = {
+    ...(origWindow || {}),
+    setInterval: () => 1,
+    clearInterval: () => {},
+    setTimeout: () => 1,
+    clearTimeout: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    stockApi: {
+      kvGet: async () => null,
+      kvSet: async () => true,
+      syncNoteConditions: async () => ({ watching: 0, session: false, hits: [] }),
+      syncNoteIntervals: async () => { intervalSyncCalls += 1; return { ok: true }; },
+      ai: {
+        agent: {
+          start: () => new Promise(resolve => { resolveStart = resolve; }),
+          poll: async () => ({ done: true, status: "done", answer: "结论：偏多" })
+        }
+      }
+    }
+  };
+  const h = createHookHarness(() => useNotes());
+  try {
+    h.render();
+    h.tree.add({ text: "测试随心记 600519" });
+    await h.flush();
+    const noteId = h.tree.store.notes[0].id;
+    const askPromise = h.tree.askAi(noteId);
+    h.tree.clearAi(noteId);
+    resolveStart({ runId: "run-1" });
+    await askPromise;
+    await h.flush();
+    assert.equal(h.tree.store.notes[0].ai, null, "clearAi while start pending must not be overwritten");
+    assert.ok(intervalSyncCalls <= 1, "empty-list interval sync is deduplicated");
+    h.tree.update(noteId, { text: "更新随心记 600519" });
+    h.tree.later(noteId, 5);
+    h.tree.rearm(noteId);
+    h.tree.setVoice(false);
+    h.tree.setSystemNotify(true);
+    h.tree.setAiAuto(false);
+    h.tree.dismiss();
+    h.tree.clearDone();
+    h.tree.remove(noteId);
+    await h.flush();
+    h.tree.add({ text: "完成态测试 000001" });
+    await h.flush();
+    const id2 = h.tree.store.notes[0].id;
+    const p2 = h.tree.askAi(id2);
+    resolveStart({ conversationId: "c1", runId: "r1" });
+    await p2;
+    await h.flush();
+    h.tree.remove(id2);
+    await h.flush();
+  } finally {
+    h.dispose();
+    if (origWindow === undefined) delete globalThis.window;
+    else globalThis.window = origWindow;
+    if (origDocument === undefined) delete globalThis.document;
+    else globalThis.document = origDocument;
+  }
+});

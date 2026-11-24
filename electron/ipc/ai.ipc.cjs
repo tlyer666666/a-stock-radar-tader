@@ -30,7 +30,8 @@ function registerAiIpc({
   analyzeSector,
   situationOf,
   emitAiStream,
-  setWorkspaceAgentSnapshot
+  setWorkspaceAgentSnapshot,
+  serviceRequestRuntime = () => ({})
 }) {
   const shanghaiToday = () => new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
   const reviewSnapshot = async () => {
@@ -50,15 +51,19 @@ function registerAiIpc({
   const interpretDate = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : shanghaiToday();
 
   handleTrustedIpc("ai:status", () => aiService().status());
-  handleTrustedIpc("ai:rank", async (_, input) => {
+  handleTrustedIpc("ai:rank", async (event, input) => {
     const raw = aiPayload(input);
+    const runtime = serviceRequestRuntime(event, raw);
     const picks = Array.isArray(raw.picks) ? raw.picks.slice(0, AI_CUSTOM_MAX) : [];
     const only = Array.isArray(raw.only) ? raw.only.map(String).filter(code => /^\d{6}$/.test(code)).slice(0, AI_CUSTOM_MAX) : null;
     const payload = { ...raw, picks, display: picks.map(item => String(item?.code || "")), ...(only ? { only } : {}) };
     const todo = new Set(aiService().pending("rank", payload));
     if (!todo.size) return aiService().cachedRank(payload) || aiService().rank(payload);
     const targets = picks.filter(item => todo.has(String(item?.code || "")));
-    const { profiles } = await loadAiStockProfiles(targets).catch(() => ({ profiles: [] }));
+    const { profiles } = await loadAiStockProfiles(targets, { signal: runtime?.signal }).catch(error => {
+      if (error?.name === "AbortError" || runtime?.signal?.aborted) throw error;
+      return { profiles: [] };
+    });
     const byCode = new Map(targets.map(item => [String(item?.code || ""), item]));
     const merged = profiles.map(profile => ({ ...profile, strategies: byCode.get(profile.code)?.strategies || [], notes: byCode.get(profile.code)?.notes || [] }));
     const profiled = new Set(merged.map(item => String(item.code)));
@@ -104,9 +109,10 @@ function registerAiIpc({
   handleTrustedIpc("ai:cached", (_, input) => { const payload = aiPayload(input); return { rank: aiService().cachedRank(payload), summary: aiService().cachedSummary(payload) }; });
   handleTrustedIpc("ai:history", () => aiService().history());
   handleTrustedIpc("ai:outcomes-leaderboard", (_, input) => aiService().outcomesLeaderboard({ days: Number(aiPayload(input).days) || 30 }));
-  handleTrustedIpc("ai:review", async (_, input) => {
+  handleTrustedIpc("ai:review", async (event, input) => {
     const payload = aiPayload(input);
-    const { profiles, failed } = await loadAiStockProfiles([payload.security]);
+    const runtime = serviceRequestRuntime(event, payload);
+    const { profiles, failed } = await loadAiStockProfiles([payload.security], { signal: runtime?.signal });
     if (!profiles.length) throw new Error(failed.length ? `读取${failed[0]}日线失败，暂时无法点评，请稍后重试` : "请选择一只 A 股股票");
     const context = (Array.isArray(payload.context) ? payload.context : []).map(item => String(item || "").slice(0, 60)).filter(Boolean).slice(0, 8);
     return aiService().review({ asOfDate: profiles[0].asOfDate, profile: context.length ? { ...profiles[0], context } : profiles[0], force: payload.force === true });
@@ -144,14 +150,15 @@ function registerAiIpc({
     if (result.added || result.removed.length) writeJson("ai-custom-stocks", { items: result.list }, isAiCustomList);
     return result;
   });
-  handleTrustedIpc("ai:custom-rank", async (_, input) => {
+  handleTrustedIpc("ai:custom-rank", async (event, input) => {
     const payload = aiPayload(input);
+    const runtime = serviceRequestRuntime(event, payload);
     const list = readAiCustomList();
     if (!list.length) throw new Error("先添加要打分的股票");
     const only = Array.isArray(payload.codes) ? new Set(payload.codes.map(String)) : null;
     const targets = only ? list.filter(item => only.has(item.code)) : list;
     if (!targets.length) throw new Error("勾选的股票不在清单里，请刷新后重试");
-    const { profiles, failed } = await loadAiStockProfiles(targets);
+    const { profiles, failed } = await loadAiStockProfiles(targets, { signal: runtime?.signal });
     if (!profiles.length) throw new Error(targets.length === 1 ? `${targets[0].name} 的日线没读到，请稍后重试` : "这些股票的日线都没读到，请稍后重试");
     const ranking = await aiService().rankCustom({ asOfDate: latestDate(profiles), profiles, display: list.map(item => item.code), force: payload.force === true });
     return { ...ranking, failed };

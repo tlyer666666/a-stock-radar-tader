@@ -1,6 +1,7 @@
 import { usePaperTrading } from "./features/paper-simulation/usePaperTrading";
 import { useBacktestWorkspace } from "./features/backtest/useBacktestWorkspace";
 import { LoadingState } from "./components/terminal/TerminalPrimitives";
+import { inferAssetType } from "./domain/securityIdentifiers";
 import { computeExecutionProjection } from "./domain/executionProjection";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { ConfirmDialog, type ConfirmDialogRequest } from "./components/terminal/ConfirmDialog";
@@ -279,7 +280,8 @@ function App() {
               {
                 code: clicked.code,
                 name: clicked.name || clicked.code,
-                secid: clicked.secid || ""
+                secid: clicked.secid || "",
+                assetType: inferAssetType(clicked.code)
               },
               { view: "cockpit", label: "返回今日驾驶舱" }
             );

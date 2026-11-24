@@ -108,3 +108,17 @@ test("close is idempotent, never leaks exceptions, and blocks subsequent calls",
   assert.throws(() => store.keys(), { code: "KV_STORE_CLOSED" });
   assert.throws(() => store.stats(), { code: "KV_STORE_CLOSED" });
 });
+
+test("rejects symlinked database path", (t) => {
+  const { dir } = tempDir(t);
+  const realTarget = path.join(dir, "real.sqlite");
+  const symlinkPath = path.join(dir, "link.sqlite");
+  fs.writeFileSync(realTarget, "");
+  try {
+    fs.symlinkSync(realTarget, symlinkPath);
+  } catch (error) {
+    if (error?.code === "EPERM" || error?.code === "ENOTSUP") return;
+    throw error;
+  }
+  assert.throws(() => createLocalKvStore({ filePath: symlinkPath }), { code: "INVALID_KV_PATH" });
+});

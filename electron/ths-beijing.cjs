@@ -36,7 +36,7 @@ async function readThsQuote(code, signal) {
   if (String(items?.["5"] || "") !== code) throw new Error("同花顺个股行情代码不匹配");
   const quote = normalizeRealhead(items);
   if (!(quote.latest > 0) || !Number.isFinite(quote.changePctResolved)) throw new Error("同花顺个股行情价格或涨幅缺失");
-  const quoteAsOf = String(items.time || items.updateTime || "");
+  const quoteAsOf = String(items.updateTime || items.time || "");
   if (!/^\d{4}-\d{2}-\d{2}/.test(quoteAsOf)) throw new Error("同花顺个股行情时间缺失");
   const turnover = Number(items["1968584"]);
   return { ...quote, code, changePct: quote.changePctResolved,
@@ -84,6 +84,7 @@ function createBeijingSectorSource({ readUniverse = loadBeijingUniverse, readQuo
   fallbackRoster = bundledRoster, now = () => Date.now(), concurrency = 4, timeoutMs = 90000 } = {}) {
   let cached = null;
   let pending = null;
+  let pendingForced = false;
   let lastRoster = null;
   let progress = null;
   let ready;
@@ -199,7 +200,7 @@ function createBeijingSectorSource({ readUniverse = loadBeijingUniverse, readQuo
     async load({ forceRefresh = false, signal, waitForQuotes = true } = {}) {
       signal?.throwIfAborted();
       if (pending) {
-        if (forceRefresh) {
+        if (forceRefresh && !pendingForced) {
           try { await attachCallerSignal(pending, signal); } catch { signal?.throwIfAborted(); }
           cached = null;
           return this.load({ forceRefresh: true, signal, waitForQuotes });
@@ -220,9 +221,10 @@ function createBeijingSectorSource({ readUniverse = loadBeijingUniverse, readQuo
         return value;
       }, error => { rejectReady(error); throw error; });
       pending = request;
+      pendingForced = Boolean(forceRefresh);
       request.then(
-        () => { if (pending === request) { pending = null; runController = null; } },
-        () => { if (pending === request) { pending = null; runController = null; } }
+        () => { if (pending === request) { pending = null; pendingForced = false; runController = null; } },
+        () => { if (pending === request) { pending = null; pendingForced = false; runController = null; } }
       );
       return attachCallerSignal(waitForQuotes ? request : progress ? Promise.resolve(progress) : ready, signal);
     }

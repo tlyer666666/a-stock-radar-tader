@@ -480,3 +480,23 @@ test("internal programming errors reach the page as a plain retry hint, not as J
   assert.equal(plain.error.message, "同花顺接口暂时不可用");
   assert.deepEqual(logged, ["IPC_FAILED"]);
 });
+
+test("storage:kv-set allows values up to 32 MiB while rejecting values over 32 MiB", () => {
+  const { createIpcPayloadBudget, assertIpcPayloadBounded, createTrustedIpcHandler, MAX_IPC_STRING_LENGTH } = require("./security-policy.cjs");
+  const kvBudget = createIpcPayloadBudget("storage:kv-set");
+  assert.equal(kvBudget.limits.bytes, 32 * 1024 * 1024);
+  assert.equal(kvBudget.limits.stringLength, 32 * 1024 * 1024);
+
+  const entry = "file:///app/dist/index.html";
+  const mainFrame = { id: "main-frame", url: entry };
+  const trustedWebContents = { mainFrame, isDestroyed: () => false };
+  const validEvent = { sender: trustedWebContents, senderFrame: mainFrame };
+  const kvHandler = createTrustedIpcHandler((_, payload) => payload.key, () => trustedWebContents, "storage:kv-set", entry);
+
+  const largeValue = "x".repeat(MAX_IPC_STRING_LENGTH + 50_000);
+  assert.equal(kvHandler(validEvent, { key: "a-stock-radar:notes:v1", value: largeValue }), "a-stock-radar:notes:v1");
+  assert.throws(
+    () => assertIpcPayloadBounded({ key: "a-stock-radar:big", value: "x".repeat(32 * 1024 * 1024 + 1) }, "storage:kv-set"),
+    { code: "INVALID_IPC_PAYLOAD" }
+  );
+});

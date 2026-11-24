@@ -410,6 +410,7 @@ function normalizeTencentQuote(security, quote = {}) {
     low: optionalQuoteNumber(quote.low),
     open: optionalQuoteNumber(quote.open),
     volume: optionalQuoteNumber(quote.volume),
+    volumeUnit: "lots",
     amount: optionalQuoteNumber(quote.amount),
     volumeRatio: optionalQuoteNumber(quote.volumeRatio),
     limitUp: optionalQuoteNumber(quote.limitUp),

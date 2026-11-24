@@ -73,3 +73,18 @@ test("clampHoldingCostPrice rounds to 3 decimals and enforces the 0.001 RMB floo
   assert.equal(L.clampHoldingCostPrice(-8.5), 0.001);
   assert.equal(L.clampHoldingCostPrice(Number.NaN), 0.001);
 });
+
+test("mergeImportedHoldings clamps previous sellableShares to imported shares when availableShares is absent", () => {
+  const existing = [
+    { ...holding(), code: "600519", shares: 1000, sellableShares: 800 },
+    { ...holding(), code: "000001", shares: 500 }
+  ];
+  const entries = [
+    { code: "600519", name: "贵州茅台", shares: 400, costPrice: 1500, note: "" },
+    { code: "000001", name: "平安银行", shares: 600, costPrice: 10, note: "" }
+  ];
+  const merged = L.mergeImportedHoldings(existing, entries);
+  const byCode = new Map(merged.map(item => [item.code, item]));
+  assert.equal(byCode.get("600519").sellableShares, 400);
+  assert.equal(byCode.get("000001").sellableShares, undefined);
+});

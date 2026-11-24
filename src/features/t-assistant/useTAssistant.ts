@@ -109,10 +109,11 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       const volumeUnit = response?.volumeUnit === "lots" || response?.volumeUnit === "shares" ? response.volumeUnit : undefined;
       const share = buildTimeShare(rows, { preClose: Number.isFinite(preClose) && preClose > 0 ? preClose : null, assetType, unitsPerLot: response?.unitsPerLot, volumeUnit });
       if (!share) throw new Error("暂无分时数据");
-      if (mountedRef.current) {
+      const hasItem = () => storeRef.current.items.some(entry => entry.code === item.code);
+      if (mountedRef.current && hasItem()) {
         setShares(current => ({ ...current, [item.code]: { share, loading: false, error: "", updatedAt: Date.now(), source: String(response?.source || "") } }));
       }
-      if (volatilitiesRef.current[item.code] === undefined && window.stockApi?.getChart) {
+      if (hasItem() && volatilitiesRef.current[item.code] === undefined && window.stockApi?.getChart) {
         void window.stockApi.getChart(security, "101", { limit: 15 }).then((dailyRes) => {
           const bars = Array.isArray(dailyRes) ? dailyRes : dailyRes?.rows || [];
           const amplitudes: number[] = [];
@@ -123,13 +124,15 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
             if (prevClose > 0 && high >= low && high > 0) amplitudes.push(((high - low) / prevClose) * 100);
           }
           const avgVol = amplitudes.length ? Number((amplitudes.reduce((s, v) => s + v, 0) / amplitudes.length).toFixed(2)) : null;
-          if (mountedRef.current) setVolatilities(curr => ({ ...curr, [item.code]: avgVol }));
+          if (mountedRef.current && storeRef.current.items.some(entry => entry.code === item.code)) {
+            setVolatilities(curr => ({ ...curr, [item.code]: avgVol }));
+          }
         }).catch(() => {
           // Leave transient fetch failures unset (undefined) instead of caching permanent null so subsequent refreshes retry.
         });
       }
     } catch (reason) {
-      if (mountedRef.current) {
+      if (mountedRef.current && storeRef.current.items.some(entry => entry.code === item.code)) {
         const message = userErrorText(reason);
         setShares(current => ({ ...current, [item.code]: { ...(current[item.code] || { share: null, updatedAt: null, source: "" }), loading: false, error: message || "分时读取失败" } }));
       }
@@ -138,7 +141,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
       const pendingItem = queuedManual.current.get(item.code);
       if (pendingItem) {
         queuedManual.current.delete(item.code);
-        if (mountedRef.current) void loadOneRef.current(pendingItem, false);
+        if (mountedRef.current && storeRef.current.items.some(entry => entry.code === item.code)) void loadOneRef.current(pendingItem, false);
       }
     }
   }, []);
@@ -322,6 +325,7 @@ export function useTAssistant({ live, holdings, onAlert }: { live: boolean; hold
 
   const removeStock = useCallback((code: string) => {
     commit(current => ({ ...current, items: current.items.filter(item => item.code !== code) }));
+    queuedManual.current.delete(code);
     delete alerted.current[code];
     delete volatilitiesRef.current[code];
     setVolatilities(current => { const next = { ...current }; delete next[code]; return next; });

@@ -25,7 +25,7 @@ import { archiveTrendPlan, expireStaleTrendPlans, readTrendPlans, PLAN_COCKPIT_T
 import QuickPlanModal, { type QuickPlanTarget } from "../../components/QuickPlanModal";
 import type { WorkspaceView } from "../../workspaceView";
 import type { CopilotAlertItem, MarketSessionPhase } from "../../copilotBriefing";
-import { inferSecid } from "../../domain/securityIdentifiers";
+import { inferAssetType, inferSecid } from "../../domain/securityIdentifiers";
 import { startVisibleInterval } from "../../visiblePolling";
 import { newsTimeText } from "../../dateUtils";
 import type { NotesApi } from "../notes/useNotes";
@@ -208,8 +208,10 @@ export default function TodayCockpitView({
   const [newsItems, setNewsItems] = useState<NewsEntry[]>([]);
   const [liveQuotes, setLiveQuotes] = useState<Record<string, CockpitQuote>>({});
   const [refreshing, setRefreshing] = useState(false);
+  const [pulseLoading, setPulseLoading] = useState(false);
   const [lastRefreshedAt, setLastRefreshedAt] = useState("");
   const generation = useRef(0);
+  const manualRefreshInFlight = useRef(false);
   const [marketPulse, setMarketPulse] = useState<MarketPulse | null>(null);
   const [pulseState, setPulseState] = useState<"loading" | "ready" | "error">("loading");
   const pulseSeqRef = useRef(0);
@@ -287,7 +289,9 @@ export default function TodayCockpitView({
   };
 
   const refreshCockpit = useCallback(async (withQuotes = true, manual = false) => {
+    if (!manual && manualRefreshInFlight.current) return;
     const requestId = ++generation.current;
+    if (manual) manualRefreshInFlight.current = true;
     const ctx = refreshContextRef.current;
     const currentCodes = new Set<string>(ctx.sentinelCodes);
     setRefreshing(true);
@@ -363,7 +367,7 @@ export default function TodayCockpitView({
           const settled = await Promise.allSettled(
             toFetch.map(code => {
               const secid = inferSecid(code);
-              return api.getQuoteSnapshot({ code, secid, name: code });
+              return api.getQuoteSnapshot({ code, secid, name: code, assetType: inferAssetType(code) });
             })
           );
           if (generation.current !== requestId) return;
@@ -378,7 +382,10 @@ export default function TodayCockpitView({
       }
       setLastRefreshedAt(new Date().toLocaleTimeString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" }));
     } finally {
-      if (generation.current === requestId) setRefreshing(false);
+      if (generation.current === requestId) {
+        manualRefreshInFlight.current = false;
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -390,6 +397,7 @@ export default function TodayCockpitView({
     }
     const seq = ++pulseSeqRef.current;
     pulseLastTryRef.current = Date.now();
+    setPulseLoading(true);
     try {
       const review = await api.getProfessionalReview({ refresh });
       if (pulseSeqRef.current !== seq) return;
@@ -401,6 +409,8 @@ export default function TodayCockpitView({
       setPulseState(next ? "ready" : "error");
     } catch {
       if (pulseSeqRef.current === seq) setPulseState("error");
+    } finally {
+      if (pulseSeqRef.current === seq) setPulseLoading(false);
     }
   }, []);
 
@@ -549,7 +559,7 @@ export default function TodayCockpitView({
     if (item.actionKind === "enable-batch-stop") {
       enableBatchStopLoss();
     } else if (item.actionKind === "open-stock" && item.stock) {
-      onOpenStock({ code: item.stock.code, name: item.stock.name, secid: item.stock.secid || "", assetType: "stock" }, "返回今日驾驶舱");
+      onOpenStock({ code: item.stock.code, name: item.stock.name, secid: item.stock.secid || "", assetType: inferAssetType(item.stock.code) }, "返回今日驾驶舱");
     } else if (item.targetView) {
       onNavigate(item.targetView as WorkspaceView);
     }
@@ -646,10 +656,10 @@ export default function TodayCockpitView({
               type="button"
               className="secondary-btn"
               onClick={() => { void refreshCockpit(true, true); void loadMarketPulse(true); }}
-              disabled={refreshing}
+              disabled={refreshing || pulseLoading}
             >
-              <RefreshCw size={14} className={refreshing ? "spin" : ""} />
-              {refreshing ? "同步中…" : lastRefreshedAt ? `已同步 ${lastRefreshedAt}` : "同步驾驶舱"}
+              <RefreshCw size={14} className={refreshing || pulseLoading ? "spin" : ""} />
+              {refreshing || pulseLoading ? "同步中…" : lastRefreshedAt ? `已同步 ${lastRefreshedAt}` : "同步驾驶舱"}
             </button>
           </div>
         </div>
@@ -788,7 +798,7 @@ export default function TodayCockpitView({
                           <button
                             type="button"
                             className="cockpit-link-row"
-                            onClick={() => onOpenStock({ code: item.code, name: item.name, secid: item.secid, assetType: "stock" }, "返回今日驾驶舱")}
+                            onClick={() => onOpenStock({ code: item.code, name: item.name, secid: item.secid, assetType: inferAssetType(item.code) }, "返回今日驾驶舱")}
                           >
                             <span><b>{item.name}</b> <small>{item.code}</small></span>
                             <span>
@@ -813,7 +823,7 @@ export default function TodayCockpitView({
                               <button
                                 type="button"
                                 className="link-btn"
-                                onClick={() => onOpenStock({ code: note.stock!.code, name: note.stock!.name, secid: note.stock!.secid || "", assetType: "stock" }, "返回今日驾驶舱")}
+                                onClick={() => onOpenStock({ code: note.stock!.code, name: note.stock!.name, secid: note.stock!.secid || "", assetType: inferAssetType(note.stock!.code) }, "返回今日驾驶舱")}
                               >
                                 {note.stock.name} {note.stock.code}
                               </button>
@@ -864,7 +874,7 @@ export default function TodayCockpitView({
                           <button
                             type="button"
                             className="link-btn"
-                            onClick={() => onOpenStock({ code: row.code, name: row.name, secid: row.secid, assetType: "stock" }, "返回今日驾驶舱")}
+                            onClick={() => onOpenStock({ code: row.code, name: row.name, secid: row.secid, assetType: inferAssetType(row.code) }, "返回今日驾驶舱")}
                           >
                             <b>{row.name}</b> <small>{row.code}</small>
                           </button>{" "}
@@ -898,7 +908,7 @@ export default function TodayCockpitView({
                             <button
                               type="button"
                               className="link-btn"
-                              onClick={() => onOpenStock({ code: row.code, name: row.name, secid: row.secid, assetType: "stock" }, "返回今日驾驶舱")}
+                              onClick={() => onOpenStock({ code: row.code, name: row.name, secid: row.secid, assetType: inferAssetType(row.code) }, "返回今日驾驶舱")}
                             >
                               看图
                             </button>
@@ -956,7 +966,7 @@ export default function TodayCockpitView({
                       className="cockpit-alert-row"
                       onClick={() => {
                         if (alert.stock && alert.targetView === "dashboard") {
-                          onOpenStock({ code: alert.stock.code, name: alert.stock.name, secid: alert.stock.secid || "", assetType: "stock" }, "返回今日驾驶舱");
+                          onOpenStock({ code: alert.stock.code, name: alert.stock.name, secid: alert.stock.secid || "", assetType: inferAssetType(alert.stock.code) }, "返回今日驾驶舱");
                         } else {
                           onNavigate(alert.targetView);
                         }
@@ -1030,7 +1040,7 @@ export default function TodayCockpitView({
                           <button
                             type="button"
                             className="link-btn"
-                            onClick={() => onOpenStock({ code: row.code, name: row.name, secid: row.secid, assetType: "stock" }, "返回今日驾驶舱")}
+                            onClick={() => onOpenStock({ code: row.code, name: row.name, secid: row.secid, assetType: inferAssetType(row.code) }, "返回今日驾驶舱")}
                           >
                             <b>{row.name}</b> <small>{row.code}</small>
                           </button>
@@ -1115,7 +1125,7 @@ export default function TodayCockpitView({
                             <button
                               type="button"
                               className="link-btn"
-                              onClick={() => onOpenStock({ code: sec.code, name: sec.name, secid: sec.secid, assetType: "stock" }, "返回今日驾驶舱")}
+                              onClick={() => onOpenStock({ code: sec.code, name: sec.name, secid: sec.secid, assetType: sec.assetType || inferAssetType(sec.code) }, "返回今日驾驶舱")}
                             >
                               <b>{sec.name}</b> <small>{sec.code}</small>
                             </button>

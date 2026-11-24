@@ -105,7 +105,10 @@ function registerWorkspaceIpc({
   });
   handleTrustedIpc("app:set-zoom", (_, factor) => setAppZoomFactor(factor));
   handleTrustedIpc("storage:kv-get", (_, key) => kvGet(key));
-  handleTrustedIpc("storage:kv-set", (_, input) => kvSet(input?.key, input?.value));
+  handleTrustedIpc("storage:kv-set", (_, input) => {
+    if (getRestoredProfilePendingRestart()) return false;
+    return kvSet(input?.key, input?.value);
+  });
   handleTrustedIpc("storage:cleanup", (_, input) => cleanupStorageCache(input));
   handleTrustedIpc("security:master-status", () => getMasterPasswordStatus());
   handleTrustedIpc("security:master-set", (_, input) => setMasterPassword(input));

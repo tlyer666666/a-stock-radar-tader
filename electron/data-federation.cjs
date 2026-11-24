@@ -80,11 +80,13 @@ function requestPolicy(options = {}, timeoutMs = 5000) {
   };
 }
 
-async function tencentQuote(security) {
+async function tencentQuote(security, { signal } = {}) {
   federationRuntime.checkpoint();
+  const effectiveSignal = federationRuntime.signal(signal);
+  effectiveSignal.throwIfAborted();
   const startedAt = Date.now();
   const symbol = `${marketPrefix(security)}${security.code}`;
-  const options = { signal: federationRuntime.signal(), headers: { Referer: "https://gu.qq.com/" } };
+  const options = { signal: effectiveSignal, headers: { Referer: "https://gu.qq.com/" } };
   const buffer = await trackFederationRequest(() => fetchArrayBufferWithPolicy(
     `${TENCENT_QUOTE}${symbol}`,
     options,
@@ -113,7 +115,7 @@ async function tencentQuote(security) {
     open: optionalNumber(fields[5]),
     high: optionalNumber(fields[33]),
     low: optionalNumber(fields[34]),
-    volume: scaledNumber(fields[36], 100),
+    volume: optionalNumber(fields[36]),
     amount: summaryAmount !== null ? summaryAmount : scaledNumber(fields[37], 10000),
     turnover: optionalNumber(fields[38]),
     volumeRatio: optionalNumber(fields[49]),
@@ -145,6 +147,7 @@ async function tencentQuote(security) {
     pricePrecision,
     latest,
     ...parsed,
+    volumeUnit: "lots",
     updatedAt: formatTencentTime(fields[30]),
     missingFields,
     latencyMs: Date.now() - startedAt,
@@ -162,7 +165,9 @@ function tableRows(json) {
   );
 }
 
-async function tushareDailyQuote(security, token) {
+async function tushareDailyQuote(security, token, { signal } = {}) {
+  const effectiveSignal = federationRuntime.signal(signal);
+  effectiveSignal.throwIfAborted();
   const cacheKey = `${tushareCode(security)}:${credentialFingerprint(token)}`;
   return federationRuntime.cached(tushareDailyCache, cacheKey, 15 * 60 * 1000,
     () => fetchTushareDailyQuote(security, token));
@@ -185,12 +190,14 @@ const shanghaiCompactDate = ms => {
   return `${shanghai.getUTCFullYear()}${String(shanghai.getUTCMonth() + 1).padStart(2, "0")}${String(shanghai.getUTCDate()).padStart(2, "0")}`;
 };
 
-async function fetchTushareDailyQuote(security, token) {
+async function fetchTushareDailyQuote(security, token, { signal } = {}) {
   federationRuntime.checkpoint();
+  const effectiveSignal = federationRuntime.signal(signal);
+  effectiveSignal.throwIfAborted();
   const startedAt = Date.now();
   const nowMs = Date.now();
   const options = {
-    signal: federationRuntime.signal(),
+    signal: effectiveSignal,
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -235,11 +242,12 @@ async function fetchTushareDailyQuote(security, token) {
   };
 }
 
-async function settledSource(factory, fallback) {
+async function settledSource(factory, fallback, signal) {
   try {
     return await factory();
   } catch (error) {
     federationRuntime.checkpoint();
+    if (signal?.aborted) throw error;
     return {
       ...fallback,
       enabled: true,
@@ -249,32 +257,36 @@ async function settledSource(factory, fallback) {
   }
 }
 
-async function collectAuxiliarySources(security, settings = {}) {
+async function collectAuxiliarySources(security, settings = {}, { signal } = {}) {
   federationRuntime.checkpoint();
+  const effectiveSignal = federationRuntime.signal(signal);
+  effectiveSignal.throwIfAborted();
   if (settings.multiSourceEnabled === false) return [];
   const tasks = [
     settledSource(
-      () => tencentQuote(security),
+      () => tencentQuote(security, { signal: effectiveSignal }),
       {
         id: "tencent",
         name: "腾讯行情公开页",
         kind: "公开网页辅助",
         role: "交叉校验",
         realtime: true
-      }
+      },
+      effectiveSignal
     )
   ];
   if (settings.tushareToken) {
     tasks.push(
       settledSource(
-        () => tushareDailyQuote(security, settings.tushareToken),
+        () => tushareDailyQuote(security, settings.tushareToken, { signal: effectiveSignal }),
         {
           id: "tushare",
           name: "Tushare Pro",
           kind: "官方令牌 · 盘后日线",
           role: "历史复核",
           realtime: false
-        }
+        },
+        effectiveSignal
       )
     );
   } else {

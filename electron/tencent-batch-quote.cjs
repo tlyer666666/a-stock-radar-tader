@@ -43,7 +43,8 @@ function parseTencentBatch(text) {
     const fields = match[3].split("~");
     const latest = optionalNumber(fields[3]);
     const timeText = formatTencentTime(fields[30]);
-    if (fields[2] !== code || latest === null || latest <= 0 || !timeText) continue;
+    const parsedDate = timeText ? new Date(timeText) : null;
+    if (fields[2] !== code || latest === null || latest <= 0 || !parsedDate || Number.isNaN(parsedDate.getTime())) continue;
     const preClose = optionalNumber(fields[4]);
     const rawChangePct = optionalNumber(fields[32]);
     const changePct = rawChangePct !== null
@@ -73,7 +74,7 @@ function parseTencentBatch(text) {
       totalMarketCap: scaledNumber(fields[45], 1e8),
       limitUp: positiveOrNull(fields[47]),
       limitDown: positiveOrNull(fields[48]),
-      quoteAt: new Date(timeText).toISOString(),
+      quoteAt: parsedDate.toISOString(),
       quoteDate: timeText.slice(0, 10),
       tradeStatus: TRADE_STATUS[fields[40]] || "trading",
       source: "腾讯行情"

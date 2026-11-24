@@ -159,10 +159,16 @@ async function fuyaoHotLists(value, signal) {
   if (codes.size) {
     try {
       quotes = await serviceRuntime.track(() => trackServiceRequest(fuyao.snapshot([...codes.values()].map(row => ({ code: row.code, thscode: row.thscode })), { signal })));
-    } catch { quotes = new Map(); }
+    } catch (error) {
+      signal?.throwIfAborted?.();
+      if (error?.name === "AbortError") throw error;
+      quotes = new Map();
+    }
   }
   const withQuote = rows => Array.isArray(rows) ? rows.slice(0, 30).map(row => {
-    const quote = quotes.get(String(row.thscode || "").toUpperCase());
+    const code = String(row.code || "").trim();
+    const thscode = String(row.thscode || (code ? `${code}.${/^6/.test(code) ? "SH" : /^(?:4|8|92)/.test(code) ? "BJ" : "SZ"}` : "")).trim().toUpperCase();
+    const quote = quotes.get(thscode) || quotes.get(code);
     return { ...row, latest: finiteOrNull(quote?.latest), changePct: finiteOrNull(quote?.changePct) };
   }) : null;
   const pack = period => (lists[period].hot || lists[period].skyrocket) ? { hot: withQuote(lists[period].hot), skyrocket: withQuote(lists[period].skyrocket) } : null;

@@ -73,9 +73,23 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
     timer = null;
     const batch = pending;
     pending = new Map();
-    const securities = [...batch.values()].map(entry => entry.security);
+    const hasUncancelledWaiter = () => [...batch.values()].some(entry => entry.waiters.some(w => !w.signal?.aborted));
+    if (!hasUncancelledWaiter()) return;
+    const securities = [...batch.values()].filter(entry => entry.waiters.some(w => !w.signal?.aborted)).map(entry => entry.security);
+    const batchController = new AbortController();
+    const cleanups = [];
+    for (const entry of batch.values()) {
+      for (const waiter of entry.waiters) {
+        if (!waiter.signal) continue;
+        const onAbort = () => {
+          if (!hasUncancelledWaiter()) batchController.abort(waiter.signal.reason || new DOMException("Aborted", "AbortError"));
+        };
+        waiter.signal.addEventListener("abort", onAbort, { once: true });
+        cleanups.push(() => waiter.signal.removeEventListener("abort", onAbort));
+      }
+    }
     try {
-      const quotes = await fuyao.snapshot(securities);
+      const quotes = await fuyao.snapshot(securities, { signal: batchController.signal });
       for (const [thscode, entry] of batch) {
         const snap = quotes.get(thscode);
         if (!snap) entry.waiters.forEach(waiter => waiter.reject(quoteError("同花顺扶摇快照没有该股票", "FUYAO_EMPTY")));
@@ -83,13 +97,40 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
       }
     } catch (error) {
       for (const entry of batch.values()) entry.waiters.forEach(waiter => waiter.reject(error));
+    } finally {
+      for (const cleanup of cleanups) cleanup();
     }
   }
 
-  function snapshotFor(security, thscode) {
+  function snapshotFor(security, thscode, signal) {
+    signal?.throwIfAborted?.();
     return new Promise((resolve, reject) => {
       const entry = pending.get(thscode) || { security, waiters: [] };
-      entry.waiters.push({ resolve, reject });
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        entry.waiters = entry.waiters.filter(w => w !== waiter);
+        if (!entry.waiters.length && pending.get(thscode) === entry) pending.delete(thscode);
+        reject(signal.reason || new DOMException("Aborted", "AbortError"));
+      };
+      const waiter = {
+        signal,
+        resolve: value => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          resolve(value);
+        },
+        reject: error => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          reject(error);
+        }
+      };
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      entry.waiters.push(waiter);
       pending.set(thscode, entry);
       if (!timer) {
         // Must remain ref'd while callers await this batch; shutdown() clears timer on exit.
@@ -111,13 +152,14 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
     profiles.clear();
   }
 
-  async function quote(security) {
+  async function quote(security, { signal } = {}) {
+    signal?.throwIfAborted?.();
     if (!fuyaoQuoteSupports(security)) throw quoteError("扶摇报价只用于沪深A股", "FUYAO_UNSUPPORTED");
     const code = String(security.code);
     const thscode = `${code}.${/^6/.test(code) ? "SH" : "SZ"}`;
     let t = null;
     const [snap, profile] = await Promise.all([
-      snapshotFor(security, thscode),
+      snapshotFor(security, thscode, signal),
       Promise.race([
         profileFor(security),
         new Promise(resolve => {

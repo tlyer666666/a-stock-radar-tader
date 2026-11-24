@@ -128,6 +128,7 @@ function pruneCorruptedCopies(filePath, limit = CORRUPTED_COPY_LIMIT) {
 function quarantineFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return null;
+    if (fs.lstatSync(filePath).isSymbolicLink()) return null;
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     let target = `${filePath}.corrupted-${stamp}`;
     // 同一毫秒内连续读取会撞名；撞名时加序号，否则 5 次读取只会留下 1 份。
@@ -476,6 +477,8 @@ module.exports = {
   CORRUPTED_COPY_LIMIT,
   capItemsPreservingFavorites,
   readJsonWithBackup,
+  renameWithRetryAsync,
+  renameWithRetrySync,
   tightenUserDataPermissions,
   writeJsonAtomic,
   writeJsonAtomicAsync

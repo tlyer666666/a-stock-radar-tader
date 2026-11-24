@@ -162,7 +162,7 @@ const BUILTIN_SKILLS = [
     ],
     focus: "判断板块处在启动、高潮、分歧还是退潮，个股应如何对待" },
   { id: "capital_game", group: "消息资金", name: "资金博弈", summary: "龙虎榜和热度里的资金动向",
-    tools: ["limit_status", "sector", "intraday"],
+    tools: ["limit_status", "sector", "intraday", "dragon_tiger", "hot_stocks"],
     method: [
       "龙虎榜：买卖总额、净买入、机构与游资各自净买、上榜席位",
       "热度：24 小时热股榜、飙升榜排名，异动原因",
@@ -190,8 +190,9 @@ const BUILTIN_SKILLS = [
     ],
     focus: "列出买点、止损、目标和风险收益比，给出做或不做" },
   { id: "market_regime", group: "大盘与ETF", name: "大盘研判", summary: "现在该进攻、均衡还是防守",
-    tools: ["index_overview", "market", "sector_rank"],
+    tools: ["index_overview", "market", "sector_rank", "global_markets", "global_news"],
     method: [
+      "外围先行：隔夜美股与中概、A50 期指、离岸人民币、日韩港股的方向；外围普跌且人民币走弱时 A 股高开难持续，外围普涨要看 A 股能否跟上",
       "指数位置：上证、创业板、沪深300、中证全指分别在 20 日线和 60 日线的上方还是下方，均线方向是否一致；中证全指代表全市场",
       "强弱与广度：当日涨跌、5 日和 20 日涨幅；涨停与跌停家数、炸板数、封板率说明赚钱效应",
       "板块：行业涨幅前列是否集中在少数方向，领涨板块有没有涨停家数支撑",
@@ -199,7 +200,7 @@ const BUILTIN_SKILLS = [
     ],
     focus: "给出进攻 / 均衡 / 防守的态度，写出关键指数点位（20 日线、60 日线）和判断失效的条件" },
   { id: "sentiment_cycle", group: "大盘与ETF", name: "情绪周期", summary: "短线情绪处在冰点、发酵、高潮还是退潮",
-    tools: ["market", "index_overview"],
+    tools: ["market", "index_overview", "ladder", "broken_boards"],
     method: [
       "冰点：涨停家数少、跌停或炸板多、最高连板被压到 3 板以内，往往是试错的低点",
       "发酵：涨停家数回升、封板率提高、出现新的连板梯队和集中题材",
@@ -208,7 +209,7 @@ const BUILTIN_SKILLS = [
     ],
     focus: "判断现在处于哪个阶段并写出依据数字，说明接下来要盯的转折信号" },
   { id: "mainline", group: "大盘与ETF", name: "主线识别", summary: "今天的钱在往哪个方向走",
-    tools: ["sector_rank", "market", "sector_detail"],
+    tools: ["sector_rank", "market", "sector_detail", "limit_reasons"],
     method: [
       "涨幅、涨停家数、主力净流入三项都靠前的板块才算主线候选，只有一项靠前的是轮动",
       "涨停原因前列与板块排行重合的方向可信度更高；有高度板和龙头股的方向持续性更好",
@@ -238,7 +239,55 @@ const BUILTIN_SKILLS = [
       "中证全指对比沪深300：全指更强说明中小盘活跃，反之资金抱团大盘",
       "用行业排行和主题 ETF 排行确认：领涨的是科技成长还是金融、消费、资源"
     ],
-    focus: "给出当前偏向的风格和依据，说明风格可能切换的信号" }
+    focus: "给出当前偏向的风格和依据，说明风格可能切换的信号" },
+  { id: "global_premarket", group: "大盘与ETF", name: "全球联动盘前推演", summary: "隔夜外围、日韩港股和外媒研判对今天 A 股的影响",
+    tools: ["global_markets", "global_news", "index_overview", "market_news", "market"],
+    method: [
+      "隔夜美股：道指、标普、纳指与中概 KWEB 的涨跌，美股期货是否延续；中概和纳指对 A 股科技成长的映射最直接",
+      "亚太：日经、韩国 KOSPI 当日开盘与盘中走势，恒生与恒生科技；日韩与 A 股同向共振时方向更可信，背离时以 A 股自身量能为准",
+      "A50 期指与离岸人民币：A50 夜盘与早盘涨跌是开盘方向的先行指标，人民币明显走弱压制外资偏好的权重股",
+      "外媒与机构：只用 global_news 里出现的彭博、路透、国际投行和国内券商对 A 股的研判，写清来自哪条快讯转述；没有就说没有",
+      "宏观与商品：美联储、美债收益率、美元指数、原油和黄金的大幅波动，对应映射到有色、石油、黄金、航空等板块",
+      "最后回到国内：指数位置、昨日情绪和今日国内要闻，外围只是开盘的变量，全天方向仍看量能和主线"
+    ],
+    focus: "给出今天高开 / 平开 / 低开的倾向和全天进攻 / 均衡 / 防守，列出外围各项的数字和时间，写出盘中修正判断的条件（如 A50 翻绿、日韩跳水、北向流出）" },
+  { id: "fx_foreign", group: "大盘与ETF", name: "外资与汇率", summary: "人民币、美元、美债和外资态度对 A 股的影响",
+    tools: ["global_markets", "global_news", "index_overview", "sector_rank"],
+    method: [
+      "离岸人民币：升值利好外资重仓的消费、金融、龙头白马，贬值时外资偏谨慎",
+      "美元指数与美债 10 年收益率：同时走高压制全球成长股估值，回落利好科技成长",
+      "外资观点：国际投行对中国资产的评级变化、外资流入流出的报道，只引用快讯里出现的",
+      "看行业排行里外资偏好的方向（食品饮料、家电、银行、电力设备等）是否同步走强"
+    ],
+    focus: "说清汇率与外资当前是顺风还是逆风，哪些方向受益或受压，以及要盯的转折信号" },
+  { id: "policy_news", group: "消息资金", name: "政策消息面", summary: "国内政策、监管与产业消息对大盘和板块的影响",
+    tools: ["market_news", "global_news", "sector_rank", "limit_reasons"],
+    method: [
+      "按力度排序：国务院、央行、证监会、部委级政策高于地方与行业协会；落地细则高于表态",
+      "看市场有没有反应：相关板块是否进入行业排行前列、涨停原因里有没有对应题材",
+      "区分一次性消息与持续催化（会议周期、政策落地节奏、产业数据）",
+      "利空也要写：监管收紧、减持、IPO 节奏、外部制裁或关税"
+    ],
+    focus: "列出今天最重要的 2–4 条政策或消息、对应受益受损方向和持续性判断" },
+  { id: "theme_ladder", group: "短线情绪", name: "题材与连板梯队", summary: "当日题材的强度、梯队完整度和持续性",
+    tools: ["limit_reasons", "ladder", "broken_boards", "hot_stocks", "market"],
+    method: [
+      "题材强度：涨停原因里家数前列的题材，是否有板块排行和主力净流入支撑",
+      "梯队完整度：同一题材有首板、二板、三板以上的完整梯队，持续性好于只有一只孤立高标",
+      "晋级率：近 5 日各档连板次日晋级比例，晋级率低说明接力亏钱",
+      "亏钱效应：炸板数、跌停数和封板率；高位股集中跌停是退潮信号",
+      "人气：热股榜里的题材股，人气高但封板差的要警惕兑现"
+    ],
+    focus: "列出最强 1–3 个题材的梯队和龙头，判断发酵 / 高潮 / 分歧 / 退潮，以及明天要看的晋级信号" },
+  { id: "hot_money", group: "消息资金", name: "游资龙虎榜", summary: "游资和机构席位今天在买什么",
+    tools: ["dragon_tiger", "hot_stocks", "anomalies", "market"],
+    method: [
+      "龙虎榜净买入前列的个股，区分机构专用席位与知名游资席位",
+      "同一题材多只股票被不同席位同时买入，比单只股票上榜更有指向性",
+      "结合异动原因和热股榜，判断是题材接力还是一日游",
+      "软件拿不到逐笔资金，不编造“主力意图”，只说榜单上能看到的"
+    ],
+    focus: "列出资金集中买入的方向与代表股，判断是接力还是兑现，以及跟随的风险" }
 ];
 
 const BUILTIN_BY_ID = new Map(BUILTIN_SKILLS.map(skill => [skill.id, skill]));
@@ -270,7 +319,8 @@ function resolveSkills(ids, custom = []) {
   return [...new Set((Array.isArray(ids) ? ids : []).map(String))].map(id => byId.get(id)).filter(Boolean).slice(0, MAX_SELECTED);
 }
 
-const MARKET_WIDE_ARGS = { market: {}, index_overview: {}, sector_rank: { kind: "industry", sortBy: "change", top: 10 }, etf_rank: { sortBy: "change", top: 10 } };
+const MARKET_WIDE_ARGS = { market: {}, index_overview: {}, sector_rank: { kind: "industry", sortBy: "change", top: 10 }, etf_rank: { sortBy: "change", top: 10 },
+  global_markets: {}, global_news: {}, market_news: {}, limit_reasons: {}, ladder: {}, broken_boards: {}, hot_stocks: {}, dragon_tiger: {}, anomalies: {} };
 const ETF_CODE_TOOLS = new Set(["kline", "intraday", "quote"]);
 
 /** 这几个打法要求的数据里，能在第一轮前直接读的：按分析对象（个股、ETF、板块、大盘）只读用得上的。 */

@@ -106,6 +106,15 @@ const TOOLS = [
   { id: "etf_quote", name: "ETF 行情", description: "按代码或关键词查 ETF：现价、涨跌幅、成交额、规模、换手、实时净值估算和溢价率（溢价过高会提示风险）", args: '{"code":"510300"} 或 {"query":"半导体"}' },
   { id: "etf_rank", name: "ETF 排行", description: "按类别（宽基/行业主题/跨境/商品/债券/货币，或 T+0 = 可当日回转的跨境/商品/债券/货币 ETF）把 ETF 按涨幅、成交额、溢价率、换手、规模或振幅排序", args: '{"category":"行业主题|T+0","sortBy":"change|amount|premium|turnover|scale|amplitude","top":10}' },
   { id: "sector_rank", name: "板块排行", description: "行业或概念板块按涨幅、涨停家数或主力净流入排行", args: '{"kind":"industry|concept","sortBy":"change|limitUps|netInflow","top":10}' },
+  { id: "global_markets", name: "全球市场", description: "隔夜美股（道指/标普/纳指/中概 KWEB）、美股期货、日经225、韩国KOSPI、恒生/恒生科技、台股、欧洲三大指数、富时A50期指、离岸人民币、美元指数、美债10年收益率、黄金白银原油；每条带最近成交时间（北京时间），分清隔夜收盘还是今天盘中", args: "{}" },
+  { id: "global_news", name: "外围与外媒研判", description: "最近 N 小时（默认 18，覆盖隔夜到早盘）快讯里的外围市场、海外央行与宏观、外媒与国际投行观点（彭博/路透/高盛/大摩等）、机构对 A 股的研判和大宗商品消息；外媒原文多付费，只能拿到国内快讯的转述", args: '{"hours":18,"category":"可选 aShareView|foreignView|overseasMarket|macroPolicy|commodity"}' },
+  { id: "market_news", name: "国内要闻", description: "东方财富 7×24 与财联社电报里最新的政策、监管、产业与市场要闻（按重要度挑选，含利好利空方向）", args: '{"type":"可选 政策|市场|产业","top":12}' },
+  { id: "limit_reasons", name: "涨停原因", description: "当日涨停股按同花顺涨停原因归类：题材、家数和代表股，看主线集中在哪", args: '{"top":12}' },
+  { id: "ladder", name: "连板梯队", description: "近 5 个交易日连板天梯（每档股票、次日是否晋级）和今日高度板，判断接力情绪", args: "{}" },
+  { id: "broken_boards", name: "炸板与跌停", description: "炸板池、跌停池数量和代表股、封板率，判断亏钱效应", args: "{}" },
+  { id: "hot_stocks", name: "热股榜", description: "同花顺热股榜和飙升榜（人气与资金关注）", args: '{"period":"day|hour"}' },
+  { id: "dragon_tiger", name: "龙虎榜", description: "龙虎榜净买入前列个股与活跃游资、机构席位", args: "{}" },
+  { id: "anomalies", name: "异动解读", description: "当日涨停、急涨、跌停、急跌个股的异动原因", args: '{"top":12}' },
   { id: "my_portfolio", name: "我的持仓与关注", description: "本机持仓（代码、名称、成本价、持仓权重、备注，不含股数）、自选池与 AI 选股池状态", args: '{"code":"6 位代码，可选；不填则汇总全部持仓与自选"}' },
   { id: "get_my_t_context", name: "我的做T状态", description: "读取做T助手参数（风格、成本价、今日可卖比例、目标价差、当日做T盈亏与未完成方向，不含绝对股数或资金）", args: '{"code":"6 位代码，可选"}' },
   { id: "get_my_plans_and_notes", name: "我的计划与随心记", description: "读取本机保存的趋势计划卡片、止损/目标位、模拟持仓风控价以及随心记盯盘条件", args: '{"code":"6 位代码，可选"}' },
@@ -155,6 +164,12 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
     return { quote, warning: value?.warning || "" };
   });
   const securityArg = args => securityOf(args?.code, nameOf(String(args?.code || "").match(/\d{6}/)?.[0] || ""));
+  /** 复用 AI 复盘的市场技能（涨停原因、连板梯队、龙虎榜等），同一会话 2 分钟内只取一次。 */
+  const reviewSkillTool = async (skill, args, label) => {
+    const result = await cached(`review:${skill}:${JSON.stringify(args)}`, () => source("reviewSkill", skill, args));
+    if (!result?.ok) throw toolError(result?.summary || `${label}暂不可用`);
+    return { summary: result.summary, data: result.data };
+  };
 
   const run = {
     async search_stock(args) {
@@ -485,6 +500,60 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
       if (!result?.ok) throw toolError(result?.summary || "板块排行暂不可用");
       return { summary: result.summary, data: result.data };
     },
+
+    async global_markets() {
+      if (typeof sources.globalMarkets !== "function") throw toolError("全球市场数据暂不可用");
+      const value = await cached("global-markets", () => source("globalMarkets"));
+      const quotes = take(value?.quotes, 40).filter(item => finite(item?.latest) !== null).map(item => ({
+        group: clip(item.group, 6), name: clip(item.name, 16), latest: finite(item.latest), changePct: round(finite(item.changePct)), time: clip(item.time, 11)
+      }));
+      if (!quotes.length) throw toolError("全球市场行情暂时没取到");
+      return { summary: clip(value?.summary || `取到 ${quotes.length} 个外围品种`, 110),
+        data: { quotes, missing: take(value?.missing, 10), note: clip(value?.note, 90), fetchedAt: String(value?.fetchedAt || "") } };
+    },
+
+    async global_news(args) {
+      if (typeof sources.globalNews !== "function") throw toolError("外围资讯暂不可用");
+      const hours = intArg(args?.hours, 2, 36, 18);
+      const category = ["aShareView", "foreignView", "overseasMarket", "macroPolicy", "commodity"].includes(String(args?.category)) ? String(args.category) : "";
+      const value = await cached(`global-news:${hours}`, () => source("globalNews", { hours, limit: 60 }));
+      const all = Array.isArray(value?.items) ? value.items : [];
+      const filtered = category ? all.filter(item => item.category === category) : all;
+      // 优先级：对 A 股的研判 > 外媒与机构观点 > 外围市场 > 海外宏观 > 商品；同类按时间新到旧。
+      const order = { aShareView: 0, foreignView: 1, overseasMarket: 2, macroPolicy: 3, commodity: 4 };
+      const picked = filtered
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => ((order[a.item.category] ?? 9) - (order[b.item.category] ?? 9)) || a.index - b.index)
+        .slice(0, 16)
+        .map(({ item }) => ({ time: clip(item.time, 11), category: clip(item.categoryLabel, 8), title: clip(item.title, 60), summary: clip(item.summary, 110), source: clip(item.source, 8) }));
+      const counts = {};
+      for (const item of filtered) counts[item.category] = (counts[item.category] || 0) + 1;
+      const summary = picked.length
+        ? `近 ${hours} 小时外围资讯 ${filtered.length} 条（A股研判 ${counts.aShareView || 0}、外媒机构 ${counts.foreignView || 0}、外围市场 ${counts.overseasMarket || 0}、海外宏观 ${counts.macroPolicy || 0}）`
+        : `近 ${hours} 小时快讯里没有挑到${category ? "这一类" : ""}外围相关消息`;
+      return { summary, data: { windowHours: hours, items: picked, failedSources: take(value?.failedSources, 3), note: clip(value?.note, 90) } };
+    },
+
+    async market_news(args) {
+      if (typeof sources.marketNews !== "function") throw toolError("国内要闻暂不可用");
+      const type = ["政策", "市场", "产业"].includes(String(args?.type)) ? String(args.type) : "";
+      const top = intArg(args?.top, 4, 20, 12);
+      const value = await cached("market-news", () => source("marketNews"));
+      const items = (Array.isArray(value?.items) ? value.items : [])
+        .filter(item => item && (type ? item.eventType === type : ["政策", "市场", "产业"].includes(item.eventType) || Number(item.importanceScore) >= 60))
+        .sort((a, b) => (Number(b.importanceScore) || 0) - (Number(a.importanceScore) || 0) || String(b.publishedAt || "").localeCompare(String(a.publishedAt || "")))
+        .slice(0, top)
+        .map(item => ({ time: beijingTime(item.publishedAt || item.time), type: clip(item.eventType, 4), title: clip(item.title, 60), summary: clip(item.summary, 90),
+          direction: DIRECTION_LABEL[item.direction] || clip(item.direction, 6), importance: finite(Number(item.importanceScore)) }));
+      return { summary: items.length ? `国内要闻 ${items.length} 条，最重要：${clip(items[0].title, 30)}` : "最近快讯里没有挑到重要的政策或市场要闻", data: { type: type || "全部", items } };
+    },
+
+    limit_reasons: args => reviewSkillTool("limit_reasons", { top: intArg(args?.top, 4, 20, 12) }, "涨停原因"),
+    ladder: () => reviewSkillTool("ladder", {}, "连板梯队"),
+    broken_boards: () => reviewSkillTool("broken_boards", {}, "炸板与跌停"),
+    hot_stocks: args => reviewSkillTool("hot_stocks", { period: args?.period === "hour" ? "hour" : "day" }, "热股榜"),
+    dragon_tiger: () => reviewSkillTool("dragon_tiger", {}, "龙虎榜"),
+    anomalies: args => reviewSkillTool("anomalies", { top: intArg(args?.top, 4, 20, 12) }, "异动解读"),
 
     async my_portfolio(args) {
       if (typeof sources.myPortfolio !== "function") throw toolError("本机持仓与自选上下文暂不可用");

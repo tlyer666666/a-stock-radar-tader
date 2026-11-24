@@ -17,4 +17,9 @@ test("non-Error reasons keep the caller's fallback or their own text", () => {
   assert.equal(mod.userErrorText(null, "涨停池更新失败"), "涨停池更新失败");
   assert.equal(mod.userErrorText("raw text"), "raw text");
   assert.equal(mod.userErrorText(new Error("[IPC_FAILED]"), "涨停池更新失败"), "涨停池更新失败");
+  assert.equal(mod.userErrorText({}), "操作失败，请稍后再试");
+  assert.equal(mod.userErrorText(undefined), "操作失败，请稍后再试");
+  assert.equal(mod.userErrorText(null), "操作失败，请稍后再试");
+  assert.equal(mod.userErrorText({ message: "[IPC_FAILED] 读取失败" }), "读取失败");
+  assert.equal(mod.userErrorText({ message: "" }, "自定义兜底"), "自定义兜底");
 });

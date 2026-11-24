@@ -275,3 +275,44 @@ test("main.cjs cleanupStorageCache uses removedOrphans and master password handl
   assert.match(mainSource, /clearMasterPassword:\s*async\s+input\s*=>[\s\S]*?loadStoredSettings\.cached\s*=\s*undefined;[\s\S]*?settingsForService\.cached\s*=\s*undefined;/);
   assert.match(mainSource, /unlockMasterPassword:\s*async\s+input\s*=>[\s\S]*?resetMarketSourceHealth\(\)[\s\S]*?resetNewsCache\(\)[\s\S]*?resetProfessionalReviewCache\(\)/);
 });
+
+test("storage:kv-set is a no-op during post-restore restart window and settings:save strips unknown keys", () => {
+  const { registerWorkspaceIpc } = require("./ipc/workspace.ipc.cjs");
+  const handlers = new Map();
+  let kvSetCalls = 0;
+  registerWorkspaceIpc({
+    handleTrustedIpc: (channel, handler) => handlers.set(channel, handler),
+    app: { getVersion: () => "1.0.0" },
+    createBackupService: () => ({}),
+    powerMonitor: { on: () => {} },
+    intervalReminders: { tick: () => {} },
+    getRestoredProfilePendingRestart: () => true,
+    kvSet: () => { kvSetCalls += 1; return true; }
+  });
+  assert.equal(handlers.get("storage:kv-set")({}, { key: "a-stock-radar:k", value: "v" }), false);
+  assert.equal(kvSetCalls, 0);
+
+  const h = createHarness();
+  try {
+    h.invoke("settings:save", { theme: "dark", unknownExtraField: "should-not-persist" });
+    const saved = h.json("settings");
+    assert.equal(saved.theme, "dark");
+    assert.equal(Object.hasOwn(saved, "unknownExtraField"), false);
+  } finally { h.cleanup(); }
+});
+
+test("main.cjs closes SQLite after async shutdown drains, flushes bounds atomically on close, and wires agent abort signals", () => {
+  const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
+  const shutdownBlock = mainSource.match(/const finishShutdown = createShutdownGate\(\{([\s\S]*?)\n\}\);/);
+  assert.ok(shutdownBlock);
+  const settledIdx = shutdownBlock[1].indexOf("Promise.allSettled");
+  const closeIdx = shutdownBlock[1].indexOf("localKvStoreInstance?.close?.()");
+  assert.ok(settledIdx >= 0 && closeIdx > settledIdx);
+
+  assert.match(mainSource, /createdWindow\.once\?\.\("close",\s*\(\)\s*=>\s*\{[\s\S]*?saveMainBounds\(\);/);
+  assert.match(mainSource, /renameWithRetrySync\(tmpBoundsFile,\s*boundsFile\)/);
+  assert.match(mainSource, /let reviewSkillsInstance;\s*const reviewSkills = \(\) => \(reviewSkillsInstance \|\|= createReviewSkills\(/);
+  assert.match(mainSource, /reviewSkill:\s*\(skill,\s*args,\s*lifecycle\)\s*=>\s*reviewSkills\(\)\.runSkill\(skill,\s*args,\s*\{\s*signal:\s*lifecycle\?\.signal\s*\}\)/);
+  assert.match(mainSource, /marketNews:\s*lifecycle\s*=>\s*getNewsFeed\(\{\s*scope:\s*"all",\s*limit:\s*80\s*\},\s*settingsForService\(\),\s*\{\s*signal:\s*lifecycle\?\.signal\s*\}\)/);
+  assert.match(mainSource, /kvSet:\s*\(key,\s*value\)\s*=>\s*\{\s*if\s*\(restoredProfilePendingRestart\s*\|\|\s*isQuitting\)\s*return false;/);
+});

@@ -47,18 +47,46 @@ function skillCatalogText() {
  */
 function createReviewSkills(sources) {
   let fuyaoPromise = null, boardPromise = null, sectorCalls = 0;
-  const fuyao = () => (fuyaoPromise ||= Promise.resolve().then(() => sources.loadFuyao()).then(value => value?.available ? value : null).catch(() => null));
-  const board = () => (boardPromise ||= Promise.resolve().then(() => sources.loadSectorBoard()));
+  const fuyao = (signal) => {
+    signal?.throwIfAborted?.();
+    if (!fuyaoPromise) {
+      fuyaoPromise = Promise.resolve()
+        .then(() => sources.loadFuyao({ signal }))
+        .then(value => value?.available ? value : null)
+        .catch(error => {
+          if (error?.name === "AbortError" || signal?.aborted) {
+            fuyaoPromise = null;
+            throw error;
+          }
+          return null;
+        });
+    }
+    return fuyaoPromise;
+  };
+  const board = (signal) => {
+    signal?.throwIfAborted?.();
+    if (!boardPromise) {
+      boardPromise = Promise.resolve()
+        .then(() => sources.loadSectorBoard({ signal }))
+        .catch(error => {
+          if (error?.name === "AbortError" || signal?.aborted) {
+            boardPromise = null;
+          }
+          throw error;
+        });
+    }
+    return boardPromise;
+  };
 
   const run = {
-    async sector_strength(args) {
+    async sector_strength(args, signal) {
       const kind = args?.kind === "concept" ? "concept" : "industry";
       const sortBy = ["change", "limitUps", "netInflow"].includes(args?.sortBy) ? args.sortBy : "change";
       const top = intArg(args?.top, 3, 15, 10);
-      const value = await board();
+      const value = await board(signal);
       const rows = kind === "concept"
-        ? take(value?.concepts, 600).map(row => ({ name: row.name, changePct: round(row.changePct), limitUps: row.limitUps, netInflowYi: yi(row.netInflow), limitUpStocks: take(row.limitUpStocks, 4).map(item => item.name) }))
-        : take(value?.industries, 200).map(row => ({ name: row.name, changePct: round(finite(row.returns?.r1) ?? finite(row.memberAverageReturn)), limitUps: finite(row.poolLimitUps ?? row.limitUps),
+        ? take(value?.concepts, 600).map(row => ({ name: clip(row.name, 20), changePct: round(row.changePct), limitUps: row.limitUps, netInflowYi: yi(row.netInflow), limitUpStocks: take(row.limitUpStocks, 4).map(item => clip(item.name, 12)) }))
+        : take(value?.industries, 200).map(row => ({ name: clip(row.name, 20), changePct: round(finite(row.returns?.r1) ?? finite(row.memberAverageReturn)), limitUps: finite(row.poolLimitUps ?? row.limitUps),
           netInflowYi: yi(row.netInflow), leader: clip(row.leaderName, 8) }));
       if (!rows.length) throw new Error(`${kind === "concept" ? "概念" : "行业"}板块榜暂不可用`);
       const key = sortBy === "change" ? "changePct" : sortBy === "limitUps" ? "limitUps" : "netInflowYi";
@@ -67,77 +95,77 @@ function createReviewSkills(sources) {
       return { summary: `${kind === "concept" ? "概念" : "行业"}按${{ change: "涨幅", limitUps: "涨停家数", netInflow: "净流入" }[sortBy]}前列：${sorted.slice(0, 4).map(row => row.name).join("、")}`,
         data: { kind, sortBy, total: rows.length, top: sorted, ...(weakest.length ? { weakest } : {}) } };
     },
-    async limit_reasons(args) {
-      const value = await fuyao();
+    async limit_reasons(args, signal) {
+      const value = await fuyao(signal);
       if (!value?.limitUp) unavailable("涨停原因");
       const top = intArg(args?.top, 3, 15, 12);
-      const groups = take(value.limitUp.reasons, top).map(group => ({ reason: group.reason, count: group.count,
-        stocks: take(group.stocks, 5).map(item => ({ code: item.code, name: item.name, boards: finite(item.boards) })) }));
+      const groups = take(value.limitUp.reasons, top).map(group => ({ reason: clip(group.reason, 24), count: group.count,
+        stocks: take(group.stocks, 5).map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), boards: finite(item.boards) })) }));
       return { summary: `涨停 ${value.limitUp.count} 家，前列原因：${groups.slice(0, 4).map(group => `${group.reason}${group.count}`).join("、")}`,
         data: { limitUpCount: value.limitUp.count, maxBoards: value.limitUp.maxBoards, groups } };
     },
-    async ladder() {
-      const value = await fuyao();
+    async ladder(_args, signal) {
+      const value = await fuyao(signal);
       if (!value?.ladder && !value?.limitUp) unavailable("连板天梯");
       const days = take(value.ladder?.days, 5).map(day => ({ date: day.date,
-        tiers: take(day.tiers, 6).filter(tier => tier.stocks?.length).map(tier => ({ level: tier.label,
-          stocks: take(tier.stocks, 4).map(item => `${item.name}${item.nextDay ? `(次日${clip(item.nextDay, 6)})` : ""}`) })) }));
-      const leaders = take(value.limitUp?.leaders, 10).map(item => ({ code: item.code, name: item.name, boards: finite(item.boards), reason: clip(item.reason, 20), sealYi: yi(item.sealMoney) }));
+        tiers: take(day.tiers, 6).filter(tier => tier.stocks?.length).map(tier => ({ level: clip(tier.label, 12),
+          stocks: take(tier.stocks, 4).map(item => `${clip(item.name, 12)}${item.nextDay ? `(次日${clip(item.nextDay, 6)})` : ""}`) })) }));
+      const leaders = take(value.limitUp?.leaders, 10).map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), boards: finite(item.boards), reason: clip(item.reason, 20), sealYi: yi(item.sealMoney) }));
       return { summary: `今日最高 ${value.limitUp?.maxBoards ?? "--"} 板；高度板：${leaders.slice(0, 3).map(item => `${item.name}${item.boards}板`).join("、") || "--"}`,
         data: { boardCounts: take(value.limitUp?.boardCounts, 5), leaders, recentDays: days } };
     },
-    async broken_boards() {
-      const value = await fuyao();
+    async broken_boards(_args, signal) {
+      const value = await fuyao(signal);
       if (!value) unavailable("炸板/跌停池");
-      const breaks = take(value.limitBreak?.top, 10).map(item => ({ code: item.code, name: item.name, changePct: round(finite(item.changePct)), openTimes: finite(item.openTimes) }));
-      const downs = take(value.limitDown?.top, 10).map(item => ({ code: item.code, name: item.name, changePct: round(finite(item.changePct)) }));
+      const breaks = take(value.limitBreak?.top, 10).map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), changePct: round(finite(item.changePct)), openTimes: finite(item.openTimes) }));
+      const downs = take(value.limitDown?.top, 10).map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), changePct: round(finite(item.changePct)) }));
       return { summary: `炸板 ${value.limitBreak?.count ?? "--"} 家，跌停 ${value.limitDown?.count ?? "--"} 家，封板率 ${finite(value.sealRate) === null ? "--" : `${Math.round(value.sealRate * 100)}%`}`,
         data: { limitBreakCount: value.limitBreak?.count ?? null, limitDownCount: value.limitDown?.count ?? null, sealRatePct: finite(value.sealRate) === null ? null : Math.round(value.sealRate * 100), breaks, downs } };
     },
-    async hot_stocks(args) {
-      const value = await fuyao();
+    async hot_stocks(args, signal) {
+      const value = await fuyao(signal);
       const period = args?.period === "hour" ? "hour" : "day";
       const lists = value?.hotLists?.[period];
       if (!lists) unavailable("热股榜");
-      const row = item => ({ code: item.code, name: item.name, rank: finite(item.rank), changePct: round(finite(item.changePct)) });
+      const row = item => ({ code: clip(item.code, 12), name: clip(item.name, 12), rank: finite(item.rank), changePct: round(finite(item.changePct)) });
       const hot = take(lists.hot, 15).map(row), skyrocket = take(lists.skyrocket, 10).map(row);
       return { summary: `${period === "hour" ? "1小时" : "24小时"}热股前列：${hot.slice(0, 5).map(item => item.name).join("、")}`, data: { period, hot, skyrocket } };
     },
-    async dragon_tiger() {
-      const value = await fuyao();
+    async dragon_tiger(_args, signal) {
+      const value = await fuyao(signal);
       if (!value?.dragonTiger) unavailable("龙虎榜");
-      const topNet = take(value.dragonTiger.topNet, 10).map(item => ({ code: item.code, name: item.name, netYi: yi(item.net), changePct: round(finite(item.changePct)),
-        reason: clip(item.reason, 20), concepts: take(item.concepts, 3), hotMoneyNetYi: yi(item.hotMoneyNet), orgNetYi: yi(item.orgNet) }));
-      const desks = take(value.dragonTiger.desks, 6).map(desk => ({ name: clip(desk.name, 16), stocks: take(desk.stocks, 4).map(item => item.name) }));
+      const topNet = take(value.dragonTiger.topNet, 10).map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), netYi: yi(item.net), changePct: round(finite(item.changePct)),
+        reason: clip(item.reason, 20), concepts: take(item.concepts, 3).map(concept => clip(concept, 16)), hotMoneyNetYi: yi(item.hotMoneyNet), orgNetYi: yi(item.orgNet) }));
+      const desks = take(value.dragonTiger.desks, 6).map(desk => ({ name: clip(desk.name, 16), stocks: take(desk.stocks, 4).map(item => clip(item.name, 12)) }));
       return { summary: `龙虎榜 ${value.dragonTiger.date || ""} 净买入前列：${topNet.slice(0, 3).map(item => item.name).join("、")}`, data: { date: value.dragonTiger.date, count: value.dragonTiger.count, topNet, desks } };
     },
-    async anomalies(args) {
-      const value = await fuyao();
+    async anomalies(args, signal) {
+      const value = await fuyao(signal);
       if (!value?.anomalies) unavailable("异动解读");
       const top = intArg(args?.top, 3, 15, 12);
-      const rows = take(value.anomalies, top).map(item => ({ code: item.code, name: item.name, tag: clip(item.tag, 6), content: clip(item.content, 70), keywords: take(item.keywords, 4) }));
+      const rows = take(value.anomalies, top).map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), tag: clip(item.tag, 6), content: clip(item.content, 70), keywords: take(item.keywords, 4).map(keyword => clip(keyword, 16)) }));
       return { summary: `异动 ${value.anomalies.length} 条，如：${rows.slice(0, 3).map(item => `${item.name}(${item.tag})`).join("、")}`, data: { rows } };
     },
-    async sector_members(args) {
+    async sector_members(args, signal) {
       const name = clip(args?.name, 16);
       if (!name) throw new Error("请给出板块名称");
       if (++sectorCalls > 2) throw new Error("每次复盘最多查 2 个板块的成分");
-      const detail = await sources.analyzeSector(name);
+      const detail = await sources.analyzeSector(name, { signal });
       const members = take(detail?.constituents, 400);
       const up = members.filter(item => finite(item.changePct) > 0).length;
       const top = [...members].sort((a, b) => (finite(b.changePct) ?? -Infinity) - (finite(a.changePct) ?? -Infinity)).slice(0, 10)
-        .map(item => ({ code: item.code, name: item.name, changePct: round(finite(item.changePct)), limitUp: item.isLimitUp === true }));
-      return { summary: `${detail?.name || name}：成分 ${detail?.memberCount ?? members.length} 只，上涨 ${up} 只，涨停 ${finite(detail?.limitUps) ?? members.filter(item => item.isLimitUp).length} 只`,
-        data: { name: detail?.name || name, memberCount: detail?.memberCount ?? members.length, upCount: up, loaded: members.length, limitUps: finite(detail?.limitUps),
+        .map(item => ({ code: clip(item.code, 12), name: clip(item.name, 12), changePct: round(finite(item.changePct)), limitUp: item.isLimitUp === true }));
+      return { summary: `${clip(detail?.name || name, 20)}：成分 ${detail?.memberCount ?? members.length} 只，上涨 ${up} 只，涨停 ${finite(detail?.limitUps) ?? members.filter(item => item.isLimitUp).length} 只`,
+        data: { name: clip(detail?.name || name, 20), memberCount: detail?.memberCount ?? members.length, upCount: up, loaded: members.length, limitUps: finite(detail?.limitUps),
           changePct: round(finite(detail?.returns?.r1) ?? finite(detail?.memberAverageReturn)), r5: round(finite(detail?.returns?.r5)), top } };
     },
-    async stock_check(args) {
+    async stock_check(args, signal) {
       const codes = [...new Set(take(args?.codes, 6).map(code => String(code || "").match(/\d{6}/)?.[0]).filter(Boolean))].slice(0, 3);
       if (!codes.length) throw new Error("请给出 6 位股票代码（可从涨停原因、梯队、热股等技能结果里拿到）");
-      const { profiles } = await sources.loadProfiles(codes.map(code => ({ code, name: code })));
+      const { profiles } = await sources.loadProfiles(codes.map(code => ({ code, name: code })), { signal });
       const rows = take(profiles, 3).map(profile => {
         const ma60 = finite(profile.ma?.ma60), latest = finite(profile.latest);
-        return { code: profile.code, name: profile.name, latest, changePct: profile.changePct, return5: profile.return5, return20: profile.return20, return60: profile.return60,
+        return { code: clip(profile.code, 12), name: clip(profile.name, 12), latest, changePct: profile.changePct, return5: profile.return5, return20: profile.return20, return60: profile.return60,
           alignment: profile.alignment, volumeRatio: profile.volumeRatio, consecutiveBoards: profile.consecutiveBoards, limitUps20: profile.limitUps20, broken20: profile.broken20,
           rsi14: profile.rsi14, bias5: profile.bias5, ma60GapPct: latest !== null && ma60 ? round((latest / ma60 - 1) * 100, 1) : null,
           situation: typeof sources.situationOf === "function" ? sources.situationOf(profile) : [] };
@@ -151,7 +179,7 @@ function createReviewSkills(sources) {
         date: review.asOfDate,
         headline: clip(review.headline, 40),
         cycle: review.cycle?.phase || "",
-        mainlines: take(review.mainlines, 4).map(item => item.name),
+        mainlines: take(review.mainlines, 4).map(item => clip(item.name, 16)),
         posture: clip(review.nextDay?.posture, 30),
         confidence: review.confidence || "",
         ...(Number.isFinite(review.lookbackHitRatePct) ? { lookbackHitRatePct: review.lookbackHitRatePct } : {}),
@@ -162,13 +190,15 @@ function createReviewSkills(sources) {
   };
 
   /** 执行一个技能；失败时返回错误说明（让 AI 知道这条数据拿不到）。 */
-  async function runSkill(id, args = {}) {
+  async function runSkill(id, args = {}, { signal } = {}) {
+    signal?.throwIfAborted?.();
     const skill = SKILL_BY_ID.get(id);
     if (!skill) return { skill: id, name: id, ok: false, summary: "没有这个技能", data: null };
     try {
-      const value = await run[id](args && typeof args === "object" && !Array.isArray(args) ? args : {});
+      const value = await run[id](args && typeof args === "object" && !Array.isArray(args) ? args : {}, signal);
       return { skill: id, name: skill.name, ok: true, summary: clip(value.summary, 90), data: value.data };
     } catch (error) {
+      if (error?.name === "AbortError" || signal?.aborted) throw error;
       return { skill: id, name: skill.name, ok: false, summary: clip(error?.message || error, 90), data: null };
     }
   }

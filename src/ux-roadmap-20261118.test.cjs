@@ -1422,3 +1422,104 @@ test("Track 3: T+1 sellableShares consistency across addNoteToT, onSyncCostToHol
   assert.equal(rolled.store.items[0].config.sellableShares, 600);
 });
 
+test("Track 4 regression: QuickPlanModal infers assetType & uses valid tokens; native modals & EtfView CSS align cleanly", async () => {
+  const { QuickPlanDialogContent } = require("./components/QuickPlanModal.tsx");
+  const { QuickMonitorModal } = require("./components/QuickMonitorModal.tsx");
+  const { MasterPasswordUnlockModal } = require("./components/MasterPasswordUnlockModal.tsx");
+  const { inferAssetType } = require("./domain/securityIdentifiers.ts");
+
+  assert.equal(inferAssetType("510300"), "etf");
+  assert.equal(inferAssetType("159915"), "etf");
+  assert.equal(inferAssetType("113050"), "convertibleBond");
+  assert.equal(inferAssetType("127085"), "convertibleBond");
+  assert.equal(inferAssetType("600519"), "stock");
+
+  const quickPlanSrc = fs.readFileSync(path.join(__dirname, "components/QuickPlanModal.tsx"), "utf8");
+  assert.match(quickPlanSrc, /assetType:\s*target\.assetType\s*\|\|\s*inferAssetType\(target\.code\)/);
+  assert.doesNotMatch(quickPlanSrc, /var\(--(?:border|surface|panel-bg|text)[),]/);
+
+  const html = renderToStaticMarkup(
+    React.createElement(QuickPlanDialogContent, {
+      target: { code: "510300", name: "沪深300ETF", referencePrice: 3.85 },
+      onClose: () => {}
+    })
+  );
+  assert.match(html, /var\(--line-2\)/);
+  assert.match(html, /var\(--surface-1\)/);
+  assert.match(html, /var\(--ink-1\)/);
+
+  // Verify QuickPlanDialogContent passes inferred assetType to getQuoteSnapshot when referencePrice is absent
+  const quoteCalls = [];
+  const prevWindow = globalThis.window;
+  globalThis.window = {
+    localStorage: createMemoryStorage(),
+    stockApi: {
+      getQuoteSnapshot: async sec => {
+        quoteCalls.push(sec);
+        return { quote: { latest: 112.5 } };
+      }
+    }
+  };
+  try {
+    const h = createHookHarness(QuickPlanDialogContent, {
+      props: {
+        target: { code: "113050", name: "某转债" },
+        onClose: () => {}
+      }
+    });
+    h.render();
+    await h.flush();
+    h.dispose();
+    assert.equal(quoteCalls.length, 1);
+    assert.equal(quoteCalls[0].assetType, "convertibleBond");
+
+    const h2 = createHookHarness(QuickPlanDialogContent, {
+      props: {
+        target: { code: "510300", name: "沪深300ETF", assetType: "etf" },
+        onClose: () => {}
+      }
+    });
+    h2.render();
+    await h2.flush();
+    h2.dispose();
+    assert.equal(quoteCalls.length, 2);
+    assert.equal(quoteCalls[1].assetType, "etf");
+  } finally {
+    globalThis.window = prevWindow;
+  }
+
+  // Verify QuickMonitorModal & MasterPasswordUnlockModal render expected classes
+  const monitorHtml = renderToStaticMarkup(
+    React.createElement(QuickMonitorModal, {
+      stock: { code: "600519", name: "贵州茅台", secid: "1.600519", assetType: "stock" },
+      onSave: () => true,
+      onClose: () => {}
+    })
+  );
+  assert.match(monitorHtml, /class="quick-palette-native-dialog"/);
+  assert.match(monitorHtml, /class="palette-dialog"/);
+
+  const unlockHtml = renderToStaticMarkup(
+    React.createElement(MasterPasswordUnlockModal, {
+      open: true,
+      onUnlocked: () => {}
+    })
+  );
+  assert.match(unlockHtml, /class="quick-palette-native-dialog"/);
+  assert.match(unlockHtml, /class="palette-dialog security-master-unlock"/);
+
+  // Verify components.css modal centering, palette-dialog surface, and EtfView table/select styling
+  const css = fs.readFileSync(path.join(__dirname, "styles/theme/components.css"), "utf8");
+  assert.match(css, /\.quick-palette-native-dialog\[open\]\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*flex-start;[^}]*justify-content:\s*center;/s);
+  assert.match(css, /\.quick-palette-dialog,\s*\.palette-dialog\s*\{[^}]*border:\s*1px solid var\(--line-2\);[^}]*background:\s*var\(--surface-1\);[^}]*color:\s*var\(--ink-1\);[^}]*box-shadow:\s*var\(--shadow-3\);/s);
+  assert.match(css, /\.bond-table:not\(\.etf-table\)\s+td:nth-child\(6\)/);
+  assert.match(css, /\.bond-table:not\(\.etf-table\)\s+thead th:nth-child\(6\)/);
+  assert.match(css, /\.etf-table\s+td:nth-child\(2\)/);
+  assert.match(css, /\.bond-toolbar select\s*\{[^}]*background:\s*var\(--surface-2\);/s);
+  assert.doesNotMatch(css, /\.bond-toolbar select\s*\{[^}]*var\(--surface,\s*transparent\)/s);
+
+  const etfSrc = fs.readFileSync(path.join(__dirname, "features/etf/EtfView.tsx"), "utf8");
+  assert.match(etfSrc, /className="bond-table etf-table"/);
+});
+
+

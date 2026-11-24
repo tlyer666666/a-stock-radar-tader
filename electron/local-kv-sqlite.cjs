@@ -69,6 +69,15 @@ function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = 
     const dir = path.dirname(resolvedPath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     safeChmod(dir, 0o700);
+    let targetIsSymlink = false;
+    try {
+      targetIsSymlink = fs.lstatSync(resolvedPath).isSymbolicLink();
+    } catch {
+      targetIsSymlink = false;
+    }
+    if (targetIsSymlink) {
+      throw fail(TypeError, "INVALID_KV_PATH", "本地键值库路径不能为符号链接");
+    }
   }
 
   const db = new DatabaseSync(resolvedPath);

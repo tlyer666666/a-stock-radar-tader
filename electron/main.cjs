@@ -16,6 +16,7 @@ const {
 } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const crypto = require("node:crypto");
 const { createRuntimeLogger } = require("./runtime-diagnostics.cjs");
 const { pathToFileURL } = require("node:url");
 const { createCustomStrategyStore } = require("./custom-strategy-store.cjs");
@@ -26,6 +27,7 @@ const { resetMarketSourceHealth } = require("./market-source-health.cjs");
 const {
   capItemsPreservingFavorites,
   readJsonWithBackup,
+  renameWithRetrySync,
   tightenUserDataPermissions,
   writeJsonAtomic
 } = require("./persistence.cjs");
@@ -88,6 +90,8 @@ const {
   getMarketSourceHealth,
   getConvertibleBonds,
   getEtfMarket,
+  getGlobalMarkets,
+  getGlobalNews,
   getBatchQuotes,
   getReviewIndexChart,
   getFuyaoReviewData,
@@ -531,7 +535,6 @@ function normalizeSettings(value) {
   )];
   return {
     ...fallback,
-    ...input,
     // The application topology is fixed: THS is the requested primary and
     // Eastmoney is the first automatic fallback/verification source.
     provider: "ths",
@@ -1024,7 +1027,17 @@ function createWindow() {
     try {
       const next = createdWindow.getBounds?.();
       if (!next || !(next.width >= 600 && next.height >= 400)) return;
-      fs.writeFileSync(boundsFile, JSON.stringify({ x: next.x, y: next.y, width: next.width, height: next.height }), { mode: 0o600 });
+      const tmpBoundsFile = `${boundsFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        fs.writeFileSync(
+          tmpBoundsFile,
+          JSON.stringify({ x: next.x, y: next.y, width: next.width, height: next.height }),
+          { mode: 0o600, flag: "wx" }
+        );
+        renameWithRetrySync(tmpBoundsFile, boundsFile);
+      } finally {
+        try { if (fs.existsSync(tmpBoundsFile)) fs.unlinkSync(tmpBoundsFile); } catch { /* ignore */ }
+      }
     } catch { /* best-effort window bounds persistence */ }
   };
   const scheduleSaveMainBounds = () => {
@@ -1035,7 +1048,7 @@ function createWindow() {
   };
   createdWindow.on?.("resize", scheduleSaveMainBounds);
   createdWindow.on?.("move", scheduleSaveMainBounds);
-  createdWindow.once?.("closed", () => {
+  createdWindow.once?.("close", () => {
     if (boundsTimer) { clearTimeout(boundsTimer); boundsTimer = null; }
     saveMainBounds();
   });
@@ -1059,9 +1072,9 @@ function createWindow() {
       return;
     }
     if (process.platform !== "win32") return;
-    event.preventDefault();
     const availableTray = createTray();
     if (!availableTray || availableTray.isDestroyed()) return;
+    event.preventDefault();
     if (!createdWindow.isDestroyed()) createdWindow.hide();
     debugLog("window hidden to tray");
   });
@@ -1442,15 +1455,15 @@ let workspaceAgentSnapshot = { tItems: [], plans: [], paperPositions: [], notes:
 let stockAgentInstance = null;
 function stockAgent() {
   if (stockAgentInstance) return stockAgentInstance;
-  // 每次调用新建一份：复盘技能内部会缓存板块数据和失败结果，长期复用会一直拿旧数据。
-  const reviewSkills = () => createReviewSkills({
+  let reviewSkillsInstance;
+  const reviewSkills = () => (reviewSkillsInstance ||= createReviewSkills({
     loadFuyao: () => getFuyaoReviewData(),
     loadSectorBoard: () => getSectorStrengthBoard(settingsForService()),
     analyzeSector: name => analyzeSector({ name }, settingsForService()),
     loadProfiles: list => loadAiStockProfiles(list),
     previousReviews: count => (typeof aiService === "function" ? aiService().recentMarketReviews("", count) : []),
     situationOf
-  });
+  }));
   const tools = createStockAgentTools({
     search: query => searchSecurities(query),
     quote: security => getQuoteSnapshot(security, settingsForService()),
@@ -1472,10 +1485,13 @@ function stockAgent() {
     strategies: security => strategyHitsForStock(security),
     diagnosis: security => analyzeSecurity(security, settingsForService()),
     sectorBoard: () => getSectorStrengthBoard(settingsForService()),
-    reviewSkill: (skill, args) => reviewSkills().runSkill(skill, args),
+    reviewSkill: (skill, args, lifecycle) => reviewSkills().runSkill(skill, args, { signal: lifecycle?.signal }),
     indexCharts: () => Promise.all([["1.000001", "上证指数"], ["0.399001", "深证成指"], ["0.399006", "创业板指"], ["1.000300", "沪深300"], ["1.000985", "中证全指"]]
       .map(([secid, name]) => getReviewIndexChart(secid, { range: "3m", limit: 90 }).then(chart => ({ code: secid.slice(2), name, rows: chart?.rows || [] }), () => ({ code: secid.slice(2), name, rows: [] })))),
     etfMarket: () => getEtfMarket(),
+    globalMarkets: lifecycle => getGlobalMarkets({ signal: lifecycle?.signal }),
+    globalNews: (args, lifecycle) => getGlobalNews({ hours: args?.hours, limit: args?.limit, signal: lifecycle?.signal }),
+    marketNews: lifecycle => getNewsFeed({ scope: "all", limit: 80 }, settingsForService(), { signal: lifecycle?.signal }),
     myPortfolio: code => {
       const holdingsValidator = typeof usableHoldings !== "undefined" ? usableHoldings : undefined;
       const watchlistValidator = typeof usableWatchlist !== "undefined" ? usableWatchlist : undefined;
@@ -1612,7 +1628,10 @@ if (!hasSingleInstanceLock) {
     customStrategiesForScan,
     customStrategyStore,
     kvGet: key => localKvStore().get(key),
-    kvSet: (key, value) => localKvStore().set(key, value),
+    kvSet: (key, value) => {
+      if (restoredProfilePendingRestart || isQuitting) return false;
+      return localKvStore().set(key, value);
+    },
     localKvMirror: {
       keys: () => localKvStore().keys(),
       get: key => localKvStore().get(key),
@@ -1738,10 +1757,14 @@ const finishShutdown = createShutdownGate({
       Promise.resolve().then(shutdownServiceResources),
       Promise.resolve().then(shutdownThsTokenManager),
       Promise.resolve().then(() => aiServiceInstance?.shutdown()),
-      Promise.resolve().then(() => stockAgentInstance?.shutdown()),
-      Promise.resolve().then(() => localKvStoreInstance?.close?.())
+      Promise.resolve().then(() => stockAgentInstance?.shutdown())
     ]);
     for (const result of results) if (result.status === "rejected") runtimeErrorLog("shutdown-resource", result.reason);
+    try {
+      localKvStoreInstance?.close?.();
+    } catch (error) {
+      runtimeErrorLog("shutdown-resource", error);
+    }
   },
   complete: () => app.quit(),
   onError: error => runtimeErrorLog("shutdown-cleanup", error)

@@ -38,3 +38,16 @@ test("样本范围文字：本机日线落后时提示重新选股", () => {
   const fresh = { signalTo: "2026-11-20", dataThrough: "2026-11-20", universe: { localStocks: 5400 }, stockCount: 5120 };
   assert.match(model.leaderboardScopeText(fresh), /数据截至 2026-11-20/);
 });
+
+test("StrategyLeaderboardView polling, sequence guard, and accessible row button invariants", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "StrategyLeaderboardView.tsx"), "utf8");
+  assert.match(source, /startVisibleInterval\(/, "must use startVisibleInterval instead of raw window.setInterval");
+  assert.doesNotMatch(source, /window\.setInterval\(/);
+  assert.match(source, /useEffect\(\(\) => \{[\s\S]*?\}, \[api, load\]\)/, "effect dependencies must not include report");
+  assert.match(source, /refreshPendingRef\.current/);
+  assert.match(source, /loadSeqRef\.current/);
+  assert.doesNotMatch(source, /<tr[^>]*role="button"/, "must not nest interactive role=button on tr around button");
+  assert.match(source, /<button type="button" className="bond-identity lb-name" aria-expanded=\{open\}/);
+});

@@ -17,6 +17,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { validateDailyBarRows } = require("./daily-bar-validation.cjs");
+const { renameWithRetryAsync } = require("./persistence.cjs");
 
 const STORE_VERSION = 1;
 const MEMORY_ENTRIES = 64;
@@ -179,7 +180,7 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
         }),
         { mode: 0o600 }
       );
-      await fs.promises.rename(temp, file);
+      await renameWithRetryAsync(temp, file);
     } catch {
       stats.writeFailures += 1;
       await fs.promises.rm(temp, { force: true }).catch(() => {});

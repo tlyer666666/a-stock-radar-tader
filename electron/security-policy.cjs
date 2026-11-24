@@ -272,13 +272,17 @@ const IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 1_000_000, keys: 500_000, byte
 const RESEARCH_IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 10_000_000, keys: 4_000_000, bytes: 96 * 1024 * 1024, stringLength: MAX_IPC_STRING_LENGTH });
 // backup:run carries serialized localStorage entries up to 48 MiB (aligned with main.cjs).
 const BACKUP_IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 1_000_000, keys: 500_000, bytes: BACKUP_RUN_MAX_BYTES, stringLength: BACKUP_RUN_MAX_BYTES });
+// storage:kv-set carries serialized localStorage entries up to 32 MiB (aligned with local-kv-sqlite.cjs MAX_VALUE_BYTES).
+const KV_IPC_PAYLOAD_LIMITS = Object.freeze({ nodes: 1_000_000, keys: 500_000, bytes: 32 * 1024 * 1024, stringLength: 32 * 1024 * 1024 });
 
 function createIpcPayloadBudget(channel) {
   const limits = channel === "trend-screener:research"
     ? RESEARCH_IPC_PAYLOAD_LIMITS
     : channel === "backup:run"
       ? BACKUP_IPC_PAYLOAD_LIMITS
-      : IPC_PAYLOAD_LIMITS;
+      : channel === "storage:kv-set"
+        ? KV_IPC_PAYLOAD_LIMITS
+        : IPC_PAYLOAD_LIMITS;
   return { nodes: 0, keys: 0, bytes: 0, limits };
 }
 

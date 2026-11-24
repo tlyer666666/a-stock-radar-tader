@@ -94,13 +94,23 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
     const candidates = holdings.filter(entry => /^\d{6}$/.test(entry.code) && entry.shares > 0 && (!entry.assetType || entry.assetType === "stock" || entry.assetType === "etf")) as HoldingItemWithSellable[];
     if (!candidates.length) { onToast("持仓股里还没有填了股数的 A 股或 ETF"); return; }
     let added = 0;
+    let updated = 0;
+    const existingCodes = new Set(store.items.map(itemEntry => itemEntry.code));
     for (const entry of candidates) {
-      if (store.items.length + added >= MAX_T_ITEMS && !store.items.some(itemEntry => itemEntry.code === entry.code)) break;
+      const isNew = !existingCodes.has(entry.code);
+      if (isNew && existingCodes.size >= MAX_T_ITEMS) continue;
       const defaultSellable = entry.sellableShares ?? 0;
       const message = api.addStock(entry, { baseShares: entry.shares, sellableShares: store.items.find(item => item.code === entry.code)?.config.sellableShares ?? defaultSellable, costPrice: entry.costPrice });
-      if (!message) added += 1;
+      if (!message) {
+        if (isNew) {
+          existingCodes.add(entry.code);
+          added += 1;
+        } else {
+          updated += 1;
+        }
+      }
     }
-    onToast(`已从持仓导入 ${added} 只，底仓、可卖和成本已按持仓股填写（若含今日新买请按券商核对今日开盘可卖股数）`);
+    onToast(`已从持仓导入 ${added} 只${updated > 0 ? `，更新 ${updated} 只` : ""}，底仓、可卖和成本已按持仓股填写（若含今日新买请按券商核对今日开盘可卖股数）`);
     if (!selected && candidates[0]) setSelected(candidates[0].code);
   };
 
@@ -534,6 +544,7 @@ function TChart({ share, analysis, trades, markers }: { share: TimeShare; analys
   const selected = hover === null ? null : points.reduce((best, point) => Math.abs(point.slot - hover) < Math.abs(best.slot - hover) ? point : best, points[0]!);
   const move = (event: MouseEvent<SVGSVGElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width <= 0) return;
     const slot = Math.round((((event.clientX - rect.left) / rect.width) * W - PX) / (W - PX * 2) * (TIME_SHARE_SLOTS - 1));
     setHover(Math.max(0, Math.min(lastSlot, slot)));
   };

@@ -7,6 +7,7 @@ const { fetchJsonWithPolicy } = require("./http-client.cjs");
 const newsController = new AbortController();
 const newsRequests = new Set();
 const { createServiceRuntime } = require("./service-runtime.cjs");
+const { producerContext } = require("./service-context.cjs");
 const newsRuntime = createServiceRuntime({ controller: newsController, cacheJobOptions: { maxActive: 8, maxQueued: 0 } });
 const {
   thsProviderError,
@@ -830,8 +831,17 @@ function isBroadcastWorthy(item) {
     (item?.sourceLevel === "A" && importance >= 75);
 }
 
-async function getNewsFeed(input = {}, settings = {}) {
-  const feed = await fetchPublicFeed(settings);
+async function getNewsFeed(input = {}, settings = {}, runtime = {}) {
+  const callerSignal = runtime?.signal;
+  const signal = newsRuntime.signal(callerSignal);
+  signal.throwIfAborted();
+  const parent = producerContext.getStore();
+  const scope = {
+    signal,
+    throwIfAborted: () => signal.throwIfAborted(),
+    track: factory => parent ? parent.track(factory) : (typeof factory === "function" ? factory() : factory)
+  };
+  const feed = await (callerSignal ? producerContext.run(scope, () => fetchPublicFeed(settings)) : fetchPublicFeed(settings));
   const deduped = dedupeItems(feed.items);
   const filtered = filterItems(deduped, input);
   const limit = Math.max(10, Math.min(200, Number(input.limit) || 100));

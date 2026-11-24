@@ -803,7 +803,7 @@ html .terminal-shell .sector-explorer-entry strong {
   padding: 4px 6px;
   border: 1px solid var(--line);
   border-radius: var(--radius-xs);
-  background: var(--surface, transparent);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -835,8 +835,10 @@ html .terminal-shell .sector-explorer-entry strong {
 
 .bond-table th[scope="row"],
 .bond-table thead th:first-child,
-.bond-table td:nth-child(6),
-.bond-table thead th:nth-child(6) {
+.bond-table:not(.etf-table) td:nth-child(6),
+.bond-table:not(.etf-table) thead th:nth-child(6),
+.etf-table td:nth-child(2),
+.etf-table thead th:nth-child(2) {
   text-align: left;
 }
 
@@ -4618,7 +4620,8 @@ html .terminal-shell .member-row.no-funds {
   background: var(--overlay);
 }
 
-.quick-palette-dialog {
+.quick-palette-dialog,
+.palette-dialog {
   width: min(640px, 100%);
   max-height: min(560px, 80vh);
   display: flex;
@@ -4626,8 +4629,15 @@ html .terminal-shell .member-row.no-funds {
   border: 1px solid var(--line-2);
   border-radius: var(--radius-md);
   background: var(--surface-1);
+  color: var(--ink-1);
   box-shadow: var(--shadow-3);
   overflow: hidden;
+}
+
+.palette-dialog,
+.security-master-unlock {
+  padding: 18px;
+  overflow-y: auto;
 }
 
 .quick-palette-head {
@@ -5272,6 +5282,12 @@ html .terminal-shell .member-row.no-funds {
   padding: 84px var(--space-md) var(--space-lg);
   border: 0;
   background: var(--overlay);
+}
+
+.quick-palette-native-dialog[open] {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
 }
 
 .quick-palette-native-dialog::backdrop {

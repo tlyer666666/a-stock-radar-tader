@@ -129,3 +129,59 @@ test("validateIpcPayload enforces structural runtime validation and preserves ty
   assert.deepEqual(tsContract.decodeArrayPayload([1, 2]), [1, 2]);
   assert.throws(() => tsContract.decodeArrayPayload({}), { name: "TypeError" });
 });
+
+test("ai.ipc.cjs forwards serviceRequestRuntime signal to loadAiStockProfiles in ai:rank, ai:review, and ai:custom-rank", async () => {
+  const { registerAiIpc } = require("./ipc/ai.ipc.cjs");
+  const handlers = new Map();
+  const seenSignals = [];
+  const controller = new AbortController();
+  registerAiIpc({
+    handleTrustedIpc: (channel, handler) => handlers.set(channel, handler),
+    aiPayload: input => (input && typeof input === "object" ? input : {}),
+    aiService: () => ({
+      pending: () => ["600519"],
+      rank: async () => ({ ranked: [] }),
+      review: async () => ({ ok: true }),
+      rankCustom: async () => ({ ranked: [] })
+    }),
+    aiProfiles: () => ({}),
+    stockAgent: () => ({}),
+    AI_CUSTOM_MAX: 50,
+    loadAiStockProfiles: async (targets, options) => {
+      seenSignals.push(options?.signal);
+      return {
+        profiles: targets.map(item => ({ code: String(item.code || "600519"), asOfDate: "2026-01-02" })),
+        failed: []
+      };
+    },
+    latestDate: () => "2026-01-02",
+    readAiCustomList: () => [{ code: "600519", name: "样本股" }],
+    normalizeAiCustomItem: x => x,
+    normalizeAiCustomItems: x => x,
+    isAiCustomList: () => true,
+    readAiFramework: () => ({}),
+    normalizeFrameworkState: x => x,
+    normalizeCustom: x => x,
+    frameworkCatalog: () => ({}),
+    isAiFrameworkState: () => true,
+    writeJson: () => {},
+    settingsForService: () => ({}),
+    resolveTestSecret: () => "",
+    sameOrigin: () => true,
+    getProfessionalReview: async () => ({}),
+    recordExternalFactorSnapshot: () => {},
+    createReviewSkills: () => ({}),
+    getFuyaoReviewData: async () => ({}),
+    getSectorStrengthBoard: async () => ({}),
+    analyzeSector: async () => ({}),
+    situationOf: () => [],
+    emitAiStream: () => {},
+    setWorkspaceAgentSnapshot: () => {},
+    serviceRequestRuntime: () => ({ signal: controller.signal })
+  });
+
+  await handlers.get("ai:rank")({}, { picks: [{ code: "600519", name: "样本股" }] });
+  await handlers.get("ai:review")({}, { security: { code: "600519", name: "样本股" } });
+  await handlers.get("ai:custom-rank")({}, {});
+  assert.deepEqual(seenSignals, [controller.signal, controller.signal, controller.signal]);
+});

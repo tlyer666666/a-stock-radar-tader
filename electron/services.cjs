@@ -70,6 +70,16 @@ const etfMarket = createEtfMarket({ fetchJson: (url, options, timeoutMs) => _run
 async function getEtfMarket(options = {}) {
   return etfMarket.load({ forceRefresh: options?.forceRefresh === true, signal: serviceSignal() });
 }
+// 全球市场与外围资讯（AI 问股的 global_markets / global_news）。
+const { createGlobalMarket } = require("./global-market.cjs");
+const globalMarket = createGlobalMarket({ fetchJson: (url, options, timeoutMs) => _runtime.fetchJson(url, options, timeoutMs) });
+async function getGlobalMarkets(options = {}) {
+  return globalMarket.loadMarkets({ forceRefresh: options?.forceRefresh === true, signal: options?.signal || serviceSignal() });
+}
+async function getGlobalNews(options = {}) {
+  return globalMarket.loadNews({ forceRefresh: options?.forceRefresh === true, signal: options?.signal || serviceSignal(),
+    hours: Number(options?.hours) || 18, limit: Number(options?.limit) || 30 });
+}
 const { priceLimitRate } = require("./price-limit-rules.cjs");
 const { workerScriptPath } = require("./worker-runner.cjs");
 const { createFailedBoardHistoryService } = require("./failed-board-history.cjs");
@@ -243,6 +253,8 @@ module.exports = {
   getMarketSourceHealth,
   getConvertibleBonds,
   getEtfMarket,
+  getGlobalMarkets,
+  getGlobalNews,
   getBatchQuotes,
   configureConvertibleRosterStore,
   configureStockIndustryStore,

@@ -144,7 +144,7 @@ async function main() {
       path.join(repo, "node_modules", "electron-builder", "cli.js"),
       "--dir", "--mac", archFlag,
       `-c.productName=${PRODUCT}`,
-      "-c.appId=com.codex.astocktrend",
+      "-c.appId=com.tlyer666666.astocktrend",
       "-c.extraMetadata.name=a-stock-trend-radar"
     ]);
   } else {

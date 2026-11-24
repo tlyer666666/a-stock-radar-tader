@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { PaperClosedPosition } from "../../domain/paperSimulationTypes";
-import { inferSecid } from "../../domain/securityIdentifiers";
+import { inferAssetType, inferSecid } from "../../domain/securityIdentifiers";
 import { normalizeSettings } from "../../domain/settings";
 import { isExecutionLogCollection, isPaperState } from "../../researchStorage";
 import { saveSafeLocalJson } from "../../safeStorage";
@@ -490,7 +490,7 @@ export function usePaperTrading({
       for (const code of targets) {
         if (!paperMountedRef.current) break;
         try {
-          const security: Security = { code, name: code, secid: inferSecid(code), assetType: "stock" };
+          const security: Security = { code, name: code, secid: inferSecid(code), assetType: inferAssetType(code) };
           const snapshot = await window.stockApi.getQuoteSnapshot(security);
           const latest = Number(snapshot?.quote?.latest);
           if (!paperMountedRef.current || !Number.isFinite(latest) || latest <= 0) continue;

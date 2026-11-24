@@ -53,7 +53,7 @@ function useHistoryChart(security: Security, frame: TFrame, adjustment: string, 
     if (manual || !cached || Date.now() - cached.at >= 30_000) void load(manual);
     const tick = whenVisible(() => { if (live && inTradingSession()) void load(); });
     const interval = live ? window.setInterval(tick, 30_000) : undefined;
-    const visible = () => { if (!cache.current.has(key)) void load(); else tick(); };
+    const visible = () => { if (typeof navigator !== 'undefined' && navigator.onLine === false) return; if (!cache.current.has(key)) void load(); else tick(); };
     document.addEventListener('visibilitychange', visible);
     return () => { disposed = true; generation++; clearTimeout(timeout); window.clearInterval(interval); document.removeEventListener('visibilitychange', visible); void scope.cancelAll(); };
   }, [key, security.code, security.name, security.secid, frame, adjustment, live, enabled, revision]);

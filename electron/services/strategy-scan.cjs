@@ -201,10 +201,13 @@ async function dailyBarSnapshots(securities) {
   const supported = missing.filter(security => fuyaoQuoteSupports(security));
   if (!supported.length || !fuyao.configured()) return out;
   for (let offset = 0; offset < supported.length; offset += 50) {
+    const signal = serviceSignal();
+    signal.throwIfAborted();
     const fetchedAt = Date.now();
     let quotes;
-    try { quotes = await fuyao.snapshot(supported.slice(offset, offset + 50)); }
+    try { quotes = await fuyao.snapshot(supported.slice(offset, offset + 50), { signal }); }
     catch (error) {
+      if (error?.name === "AbortError" || signal.aborted) throw error;
       if (/RATE_LIMITED|AUTH|NO_KEY/.test(String(error?.code || ""))) break;
       continue;
     }
@@ -509,13 +512,21 @@ async function leaderboardUniverseNames() {
   return names;
 }
 
+function leaderboardSignalTo() {
+  const asOf = dailyBarAsOf();
+  if (asOf) return asOf;
+  const today = shanghaiDateText();
+  const anchor = dailyBarCalendar.coveredTo && today > dailyBarCalendar.coveredTo ? dailyBarCalendar.coveredTo : today;
+  return dailyBarCalendar.previousSession(anchor, true) || dailyBarCalendar.coveredTo || today;
+}
+
 const strategyLeaderboardLoader = createStrategyLeaderboardService({
   listCodes: () => dailyBarStore.listLocalCodes(),
   readRows: code => dailyBarStore.readLocal(code),
   loadNames: leaderboardUniverseNames,
   loadBenchmark: () => serviceRuntime.track(() => trackServiceRequest(strategySelectionMarketData.fetchBenchmark({ signal: serviceSignal() }))),
   runChunk: (candidates, histories, benchmark, replay) => buildStrategySignalReportInWorker(candidates, histories, benchmark, replay),
-  resolveSignalTo: () => dailyBarAsOf() || shanghaiDateText(),
+  resolveSignalTo: () => leaderboardSignalTo(),
   isEligibleCode: leaderboardCodeEligible,
   isRiskName: isRiskSecurityName,
   assertActive: () => serviceSignal()?.throwIfAborted()
@@ -580,7 +591,7 @@ function leaderboardExpiresAt(signalTo) {
 }
 
 function strategyLeaderboard(rawOptions = {}, runtime = {}) {
-  const signalTo = dailyBarAsOf() || shanghaiDateText();
+  const signalTo = leaderboardSignalTo();
   const forceRefresh = rawOptions?.refresh === true;
   const cacheKey = JSON.stringify(["leaderboard-v1", signalTo, leaderboardEngineKey()]);
   return serviceRuntime.run("selection", JSON.stringify([cacheKey, forceRefresh]), runtime, async () => {

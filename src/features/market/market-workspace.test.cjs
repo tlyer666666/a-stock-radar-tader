@@ -188,6 +188,15 @@ test("one-click close-all is bound to the all-position handler, with a single-po
   assert.equal(resolvePaperCloseAllHandler(null, single), single);
 });
 
+test("MarketWorkspace infers assetType on paper position open and traps focus in agent drawer", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "MarketWorkspace.tsx"), "utf8");
+  assert.match(source, /onOpen\(\{ code: position\.code, name: position\.name, secid: "", assetType: inferAssetType\(position\.code\) \} as Security\)/);
+  assert.match(source, /id="mw-agent-drawer" ref=\{agentDrawerRef\} tabIndex=\{-1\}/);
+  assert.match(source, /if \(event\.key !== "Tab"\) return;/);
+});
+
 after(() => {
   restoreTypeScript?.();
   if (previousCssLoader) require.extensions[".css"] = previousCssLoader;

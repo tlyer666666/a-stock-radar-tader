@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, RefreshCw, Trophy } from "lucide-react";
 import { PageHeading, PanelTitle } from "../../components/terminal/TerminalPrimitives";
 import { userErrorText } from "../../userErrorText";
+import { startVisibleInterval } from "../../visiblePolling";
 import type { StrategyLeaderboardReport } from "../../shared/ipc-contract";
 import { leaderboardHeadline, leaderboardScopeText, rowEdge, rowWinRate, sortLeaderboardRows, verdictLabel, type LeaderboardSort, type LeaderboardSortColumn } from "./leaderboardModel";
 
@@ -17,23 +18,34 @@ export default function StrategyLeaderboardView({ onBack, backLabel }: { onBack:
   const [sort, setSort] = useState<LeaderboardSort>({ column: "edge", direction: "desc" });
   const [expanded, setExpanded] = useState<string | null>(null);
   const alive = useRef(true);
+  const reportRef = useRef<StrategyLeaderboardReport | null>(null);
+  reportRef.current = report;
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
+  const refreshPendingRef = useRef(false);
+  const loadSeqRef = useRef(0);
   const api = typeof window === "undefined" ? null : window.stockApi;
 
   const load = useCallback(async (forceRefresh: boolean) => {
     if (typeof api?.getStrategyLeaderboard !== "function") return;
+    const seq = ++loadSeqRef.current;
+    if (forceRefresh) refreshPendingRef.current = true;
     setLoading(true);
     setError("");
     try {
       const value = await api.getStrategyLeaderboard({ refresh: forceRefresh });
-      if (!alive.current) return;
+      if (!alive.current || seq !== loadSeqRef.current) return;
       if (value?.statusOnly) { setProgress(value.progress ?? null); return; }
+      refreshPendingRef.current = false;
+      setProgress(null);
       setReport(value ?? null);
       setError("");
     } catch (reason) {
-      if (!alive.current) return;
+      if (!alive.current || seq !== loadSeqRef.current) return;
+      if (forceRefresh) refreshPendingRef.current = false;
       setError(userErrorText(reason, "策略实测读取失败"));
     } finally {
-      if (alive.current) setLoading(false);
+      if (alive.current && seq === loadSeqRef.current) setLoading(false);
     }
   }, [api]);
 
@@ -41,17 +53,18 @@ export default function StrategyLeaderboardView({ onBack, backLabel }: { onBack:
   useEffect(() => {
     alive.current = true;
     void load(false);
-    const timer = window.setInterval(() => {
+    const stop = startVisibleInterval(() => {
       if (typeof api?.getStrategyLeaderboard !== "function") return;
+      if (reportRef.current !== null && !refreshPendingRef.current && !progressRef.current?.active) return;
       void api.getStrategyLeaderboard({ statusOnly: true }).then(value => {
         if (!alive.current) return;
         const active = value?.progress?.active === true;
         setProgress(active ? value.progress ?? null : null);
-        if (!active && report === null) void load(false);
+        if (!active && (reportRef.current === null || refreshPendingRef.current)) void load(false);
       }).catch(() => undefined);
     }, 5000);
-    return () => { alive.current = false; window.clearInterval(timer); };
-  }, [api, load, report]);
+    return () => { alive.current = false; stop(); };
+  }, [api, load]);
 
   const rows = useMemo(() => sortLeaderboardRows(report?.strategies || [], sort), [report, sort]);
   const headline = useMemo(() => leaderboardHeadline(report), [report]);
@@ -107,12 +120,9 @@ export default function StrategyLeaderboardView({ onBack, backLabel }: { onBack:
                 const primary = row.horizons?.[String(report.primaryHorizon ?? 5)];
                 const edge5 = rowEdge(row, "5");
                 const openRow = () => setExpanded(current => current === row.id ? null : row.id);
-                return <tr key={row.id} className={open ? "lb-open" : undefined} onClick={openRow} role="button" tabIndex={0}
-                  onKeyDown={event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openRow(); } }}
-                  onMouseDown={event => event.preventDefault()}
-                  aria-expanded={open} aria-label={`${row.name} 展开明细`}>
+                return <tr key={row.id} className={open ? "lb-open" : undefined} onClick={openRow}>
                   <td className="lb-rank">{row.featured ? <span className="lb-star" title="精选策略">★</span> : ""}{row.rank ?? "--"}</td>
-                  <td><button type="button" className="bond-identity lb-name" onClick={event => { event.stopPropagation(); openRow(); }}>
+                  <td><button type="button" className="bond-identity lb-name" aria-expanded={open} aria-label={`${row.name} 展开明细`} onClick={event => { event.stopPropagation(); openRow(); }}>
                     <b>{row.name}</b><code>{row.id}</code>{row.featured ? <span className="lb-featured">精选</span> : ""}
                   </button></td>
                   <td className={edgeTone(edge5)}><b>{signed(edge5)}</b>{primary?.sampleCount ? <small>{primary.sampleCount} 笔</small> : null}</td>

@@ -131,3 +131,23 @@ test("Hong Kong / overseas ETFs mis-filed under the A-share bucket are treated a
   assert.equal(kr.amplitude, 1.86);
   assert.equal(isT0Category("宽基"), false);
 });
+
+test("caller abort does not fail a concurrent ETF market waiter", async () => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const { fetchJson } = fakeFetch();
+  const market = createEtfMarket({
+    fetchJson: async (url, options, timeoutMs) => {
+      await gate;
+      return fetchJson(url, options, timeoutMs);
+    }
+  });
+  const controller = new AbortController();
+  const first = market.load({ signal: controller.signal });
+  const second = market.load();
+  controller.abort(new Error("caller cancelled"));
+  await assert.rejects(first, /caller cancelled/);
+  release();
+  const result = await second;
+  assert.ok(result.items.length > 0);
+});

@@ -535,7 +535,7 @@ function enrichStrategySignalReport(report = {}, candidates = [], context = {}) 
           "样本外相对中证全指超额收益未转正，不发布当前信号。"
         );
       }
-      if (robustValidation && !(Number(outOfSampleLowerBound) >= 0)) {
+      if (robustValidation && !(outOfSampleLowerBound !== null && Number.isFinite(outOfSampleLowerBound) && outOfSampleLowerBound >= 0)) {
         publicationFailureReasons.push(
           "样本外平均收益95%单侧置信下限未达到0%，不发布当前信号。"
         );
@@ -563,7 +563,7 @@ function enrichStrategySignalReport(report = {}, candidates = [], context = {}) 
         (!robustValidation ||
           (
             Number(outOfSampleExcess) > 0 &&
-            Number(outOfSampleLowerBound) >= 0 &&
+            outOfSampleLowerBound !== null && Number.isFinite(outOfSampleLowerBound) && outOfSampleLowerBound >= 0 &&
             currentRegimeFit.supported === true &&
             context.independentValidationUniverse === true
           ));

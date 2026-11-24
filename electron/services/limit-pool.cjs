@@ -119,12 +119,11 @@ function normalizeThsLimitUpItem(item = {}, date = "", dataProvider = "ths_publi
   const lastSealRaw = poolTimeRawFromEpoch(item.last_limit_up_time);
   const consecutiveBoards = thsLimitUpConsecutiveBoards(item);
   // 同花顺字段 19 返回为 turnover（成交额，元）；3541450/3475914 返回为 currency_value/sum_market_value。
-  const amount = Number(item.amount ?? item.turnover ?? NaN);
-  const floatMarketCap = Number(item.float_market_cap ?? item.currency_value ?? item.ltsz ?? NaN);
-  const totalMarketCap = Number(item.total_market_cap ?? item.sum_market_value ?? item.tshare ?? NaN);
-  const openBoardCount = item.open_board_count === null || item.open_board_count === undefined
-    ? null
-    : Number(item.open_board_count);
+  const finiteOrNull = _backtest.finiteOrNull;
+  const amount = finiteOrNull(item.amount) ?? finiteOrNull(item.turnover);
+  const floatMarketCap = finiteOrNull(item.float_market_cap) ?? finiteOrNull(item.currency_value) ?? finiteOrNull(item.ltsz);
+  const totalMarketCap = finiteOrNull(item.total_market_cap) ?? finiteOrNull(item.sum_market_value) ?? finiteOrNull(item.tshare);
+  const openBoardCount = finiteOrNull(item.open_board_count);
   // A2-04：封单额 = 最新价 × 封单量。任一缺失/非正 → 未知（null），绝不写 0：
   // 涨停股必然有封单队列，"0 元封单"不是一个可观测的真实值，只是"没拿到"。
   const sealedAmount =
@@ -139,9 +138,9 @@ function normalizeThsLimitUpItem(item = {}, date = "", dataProvider = "ths_publi
       p: latest ? Math.round(latest * 1000) : 0,
       zdp: Number(item.change_rate || 0),
       hs: Number(item.turnover_rate || 0),
-      amount: Number.isFinite(amount) ? amount : 0,
-      ltsz: Number.isFinite(floatMarketCap) ? floatMarketCap : 0,
-      tshare: Number.isFinite(totalMarketCap) ? totalMarketCap : 0,
+      amount: amount ?? 0,
+      ltsz: floatMarketCap ?? 0,
+      tshare: totalMarketCap ?? 0,
       fund: sealedAmount ?? 0,
       lbc: consecutiveBoards || 1,
       fbt: firstSealRaw,
@@ -209,7 +208,7 @@ function mergeThsAndEastmoneyLimitPool(thsPool, eastmoneyPool) {
     const floatMarketCap = hasFiniteValue(eastItem.floatMarketCap) && Number(eastItem.floatMarketCap) > 0
       ? Number(eastItem.floatMarketCap)
       : thsItem.floatMarketCap;
-    const amount = hasFiniteValue(eastItem.amount)
+    const amount = hasFiniteValue(eastItem.amount) && Number(eastItem.amount) > 0
       ? Number(eastItem.amount)
       : thsItem.amount;
     return {
@@ -217,7 +216,7 @@ function mergeThsAndEastmoneyLimitPool(thsPool, eastmoneyPool) {
       industry: String(eastItem.industry || thsItem.industry || "未分类"),
       amount,
       floatMarketCap,
-      totalMarketCap: hasFiniteValue(eastItem.totalMarketCap)
+      totalMarketCap: hasFiniteValue(eastItem.totalMarketCap) && Number(eastItem.totalMarketCap) > 0
         ? Number(eastItem.totalMarketCap)
         : thsItem.totalMarketCap,
       consecutiveBoards: hasFiniteValue(eastItem.consecutiveBoards)

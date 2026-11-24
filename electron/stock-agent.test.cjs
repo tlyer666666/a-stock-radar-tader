@@ -3,7 +3,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { createStockAgentTools, toolCatalogText } = require("./stock-agent-tools.cjs");
-const { createStockAgentService, runAgentTurn, validateFinal, fitJson, systemPrompt, sanitizeUserContext, MAX_TOOL_ROUNDS, PREFETCH_TOOLS } = require("./stock-agent.cjs");
+const { createStockAgentService, runAgentTurn, validateFinal, fitJson, systemPrompt, sanitizeUserContext, MAX_TOOL_ROUNDS, PREFETCH_TOOLS, MAX_ACTIVE_RUNS } = require("./stock-agent.cjs");
 
 const clock = { text: "2026-11-06 10:49 星期五", session: "盘中（上午）" };
 const profile = { code: "600519", name: "贵州茅台", industry: "白酒", asOfDate: "2026-11-05", bars: 120, latest: 1500, changePct: 1.2, return5: 2, return20: -3, return60: 5,
@@ -554,20 +554,20 @@ test("tool deadlines abort sources and cancelled tools cannot start new source w
   await timed.drained;
 });
 
-test("cancelled turns retain both admission slots until their source work drains", async () => {
+test("cancelled turns retain every admission slot until their source work drains", async () => {
   const gates = [], signals = [];
   const tools = createStockAgentTools({ timeShare: (_security, options) => { const gate = deferred(); gates.push(gate); signals.push(options?.signal); return gate.promise; } });
   let number = 0;
   const service = auditService({ tools, chat: async () => ({ calls: [{ tool: "intraday", args: { code: `60000${++number}` } }] }) });
   try {
-    for (let index = 0; index < 2; index++) {
+    for (let index = 0; index < MAX_ACTIVE_RUNS; index++) {
       const started = service.start({ message: "lookup" });
       await until(() => gates.length === index + 1);
       service.cancel(started.runId);
       await until(() => service.poll(started.runId).status === "cancelled");
     }
     assert.throws(() => service.start({ message: "third" }), error => error.code === "AGENT_BUSY");
-    assert.equal(gates.length, 2);
+    assert.equal(gates.length, MAX_ACTIVE_RUNS);
     assert.ok(signals.every(signal => signal?.aborted));
   } finally { for (const gate of gates) gate.resolve({ rows: [] }); await service.shutdown(); }
 });

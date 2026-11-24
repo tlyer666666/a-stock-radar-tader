@@ -1,4 +1,4 @@
-import { inferSecid } from "../../domain/securityIdentifiers";
+import { inferAssetType, inferSecid } from "../../domain/securityIdentifiers";
 import { saveQuickObservationPlan } from "../../trendWorkspace";
 
 type PlanStorage = Pick<Storage, "getItem" | "setItem">;
@@ -7,6 +7,7 @@ export type CockpitAddTarget = {
   code: string;
   name: string;
   secid?: string | undefined;
+  assetType?: Security["assetType"] | undefined;
   referencePrice?: number | null | undefined;
   asOf?: string | undefined;
   defaultNote?: string | undefined;
@@ -34,7 +35,12 @@ const validPrice = (value: unknown) => typeof value === "number" && Number.isFin
 export async function fetchLatestPrice(target: CockpitAddTarget): Promise<number | null> {
   if (typeof window === "undefined" || typeof window.stockApi?.getQuoteSnapshot !== "function") return null;
   try {
-    const snapshot = await window.stockApi.getQuoteSnapshot({ code: target.code, name: target.name, secid: target.secid || inferSecid(target.code), assetType: "stock" });
+    const snapshot = await window.stockApi.getQuoteSnapshot({
+      code: target.code,
+      name: target.name,
+      secid: target.secid || inferSecid(target.code),
+      assetType: target.assetType || inferAssetType(target.code)
+    });
     const latest = Number(snapshot?.quote?.latest ?? snapshot?.quote?.price ?? snapshot?.quote?.preClose);
     return validPrice(latest) ? latest : null;
   } catch {

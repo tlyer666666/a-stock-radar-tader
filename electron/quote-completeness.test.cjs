@@ -136,7 +136,8 @@ test("Tencent parser keeps every absent optional field null instead of zero and 
   assert.equal(complete.open, 10.12);
   assert.equal(complete.high, 10.3);
   assert.equal(complete.low, 10.1);
-  assert.equal(complete.volume, 300000);
+  assert.equal(complete.volume, 3000);
+  assert.equal(complete.volumeUnit, "lots");
   assert.equal(complete.amount, 50000, "tradeSummary amount keeps priority over the 10k fallback");
   assert.equal(complete.totalMarketCap, 1e10);
   assert.equal(complete.floatMarketCap, 8e9);
@@ -207,7 +208,7 @@ test("real provider parsing through monitor evaluation rejects missing zero plac
     tencentFields[32] = "";
     const tencent = services.normalizeTencentQuote(security, await federation.tencentQuote(security));
     for (const quote of [east, ths, tencent]) {
-      assert.equal(quote.changePct, quote.source === "ths" ? 0 : null, "absent provider changes stay null for Eastmoney and Tencent");
+      assert.equal(quote.changePct, null, "absent provider changes stay null for all providers");
       const missing = evaluateStockMonitor(config, snapshot(quote), baseline.runtime, now);
       assert.equal(missing.status, "unavailable", quote.source);
       assert.equal(missing.shouldAlert, false, quote.source);

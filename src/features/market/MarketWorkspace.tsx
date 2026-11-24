@@ -1,4 +1,5 @@
 import { marketCapitalization } from "../../domain/marketCapitalization";
+import { inferAssetType } from "../../domain/securityIdentifiers";
 import type { BoardStock } from "../../domain/consecutiveBoardGroups";
 import LimitUpPool from "../dashboard/LimitUpPool";
 import type { LimitUpStock } from "../dashboard/limitUpPoolModel";
@@ -201,6 +202,7 @@ export function Dashboard({
   const [quickPlanTarget, setQuickPlanTarget] = useState<QuickPlanTarget | null>(null);
   const [plannedCodes] = usePlannedCodes();
   const agentTriggerRef = useRef<HTMLButtonElement>(null);
+  const agentDrawerRef = useRef<HTMLElement>(null);
   useEffect(() => {
     setQuickTradeOpen(false);
     setMonitorEditorOpen(false);
@@ -217,14 +219,46 @@ export function Dashboard({
   }, [analysisTarget]);
   useEffect(() => {
     if (!agentDrawerOpen || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const focusableSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const focusDrawer = () => {
+      const drawer = agentDrawerRef.current;
+      if (!drawer) return;
+      const first = drawer.querySelector<HTMLElement>(focusableSelector);
+      (first || drawer).focus({ preventScroll: true });
+    };
+    const raf = typeof window.requestAnimationFrame === "function" ? window.requestAnimationFrame(focusDrawer) : (focusDrawer(), 0);
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         setAgentDrawerOpen(false);
         agentTriggerRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const drawer = agentDrawerRef.current;
+      if (!drawer) return;
+      const focusables = Array.from(drawer.querySelectorAll<HTMLElement>(focusableSelector))
+        .filter(el => el.offsetParent !== null || el === document.activeElement);
+      if (focusables.length === 0) {
+        event.preventDefault();
+        drawer.focus({ preventScroll: true });
+        return;
+      }
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      const active = document.activeElement as HTMLElement | null;
+      if (event.shiftKey) {
+        if (active === first || !active || !drawer.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (active === last || !active || !drawer.contains(active)) {
+        event.preventDefault();
+        first.focus();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => {
+      if (raf && typeof window.cancelAnimationFrame === "function") window.cancelAnimationFrame(raf);
       if (typeof window.removeEventListener === "function") {
         window.removeEventListener("keydown", onKeyDown);
       }
@@ -913,7 +947,7 @@ export function Dashboard({
             <AiStockReviewPanel security={{ code: activeCode, name: activeName, assetType: security.assetType }} agentContext={agentContext} />
 
             {agentDrawerOpen && canOpenAgent() && (
-              <aside id="mw-agent-drawer" className="panel mw-agent-drawer" role="dialog" aria-label="个股侧边 AI 问股">
+              <aside id="mw-agent-drawer" ref={agentDrawerRef} tabIndex={-1} className="panel mw-agent-drawer" role="dialog" aria-label="个股侧边 AI 问股">
                 <header className="mw-agent-drawer-head">
                   <div>
                     <MessagesSquare size={15} />
@@ -1324,7 +1358,7 @@ export function Dashboard({
               {paperSummary.normalized.openPositions.map((position: PaperPosition) => (
                 <div className="tr" key={position.id}>
                   <span className="stock-cell">
-                    <button className="table-action" onClick={() => onOpen({ code: position.code, name: position.name, secid: "" } as Security)}> {position.code}</button>
+                    <button className="table-action" onClick={() => onOpen({ code: position.code, name: position.name, secid: "", assetType: inferAssetType(position.code) } as Security)}> {position.code}</button>
                     <small>{position.name}</small>{position.settlementBlockedReason && <small className="paper-settlement-warning">{position.settlementBlockedReason}</small>}
                   </span>
                   <span>{`${position.shares} 股 · 入场 ${fmt(position.entryPrice)}元`}</span>

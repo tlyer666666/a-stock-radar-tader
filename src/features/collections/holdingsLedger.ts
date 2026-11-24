@@ -812,7 +812,9 @@ export function mergeImportedHoldings(
     const sellableShares =
       typeof row.availableShares === "number" && Number.isSafeInteger(row.availableShares) && row.availableShares >= 0
         ? row.availableShares
-        : prev?.sellableShares;
+        : prev?.sellableShares !== undefined
+          ? Math.min(row.shares, prev.sellableShares)
+          : undefined;
     const merged: HoldingItemWithSellable = {
       ...meta,
       ...(prev || {}),

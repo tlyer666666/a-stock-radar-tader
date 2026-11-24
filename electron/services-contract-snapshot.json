@@ -51,6 +51,8 @@
   "getDataFederation:function",
   "getEtfMarket:function",
   "getFuyaoReviewData:function",
+  "getGlobalMarkets:function",
+  "getGlobalNews:function",
   "getLimitUpSectorBoard:function",
   "getMarketSourceHealth:function",
   "getNewsFeed:function",

@@ -26,6 +26,24 @@ const MIN_PASSWORD_LENGTH = 8;
 
 const isRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const fail = (code, message) => Object.assign(new Error(message), { code });
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_WAIT_BUFFER = typeof SharedArrayBuffer === "function" ? new Int32Array(new SharedArrayBuffer(4)) : null;
+
+function renameWithRetrySync(fsApi, sourcePath, targetPath, maxRetries = 3) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      fsApi.renameSync(sourcePath, targetPath);
+      return;
+    } catch (error) {
+      if (!RETRYABLE_RENAME_CODES.has(error?.code) || attempt >= maxRetries) {
+        throw error;
+      }
+      if (RENAME_WAIT_BUFFER && typeof globalThis.Atomics?.wait === "function") {
+        try { globalThis.Atomics.wait(RENAME_WAIT_BUFFER, 0, 0, (attempt + 1) * 10); } catch { /* ignore */ }
+      }
+    }
+  }
+}
 
 function deriveKeyAsync(password, salt) {
   return new Promise((resolve, reject) => {
@@ -422,7 +440,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
         const temp = path.join(current.folder, `.${name}.${process.pid}.${crypto.randomUUID()}.part`);
         try {
           fsApi.writeFileSync(temp, content, { mode: 0o600, flag: "wx" });
-          fsApi.renameSync(temp, file);
+          renameWithRetrySync(fsApi, temp, file);
         } finally {
           try {
             if (!fsApi.existsSync || fsApi.existsSync(temp)) fsApi.unlinkSync?.(temp);
