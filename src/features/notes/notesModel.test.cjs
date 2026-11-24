@@ -283,7 +283,19 @@ test("useNotes askAi guards cleared ai state and syncIntervals avoids empty-list
     resolveStart({ conversationId: "c1", runId: "r1" });
     await p2;
     await h.flush();
-    h.tree.remove(id2);
+    h.tree.update(id2, { done: true });
+    h.tree.clearDone();
+    await h.flush();
+    h.tree.add({ text: "失败态测试 600000" });
+    await h.flush();
+    const id3 = h.tree.store.notes[0].id;
+    let rejectStart;
+    globalThis.window.stockApi.ai.agent.start = () => new Promise((_, reject) => { rejectStart = reject; });
+    const p3 = h.tree.askAi(id3);
+    rejectStart(new Error("agent offline"));
+    await p3;
+    await h.flush();
+    h.tree.remove(id3);
     await h.flush();
   } finally {
     h.dispose();

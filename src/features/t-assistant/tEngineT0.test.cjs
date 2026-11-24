@@ -153,6 +153,7 @@ test("useTAssistant, TAssistantView and useTToolbox guard stale items, width zer
     clearTimeout: () => {},
     stockApi: {
       cancelServiceJob: async () => {},
+      getTimeShare: async () => ({ code: "600519", name: "贵州茅台", preClose: 1500, points: [{ time: "09:30", price: 1502, avg: 1501, volume: 100 }] }),
       getChart: async () => {
         chartCalls += 1;
         return { bars: [{ date: "2026-11-24", open: 10, high: 10.5, low: 9.8, close: 10.2, volume: 1000, amount: 10000 }] };
@@ -175,11 +176,16 @@ test("useTAssistant, TAssistantView and useTToolbox guard stale items, width zer
     assert.equal(chartCalls, 4);
 
     const { useTAssistant } = require("./useTAssistant.ts");
-    const ta = createHookHarness(() => useTAssistant({ live: false, onAlert: () => {} }));
+    const ta = createHookHarness(() => useTAssistant({ live: false, holdings: [{ code: "600519", shares: 200, costPrice: 1490 }], onAlert: () => {} }));
     try {
       ta.render();
       ta.tree.addStock({ code: "600519", name: "贵州茅台" });
       ta.tree.updateConfig("600519", { tShares: 100 });
+      ta.tree.addTrade("2026-11-24", "600519", { side: "buy", price: 1500, shares: 100, time: "10:00" });
+      const tradeId = ta.tree.store.trades["2026-11-24|600519"]?.[0]?.id;
+      if (tradeId) ta.tree.removeTrade("2026-11-24", "600519", tradeId);
+      await ta.tree.refresh("600519");
+      await ta.tree.refresh();
       ta.tree.setVoice(false);
       ta.tree.setShowReplay(false);
       ta.tree.removeStock("600519");

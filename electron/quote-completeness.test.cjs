@@ -218,3 +218,28 @@ test("real provider parsing through monitor evaluation rejects missing zero plac
     }
   } finally { restore(); }
 });
+
+test("weekly/monthly history aggregation preserves null amount when absent and chartAdjustment/quoteProviderMeta map cleanly", () => {
+  const qc = load("services/quotes-and-charts.cjs");
+  const weekly = qc.aggregateHistoryRows([
+    { date: "2026-11-23", open: 10, high: 11, low: 9.8, close: 10.5, volume: 100, amount: null },
+    { date: "2026-11-24", open: 10.5, high: 11.2, low: 10.2, close: 11, volume: 200, amount: null }
+  ], "week");
+  assert.equal(weekly.length, 1);
+  assert.equal(weekly[0].amount, null);
+  const monthly = qc.aggregateHistoryRows([
+    { date: "2026-11-23", open: 10, high: 11, low: 9.8, close: 10.5, volume: 100, amount: 1000 },
+    { date: "2026-11-24", open: 10.5, high: 11.2, low: 10.2, close: 11, volume: 200, amount: 2000 }
+  ], "month");
+  assert.equal(monthly.length, 1);
+  assert.equal(monthly[0].amount, 3000);
+  assert.equal(qc.chartAdjustment("front").value, 1);
+  assert.equal(qc.chartAdjustment("back").value, 2);
+  assert.equal(qc.chartAdjustment("none").value, 0);
+  assert.equal(qc.quoteProviderMeta("ths").id, "ths");
+  assert.equal(qc.quoteProviderMeta("ths_free").id, "ths");
+  assert.equal(qc.quoteProviderMeta("tencent").id, "tencent");
+  assert.equal(qc.quoteProviderMeta("east").id, "eastmoney");
+  assert.equal(typeof qc.emotionFromCounts({ currentDate: "20261124", limitUpCount: 80, limitDownCount: 5, previousLimitUpCount: 60, indexReturn: 0.8 }).score, "number");
+  assert.equal(typeof qc.scoreAnnouncement("重大合同中标公告").score, "number");
+});
