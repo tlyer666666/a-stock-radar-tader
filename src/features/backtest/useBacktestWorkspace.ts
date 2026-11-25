@@ -26,14 +26,12 @@ import {
   normalizeBacktestStrategyIds
 } from "./backtestModel";
 import {
-  BACKTEST_HISTORY_KEY,
   BACKTEST_HISTORY_LIMIT,
   buildBacktestHistoryRecord,
   hydrateBacktestHistory,
   loadBacktestHistory,
   saveBacktestHistory
 } from "./backtestStorage";
-import { mirrorToNativeKv } from "../../safeStorage";
 import type {
   BacktestDraft,
   BacktestEntryContext,
@@ -468,7 +466,11 @@ export function useBacktestWorkspace({
     URL.revokeObjectURL(url);
   };
 
-  const applyBacktestProfile = (record: BacktestHistoryRecord, profileOverride?: BacktestStrategyProfile) => {
+  const applyBacktestProfile = async (
+    record: BacktestHistoryRecord,
+    profileOverride?: BacktestStrategyProfile,
+    successToast = "已将回测参数同步到执行设置（已保存）"
+  ): Promise<boolean> => {
     const profile = profileOverride || record.strategyProfile;
     const selectedStrategies = profile?.selectedStrategies?.length
       ? normalizeBacktestStrategyIds([...profile.selectedStrategies, "riskVeto"])
@@ -476,39 +478,49 @@ export function useBacktestWorkspace({
     if (!selectedStrategies.includes("riskVeto")) {
       selectedStrategies.push("riskVeto");
     }
-    if (!selectedStrategies.length) return;
-    const next = normalizeSettings({
-      ...settings,
-      riskProfile: normalizeRiskProfile(profile.riskProfile),
-      selectedStrategies,
-      minProjectedNetEdgePercent: clampNumber(profile.minProjectedNetEdgePercent, -2, 10, settings.minProjectedNetEdgePercent),
-      minExpectancyPoints: clampNumber(profile.minExpectancyPoints, -2, 8, settings.minExpectancyPoints),
-      minTurnoverPercent: clampNumber(profile.minTurnoverPercent, 0, 20, settings.minTurnoverPercent ?? 0.4),
-      minQuoteAmount: clampNumber(profile.minQuoteAmount, 0, 1_000_000_000, settings.minQuoteAmount ?? 1200000),
-      maxQuoteAgeSeconds: clampNumber(profile.maxQuoteAgeSeconds, 30, 1800, settings.maxQuoteAgeSeconds ?? 480),
-      commissionBps: clampNumber(profile.commissionBps, 0, 60, settings.commissionBps),
-      slippageBps: clampNumber(profile.slippageBps, 0, 60, settings.slippageBps),
-      maxPositionPercent: clampNumber(profile.maxPositionPercent, 5, 90, settings.maxPositionPercent),
-      maxRiskPerTradePercent: clampNumber(profile.maxRiskPerTradePercent, 0.2, 5, settings.maxRiskPerTradePercent),
-      stopLossATRMultiple: clampNumber(profile.stopLossATRMultiple, 0.8, 5, settings.stopLossATRMultiple),
-      takeProfitATRMultiple: clampNumber(profile.takeProfitATRMultiple, 1, 10, settings.takeProfitATRMultiple),
-      maxHoldingBars: Math.round(clampNumber(profile.maxHoldingBars, 3, 120, settings.maxHoldingBars)),
-      maxOpenPositions: Math.round(clampNumber(profile.maxOpenPositions, 1, 10, settings.maxOpenPositions)),
-      maxDailyRiskPercent: clampNumber(profile.maxDailyRiskPercent, 0.3, 12, settings.maxDailyRiskPercent ?? 3.2),
-      maxPortfolioRiskPercent: clampNumber(profile.maxPortfolioRiskPercent, 10, 100, settings.maxPortfolioRiskPercent ?? 70),
-      maxSectorExposurePercent: clampNumber(profile.maxSectorExposurePercent, 10, 100, settings.maxSectorExposurePercent ?? 45),
-      minExecutionRatePercent: clampNumber(profile.minExecutionRatePercent, 40, 100, settings.minExecutionRatePercent ?? 90),
-      trailingStopPercent: clampNumber(profile.trailingStopPercent, 0, 25, settings.trailingStopPercent ?? 3),
-      lossStreakStepPercent: clampNumber(profile.lossStepPercent, 2, 60, settings.lossStreakStepPercent ?? 18),
-      lossStreakFloorPercent: clampNumber(profile.lossFloorPercent, 10, 80, settings.lossStreakFloorPercent ?? 30),
-      maxConsecutiveLossesForStop: Math.round(clampNumber(profile.maxConsecutiveLossesForStop, 2, 12, settings.maxConsecutiveLossesForStop ?? 4)),
-      timeDecayPerBarPercent: clampNumber(profile.timeDecayPerBarPercent, 0, 1, settings.timeDecayPerBarPercent ?? 0.11)
-    });
-    void persistSettings(next).then(() => {
-      showToast("已将回测参数同步到执行设置（已保存）");
-    }).catch(() => {
+    if (!selectedStrategies.length) return false;
+    try {
+      await persistSettings((current) => {
+        const strategies = profile?.selectedStrategies?.length
+          ? normalizeBacktestStrategyIds([...profile.selectedStrategies, "riskVeto"])
+          : normalizeBacktestStrategyIds(current.selectedStrategies);
+        if (!strategies.includes("riskVeto")) {
+          strategies.push("riskVeto");
+        }
+        return normalizeSettings({
+          ...current,
+          riskProfile: normalizeRiskProfile(profile.riskProfile),
+          selectedStrategies: strategies,
+          minProjectedNetEdgePercent: clampNumber(profile.minProjectedNetEdgePercent, -2, 10, current.minProjectedNetEdgePercent),
+          minExpectancyPoints: clampNumber(profile.minExpectancyPoints, -2, 8, current.minExpectancyPoints),
+          minTurnoverPercent: clampNumber(profile.minTurnoverPercent, 0, 20, current.minTurnoverPercent ?? 0.4),
+          minQuoteAmount: clampNumber(profile.minQuoteAmount, 0, 1_000_000_000, current.minQuoteAmount ?? 1200000),
+          maxQuoteAgeSeconds: clampNumber(profile.maxQuoteAgeSeconds, 30, 1800, current.maxQuoteAgeSeconds ?? 480),
+          commissionBps: clampNumber(profile.commissionBps, 0, 60, current.commissionBps),
+          slippageBps: clampNumber(profile.slippageBps, 0, 60, current.slippageBps),
+          maxPositionPercent: clampNumber(profile.maxPositionPercent, 5, 90, current.maxPositionPercent),
+          maxRiskPerTradePercent: clampNumber(profile.maxRiskPerTradePercent, 0.2, 5, current.maxRiskPerTradePercent),
+          stopLossATRMultiple: clampNumber(profile.stopLossATRMultiple, 0.8, 5, current.stopLossATRMultiple),
+          takeProfitATRMultiple: clampNumber(profile.takeProfitATRMultiple, 1, 10, current.takeProfitATRMultiple),
+          maxHoldingBars: Math.round(clampNumber(profile.maxHoldingBars, 3, 120, current.maxHoldingBars)),
+          maxOpenPositions: Math.round(clampNumber(profile.maxOpenPositions, 1, 10, current.maxOpenPositions)),
+          maxDailyRiskPercent: clampNumber(profile.maxDailyRiskPercent, 0.3, 12, current.maxDailyRiskPercent ?? 3.2),
+          maxPortfolioRiskPercent: clampNumber(profile.maxPortfolioRiskPercent, 10, 100, current.maxPortfolioRiskPercent ?? 70),
+          maxSectorExposurePercent: clampNumber(profile.maxSectorExposurePercent, 10, 100, current.maxSectorExposurePercent ?? 45),
+          minExecutionRatePercent: clampNumber(profile.minExecutionRatePercent, 40, 100, current.minExecutionRatePercent ?? 90),
+          trailingStopPercent: clampNumber(profile.trailingStopPercent, 0, 25, current.trailingStopPercent ?? 3),
+          lossStreakStepPercent: clampNumber(profile.lossStepPercent, 2, 60, current.lossStreakStepPercent ?? 18),
+          lossStreakFloorPercent: clampNumber(profile.lossFloorPercent, 10, 80, current.lossStreakFloorPercent ?? 30),
+          maxConsecutiveLossesForStop: Math.round(clampNumber(profile.maxConsecutiveLossesForStop, 2, 12, current.maxConsecutiveLossesForStop ?? 4)),
+          timeDecayPerBarPercent: clampNumber(profile.timeDecayPerBarPercent, 0, 1, current.timeDecayPerBarPercent ?? 0.11)
+        });
+      });
+      showToast(successToast);
+      return true;
+    } catch {
       showToast("回测参数保存失败，仍使用上次成功保存的执行设置");
-    });
+      return false;
+    }
   };
 
   const applyBacktestProfileWithGovernance = async (
@@ -583,7 +595,8 @@ export function useBacktestWorkspace({
         showToast("已取消应用回测参数");
         return;
       }
-      applyBacktestProfile(record, deRiskResult.profile);
+      const applied = await applyBacktestProfile(record, deRiskResult.profile, "已按“等待确认”降仓档位应用回测参数");
+      if (!applied) return;
       appendExecutionDecisionLog({
         source,
         result: "APPROVED",
@@ -598,11 +611,11 @@ export function useBacktestWorkspace({
           ...readiness.reasons
         ]
       });
-      showToast("已按“等待确认”降仓档位应用回测参数");
       return;
     }
 
-    applyBacktestProfile(record);
+    const applied = await applyBacktestProfile(record);
+    if (!applied) return;
     appendExecutionDecisionLog({
       source,
       result: "APPROVED",
@@ -626,10 +639,13 @@ export function useBacktestWorkspace({
       tone: "danger"
     });
     if (!confirmed) return;
-    historyMutatedRef.current = true;
     const saved = saveBacktestHistory([]);
-    if (saved) historySignatureRef.current = "[]";
-    else mirrorToNativeKv(BACKTEST_HISTORY_KEY, "[]");
+    if (!saved) {
+      showToast("清空回测历史失败，本机存储写入受限，已保留原有记录");
+      return;
+    }
+    historyMutatedRef.current = true;
+    historySignatureRef.current = "[]";
     setBacktestHistory([]);
     showToast("已清空回测历史");
   };

@@ -77,6 +77,7 @@ export function useWorkspaceCopilot({
   const [copilotOpen, setCopilotOpen] = useState(false);
   const copilotRef = useRef<HTMLDivElement>(null);
 
+  const monitorItemsRef = useRef<{ sig: string; list: Security[] }>({ sig: "", list: [] });
   const monitorItems = useMemo(() => {
     const byCode = new Map<string, Security>();
     const append = (item: { code?: unknown; name?: unknown; secid?: unknown; assetType?: unknown }) => {
@@ -92,7 +93,11 @@ export function useWorkspaceCopilot({
     favoriteItems.forEach(append);
     holdings.forEach(append);
     paperSummary.normalized.openPositions.forEach(append);
-    return [...byCode.values()];
+    const next = [...byCode.values()];
+    const sig = next.map(item => `${item.code}|${item.name}|${item.secid}|${item.assetType || ""}`).join(";");
+    if (sig === monitorItemsRef.current.sig) return monitorItemsRef.current.list;
+    monitorItemsRef.current = { sig, list: next };
+    return next;
   }, [favoriteItems, holdings, paperSummary.normalized.openPositions]);
 
   const stockMonitors = useStockMonitors({
@@ -209,6 +214,7 @@ export function useWorkspaceCopilot({
     };
   }, []);
 
+  const lastWorkspaceSyncJsonRef = useRef("");
   useEffect(() => {
     if (settingsLoadState !== "ready") return;
     const syncWorkspace = window.stockApi?.ai?.agent?.syncWorkspace;
@@ -241,8 +247,13 @@ export function useWorkspaceCopilot({
         condition: n.condition ? `${n.condition.field === "latest" ? "现价" : "涨跌幅"} ${n.condition.op === "gte" ? "≥" : "≤"} ${n.condition.value}` : "",
         status: n.conditionHit ? "triggered" : n.remindAt || n.condition ? "watching" : "active"
       }));
-      void syncWorkspace({ tItems, plans, paperPositions, notes: noteSummaries }).catch(() => {
-        // Optional background sync with AI agent workbench; missing agent service is non-fatal.
+      const syncPayload = { tItems, plans, paperPositions, notes: noteSummaries };
+      const fingerprint = JSON.stringify(syncPayload);
+      if (fingerprint === lastWorkspaceSyncJsonRef.current) return;
+      lastWorkspaceSyncJsonRef.current = fingerprint;
+      void syncWorkspace(syncPayload).catch(() => {
+        // Optional background sync with AI agent workbench; allow retry after failure.
+        if (lastWorkspaceSyncJsonRef.current === fingerprint) lastWorkspaceSyncJsonRef.current = "";
       });
     }, 250);
     return () => window.clearTimeout(timer);
@@ -278,10 +289,16 @@ export function useWorkspaceCopilot({
     return () => { active = false; };
   }, [view]);
 
+  const tAssistantItemsRef = useRef(tAssistant.store.items);
+  tAssistantItemsRef.current = tAssistant.store.items;
+  const holdingsRef = useRef(holdings);
+  holdingsRef.current = holdings;
+  const addTStock = tAssistant.addStock;
+
   const addNoteToT = useCallback((security: Security) => {
-    const matchedHolding = holdings.find(h => h.code === security.code);
-    const existingT = tAssistant.store.items.find(item => item.code === security.code);
-    const problem = tAssistant.addStock(
+    const matchedHolding = holdingsRef.current.find(h => h.code === security.code);
+    const existingT = tAssistantItemsRef.current.find(item => item.code === security.code);
+    const problem = addTStock(
       { code: security.code, name: matchedHolding?.name || security.name, secid: security.secid },
       buildNoteToTConfig(matchedHolding, existingT)
     );
@@ -290,7 +307,7 @@ export function useWorkspaceCopilot({
       return;
     }
     showToast(`已将 ${matchedHolding?.name || security.name} 加入做T助手`);
-  }, [holdings, showToast, tAssistant]);
+  }, [addTStock, showToast]);
 
   const addNoteToMonitor = useCallback(async (security: Security, condition?: NoteCondition | null) => {
     if (!security?.code) return;

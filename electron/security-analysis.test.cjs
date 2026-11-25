@@ -161,3 +161,88 @@ test("analyzeSecurity still computes limit-up events and AVWAP when unadjusted r
   assert.equal(result.analysis.limitEvent.date, dates[25]);
   assert.ok(Number.isFinite(result.analysis.avwap) && result.analysis.avwap > 0, `AVWAP must be finite and positive, got ${result.analysis.avwap}`);
 });
+
+test("C-4 & C-5: edgeGateFromStats deducts costs for gross stats, uses settled independent samples, and never coerces null metrics to zero", () => {
+  // Gross 0.35% cannot pass a 0.3% net hurdle once A-share round-trip costs (~0.232%) are deducted
+  const grossEdge = services.edgeGateFromStats({
+    stats: [{ id: "currentCombination", sampleCount: 40, n5: 40, independentN5: 40, winRate5: 55, average5: 0.35, worstMdd5: -8, confidence: "中等" }]
+  });
+  assert.equal(grossEdge.passed, false);
+  assert.ok(grossEdge.average5 < 0.3);
+
+  // Overlapping T+3/5/7/9 nodes cannot inflate 10 independent events into 40 samples
+  const inflated = services.edgeGateFromStats({
+    costsIncluded: true,
+    stats: [{ id: "currentCombination", sampleCount: 40, n5: 40, independentEventCount: 10, independentN5: 10, winRate5: 65, average5: 1.5, worstMdd5: -5, confidence: "偏低" }]
+  });
+  assert.equal(inflated.passed, false);
+  assert.equal(inflated.sampleCount, 10);
+
+  // Unsettled samples (sampleCount=40, n5=0) and null metrics must never coerce to 0
+  const unsettled = services.edgeGateFromStats({
+    costsIncluded: true,
+    stats: [{ id: "currentCombination", sampleCount: 40, n5: 0, winRate5: null, average5: null, worstMdd5: null, confidence: "不足" }]
+  });
+  assert.equal(unsettled.passed, false);
+  assert.equal(unsettled.sampleCount, 0);
+  assert.equal(unsettled.winRate5, null);
+  assert.equal(unsettled.average5, null);
+  assert.equal(unsettled.worstMdd5, null);
+});
+
+test("H-9: calculateAtr averages all 14 true ranges for a 15-bar history and buildTradePlan keeps stop positive and respects risk budget", () => {
+  // 15 bars: bar 1..13 have TR=1.0, bar 14 has TR=15.0 -> true 14-period ATR = (13*1 + 15) / 14 = 2.0 (NOT 15.0!)
+  const bars15 = Array.from({ length: 15 }, (_, i) => ({
+    date: `2026-10-${String(i + 1).padStart(2, "0")}`,
+    open: 10,
+    high: i === 14 ? 25 : 11,
+    low: 10,
+    close: 10,
+    volume: 10000
+  }));
+  const atr15 = securityAnalysis.calculateAtr(bars15, 14);
+  assert.ok(Math.abs(atr15 - 2.0) < 1e-9, `expected 14-bar average TR=2.0, got ${atr15}`);
+
+  const baseAnalysis = {
+    mrs: 85,
+    exactNode: true,
+    alertQualified: true,
+    strategyQualified: true,
+    riskPenalty: 0,
+    qualification: { riskVetoPassed: true },
+    historicalEdge: { passed: true }
+  };
+
+  // Wide stop (>20%): 1% max risk budget requires <5% position; must NOT enforce 5% floor or hide risk overshoot
+  const wideStopHistory = Array.from({ length: 16 }, (_, i) => ({
+    date: `2026-10-${String(i + 1).padStart(2, "0")}`,
+    open: 10,
+    high: 12,
+    low: 10,
+    close: 10,
+    volume: 10000
+  }));
+  const widePlan = securityAnalysis.buildTradePlan(
+    baseAnalysis,
+    { latest: 10, open: 10, preClose: 10 },
+    wideStopHistory,
+    { stopLossATRMultiple: 2, takeProfitATRMultiple: 3.2, maxRiskPerTradePercent: 1, maxPositionPercent: 30 }
+  );
+  // Stop distance = 2 * 2 / 10 = 40%; 1% risk budget => max position = 2.5% * confidence <= 2.5%
+  assert.ok(widePlan.positionSizePercent > 0 && widePlan.positionSizePercent < 5, `expected position < 5%, got ${widePlan.positionSizePercent}`);
+  assert.ok(widePlan.maxLossBudgetPercent <= 1.0 + 1e-9, `maxLossBudgetPercent must stay within 1% risk budget`);
+  assert.ok(Math.abs(widePlan.maxLossBudgetPercent - Number(((widePlan.positionSizePercent * widePlan.stopLossDistancePercent) / 100).toFixed(2))) <= 0.02);
+
+  // Extreme ATR where stop distance >= 100% of price: stopLossPrice stays strictly positive and plan is blocked (WAIT, 0% size)
+  const extremePlan = securityAnalysis.buildTradePlan(
+    baseAnalysis,
+    { latest: 1.0, open: 1.0, preClose: 1.0 },
+    wideStopHistory,
+    { stopLossATRMultiple: 2, takeProfitATRMultiple: 3.2, maxRiskPerTradePercent: 1, maxPositionPercent: 30 }
+  );
+  assert.ok(extremePlan.stopLossPrice > 0, `stopLossPrice must stay strictly positive, got ${extremePlan.stopLossPrice}`);
+  assert.equal(extremePlan.stopInvalid, true);
+  assert.equal(extremePlan.signal, "WAIT");
+  assert.equal(extremePlan.positionSizePercent, 0);
+  assert.equal(extremePlan.maxLossBudgetPercent, 0);
+});

@@ -34,6 +34,20 @@ function verifyMacDelivery(appPath, repoRoot, { allowSourceDrift = false } = {})
   });
   const artifact = verifyBuildArtifact(appPath, repoRoot);
   if ((!artifact.consistent && !allowSourceDrift) || !artifact.artifactConsistent) throw new Error('Application differs from current source or build receipt');
+  const unpackedDir = path.join(appPath, 'Contents/Resources/app.asar.unpacked');
+  if (fs.existsSync(unpackedDir)) {
+    const checkReadable = (dir) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isSymbolicLink()) continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) checkReadable(full);
+        else if (entry.isFile() && ((fs.statSync(full).mode & 0o004) === 0)) {
+          throw new Error(`Unpacked runtime file is not world-readable (expected 0644+): ${path.relative(unpackedDir, full)}`);
+        }
+      }
+    };
+    checkReadable(unpackedDir);
+  }
   const bundle = verifyAppBundleIntegrity(appPath);
   return { ...metadata, artifact, bundle, asarSha256: createHash('sha256').update(fs.readFileSync(archive)).digest('hex') };
 }

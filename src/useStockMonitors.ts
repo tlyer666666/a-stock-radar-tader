@@ -82,6 +82,26 @@ export function createStockMonitorPolling(options: PollingOptions) {
   return { configure, poll, stop: () => configure([], {}, false) };
 }
 
+const sameRuntimeEvaluation = (a: StockMonitorEvaluation | undefined, b: StockMonitorEvaluation | undefined): boolean => {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.status === b.status
+    && a.detail === b.detail
+    && a.shouldAlert === b.shouldAlert
+    && a.runtime.configSignature === b.runtime.configSignature
+    && a.runtime.initialized === b.runtime.initialized
+    && a.runtime.matched === b.runtime.matched
+    && a.runtime.lastAlertAt === b.runtime.lastAlertAt
+    && a.runtime.lastSampleAt === b.runtime.lastSampleAt;
+};
+
+const sameRuntimesMap = (a: Record<string, StockMonitorEvaluation>, b: Record<string, StockMonitorEvaluation>): boolean => {
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  return keysB.every(key => sameRuntimeEvaluation(a[key], b[key]));
+};
+
 export function reconcileStockMonitorRuntimes(current: Record<string, StockMonitorEvaluation>, items: Security[], configs: Record<string, StockMonitorConfig>, live: boolean): Record<string, StockMonitorEvaluation> {
   const next: Record<string, StockMonitorEvaluation> = {};
   for (const item of items) {
@@ -168,9 +188,14 @@ export default function useStockMonitors({ items, live, refreshSeconds, onAlert 
     // resets only a changed stock's configuration. Pauses reset all baselines.
     const activeCodes = new Set(items.map(item => item.code));
     const nextRuntimes = reconcileStockMonitorRuntimes(runtimeRef.current, items, saved.configs, live);
-    runtimeRef.current = nextRuntimes;
-    setRuntimes(nextRuntimes);
-    setLatestQuotes(current => Object.fromEntries(Object.entries(current).filter(([code]) => activeCodes.has(code))));
+    if (!sameRuntimesMap(runtimeRef.current, nextRuntimes)) {
+      runtimeRef.current = nextRuntimes;
+      setRuntimes(nextRuntimes);
+    }
+    setLatestQuotes(current => {
+      if (Object.keys(current).every(code => activeCodes.has(code))) return current;
+      return Object.fromEntries(Object.entries(current).filter(([code]) => activeCodes.has(code)));
+    });
     if (poller.configure(items, saved.configs, live)) whenVisible(() => void poller.poll())();
   }, [items, live, saved.configs]);
 

@@ -13,7 +13,7 @@ ART = ROOT / 'artifacts/module-polish-20261001'
 parser = argparse.ArgumentParser()
 parser.add_argument('--final', action='store_true')
 args = parser.parse_args()
-OUT = Path('~/Desktop/a股/细节打磨版1.5.2/模块打磨与独立审计报告.docx') if args.final else ART / 'word-draft/模块打磨与独立审计报告草稿.docx'
+OUT = Path('~/Desktop/a股/细节打磨版1.5.2/模块打磨与独立审计报告.docx').expanduser() if args.final else ART / 'word-draft/模块打磨与独立审计报告草稿.docx'
 def read(name):
     path = ART / name
     return json.loads(path.read_text()) if path.exists() else None

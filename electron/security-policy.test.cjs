@@ -500,3 +500,31 @@ test("storage:kv-set allows values up to 32 MiB while rejecting values over 32 M
     { code: "INVALID_IPC_PAYLOAD" }
   );
 });
+
+test("H-1: resolveStoredSecret and encryptSecretForStorage reject clearing an existing secret while master-password locked", () => {
+  const lockedStorage = {
+    isLocked: () => true,
+    isEncryptionAvailable: () => false,
+    encryptString: () => { throw new Error("must not encrypt while locked"); }
+  };
+  const encrypt = (value) => encryptSecretForStorage(value, lockedStorage);
+
+  // Clearing an existing non-empty secret while locked must throw SECRET_STORAGE_LOCKED
+  assert.throws(
+    () => resolveStoredSecret("", "safe:EXISTING", encrypt, lockedStorage),
+    { code: "SECRET_STORAGE_LOCKED" }
+  );
+  assert.throws(
+    () => resolveStoredSecret("   ", "safe:EXISTING", encrypt, () => true),
+    { code: "SECRET_STORAGE_LOCKED" }
+  );
+  assert.throws(
+    () => encryptSecretForStorage("", lockedStorage, { previousEncrypted: "safe:EXISTING" }),
+    { code: "SECRET_STORAGE_LOCKED" }
+  );
+
+  // Preserving via mask/undefined or saving empty when no previous secret existed still works
+  assert.equal(resolveStoredSecret("••••••", "safe:EXISTING", encrypt, lockedStorage), "safe:EXISTING");
+  assert.equal(resolveStoredSecret(undefined, "safe:EXISTING", encrypt, lockedStorage), "safe:EXISTING");
+  assert.equal(resolveStoredSecret("", "", encrypt, lockedStorage), "");
+});

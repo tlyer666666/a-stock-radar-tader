@@ -24,6 +24,8 @@ function resolveExecutablePath(input = process.argv[2] || process.env.PACKAGED_E
     : [
         path.resolve("release-builder", "mac-arm64", "A股雷达趋势版.app"),
         path.resolve("release-builder", "mac", "A股雷达趋势版.app"),
+        path.resolve("release-builder", "mac-arm64", `${productName}.app`),
+        path.resolve("release-builder", "mac", `${productName}.app`),
         path.resolve("release", "win-unpacked", `${productName}.exe`),
         path.resolve("程序", `${productName}.exe`)
       ];

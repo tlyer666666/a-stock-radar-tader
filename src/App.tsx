@@ -131,11 +131,15 @@ function App() {
       return true;
     }
   });
-  const [view, setView] = useState<View>(() => (
-    typeof window !== "undefined" && window.localStorage?.getItem(DEFAULT_VIEW_STORAGE_KEY) === "signals"
-      ? "signals"
-      : "cockpit"
-  ));
+  const [view, setView] = useState<View>(() => {
+    try {
+      return typeof window !== "undefined" && window.localStorage?.getItem(DEFAULT_VIEW_STORAGE_KEY) === "signals"
+        ? "signals"
+        : "cockpit";
+    } catch {
+      return "cockpit";
+    }
+  });
   const [privacyMask, setPrivacyMask] = useState<boolean>(() => {
     try {
       return typeof window !== "undefined" && window.localStorage?.getItem(PRIVACY_MASK_STORAGE_KEY) === "true";

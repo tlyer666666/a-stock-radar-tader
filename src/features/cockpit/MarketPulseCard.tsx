@@ -12,8 +12,10 @@ export default function MarketPulseCard({
   state,
   onRetry,
   onOpenReview,
-  onAskAi
+  onAskAi,
+  showIndices = true
 }: {
+  showIndices?: boolean;
   pulse: MarketPulse | null;
   state: "loading" | "ready" | "error";
   onRetry: () => void;
@@ -54,7 +56,7 @@ export default function MarketPulseCard({
         </small>
       </header>
 
-      <div className="cockpit-pulse-grid">
+      <div className={`cockpit-pulse-grid${showIndices ? "" : " no-indices"}`}>
         <div className="cockpit-pulse-lead">
           <strong className="cockpit-pulse-headline">{pulse.headline || "—"}</strong>
           {pulse.posture ? <span className="cockpit-pulse-posture">建议：{pulse.posture}</span> : null}
@@ -86,7 +88,8 @@ export default function MarketPulseCard({
           ) : <span className="cockpit-pulse-na">暂未取到</span>}
         </div>
 
-        <ul className="cockpit-pulse-indices">
+        {/* 驾驶舱上方已有实时指数条时，这里不再重复列指数（均线位置以小标签挂到指数卡片上）。 */}
+        {showIndices ? <ul className="cockpit-pulse-indices">
           {pulse.indices.length ? pulse.indices.map((index) => (
             <li key={index.name}>
               <span>{index.name}</span>
@@ -97,7 +100,7 @@ export default function MarketPulseCard({
               {index.trend ? <small>{index.trend}</small> : null}
             </li>
           )) : <li className="cockpit-pulse-na">暂未取到</li>}
-        </ul>
+        </ul> : null}
 
         <footer className="cockpit-pulse-foot">
         {pulse.risks.length ? <span className="cockpit-pulse-risks">要留意：{pulse.risks.slice(0, 2).join("；")}</span> : null}

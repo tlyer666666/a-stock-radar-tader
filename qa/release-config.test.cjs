@@ -92,7 +92,7 @@ for (const script of appBuildEntryPoints) {
   test(`${script} audits exactly once before packaging`, () => {
     const commands = expandScript(script);
     const audits = commands.map((command, index) => command === "node qa/verify-dependencies.cjs --audit" ? index : -1).filter((index) => index >= 0);
-    const builder = commands.findIndex((command) => /(?:build-unpacked|build-platform)\.cjs|electron-builder/.test(command));
+    const builder = commands.findIndex((command) => /(?:build-unpacked|build-platform|deploy-single-app)\.cjs|electron-builder/.test(command));
     assert.equal(audits.length, 1, `${script} must audit once through its shared chain`);
     assert.ok(builder > audits[0], `${script} packages before dependency security review`);
   });
@@ -138,7 +138,7 @@ for (const script of appBuildEntryPoints) {
   test(`${script} stops its real command chain when the audit rejects`, (t) => {
     const events = runWithRejectedAudit(script, t);
     assert.equal(events.filter(({ tool, args }) => tool === "node" && args[0] === "qa/verify-dependencies.cjs" && args.includes("--audit")).length, 1);
-    assert.deepEqual(events.filter(({ tool, args }) => tool === "vite" || tool === "electron-builder" || (tool === "node" && /(?:build-unpacked|build-platform|deploy-formal)\.cjs/.test(args[0] || ""))), []);
+    assert.deepEqual(events.filter(({ tool, args }) => tool === "vite" || tool === "electron-builder" || (tool === "node" && /(?:build-unpacked|build-platform|deploy-formal|deploy-single-app)\.cjs/.test(args[0] || ""))), []);
   });
 }
 

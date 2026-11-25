@@ -1228,3 +1228,33 @@ test('cooldownDays === 0 still prevents overlapping same-stock positions when an
   assert.equal(replay.samples[1].signalDate, dates[33]);
   assert.equal(replay.samples[1].entryDate, dates[34]);
 });
+
+test('L-9: empty purged initial training fold reports degradationPercent=null and overfitRisk=unknown', () => {
+  const engine = require('./strategy-signal-engine.cjs');
+  // 24 distinct signal dates with default outOfSampleRatio=0.3 -> first 16 are initial training, last 8 are OOS (starting at dates[16]).
+  // Give every initial-training sample a delayed exitDate >= dates[16] so all 16 training samples are purged.
+  const total = 24;
+  const dates = Array.from({ length: total + 10 }, (_, idx) => dateAt(idx));
+  const samples = Array.from({ length: total }, (_, idx) => ({
+    code: '600001',
+    name: '测试样本',
+    signalDate: dates[idx],
+    entryDate: dates[idx + 1],
+    exitDate: idx < 16 ? dates[20] : dates[idx + 2],
+    netReturn: 2.5,
+    benchmarkReturn: 0.2,
+    excessReturn: 2.3,
+    maxDrawdown: -2.0
+  }));
+  const wf = engine.__test.buildWalkForward(samples, engine.__test.resolvedOptions({
+    minSamples: 18,
+    minIndependentSignalDays: 18,
+    minOutOfSampleSamples: 6,
+    minWalkForwardFoldSamples: 2
+  }));
+  assert.equal(wf.available, true);
+  assert.equal(wf.initialTraining.sampleCount, 0);
+  assert.equal(wf.purgedInitialTrainingSamples, 16);
+  assert.equal(wf.degradationPercent, null);
+  assert.equal(wf.overfitRisk, 'unknown');
+});

@@ -45,35 +45,53 @@ function skillCatalogText() {
  *   loadProfiles: (list: Array<{code: string, name: string}>) => Promise<{profiles: any[]}>, previousReviews: (count: number) => any[],
  *   situationOf?: (profile: any) => string[] }} sources
  */
-function createReviewSkills(sources) {
-  let fuyaoPromise = null, boardPromise = null, sectorCalls = 0;
+function createReviewSkills(sources, { cacheTtlMs = 60_000, now = () => Date.now() } = {}) {
+  let fuyaoPromise = null, fuyaoAt = 0;
+  let boardPromise = null, boardAt = 0;
+  let sectorCalls = 0;
+  const isExpired = cachedAt => cacheTtlMs > 0 && now() - cachedAt >= cacheTtlMs;
+  const reset = () => {
+    fuyaoPromise = null;
+    fuyaoAt = 0;
+    boardPromise = null;
+    boardAt = 0;
+    sectorCalls = 0;
+  };
   const fuyao = (signal) => {
     signal?.throwIfAborted?.();
-    if (!fuyaoPromise) {
-      fuyaoPromise = Promise.resolve()
+    if (!fuyaoPromise || isExpired(fuyaoAt)) {
+      fuyaoAt = now();
+      const pending = Promise.resolve()
         .then(() => sources.loadFuyao({ signal }))
         .then(value => value?.available ? value : null)
         .catch(error => {
-          if (error?.name === "AbortError" || signal?.aborted) {
+          if (fuyaoPromise === pending) {
             fuyaoPromise = null;
+            fuyaoAt = 0;
+          }
+          if (error?.name === "AbortError" || signal?.aborted) {
             throw error;
           }
           return null;
         });
+      fuyaoPromise = pending;
     }
     return fuyaoPromise;
   };
   const board = (signal) => {
     signal?.throwIfAborted?.();
-    if (!boardPromise) {
-      boardPromise = Promise.resolve()
+    if (!boardPromise || isExpired(boardAt)) {
+      boardAt = now();
+      const pending = Promise.resolve()
         .then(() => sources.loadSectorBoard({ signal }))
         .catch(error => {
-          if (error?.name === "AbortError" || signal?.aborted) {
+          if (boardPromise === pending) {
             boardPromise = null;
+            boardAt = 0;
           }
           throw error;
         });
+      boardPromise = pending;
     }
     return boardPromise;
   };
@@ -203,7 +221,7 @@ function createReviewSkills(sources) {
     }
   }
 
-  return { catalog: SKILLS, runSkill };
+  return { catalog: SKILLS, runSkill, reset };
 }
 
 module.exports = { createReviewSkills, SKILLS, skillCatalogText };

@@ -178,23 +178,45 @@ function buildUnpacked(options = {}) {
       }
       const configRoot = path.join(projectRoot, "config");
       if (fsImpl.existsSync(configRoot)) copyTree(configRoot, path.join(appRoot, "config"), fsImpl);
-      // 与 package.json build.files 一致：凭据种子文件绝不进安装包。
-      fsImpl.rmSync(path.join(appRoot, "config", "fuyao-seed.json"), { force: true });
+      // 与 package.json build.files 一致：config/ 仅保留非凭据种子的 .json 文件。
+      const pruneConfigDir = (dir) => {
+        if (!fsImpl.existsSync(dir)) return;
+        for (const entry of fsImpl.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            pruneConfigDir(full);
+          } else if (entry.name === "fuyao-seed.json" || !entry.name.endsWith(".json")) {
+            fsImpl.rmSync(full, { force: true });
+          }
+        }
+      };
+      pruneConfigDir(path.join(appRoot, "config"));
       fsImpl.copyFileSync(packagePath, path.join(appRoot, "package.json"));
 
-      for (const name of fsImpl.readdirSync(path.join(appRoot, "electron"))) {
-        if (
-          name.endsWith(".test.cjs") ||
-          name === "build-unpacked.cjs" ||
-          name === "build-platform.cjs" ||
-          name === "deploy-formal.cjs" ||
-          name === "after-pack-fuses.cjs" ||
-          name === "deploy-single-app.cjs" ||
-          name === "build-runtime-fuses.cjs"
-        ) {
-          fsImpl.rmSync(path.join(appRoot, "electron", name), { force: true });
+      const buildOnlyScripts = new Set([
+        "build-unpacked.cjs",
+        "build-platform.cjs",
+        "deploy-formal.cjs",
+        "after-pack-fuses.cjs",
+        "deploy-single-app.cjs",
+        "build-runtime-fuses.cjs"
+      ]);
+      // 与 package.json build.files 一致：递归清理非 .cjs（如测试快照 .json）、*.test.cjs 及构建脚本。
+      const pruneElectronDir = (dir, isTopLevel) => {
+        for (const entry of fsImpl.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          if (entry.isDirectory()) {
+            pruneElectronDir(full, false);
+          } else if (
+            !entry.name.endsWith(".cjs") ||
+            entry.name.endsWith(".test.cjs") ||
+            (isTopLevel && buildOnlyScripts.has(entry.name))
+          ) {
+            fsImpl.rmSync(full, { force: true });
+          }
         }
-      }
+      };
+      pruneElectronDir(path.join(appRoot, "electron"), true);
 
       const harden = options.hardenRuntime || (binary => execFileSync(process.execPath,
         [path.join(__dirname, 'build-runtime-fuses.cjs'), binary, 'win32'], { stdio: 'pipe' }));

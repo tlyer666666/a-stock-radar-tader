@@ -42,8 +42,33 @@ function completeMacRuntimeResources(context) {
   fs.rmSync(path.join(resources, 'default_app.asar'), { force: true });
 }
 
+function normalizeUnpackedPermissions(context) {
+  if (context.electronPlatformName === 'win32') return;
+  const resources = context.electronPlatformName === 'darwin'
+    ? path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.app`, 'Contents', 'Resources')
+    : path.join(context.appOutDir, 'resources');
+  const unpacked = path.join(resources, 'app.asar.unpacked');
+  if (!fs.existsSync(unpacked)) return;
+  const walk = (dir) => {
+    fs.chmodSync(dir, 0o755);
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+      } else if (entry.isFile()) {
+        const current = fs.statSync(full).mode & 0o777;
+        const execBits = current & 0o111;
+        fs.chmodSync(full, execBits ? 0o755 : 0o644);
+      }
+    }
+  };
+  walk(unpacked);
+}
+
 module.exports = async function afterPack(context) {
   completeMacRuntimeResources(context);
+  normalizeUnpackedPermissions(context);
   const binary = electronBinaryPath(context);
   const { electronPlatformName } = context;
   await flipFuses(binary, {

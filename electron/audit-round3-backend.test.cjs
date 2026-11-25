@@ -299,3 +299,39 @@ test("R3-Federation & Costs: tencentQuote infers SH/BJ from secid/code without t
   const f = fees(38214.2857, "buy", { ...DEFAULT_COSTS, commissionBps: 7, minCommission: 5 });
   assert.equal(f.commission, 26.75, "26.75 half-cent boundary rounds consistently with trend-research-account");
 });
+
+test("C-5: walk-forward validation ignores unsettled null r5/mdd5 and purges training samples overlapping testStart", () => {
+  const { summarizeWalkForwardSamples, buildWalkForwardValidationFromSamples } = require("./services/backtest.cjs");
+
+  // Unsettled r5: null and mdd5: null must NEVER be coerced to 0
+  const summary = summarizeWalkForwardSamples([
+    { entryDate: "2026-01-02", exitDate: "2026-01-08", r5: 3.0, mdd5: null },
+    { entryDate: "2026-01-09", exitDate: "2026-01-15", r5: null, mdd5: null },
+    { entryDate: "2026-01-16", exitDate: "2026-01-22", r5: "", mdd5: "" }
+  ]);
+  assert.equal(summary.samples, 1, "r5: null and empty string must not count as settled 0% returns");
+  assert.equal(summary.expectancy5, 3.0);
+  assert.equal(summary.worstMdd5, null, "absent/null mdd5 must remain null instead of 0");
+
+  // 20 settled samples + 4 unsettled null samples: unsettled ones excluded, and training samples with exitDate >= testStart are purged
+  const samples = Array.from({ length: 20 }, (_, i) => {
+    const entry = new Date(Date.UTC(2026, 0, i * 2 + 1)).toISOString().slice(0, 10);
+    // Make training sample #9 overlap test fold #1 start (sample #10 entryDate = 2026-01-21)
+    const exit = i === 9
+      ? new Date(Date.UTC(2026, 0, 25)).toISOString().slice(0, 10)
+      : new Date(Date.UTC(2026, 0, i * 2 + 2)).toISOString().slice(0, 10);
+    return { entryDate: entry, exitDate: exit, r5: i === 9 ? 50 : 2.0, mdd5: -3.0 };
+  });
+  samples.push(
+    { entryDate: "2026-03-01", exitDate: "", r5: null, mdd5: null },
+    { entryDate: "2026-03-02", exitDate: "", r5: null, mdd5: null }
+  );
+
+  const wf = buildWalkForwardValidationFromSamples(samples, { minSamples: 18, expectedCostPercent: 0.25 });
+  assert.equal(wf.available, true);
+  assert.equal(wf.sampleCount, 20, "unsettled null samples must be excluded from walk-forward sample count");
+  assert.equal(wf.purgedInitialTrainingSamples, 1, "training sample whose exitDate >= oosStart must be purged");
+  assert.equal(wf.folds[0].purgedTrainingSamples, 1, "fold 1 must purge overlapping training sample");
+  assert.equal(wf.trainingSamples, 9);
+  assert.ok(Math.abs(wf.trainingProjectedNetEdge - 1.75) < 1e-6, "purged +50% leaking sample must not inflate training edge");
+});

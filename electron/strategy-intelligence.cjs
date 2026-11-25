@@ -2,8 +2,10 @@ const { preLimitRangePosition, LOW_POSITION } = require("./strategy-selection-ru
 const { anchoredVwap } = require("./market-history-rules.cjs");
 const { measuredFactorSnapshot } = require("./strategy-field-rules.cjs");
 const { intervalPriceBasisIssue } = require("./quant-history-safety.cjs");
+const { DEFAULT_COSTS, roundTripBps } = require("./backtest-costs.cjs");
 const {
   isBseAshareCode,
+  isClosingLimitDownExit,
   isLimitUpBar,
   isOpeningLimitUpEntry,
   upperLimitPrice
@@ -608,18 +610,73 @@ function wilsonInterval(wins, total, z = 1.96) {
   ];
 }
 
+function countIndependentSamples(samples) {
+  if (!Array.isArray(samples) || !samples.length) return 0;
+  const sorted = [...samples].sort((left, right) =>
+    String(left?.entryDate || left?.date || "").localeCompare(String(right?.entryDate || right?.date || "")) ||
+    (Number(left?.node) || 0) - (Number(right?.node) || 0)
+  );
+  const usedEvents = new Set();
+  let lastExitDate = "";
+  let count = 0;
+  for (const item of sorted) {
+    const eventKey = item?.eventDate
+      ? String(item.eventDate).slice(0, 10)
+      : Number.isInteger(item?.eventIndex)
+        ? `idx:${item.eventIndex}`
+        : "";
+    const entryDate = String(item?.entryDate || item?.date || "").slice(0, 10);
+    const exitDate = String(item?.exitDate || entryDate).slice(0, 10);
+    if (eventKey && usedEvents.has(eventKey)) continue;
+    if (lastExitDate && entryDate && entryDate <= lastExitDate) continue;
+    if (eventKey) usedEvents.add(eventKey);
+    if (exitDate) lastExitDate = exitDate;
+    count += 1;
+  }
+  return count;
+}
+
+function isTradableExitBar(history, index, code, name) {
+  if (!Array.isArray(history) || index < 1 || index >= history.length) return false;
+  const bar = history[index];
+  const previous = history[index - 1];
+  if (!bar || !previous) return false;
+  if (bar.volume === null || bar.volume === undefined || bar.volume === "") return false;
+  const volume = Number(bar.volume);
+  if (!Number.isFinite(volume) || volume <= 0) return false;
+  const close = Number(bar.close);
+  if (!Number.isFinite(close) || close <= 0) return false;
+  if (isClosingLimitDownExit(Number(previous.close), bar, code, name)) return false;
+  return true;
+}
+
+function findTradableExitIndex(history, entryIndex, targetIndex, warmupStart, code, name) {
+  const startIndex = Math.max(entryIndex + 1, targetIndex);
+  for (let idx = startIndex; idx < history.length; idx += 1) {
+    if (!isTradableExitBar(history, idx, code, name)) continue;
+    if (intervalPriceBasisIssue(history, warmupStart, idx, code, name)) return -1;
+    return idx;
+  }
+  return -1;
+}
+
 function summarizeSamples(id, samples) {
   const returns = (days) => samples.map((item) => item[`r${days}`]).filter(Number.isFinite);
   const r1 = returns(1);
   const r3 = returns(3);
   const r5 = returns(5);
+  const settled5 = samples.filter((item) => Number.isFinite(item?.r5));
+  const independentEventCount = countIndependentSamples(samples);
+  const independentN5 = countIndependentSamples(settled5);
   const excess5 = samples.map((item) => item.excess5).filter(Number.isFinite);
   const wins5 = r5.filter((value) => value > 0).length;
-  const confidence = confidenceFor(r5.length);
+  const confidence = confidenceFor(independentN5);
   return {
     id,
     label: STAT_LABELS[id] || id,
     sampleCount: samples.length,
+    independentEventCount,
+    independentN5,
     n1: r1.length,
     n3: r3.length,
     n5: r5.length,
@@ -670,12 +727,25 @@ function buildHistoricalStrategyStats(
   ]);
   const statisticIds = selectedIds.filter((id) => !gateIds.has(id));
   const replayableIds = statisticIds.filter((id) => !externalIds.has(id));
+  const customCostBps =
+    options?.roundTripCostBps !== null &&
+    options?.roundTripCostBps !== undefined &&
+    options?.roundTripCostBps !== "" &&
+    Number.isFinite(Number(options.roundTripCostBps)) &&
+    Number(options.roundTripCostBps) >= 0
+      ? Number(options.roundTripCostBps)
+      : roundTripBps(DEFAULT_COSTS);
+  const roundTripCostPercent = customCostBps / 100;
+  const costsIncluded = customCostBps > 0;
   if (!Array.isArray(history) || history.length < 40) {
     return {
       source: "个股不复权日线回放",
       range: "",
       totalEvents: 0,
-      entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入",
+      entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入（T+1卖出，扣双边交易成本）",
+      costsIncluded,
+      roundTripCostBps: customCostBps,
+      roundTripCostPercent,
       stats: statisticIds.map((id) => summarizeSamples(id, [])),
       nodeStats: [],
       untradeableCount: 0,
@@ -719,31 +789,44 @@ function buildHistoricalStrategyStats(
         }
       }
       const entryPrice = Number(entry.open);
-      if (!entryPrice) continue;
+      if (!Number.isFinite(entryPrice) || entryPrice <= 0) continue;
       const openingLimitUp = isOpeningLimitUpEntry(Number(evaluation.close), entry, code, name);
+      const warmupStart = Math.max(0, event.index - 20);
       if (
         openingLimitUp ||
         entry.volume === null ||
         entry.volume === undefined ||
+        entry.volume === "" ||
         !Number.isFinite(Number(entry.volume)) ||
         Number(entry.volume) <= 0 ||
-        intervalPriceBasisIssue(history, entryIndex, Math.min(history.length - 1, entryIndex + 4), code, code)
+        intervalPriceBasisIssue(history, warmupStart, Math.min(history.length - 1, entryIndex + 4), code, name)
       ) {
         untradeableCount += 1;
         continue;
       }
       const outcome = {
         node,
+        eventIndex: event.index,
+        eventDate: String(event.date || "").slice(0, 10),
         date: evaluation.date,
         entryDate: entry.date,
         entryPrice
       };
+      let exitIndex5 = -1;
       for (const days of [1, 3, 5]) {
-        const futureIndex = entryIndex + days - 1;
-        if (futureIndex < history.length) {
+        // A-share T+1: earliest legal exit after buying at entryIndex open is entryIndex + 1 close.
+        const targetIndex = entryIndex + (days === 1 ? 1 : days - 1);
+        const futureIndex = targetIndex < history.length
+          ? findTradableExitIndex(history, entryIndex, targetIndex, warmupStart, code, name)
+          : -1;
+        if (futureIndex >= 0) {
           const future = history[futureIndex];
-          outcome[`r${days}`] = ((Number(future.close) / entryPrice) - 1) * 100;
-          if (days === 5) outcome.exitDate = String(future.date || "").slice(0, 10);
+          const grossReturn = ((Number(future.close) / entryPrice) - 1) * 100;
+          outcome[`r${days}`] = grossReturn - roundTripCostPercent;
+          if (days === 5) {
+            exitIndex5 = futureIndex;
+            outcome.exitDate = String(future.date || "").slice(0, 10);
+          }
           const benchmarkEntry = benchmarkByDate.get(String(entry.date).slice(0, 10));
           const benchmarkFuture = benchmarkByDate.get(String(future.date).slice(0, 10));
           const benchmarkEntryPrice = Number(benchmarkEntry?.open);
@@ -762,9 +845,8 @@ function buildHistoricalStrategyStats(
           outcome[`excess${days}`] = null;
         }
       }
-      const hasFiveDays = entryIndex + 4 < history.length;
-      const forward = hasFiveDays ? history.slice(entryIndex, entryIndex + 5) : [];
-      outcome.mdd5 = hasFiveDays
+      const forward = exitIndex5 >= 0 ? history.slice(entryIndex, exitIndex5 + 1) : [];
+      outcome.mdd5 = exitIndex5 >= 0
         ? Math.min(...forward.map((item) => ((Number(item.low) / entryPrice) - 1) * 100))
         : null;
       nodeSamples.get(node).push(outcome);
@@ -823,7 +905,10 @@ function buildHistoricalStrategyStats(
     range: `${history[0]?.date || ""} 至 ${history.at(-1)?.date || ""}`,
     totalEvents: events.length,
     rawEventCount: rawEvents.length,
-    entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入；开盘涨停或无有效成交量样本剔除",
+    entryRule: "T+N收盘产生信号，下一交易日开盘模拟买入，最早T+1收盘卖出；开盘涨停、无成交或跌停封死不可成交，并扣除双边交易成本",
+    costsIncluded,
+    roundTripCostBps: customCostBps,
+    roundTripCostPercent,
     benchmarkAvailable: Array.isArray(benchmarkHistory) && benchmarkHistory.length > 0,
     untradeableCount,
     externalArchiveDays,

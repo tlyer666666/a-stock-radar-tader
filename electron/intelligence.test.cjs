@@ -678,3 +678,64 @@ test("Phase 3D: news confirmWithMarket uses liveQuotes & sectorStrength and anal
   assert.deepEqual(impact.supplyChain.upstream, ["高压快充材料", "电解液添加剂"]);
   assert.equal(impact.portfolioExposure.length, 1);
 });
+
+test("C-4: buildHistoricalStrategyStats enforces T+1 exits, round-trip costs, exit tradability, warmup price-basis guard, and independent event counts", () => {
+  // 1) T+1 compliance + round-trip cost deduction + independent event counting
+  const makeBars = (length, eventIdx = 25) => Array.from({ length }, (_, idx) => {
+    const isEvent = idx === eventIdx;
+    const close = idx < eventIdx ? 10 : 11;
+    return {
+      date: new Date(Date.UTC(2026, 0, idx + 1)).toISOString().slice(0, 10),
+      open: isEvent ? 10.2 : close,
+      high: isEvent ? 11 : close + 0.05,
+      low: close - 0.05,
+      close,
+      volume: isEvent ? 200000 : 100000,
+      amount: close * 100000 * 100,
+      turnover: 2
+    };
+  });
+
+  // Entry at idx 29 (T+3 eval at 28) has same-day close=11.55 (+5% same day), next-day close=11.00 (0% T+1)
+  const t1Rows = makeBars(45, 25);
+  t1Rows[29] = { ...t1Rows[29], open: 11.0, high: 11.6, low: 10.95, close: 11.55 };
+  t1Rows[30] = { ...t1Rows[30], open: 11.55, high: 11.6, low: 10.95, close: 11.0 };
+  const t1Stats = buildHistoricalStrategyStats(t1Rows, "600001", "测试股份", ["support"], [], { includeSamples: true });
+  const t1Sample = t1Stats.combinationSamples.find(item => item.node === 3);
+  assert.ok(t1Sample, "T+3 sample should be recorded");
+  assert.equal(t1Stats.costsIncluded, true);
+  assert.ok(t1Stats.roundTripCostPercent > 0.2, "round-trip A-share cost must be deducted");
+  // Under T+1, exit is idx 30 close (11.0 / 11.0 - 1 = 0% gross) minus ~0.232% cost -> strictly negative, NOT +5% same-day!
+  assert.ok(t1Sample.r1 < 0 && t1Sample.r1 > -0.5, `T+1 r1 should reflect next-day close minus costs, got ${t1Sample.r1}`);
+
+  // Single limit-up event firing on T+3/5/7/9 yields 4 raw samples but only 1 independent event!
+  const comb = t1Stats.stats.find(item => item.id === "currentCombination");
+  assert.equal(comb.sampleCount, 4);
+  assert.equal(comb.independentEventCount, 1);
+  assert.equal(comb.independentN5, 1);
+
+  // 2) Exit bar tradability: closing limit-down lock on nominal 5-day exit (idx 33) rolls forward to next tradable bar (idx 34)
+  const lockRows = makeBars(45, 25);
+  lockRows[33] = { ...lockRows[33], open: 10.5, high: 10.5, low: 9.9, close: 9.9, volume: 100000 }; // -10% closing limit-down from 11.0
+  lockRows[34] = { ...lockRows[34], open: 9.5, high: 9.7, low: 9.4, close: 9.6, volume: 100000 }; // tradable next day
+  const lockStats = buildHistoricalStrategyStats(lockRows, "600001", "测试股份", ["support"], [], { includeSamples: true });
+  const lockSample = lockStats.combinationSamples.find(item => item.node === 3);
+  assert.equal(lockSample.exitDate, lockRows[34].date, "limit-down locked exit must roll forward to next tradable bar");
+  assert.ok(lockSample.r5 < -12, "rolled exit reflects actual tradable close minus costs");
+
+  // Unsettled when remaining bars are all untradable (volume=0)
+  const haltsAtEnd = makeBars(45, 25);
+  for (let i = 33; i < haltsAtEnd.length; i += 1) haltsAtEnd[i] = { ...haltsAtEnd[i], volume: 0 };
+  const haltStats = buildHistoricalStrategyStats(haltsAtEnd, "600001", "测试股份", ["support"], [], { includeSamples: true });
+  const haltSample = haltStats.combinationSamples.find(item => item.node === 3);
+  assert.equal(haltSample.r5, null, "untradable exit with no tradable follow-up stays unsettled (null)");
+  assert.equal(haltSample.mdd5, null);
+
+  // 3) Pre-signal indicator warmup window [event.index - 20, exitIndex] price-basis guard
+  const splitWarmupRows = makeBars(45, 25);
+  // Inject unresolved ex-rights discontinuity at idx 15 (10 bars BEFORE limit event at idx 25)
+  splitWarmupRows[15] = { ...splitWarmupRows[15], open: 10, high: 10.05, low: 9.95, close: 10, preClose: 12.5 };
+  const splitStats = buildHistoricalStrategyStats(splitWarmupRows, "600001", "测试股份", ["support"], [], { includeSamples: true });
+  assert.equal(splitStats.combinationSamples.length, 0, "pre-signal warmup corporate action must invalidate replay samples");
+  assert.ok(splitStats.untradeableCount >= 4);
+});

@@ -212,6 +212,33 @@ function firstValue(table, keys) {
   return undefined;
 }
 
+function parseThsSuspendedStatus(status) {
+  if (typeof status === "boolean") return status;
+  const text = String(status || "").trim();
+  if (!text) return null;
+  if (/^(?:suspended|delisted|halted)$/i.test(text) || /停牌|暂停交易|暂停上市/.test(text)) return true;
+  if (/^(?:trading|open|closed|normal)$/i.test(text) || /交易|竞价|盘中|闭市|收盘|休市|午间|午休|未开盘|盘后|正常|开市/.test(text)) return false;
+  return null;
+}
+
+function normalizeThsQuoteAt(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value < 1e12 ? value * 1000 : value).toISOString();
+  }
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}+08:00`;
+  }
+  const localMatch = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)$/);
+  if (localMatch) {
+    const timePart = localMatch[2].length === 5 ? `${localMatch[2]}:00` : localMatch[2];
+    return `${localMatch[1]}T${timePart}+08:00`;
+  }
+  if (/(?:Z|[+-]\d{2}:\d{2})$/.test(text) && Number.isFinite(Date.parse(text))) return text;
+  return "";
+}
+
 async function thsQuote(security, settings) {
   const indicators =
     "open,high,low,latest,preClose,changeRatio,turnoverRatio,latestAmount,latestVolume";
@@ -238,6 +265,14 @@ async function thsQuote(security, settings) {
   if (!Number.isFinite(latest) || latest <= 0) {
     throw new Error("同花顺实时行情缺少有效最新价");
   }
+  const volumeDivisor = String(security?.assetType || "stock") === "convertibleBond" ? 10 : 100;
+  const rawVolume = finiteOrNull(firstValue(t, ["latestVolume", "volume"]));
+  const rawSuspended = firstValue(t, ["suspended"]);
+  const rawStatus = firstValue(t, ["tradeStatus", "marketStatus", "stockStatus", "suspensionFlag"]);
+  const suspended = typeof rawSuspended === "boolean" ? rawSuspended : parseThsSuspendedStatus(rawStatus);
+  const quoteAt = normalizeThsQuoteAt(firstValue(t, ["quoteAt", "tradeTime", "quoteTime", "time"]));
+  const limitUp = finiteOrNull(firstValue(t, ["upperLimit", "limitUp"]));
+  const limitDown = finiteOrNull(firstValue(t, ["lowerLimit", "limitDown"]));
   return {
     ...security,
     latest,
@@ -245,11 +280,16 @@ async function thsQuote(security, settings) {
     low: finiteOrNull(firstValue(t, ["low"])),
     open: finiteOrNull(firstValue(t, ["open"])),
     preClose: finiteOrNull(firstValue(t, ["preClose", "preclose"])),
+    ...(limitUp !== null ? { limitUp } : {}),
+    ...(limitDown !== null ? { limitDown } : {}),
     changePct: finiteOrNull(monitorValues.changePct),
     turnover: finiteOrNull(monitorValues.turnover),
     amount: finiteOrNull(monitorValues.amount),
-    volume: finiteOrNull(firstValue(t, ["latestVolume", "volume"])) === null ? null : Number(firstValue(t, ["latestVolume", "volume"])) / 100,
+    volume: rawVolume === null ? null : rawVolume / volumeDivisor,
     volumeUnit: "lots",
+    ...(quoteAt ? { quoteAt } : {}),
+    ...(rawStatus !== undefined && rawStatus !== null && String(rawStatus).trim() ? { marketStatus: String(rawStatus).trim() } : {}),
+    ...(suspended !== null ? { suspended } : {}),
     industry: "",
     source: "ths",
     missingFields: missingMonitorQuoteFields(monitorValues)

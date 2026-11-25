@@ -500,4 +500,68 @@ test("主密码锁定时加密备份的 run/inspect/prepareRestore 抛出 SECRET
   // 显式传入密码时即使密钥库锁定也可预览/准备恢复
   assert.equal((await api.inspect(name, "BackupPass#2026")).stores.includes("holdings"), true);
   assert.equal((await api.prepareRestore(name, "BackupPass#2026")).stores.holdings[0].code, "600519");
+
+  // H-1: 密钥库锁定时禁止用空字符串清空已有备份密码
+  assert.throws(
+    () => api.configure({ password: "" }),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED"
+  );
+  assert.ok(saved.password, "existing encrypted backup password must be preserved when locked");
+
+  // 解锁后允许清空备份密码
+  locked = false;
+  api.configure({ password: "" });
+  assert.equal(saved.password, "");
+});
+
+test("H-2 & L-4: syncLocalMirror uses transactional replaceKeys when available and inspect/prepareRestore guard empty folder", async () => {
+  const { createLocalKvStore } = require("./local-kv-sqlite.cjs");
+  const dir = tempDir();
+  const emptyFolderService = service(STORES, { folder: "" });
+  await assert.rejects(
+    () => emptyFolderService.api.inspect("A股雷达备份-20261112-160509.json"),
+    { code: "BACKUP_FOLDER" }
+  );
+  await assert.rejects(
+    () => emptyFolderService.api.prepareRestore("A股雷达备份-20261112-160509.json"),
+    { code: "BACKUP_FOLDER" }
+  );
+
+  const source = service(STORES, { folder: dir });
+  const { name } = await source.api.run({ "a-stock-radar:notes:v1": "{\"notes\":[\"tx\"]}" });
+  const kvStore = createLocalKvStore({ userDataDir: tempDir() });
+  let replaceKeysCalls = 0;
+  const wrappedMirror = {
+    keys: () => kvStore.keys(),
+    get: k => kvStore.get(k),
+    set: (k, v) => kvStore.set(k, v),
+    remove: k => kvStore.remove(k),
+    replaceKeys: (entries, removeKeys) => {
+      replaceKeysCalls += 1;
+      return kvStore.replaceKeys(entries, removeKeys);
+    }
+  };
+  try {
+    kvStore.set("a-stock-radar:obsolete", "old");
+    kvStore.set("other:keep", "keep");
+    const data = structuredClone(STORES);
+    const api = backup.createBackupService({
+      readStore: store => structuredClone(data[store] ?? null),
+      writeStore: (store, value) => { data[store] = value; },
+      readConfig: () => ({ folder: dir }),
+      writeConfig: () => {},
+      encryptSecret: v => v,
+      decryptSecret: v => v,
+      appVersion: "1.6.71",
+      now: () => NOW,
+      localMirror: wrappedMirror
+    });
+    await api.restore(name);
+    assert.equal(replaceKeysCalls, 1);
+    assert.equal(kvStore.get("a-stock-radar:notes:v1"), "{\"notes\":[\"tx\"]}");
+    assert.equal(kvStore.get("a-stock-radar:obsolete"), null);
+    assert.equal(kvStore.get("other:keep"), "keep");
+  } finally {
+    kvStore.close();
+  }
 });

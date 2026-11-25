@@ -62,8 +62,11 @@ function TrendSparkline({ trend }: { trend: SectorExplorerTrend }) {
     return <svg className={`sector-explorer-sparkline ${tone}`} viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={`近 ${closes.length} 个交易日板块指数走势`}><polyline points={points} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round"/></svg>;
 }
 const localTime = (value: string) => Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: "Asia/Shanghai" }) : '未提供';
-function openSource(url: string) { if (typeof window !== 'undefined')
-    void window.stockApi?.openExternal(url); }
+function openSource(url: string) {
+    const target = String(url || "").trim();
+    if (!target || typeof window === 'undefined') return;
+    void Promise.resolve(window.stockApi?.openExternal?.(target)).catch(() => {});
+}
 function toSecurity(member: SectorExplorerMember): Security { return { code: member.code, name: member.name, secid: member.secid, thscode: `${member.code}.${member.secid.startsWith('1.') ? 'SH' : /^[489]/.test(member.code) ? 'BJ' : 'SZ'}`, assetType: 'stock' }; }
 export function filterSectorEntries(entries: SectorExplorerEntry[], query: string, kind: Filter) {
     const needle = query.trim().toLowerCase();

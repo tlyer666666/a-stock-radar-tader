@@ -301,18 +301,138 @@ test("storage:kv-set is a no-op during post-restore restart window and settings:
   } finally { h.cleanup(); }
 });
 
-test("main.cjs closes SQLite after async shutdown drains, flushes bounds atomically on close, and wires agent abort signals", () => {
+test("main.cjs closes SQLite synchronously on before-quit and defensively on will-quit, saves bounds on every close, scopes reviewSkills per run, and hardens debugLog", () => {
   const mainSource = fs.readFileSync(path.join(__dirname, "main.cjs"), "utf8");
-  const shutdownBlock = mainSource.match(/const finishShutdown = createShutdownGate\(\{([\s\S]*?)\n\}\);/);
-  assert.ok(shutdownBlock);
-  const settledIdx = shutdownBlock[1].indexOf("Promise.allSettled");
-  const closeIdx = shutdownBlock[1].indexOf("localKvStoreInstance?.close?.()");
-  assert.ok(settledIdx >= 0 && closeIdx > settledIdx);
+  const beforeQuitBlock = mainSource.match(/app\.on\("before-quit",\s*\(event\)\s*=>\s*\{([\s\S]*?)\n\}\);/);
+  assert.ok(beforeQuitBlock);
+  const quitFlagIdx = beforeQuitBlock[1].indexOf("isQuitting = true;");
+  const closeIdx = beforeQuitBlock[1].indexOf("localKvStoreInstance?.close?.()");
+  const finishIdx = beforeQuitBlock[1].indexOf("finishShutdown(event);");
+  assert.ok(quitFlagIdx >= 0 && closeIdx > quitFlagIdx && closeIdx < finishIdx, "SQLite must close synchronously right after isQuitting = true before async finishShutdown");
 
-  assert.match(mainSource, /createdWindow\.once\?\.\("close",\s*\(\)\s*=>\s*\{[\s\S]*?saveMainBounds\(\);/);
+  const willQuitBlock = mainSource.match(/app\.on\("will-quit",\s*\(\)\s*=>\s*\{([\s\S]*?)\n\}\);/);
+  assert.ok(willQuitBlock && willQuitBlock[1].includes("localKvStoreInstance?.close?.()"));
+
+  assert.match(mainSource, /createdWindow\.on\?\.\("close",\s*\(\)\s*=>\s*\{[\s\S]*?saveMainBounds\(\);/);
   assert.match(mainSource, /renameWithRetrySync\(tmpBoundsFile,\s*boundsFile\)/);
-  assert.match(mainSource, /let reviewSkillsInstance;\s*const reviewSkills = \(\) => \(reviewSkillsInstance \|\|= createReviewSkills\(/);
-  assert.match(mainSource, /reviewSkill:\s*\(skill,\s*args,\s*lifecycle\)\s*=>\s*reviewSkills\(\)\.runSkill\(skill,\s*args,\s*\{\s*signal:\s*lifecycle\?\.signal\s*\}\)/);
+  assert.doesNotMatch(mainSource, /let reviewSkillsInstance;/);
+  assert.match(mainSource, /const reviewSkillsByLifecycle = new WeakMap\(\);/);
+  assert.match(mainSource, /reviewSkill:\s*\(skill,\s*args,\s*lifecycle\)\s*=>\s*reviewSkillsFor\(lifecycle\)\.runSkill\(skill,\s*args,\s*\{\s*signal:\s*lifecycle\?\.signal\s*\}\)/);
   assert.match(mainSource, /marketNews:\s*lifecycle\s*=>\s*getNewsFeed\(\{\s*scope:\s*"all",\s*limit:\s*80\s*\},\s*settingsForService\(\),\s*\{\s*signal:\s*lifecycle\?\.signal\s*\}\)/);
-  assert.match(mainSource, /kvSet:\s*\(key,\s*value\)\s*=>\s*\{\s*if\s*\(restoredProfilePendingRestart\s*\|\|\s*isQuitting\)\s*return false;/);
+  assert.match(mainSource, /kvSet:\s*\(key,\s*value\)\s*=>\s*\{\s*if\s*\(restoredProfilePendingRestart\s*\|\|\s*isQuitting\s*\|\|\s*restoreCommitting\)\s*return false;/);
+  assert.match(mainSource, /function debugLog\(message\)[\s\S]*?app\.getPath\("userData"\)[\s\S]*?lstatSync\(logPath\)[\s\S]*?DEBUG_LOG_MAX_BYTES[\s\S]*?0o600/);
+});
+
+test("M-5: settings:save rejects changing aiBaseUrl to a different origin without a new aiApiKey", () => {
+  const h = createHarness();
+  try {
+    h.invoke("settings:save", { aiBaseUrl: "https://api.deepseek.com/v1", aiApiKey: "sk-deepseek-key" });
+    assert.match(h.json("settings").aiApiKey, /^safe:/);
+
+    // Same-origin path change preserves saved key
+    h.invoke("settings:save", { aiBaseUrl: "https://api.deepseek.com/v2", aiApiKey: "••••••••••••" });
+    assert.equal(h.json("settings").aiBaseUrl, "https://api.deepseek.com/v2");
+    assert.match(h.json("settings").aiApiKey, /^safe:/);
+
+    // Different origin without a new key (omitted or masked) must be rejected
+    assert.throws(
+      () => h.invoke("settings:save", { aiBaseUrl: "https://other-provider.example/v1" }),
+      { code: "INVALID_AI_PROFILE" }
+    );
+    assert.throws(
+      () => h.invoke("settings:save", { aiBaseUrl: "https://other-provider.example/v1", aiApiKey: "••••••••••••" }),
+      { code: "INVALID_AI_PROFILE" }
+    );
+    assert.equal(h.json("settings").aiBaseUrl, "https://api.deepseek.com/v2");
+
+    // Different origin WITH a new key succeeds
+    h.invoke("settings:save", { aiBaseUrl: "https://other-provider.example/v1", aiApiKey: "sk-other-provider-key" });
+    assert.equal(h.json("settings").aiBaseUrl, "https://other-provider.example/v1");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("M-1: backup:prepare-restore sets restoreInProgress synchronously, rejects concurrent prepares, and blocks kv-set during commit", async () => {
+  const { registerWorkspaceIpc } = require("./ipc/workspace.ipc.cjs");
+  const handlers = new Map();
+  let restoreInProgress = false;
+  let restoreCommitting = false;
+  let restoredPending = false;
+  let kvSetCalls = 0;
+  let resolvePrepare;
+  let resolveApply;
+  let writeStoreAllowFlag = null;
+
+  registerWorkspaceIpc({
+    handleTrustedIpc: (channel, handler) => handlers.set(channel, handler),
+    app: { getVersion: () => "1.0.0", relaunch: () => {}, quit: () => {} },
+    fs: { unlinkSync: () => {} },
+    dialog: {},
+    shell: {},
+    powerMonitor: { on: () => {} },
+    BrowserWindow: {},
+    getMainWindow: () => null,
+    trustedMainWebContents: () => fakeSender,
+    readJson: () => null,
+    writeJson: (_name, _val, _validator, _sync, opts) => { writeStoreAllowFlag = opts?.allowDuringRestoreCommit === true; },
+    jsonPath: n => n,
+    backupJsonPath: n => n,
+    isSettingsRecord: () => true,
+    usableWatchlist: () => true,
+    usableHoldings: () => true,
+    isCustomStrategyStore: () => true,
+    isAiProfileStore: () => true,
+    isAiFrameworkState: () => true,
+    isAiCustomList: () => true,
+    isAiStore: () => true,
+    isAgentStore: () => true,
+    createBackupService: ({ writeStore }) => ({
+      status: () => ({}),
+      suggestions: () => [],
+      prepareRestore: () => new Promise((resolve, reject) => { resolvePrepare = { resolve, reject }; }),
+      applyRestore: async () => {
+        writeStore("settings", {});
+        await new Promise(resolve => { resolveApply = resolve; });
+      }
+    }),
+    readMigratedBackupConfig: () => ({}),
+    loadStoredSettings: () => ({}),
+    settingsForService: () => ({}),
+    intervalReminders: { tick: () => {} },
+    getRestoredProfilePendingRestart: () => restoredPending,
+    setRestoredProfilePendingRestart: value => { restoredPending = Boolean(value); },
+    setRestoreInProgress: value => { restoreInProgress = Boolean(value); },
+    setRestoreCommitting: value => { restoreCommitting = Boolean(value); },
+    kvSet: () => { kvSetCalls += 1; return true; }
+  });
+
+  const fakeSender = { id: 7, session: { flushStorageData: async () => {} } };
+  const event = { sender: fakeSender };
+
+  // 1) prepare-restore sets restoreInProgress synchronously BEFORE await and blocks concurrent prepare
+  const firstPrepare = handlers.get("backup:prepare-restore")(event, "A股雷达备份-20261112-160509.json", "");
+  assert.equal(restoreInProgress, true);
+  await assert.rejects(() => handlers.get("backup:prepare-restore")(event, "A股雷达备份-20261112-160509.json", ""), { code: "BACKUP_BUSY" });
+
+  // 2) failed prepare resets restoreInProgress
+  resolvePrepare.reject(new Error("bad backup"));
+  await assert.rejects(firstPrepare, /bad backup/);
+  assert.equal(restoreInProgress, false);
+
+  // 3) successful prepare -> restore blocks storage:kv-set while committing and passes allowDuringRestoreCommit to writeJson
+  const secondPrepare = handlers.get("backup:prepare-restore")(event, "A股雷达备份-20261112-160509.json", "");
+  resolvePrepare.resolve({ local: {}, stores: {} });
+  const { token } = await secondPrepare;
+  const commitPromise = handlers.get("backup:restore")(event, token);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(restoreCommitting, true);
+  assert.equal(writeStoreAllowFlag, true);
+  assert.equal(handlers.get("storage:kv-set")(event, { key: "a-stock-radar:k", value: "v" }), false);
+  assert.equal(kvSetCalls, 0);
+  resolveApply();
+  const commitResult = await commitPromise;
+  assert.equal(commitResult.ok, true);
+  assert.equal(restoreCommitting, false);
+  assert.equal(restoredPending, true);
 });

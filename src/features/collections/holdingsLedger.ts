@@ -329,15 +329,16 @@ export function appendHoldingTradeRecord(
   return next;
 }
 
-export function clearHoldingTrades(storage: Pick<Storage, "setItem"> | null = defaultTradeStorage()): void {
-  if (!storage) return;
+export function clearHoldingTrades(storage: Pick<Storage, "setItem"> | null = defaultTradeStorage()): boolean {
+  if (!storage) return false;
   try {
     storage.setItem(HOLDING_TRADES_STORAGE_KEY, JSON.stringify({ records: [], archived: EMPTY_ARCHIVE }));
     if (typeof window !== "undefined" && typeof window.dispatchEvent === "function" && typeof CustomEvent === "function") {
       window.dispatchEvent(new CustomEvent("a-stock-radar:holding-trades-updated"));
     }
+    return true;
   } catch {
-    // ignore storage errors
+    return false;
   }
 }
 

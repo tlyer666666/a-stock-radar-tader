@@ -169,11 +169,12 @@ export function useWorkspaceCollections({
   const toggleFavorite = useCallback(async (security = payload?.security) => {
     if (!security) return;
     if (!watchlistLoaded.current) { showToast("自选列表尚未加载，请稍后重试"); return; }
-    const displayed = watchlistRef.current.find(item => item.code === security.code);
-    const currentlyFavorite = Boolean(displayed && (displayed.favorite || !displayed.autoAdded));
+    let removed = false;
     try {
       await watchlistWriter.current!(current => {
         const existing = current.find(item => item.code === security.code);
+        const currentlyFavorite = Boolean(existing && (existing.favorite || !existing.autoAdded));
+        removed = currentlyFavorite;
         const next: WatchItem[] = currentlyFavorite
           ? existing?.autoAdded
             ? current.map(item =>
@@ -205,7 +206,7 @@ export function useWorkspaceCollections({
               ];
         return next;
       });
-      showToast(currentlyFavorite ? "已移出自选监控" : "已加入自选监控");
+      showToast(removed ? "已移出自选监控" : "已加入自选监控");
     } catch { showToast("自选保存失败，已保留原有列表"); }
   }, [payload?.security, showToast]);
 

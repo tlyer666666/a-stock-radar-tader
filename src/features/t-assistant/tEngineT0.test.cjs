@@ -119,6 +119,46 @@ test("持久化后的配置保留交易规则", () => {
   assert.equal(loaded.items[0].config.tradingRule, "t0");
 });
 
+test("H-5, H-6, M-6, H-7: T+0 enforces minSpreadPct on buyShares, ETF limits use 0.001 tick & half-tick tol, normalizeTConfig preserves T+0/odd-lot tShares, TAssistantView enforces T+1 safe sellableShares import", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+
+  // H-5: T+0 ETF with sellableShares = 0 and high minSpreadPct must reject thin forward-T spread instead of bypassing minSpreadPct.
+  const thinPrices = [...Array.from({ length: 60 }, () => 1.000), ...Array.from({ length: 15 }, (_, i) => Number((1.000 - i * 0.0005).toFixed(3))), 0.992, 0.993, 0.994];
+  const thinRes = engine.analyzeT(share(thinPrices), ETF, etfConfig({ sellableShares: 0, tShares: 10000, minSpreadPct: 1.5, style: "active" }), []);
+  assert.equal(thinRes.signal.action, "wait");
+  assert.notEqual(thinRes.signal.action, "buy", "must not bypass minSpreadPct when sellableShares === 0");
+
+  // H-6: priceLimits prefers upstream quote limits, supports ETF 10%/20% fallback rounded to 0.001, and sealedUp uses tick/2 (0.0005) not 0.005.
+  assert.deepEqual(engine.priceLimits("513180", "恒生科技ETF", 0.720), { limitUp: 0.792, limitDown: 0.648 });
+  assert.deepEqual(engine.priceLimits("588000", "科创50ETF", 1.000), { limitUp: 1.2, limitDown: 0.8 });
+  assert.deepEqual(engine.priceLimits("513180", "恒生科技ETF", 0.720, undefined, { limitUp: 0.805, limitDown: 0.635 }), { limitUp: 0.805, limitDown: 0.635 });
+
+  // At 0.788 (0.004 below 0.792 limitUp), ETF is NOT sealed limit-up (old hardcoded 0.005 falsely flagged 0.788 as sealedUp).
+  const etfPoints = Array.from({ length: 230 }, (_, slot) => ({
+    slot, time: slotTime(slot), price: slot < 228 ? 0.740 : 0.788, average: 0.740, volume: 100, amount: null, changePercent: 9.4, rising: true
+  }));
+  const notSealed = engine.evaluateAt(
+    etfPoints, 229,
+    { code: "513180", name: "恒生科技ETF", preClose: 0.720, date: "2026-11-19" },
+    etfConfig({ baseShares: 10000, sellableShares: 10000, tShares: 10000 }),
+    { kind: "reverse", shares: 10000, price: 0.760, time: "10:00" },
+    { rounds: 0, realized: 0, fees: 5, costReduction: 0, newCost: null, tradedShares: 10000, lastClosed: null, soldShares: 10000, boughtShares: 0, lost: { reverse: false, forward: false } }
+  );
+  assert.equal(notSealed.signal.action, "closeBuyBack", "0.788 is 4 ticks below 0.792 limitUp and must not be treated as sealedUp");
+
+  // M-6: T+0 does not clamp tShares to sellableShares; T+1 odd-lot sellableShares (< 1 lot) does not wipe tShares to 0.
+  assert.equal(engine.normalizeTConfig({ baseShares: 1000, sellableShares: 1000, tShares: 20000 }, "513180", "恒生科技ETF").tShares, 20000);
+  assert.equal(engine.normalizeTConfig({ baseShares: 50, sellableShares: 50, tShares: 500 }, "600000", "浦发银行").tShares, 500);
+  assert.equal(engine.normalizeTConfig({ baseShares: 150, sellableShares: 150, tShares: 300 }, "688001", "华兴源创").tShares, 300);
+
+  // H-7: TAssistantView preserves T+1 safety (omitted sellableShares stays 0, never assumed sellable) and tells user truthfully in toast.
+  const viewSrc = fs.readFileSync(path.join(__dirname, "TAssistantView.tsx"), "utf8");
+  assert.match(viewSrc, /holding\.sellableShares \?\? 0/);
+  assert.match(viewSrc, /entry\.sellableShares \?\? 0/);
+  assert.match(viewSrc, /未填可卖股数的标的未自动填「今日可卖」/);
+});
+
 test("useTAssistant, TAssistantView and useTToolbox guard stale items, width zero and offline visibility", async () => {
   const fs = require("node:fs");
   const path = require("node:path");

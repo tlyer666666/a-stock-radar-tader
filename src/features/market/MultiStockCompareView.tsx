@@ -86,8 +86,7 @@ const periodReturn = (history: Array<CompareRecord>, days: number) => {
   return base > 0 ? ((latest / base) - 1) * 100 : null;
 };
 
-const restoredCompareSelection = () => {
-  if (compareSelectionInitialized) return compareSelectionCache;
+export const restoredCompareSelection = () => {
   try {
     const persistent = localStorage.getItem(COMPARE_SELECTION_KEY);
     const legacySession = sessionStorage.getItem(COMPARE_SELECTION_KEY);
@@ -103,13 +102,17 @@ const restoredCompareSelection = () => {
         if (isUsableSecurityCollection(legacy)) { stored = legacy; migrateSession = true; }
       } catch { /* An invalid legacy session cannot hide a valid persistent backup. */ }
     }
-    compareSelectionInitialized = true;
-    compareSelectionCache = uniqueSecurities(stored).slice(0, 6);
-    if (migrateSession && saveSafeLocalJson(COMPARE_SELECTION_KEY, compareSelectionCache, isUsableSecurityCollection)) {
-      sessionStorage.removeItem(COMPARE_SELECTION_KEY);
+    if (stored !== null) {
+      compareSelectionInitialized = true;
+      compareSelectionCache = uniqueSecurities(stored).slice(0, 6);
+      if (migrateSession && saveSafeLocalJson(COMPARE_SELECTION_KEY, compareSelectionCache, isUsableSecurityCollection)) {
+        sessionStorage.removeItem(COMPARE_SELECTION_KEY);
+      }
+    } else if (!compareSelectionInitialized) {
+      compareSelectionCache = [];
     }
   } catch {
-    compareSelectionCache = [];
+    if (!compareSelectionInitialized) compareSelectionCache = [];
   }
   return compareSelectionCache;
 };

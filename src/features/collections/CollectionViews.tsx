@@ -22,7 +22,9 @@ import {
   X
 } from "lucide-react";
 import { PageHeading, PanelTitle, Fact } from "../../components/terminal/TerminalPrimitives";
+import { ConfirmDialog, type ConfirmDialogRequest } from "../../components/terminal/ConfirmDialog";
 import StockMonitorEditor from "../../components/StockMonitorEditor";
+import { emitAppToast } from "../cockpit/cockpitAdd";
 import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
 import StockRowActions from "../../components/StockRowActions";
 import { useVirtualWindow } from "../../components/useVirtualWindow";
@@ -272,6 +274,7 @@ export function HoldingsView({
   const [editingMonitorCode, setEditingMonitorCode] = useState<string | null>(null);
   const [holdingSort, setHoldingSort] = useState<{ key: "marketValue" | "profit" | "profitPercent"; dir: "desc" | "asc" } | null>(null);
   const [tradeRecords, setTradeRecords] = useState<HoldingTradeRecord[]>(() => loadHoldingTrades());
+  const [clearTradesConfirm, setClearTradesConfirm] = useState<ConfirmDialogRequest | null>(null);
   const [quotes, setQuotes] = useState<Record<string, { quote: Record<string, unknown> | null; updatedAt: string; failed: boolean }>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -1147,8 +1150,13 @@ export function HoldingsView({
                 type="button"
                 className="secondary-btn"
                 onClick={() => {
-                  clearHoldingTrades();
-                  setTradeRecords([]);
+                  setClearTradesConfirm({
+                    title: "清空实盘成交流水",
+                    message: "将永久删除本机保存的全部实盘成交流水与累计已实现盈亏统计，且无法撤销。",
+                    details: ["当前持仓数量和成本不会受影响，仅清空历史成交归档记录。"],
+                    confirmLabel: "清空记录",
+                    tone: "danger"
+                  });
                 }}
               >
                 <Trash2 size={14} />清空成交流水
@@ -1187,6 +1195,19 @@ export function HoldingsView({
       </details>
       </>
       )}
+      <ConfirmDialog
+        request={clearTradesConfirm}
+        onResolve={(confirmed) => {
+          setClearTradesConfirm(null);
+          if (!confirmed) return;
+          if (!clearHoldingTrades()) {
+            emitAppToast("清空成交流水失败，本机存储写入受限，已保留原有记录");
+            return;
+          }
+          setTradeRecords([]);
+          emitAppToast("已清空实盘成交流水");
+        }}
+      />
     </div>
   );
 }

@@ -85,6 +85,7 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
 
   const add = (security: Security) => {
     const holding = holdings.find(entry => entry.code === security.code) as HoldingItemWithSellable | undefined;
+    // A股 T+1 安全约束：持仓未显式填写可卖股数时，不能假定当日买入份额可卖。
     const defaultSellable = holding ? (holding.sellableShares ?? 0) : 0;
     const message = api.addStock(security, holding ? { baseShares: holding.shares, sellableShares: store.items.find(item => item.code === holding.code)?.config.sellableShares ?? defaultSellable, costPrice: holding.costPrice } : undefined);
     if (message) onToast(message);
@@ -95,10 +96,12 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
     if (!candidates.length) { onToast("持仓股里还没有填了股数的 A 股或 ETF"); return; }
     let added = 0;
     let updated = 0;
+    let missingSellable = 0;
     const existingCodes = new Set(store.items.map(itemEntry => itemEntry.code));
     for (const entry of candidates) {
       const isNew = !existingCodes.has(entry.code);
       if (isNew && existingCodes.size >= MAX_T_ITEMS) continue;
+      if (entry.sellableShares === undefined) missingSellable += 1;
       const defaultSellable = entry.sellableShares ?? 0;
       const message = api.addStock(entry, { baseShares: entry.shares, sellableShares: store.items.find(item => item.code === entry.code)?.config.sellableShares ?? defaultSellable, costPrice: entry.costPrice });
       if (!message) {
@@ -110,7 +113,10 @@ export default function TAssistantView({ api, holdings, live, onOpenStock, onToa
         }
       }
     }
-    onToast(`已从持仓导入 ${added} 只${updated > 0 ? `，更新 ${updated} 只` : ""}，底仓、可卖和成本已按持仓股填写（若含今日新买请按券商核对今日开盘可卖股数）`);
+    const sellableTip = missingSellable > 0
+      ? "底仓和成本已按持仓股填写（为遵守 T+1，未填可卖股数的标的未自动填「今日可卖」，核对后可手动填写或点「按底仓同步可卖」）"
+      : "底仓、可卖和成本已按持仓股填写（若含今日新买请按券商核对今日开盘可卖股数）";
+    onToast(`已从持仓导入 ${added} 只${updated > 0 ? `，更新 ${updated} 只` : ""}，${sellableTip}`);
     if (!selected && candidates[0]) setSelected(candidates[0].code);
   };
 

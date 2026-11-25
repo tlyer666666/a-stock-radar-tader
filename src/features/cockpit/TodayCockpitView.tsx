@@ -47,6 +47,8 @@ import {
   type MorningPriorityItem
 } from "./cockpitModel";
 import MarketPulseCard from "./MarketPulseCard";
+import IndexBoard from "./IndexBoard";
+import { applyIndexTick, type IndexBoardSnapshot } from "./indexBoardModel";
 import { canOpenAgent, openAgentForMarket } from "../ai-agent/agentModel";
 
 const MODE_META: Record<CockpitSessionMode, { label: string; badge: string; focus: string }> = {
@@ -217,6 +219,12 @@ export default function TodayCockpitView({
   const pulseSeqRef = useRef(0);
   const pulseLastOkRef = useRef(0);
   const pulseLastTryRef = useRef(0);
+  const [indexBoard, setIndexBoard] = useState<IndexBoardSnapshot | null>(null);
+  const [indexBoardState, setIndexBoardState] = useState<"loading" | "ready" | "error">("loading");
+  const indexSeqRef = useRef(0);
+  const [indexTickAt, setIndexTickAt] = useState(0);
+  const indexTickRef = useRef(0);
+  const indexFullRef = useRef(0);
 
   const activePlans = useMemo(() => plans.filter(item => !item.archivedAt), [plans]);
   const planByCode = useMemo(() => new Map(activePlans.map(plan => [plan.candidate.security.code, plan])), [activePlans]);
@@ -413,6 +421,58 @@ export default function TodayCockpitView({
       if (pulseSeqRef.current === seq) setPulseLoading(false);
     }
   }, []);
+
+  // 指数条：先读一次完整快照（含分时）；盘中再订阅主进程的实时推送，行情一变立刻合并进来。
+  // 推送 8 秒没动静就退回每 2 秒读一次快照；分时每 60 秒整体刷新一次。休市时只在打开和手动同步时读。
+  const loadIndexBoard = useCallback(async (refresh = false) => {
+    const api = typeof window !== "undefined" ? window.stockApi : undefined;
+    if (typeof api?.getIndexBoard !== "function") { setIndexBoardState("error"); return; }
+    const seq = ++indexSeqRef.current;
+    try {
+      const next = await api.getIndexBoard({ forceRefresh: refresh });
+      if (indexSeqRef.current !== seq) return;
+      if (next && Array.isArray(next.indices)) { indexFullRef.current = Date.now(); setIndexBoard(next); setIndexBoardState("ready"); }
+      else setIndexBoardState("error");
+    } catch {
+      if (indexSeqRef.current === seq) setIndexBoardState("error");
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadIndexBoard(false);
+    return () => { indexSeqRef.current += 1; };
+  }, [loadIndexBoard]);
+
+  useEffect(() => {
+    if (!live) return;
+    const api = typeof window !== "undefined" ? window.stockApi : undefined;
+    const canStream = typeof api?.subscribeIndexStream === "function" && typeof api?.onIndexTick === "function";
+    const unlisten = canStream ? api!.onIndexTick!(tick => {
+      if (!tick || !Array.isArray(tick.quotes)) return;
+      indexTickRef.current = Number(tick.atMs) || Date.now();
+      setIndexTickAt(indexTickRef.current);
+      setIndexBoard(prev => applyIndexTick(prev, tick));
+    }) : () => {};
+    const renew = () => { if (canStream) void api!.subscribeIndexStream!({ active: true }).catch(() => undefined); };
+    renew();
+    const stopRenew = startVisibleInterval(renew, 10_000, { resumeOnVisible: true });
+    const stopFallback = startVisibleInterval(() => {
+      const at = Date.now();
+      const pushQuiet = at - indexTickRef.current > 8_000;
+      if (pushQuiet || at - indexFullRef.current > 60_000) void loadIndexBoard(false);
+    }, 2_000, { resumeOnVisible: true });
+    return () => {
+      unlisten();
+      stopRenew();
+      stopFallback();
+      if (canStream) void api!.subscribeIndexStream!({ active: false }).catch(() => undefined);
+    };
+  }, [live, loadIndexBoard]);
+
+  const indexTrendByName = useMemo(
+    () => Object.fromEntries((marketPulse?.indices || []).filter(item => item.trend).map(item => [item.name, item.trend])),
+    [marketPulse]
+  );
 
   useEffect(() => {
     void loadMarketPulse(false);
@@ -655,7 +715,7 @@ export default function TodayCockpitView({
             <button
               type="button"
               className="secondary-btn"
-              onClick={() => { void refreshCockpit(true, true); void loadMarketPulse(true); }}
+              onClick={() => { void refreshCockpit(true, true); void loadMarketPulse(true); void loadIndexBoard(true); }}
               disabled={refreshing || pulseLoading}
             >
               <RefreshCw size={14} className={refreshing || pulseLoading ? "spin" : ""} />
@@ -704,8 +764,21 @@ export default function TodayCockpitView({
         </div>
       </section>
 
+      <section className="panel index-board" aria-label="主要指数">
+        <IndexBoard
+          snapshot={indexBoard}
+          state={indexBoardState}
+          today={todayDate}
+          trendByName={indexTrendByName}
+          tickAt={live ? indexTickAt : 0}
+          onRetry={() => void loadIndexBoard(true)}
+          onAskAi={canOpenAgent() ? () => { void openAgentForMarket(); } : undefined}
+        />
+      </section>
+
       <section className="panel cockpit-pulse" aria-label="今日大盘">
         <MarketPulseCard
+          showIndices={!indexBoard}
           pulse={marketPulse}
           state={pulseState}
           onRetry={() => void loadMarketPulse(true)}

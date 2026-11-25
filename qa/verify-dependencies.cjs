@@ -93,7 +93,7 @@ function verifyInTreePatchedAdvisories(root) {
   if (!fs.existsSync(vitePkg)) return mitigated;
   const pm = createRequire(fs.realpathSync(vitePkg))("picomatch");
   const probe = "a".repeat(42) + "!";
-  for (const pattern of ["+(*)", "+(*a)", "+(a*)", "+(?*a)"]) {
+  for (const pattern of ["+(*)", "+(*a)", "+(a*)", "+(?*a)", "+(@(*a))", "+((a*)+b)"]) {
     const started = Date.now();
     if (pm.isMatch(probe, pattern) !== false || Date.now() - started > 200) {
       throw new Error(`Patched picomatch verification failed on ${pattern}`);

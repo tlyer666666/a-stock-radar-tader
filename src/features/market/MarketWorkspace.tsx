@@ -1251,7 +1251,7 @@ export function Dashboard({
                   ? `日内连续亏损过载，已触发降仓停手（${paperSummary.lossStreakConsecutive || 0}笔）`
                   : paperSummary.lossStreakConsecutive > 0
                   ? `日内连续亏损 ${paperSummary.lossStreakConsecutive} 笔，减仓系数 ${Math.round((paperSummary.lossStreakMultiplier || 1) * 100)}%`
-                  : `可用仓位 ${paperCurrentPositions.length} / ${settings.maxOpenPositions}`}
+                  : `可用仓位 ${paperSummary.normalized.openPositions.length} / ${settings.maxOpenPositions}`}
               </small>
             </div>
           </div>
@@ -1370,7 +1370,7 @@ export function Dashboard({
                   <span>
                     {`最新 ${fmtMoney(position.latestPrice)}`}
                     <br />
-                    {`未实 ${fmt(position.latestPrice * position.shares - position.entryPrice * position.shares)}元`}
+                    {`未实 ${fmt(position.latestPrice * position.shares - position.entryPrice * position.shares - (Number(position.entryFee) || 0))}元`}
                   </span>
                   <span>
                     <button className="table-action" onClick={() => closePaperTradeForCode?.(position.code, "MANUAL")}>平仓</button>
@@ -1451,17 +1451,28 @@ export function Dashboard({
 
         <div className="panel news-panel">
           <PanelTitle title="最新公告" subtitle="信息驱动 · 原始披露" icon={Newspaper} badge={`${announcements.length} 条`} />
-          {announcements.slice(0, 4).map((item) => (
-            <button
-              className="news-item"
-              key={String(item.art_code || item.title || "")}
-              onClick={() => window.stockApi.openExternal(`https://data.eastmoney.com/notices/detail/${quote.code}/${item.art_code}.html`)}
-            >
-              <span className={`news-score ${item.direction}`}>{item.score}</span>
-              <span className="news-copy"><b>{item.title}</b><small>{item.category} · {item.display_time?.slice(0, 16)}</small></span>
-              <ExternalLink size={15} />
-            </button>
-          ))}
+          {announcements.slice(0, 4).map((item) => {
+            const artCode = String(item.art_code || "").trim();
+            const canOpen = Boolean(quote.code && artCode);
+            return (
+              <button
+                type="button"
+                className="news-item"
+                key={String(item.art_code || item.title || "")}
+                disabled={!canOpen}
+                onClick={() => {
+                  if (!canOpen) return;
+                  void Promise.resolve(
+                    window.stockApi?.openExternal?.(`https://data.eastmoney.com/notices/detail/${quote.code}/${artCode}.html`)
+                  ).catch(() => {});
+                }}
+              >
+                <span className={`news-score ${item.direction}`}>{item.score}</span>
+                <span className="news-copy"><b>{item.title}</b><small>{item.category} · {item.display_time?.slice(0, 16)}</small></span>
+                <ExternalLink size={15} />
+              </button>
+            );
+          })}
           {!announcements.length && <EmptyInline text="暂无公告" />}
         </div>
       </section>
@@ -2368,11 +2379,14 @@ function PriceChart({
 
 const MemoizedPriceChart = memo(PriceChart);
 
-function ema(values: number[], period: number) {
+export function ema(values: number[], period: number): number[] {
   const multiplier = 2 / (period + 1);
-  return values.map((value, index, result) =>
-    index === 0 ? value : value * multiplier + (result[index - 1] ?? value) * (1 - multiplier)
-  );
+  const out: number[] = [];
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index]!;
+    out.push(index === 0 ? value : value * multiplier + out[index - 1]! * (1 - multiplier));
+  }
+  return out;
 }
 
 /** RSI：与原实现同口径（最近 period 个涨跌的简单平均），用前缀和做到 O(n)。 */

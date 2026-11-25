@@ -80,6 +80,16 @@ async function getGlobalNews(options = {}) {
   return globalMarket.loadNews({ forceRefresh: options?.forceRefresh === true, signal: options?.signal || serviceSignal(),
     hours: Number(options?.hours) || 18, limit: Number(options?.limit) || 30 });
 }
+// 驾驶舱指数条（同花顺手机版首页的指数区：上证、深证、创业板、科创50、北证50、沪深300 等）。
+const { createIndexBoard } = require("./index-board.cjs");
+const indexBoard = createIndexBoard({ fetchJson: (url, options, timeoutMs) => _runtime.fetchJson(url, options, timeoutMs) });
+async function getIndexBoard(options = {}) {
+  return indexBoard.load({ forceRefresh: options?.forceRefresh === true, withTrends: options?.withTrends !== false, signal: options?.signal || serviceSignal() });
+}
+/** 指数实时推送的 1 秒快照轮询（不走缓存，返回 stock 字段格式，供 index-stream.cjs 与 SSE 推送合并）。 */
+async function pollIndexQuotes(options = {}) {
+  return indexBoard.pollRaw({ signal: options?.signal || serviceSignal() });
+}
 const { priceLimitRate } = require("./price-limit-rules.cjs");
 const { workerScriptPath } = require("./worker-runner.cjs");
 const { createFailedBoardHistoryService } = require("./failed-board-history.cjs");
@@ -255,6 +265,8 @@ module.exports = {
   getEtfMarket,
   getGlobalMarkets,
   getGlobalNews,
+  getIndexBoard,
+  pollIndexQuotes,
   getBatchQuotes,
   configureConvertibleRosterStore,
   configureStockIndustryStore,

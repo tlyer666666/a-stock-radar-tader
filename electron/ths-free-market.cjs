@@ -140,6 +140,16 @@ function isTradingStatus(status) {
   return /交易|竞价|盘中/.test(text);
 }
 
+/** 仅根据源端明确给出的状态文本/字段判定是否停牌；状态缺失或未知时保持 null，绝不猜测 false。 */
+function parseSuspendedStatus(status) {
+  if (typeof status === "boolean") return status;
+  const text = String(status || "").trim();
+  if (!text) return null;
+  if (/^(?:suspended|delisted|halted)$/i.test(text) || /停牌|暂停交易|暂停上市/.test(text)) return true;
+  if (/^(?:trading|open|closed|normal)$/i.test(text) || /交易|竞价|盘中|闭市|收盘|休市|午间|午休|未开盘|盘后|正常|开市/.test(text)) return false;
+  return null;
+}
+
 function decimalsOf(text) {
   const value = String(text || "");
   const dot = value.indexOf(".");
@@ -211,6 +221,11 @@ function normalizeThsFreeQuote(security, items) {
     amplitude: num(items["526792"]),
     quoteAt: new Date(updatedMs).toISOString(),
     marketStatus: status,
+    ...(typeof items.suspended === "boolean"
+      ? { suspended: items.suspended }
+      : parseSuspendedStatus(items.tradeStatus ?? status) !== null
+        ? { suspended: parseSuspendedStatus(items.tradeStatus ?? status) }
+        : {}),
     lagSeconds,
     source: "ths_free",
     missingFields: missingQuoteFields(values)
@@ -497,14 +512,22 @@ function parseThsTimeShare(payload, unitsPerLot = 100) {
     points.push({ time: `${cells[0].slice(0, 2)}:${cells[0].slice(2)}`, price, a, b, average });
   }
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !points.length) return null;
-  // 识别：成交额/成交量 ≈ 价格（量为股）或 ≈ 价格×每手股数（量为手）。
+  // 识别：成交额/成交量 ≈ 价格（量为股/张）或 ≈ 价格×每手单位（量为手）。
+  // 不能靠 sa >= sb 猜测方向（价格 < 1 元的 ETF/低价股成交额小于股数）；
+  // 在两种列顺序 × 两种成交量单位共 4 个候选里选对数相对误差最小者。
   const sum = (key) => points.reduce((total, point) => total + (point[key] > 0 ? point[key] : 0), 0);
   const meanPrice = points.reduce((total, point) => total + point.price, 0) / points.length;
   const sa = sum("a"), sb = sum("b");
-  const amountFirst = sa >= sb; // 成交额总是远大于成交量
-  const amountTotal = amountFirst ? sa : sb, volumeTotal = amountFirst ? sb : sa;
-  const implied = volumeTotal > 0 ? amountTotal / volumeTotal / meanPrice : 1;
-  const sharesPerVolumeUnit = Math.abs(Math.log(implied / unitsPerLot)) < Math.abs(Math.log(implied)) ? unitsPerLot : 1;
+  const candidates = sa > 0 && sb > 0
+    ? [
+        { amountFirst: true, sharesPerVolumeUnit: 1, error: Math.abs(Math.log((sa / sb) / meanPrice)) },
+        { amountFirst: true, sharesPerVolumeUnit: unitsPerLot, error: Math.abs(Math.log((sa / sb) / (meanPrice * unitsPerLot))) },
+        { amountFirst: false, sharesPerVolumeUnit: 1, error: Math.abs(Math.log((sb / sa) / meanPrice)) },
+        { amountFirst: false, sharesPerVolumeUnit: unitsPerLot, error: Math.abs(Math.log((sb / sa) / (meanPrice * unitsPerLot))) }
+      ]
+    : [{ amountFirst: true, sharesPerVolumeUnit: 1, error: 0 }];
+  const best = candidates.reduce((acc, item) => (item.error < acc.error ? item : acc), candidates[0]);
+  const { amountFirst, sharesPerVolumeUnit } = best;
   const rows = points.map((point) => {
     const amount = amountFirst ? point.a : point.b, volume = amountFirst ? point.b : point.a;
     return { date: `${date} ${point.time}`, open: point.price, high: point.price, low: point.price, close: point.price,

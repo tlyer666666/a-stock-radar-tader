@@ -10,6 +10,8 @@ const DEFAULT_DB_FILENAME = "radar-store.sqlite";
 const KEY_PATTERN = /^[a-zA-Z0-9:._-]+$/;
 const MAX_KEY_LENGTH = 128;
 const MAX_VALUE_BYTES = 32 * 1024 * 1024;
+const MAX_KEYS = 256;
+const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 
 function fail(ErrorCtor, code, message) {
   return Object.assign(new ErrorCtor(message), { code });
@@ -61,9 +63,19 @@ function resolveDbPath({ filePath, userDataDir } = {}) {
   throw fail(TypeError, "INVALID_KV_PATH", "缺少本地键值库文件路径");
 }
 
-function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = {}) {
+function createLocalKvStore({
+  filePath,
+  userDataDir,
+  now = () => Date.now(),
+  maxKeys = MAX_KEYS,
+  maxTotalBytes = MAX_TOTAL_BYTES
+} = {}) {
   const resolvedPath = resolveDbPath({ filePath, userDataDir });
   const isMemory = resolvedPath === ":memory:";
+  const effectiveMaxKeys = Number.isInteger(maxKeys) && maxKeys > 0 ? maxKeys : MAX_KEYS;
+  const effectiveMaxTotalBytes = Number.isFinite(Number(maxTotalBytes)) && Number(maxTotalBytes) > 0
+    ? Math.trunc(Number(maxTotalBytes))
+    : MAX_TOTAL_BYTES;
 
   if (!isMemory) {
     const dir = path.dirname(resolvedPath);
@@ -84,7 +96,7 @@ function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = 
   let closed = false;
 
   try {
-    db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+    db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
     db.exec(`
       CREATE TABLE IF NOT EXISTS kv_store (
         key TEXT PRIMARY KEY,
@@ -100,6 +112,7 @@ function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = 
   }
 
   const stmtGet = db.prepare("SELECT value FROM kv_store WHERE key = ?");
+  const stmtGetSize = db.prepare("SELECT LENGTH(CAST(value AS BLOB)) AS bytes FROM kv_store WHERE key = ?");
   const stmtSet = db.prepare(`
     INSERT INTO kv_store (key, value, updated_at)
     VALUES (?, ?, ?)
@@ -119,6 +132,21 @@ function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = 
     }
   }
 
+  function currentTimestamp() {
+    const value = Number(now());
+    return Number.isFinite(value) ? Math.trunc(value) : Date.now();
+  }
+
+  function assertQuotaWithinLimits() {
+    const row = stmtStats.get() || { count: 0, totalBytes: 0 };
+    if ((Number(row.count) || 0) > effectiveMaxKeys) {
+      throw fail(RangeError, "KV_KEY_LIMIT_EXCEEDED", `本地键值库键数量超过 ${effectiveMaxKeys} 上限`);
+    }
+    if ((Number(row.totalBytes) || 0) > effectiveMaxTotalBytes) {
+      throw fail(RangeError, "KV_QUOTA_EXCEEDED", "本地键值库总容量超过上限");
+    }
+  }
+
   return {
     get(key) {
       ensureOpen();
@@ -130,8 +158,49 @@ function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = 
       ensureOpen();
       const validKey = validateKey(key);
       const validValue = validateValue(value);
-      const timestamp = Number.isFinite(Number(now())) ? Math.trunc(Number(now())) : Date.now();
-      stmtSet.run(validKey, validValue, timestamp);
+      const valueBytes = Buffer.byteLength(validValue, "utf8");
+      const existingRow = stmtGetSize.get(validKey);
+      const existingBytes = existingRow ? Number(existingRow.bytes) || 0 : 0;
+      const currentStats = stmtStats.get() || { count: 0, totalBytes: 0 };
+      const nextCount = (Number(currentStats.count) || 0) + (existingRow ? 0 : 1);
+      const nextTotalBytes = (Number(currentStats.totalBytes) || 0) - existingBytes + valueBytes;
+      if (nextCount > effectiveMaxKeys) {
+        throw fail(RangeError, "KV_KEY_LIMIT_EXCEEDED", `本地键值库键数量超过 ${effectiveMaxKeys} 上限`);
+      }
+      if (nextTotalBytes > effectiveMaxTotalBytes) {
+        throw fail(RangeError, "KV_QUOTA_EXCEEDED", "本地键值库总容量超过上限");
+      }
+      stmtSet.run(validKey, validValue, currentTimestamp());
+      tightenDbFiles(resolvedPath);
+      return true;
+    },
+    replaceKeys(entries = [], removeKeys = []) {
+      ensureOpen();
+      const rawEntries = Array.isArray(entries)
+        ? entries
+        : (entries && typeof entries === "object" ? Object.entries(entries) : []);
+      const validEntries = rawEntries.map((entry) => {
+        if (!Array.isArray(entry) || entry.length < 2) {
+          throw fail(TypeError, "INVALID_KV_VALUE", "批量写入键值参数格式无效");
+        }
+        return [validateKey(entry[0]), validateValue(entry[1])];
+      });
+      const validRemovals = (Array.isArray(removeKeys) ? removeKeys : []).map((key) => validateKey(key));
+      const timestamp = currentTimestamp();
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        for (const key of validRemovals) {
+          stmtRemove.run(key);
+        }
+        for (const [key, value] of validEntries) {
+          stmtSet.run(key, value, timestamp);
+        }
+        assertQuotaWithinLimits();
+        db.exec("COMMIT");
+      } catch (error) {
+        try { db.exec("ROLLBACK"); } catch { /* ignore */ }
+        throw error;
+      }
       tightenDbFiles(resolvedPath);
       return true;
     },
@@ -170,6 +239,13 @@ function createLocalKvStore({ filePath, userDataDir, now = () => Date.now() } = 
       if (closed) return;
       closed = true;
       try {
+        if (!isMemory) {
+          try {
+            db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+          } catch {
+            // Best-effort WAL checkpoint before closing.
+          }
+        }
         db.close();
       } catch {
         // Never leak exceptions on close.
@@ -182,6 +258,8 @@ module.exports = {
   DEFAULT_DB_FILENAME,
   KEY_PATTERN,
   MAX_KEY_LENGTH,
+  MAX_KEYS,
+  MAX_TOTAL_BYTES,
   MAX_VALUE_BYTES,
   createLocalKvStore
 };

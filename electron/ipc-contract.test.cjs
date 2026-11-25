@@ -185,3 +185,143 @@ test("ai.ipc.cjs forwards serviceRequestRuntime signal to loadAiStockProfiles in
   await handlers.get("ai:custom-rank")({}, {});
   assert.deepEqual(seenSignals, [controller.signal, controller.signal, controller.signal]);
 });
+
+test("M-4: ai.ipc.cjs wires abortable AbortController runtime into loadAiStockProfiles and aiService rank/review/rankCustom", async () => {
+  const { registerAiIpc } = require("./ipc/ai.ipc.cjs");
+  const handlers = new Map();
+  const serviceCalls = [];
+  const profileSignals = [];
+  let cleanupCalls = 0;
+  let activeController = null;
+
+  registerAiIpc({
+    handleTrustedIpc: (channel, handler) => handlers.set(channel, handler),
+    aiPayload: input => (input && typeof input === "object" ? input : {}),
+    aiService: () => ({
+      pending: () => ["600519"],
+      rank: async (_payload, runtime) => {
+        serviceCalls.push({ method: "rank", runtime });
+        return { ranked: [] };
+      },
+      review: async (_payload, runtime) => {
+        serviceCalls.push({ method: "review", runtime });
+        return { ok: true };
+      },
+      rankCustom: async (_payload, runtime) => {
+        serviceCalls.push({ method: "rankCustom", runtime });
+        return { ranked: [] };
+      }
+    }),
+    aiProfiles: () => ({}),
+    stockAgent: () => ({}),
+    AI_CUSTOM_MAX: 50,
+    loadAiStockProfiles: async (targets, options) => {
+      profileSignals.push(options?.signal);
+      if (options?.signal?.aborted) throw options.signal.reason;
+      return {
+        profiles: targets.map(item => ({ code: String(item.code || "600519"), asOfDate: "2026-01-02" })),
+        failed: []
+      };
+    },
+    latestDate: () => "2026-01-02",
+    readAiCustomList: () => [{ code: "600519", name: "样本股" }],
+    normalizeAiCustomItem: x => x,
+    normalizeAiCustomItems: x => x,
+    isAiCustomList: () => true,
+    readAiFramework: () => ({}),
+    normalizeFrameworkState: x => x,
+    normalizeCustom: x => x,
+    frameworkCatalog: () => ({}),
+    isAiFrameworkState: () => true,
+    writeJson: () => {},
+    settingsForService: () => ({}),
+    resolveTestSecret: () => "",
+    sameOrigin: () => true,
+    getProfessionalReview: async () => ({}),
+    recordExternalFactorSnapshot: () => {},
+    createReviewSkills: () => ({}),
+    getFuyaoReviewData: async () => ({}),
+    getSectorStrengthBoard: async () => ({}),
+    analyzeSector: async () => ({}),
+    situationOf: () => [],
+    emitAiStream: () => {},
+    setWorkspaceAgentSnapshot: () => {},
+    serviceRequestRuntime: (_event, input) => ({ owner: 42, requestId: input?.requestId }),
+    trackAbortableRequest: () => {
+      const controller = new AbortController();
+      activeController = controller;
+      return {
+        signal: controller.signal,
+        abort: reason => controller.abort(reason),
+        cleanup: () => { cleanupCalls += 1; }
+      };
+    }
+  });
+
+  await handlers.get("ai:rank")({}, { requestId: "req-1", picks: [{ code: "600519", name: "样本股" }] });
+  await handlers.get("ai:review")({}, { requestId: "req-2", security: { code: "600519", name: "样本股" } });
+  await handlers.get("ai:custom-rank")({}, { requestId: "req-3" });
+
+  assert.equal(serviceCalls.length, 3);
+  assert.equal(cleanupCalls, 3);
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(serviceCalls[i].runtime.owner, 42);
+    assert.equal(serviceCalls[i].runtime.requestId, `req-${i + 1}`);
+    assert.equal(serviceCalls[i].runtime.signal, profileSignals[i]);
+    assert.equal(serviceCalls[i].runtime.signal instanceof AbortSignal, true);
+  }
+
+  // Aborting in-flight tracked controller propagates AbortError and still invokes cleanup
+  const abortHandlers = new Map();
+  let abortedCleanup = 0;
+  registerAiIpc({
+    handleTrustedIpc: (channel, handler) => abortHandlers.set(channel, handler),
+    aiPayload: input => (input && typeof input === "object" ? input : {}),
+    aiService: () => ({
+      pending: () => ["600519"],
+      rank: async () => { throw new Error("should not reach rank after abort"); }
+    }),
+    aiProfiles: () => ({}),
+    stockAgent: () => ({}),
+    AI_CUSTOM_MAX: 50,
+    loadAiStockProfiles: async (_targets, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    }),
+    latestDate: () => "2026-01-02",
+    readAiCustomList: () => [],
+    normalizeAiCustomItem: x => x,
+    normalizeAiCustomItems: x => x,
+    isAiCustomList: () => true,
+    readAiFramework: () => ({}),
+    normalizeFrameworkState: x => x,
+    normalizeCustom: x => x,
+    frameworkCatalog: () => ({}),
+    isAiFrameworkState: () => true,
+    writeJson: () => {},
+    settingsForService: () => ({}),
+    resolveTestSecret: () => "",
+    sameOrigin: () => true,
+    getProfessionalReview: async () => ({}),
+    recordExternalFactorSnapshot: () => {},
+    createReviewSkills: () => ({}),
+    getFuyaoReviewData: async () => ({}),
+    getSectorStrengthBoard: async () => ({}),
+    analyzeSector: async () => ({}),
+    situationOf: () => [],
+    emitAiStream: () => {},
+    setWorkspaceAgentSnapshot: () => {},
+    serviceRequestRuntime: (_event, input) => ({ owner: 42, requestId: input?.requestId }),
+    trackAbortableRequest: () => {
+      activeController = new AbortController();
+      return {
+        signal: activeController.signal,
+        abort: reason => activeController.abort(reason),
+        cleanup: () => { abortedCleanup += 1; }
+      };
+    }
+  });
+  const pendingRank = abortHandlers.get("ai:rank")({}, { requestId: "req-abort", picks: [{ code: "600519", name: "样本股" }] });
+  activeController.abort(Object.assign(new Error("任务已取消"), { code: "JOB_CANCELLED", name: "AbortError" }));
+  await assert.rejects(pendingRank, { code: "JOB_CANCELLED" });
+  assert.equal(abortedCleanup, 1);
+});

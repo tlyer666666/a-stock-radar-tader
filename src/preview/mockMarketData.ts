@@ -32,11 +32,21 @@ export type PreviewMarketApi = Pick<
   | "getLimitEcology"
   | "getConvertibleBonds"
   | "getEtfMarket"
+  | "getIndexBoard"
+  | "subscribeIndexStream"
+  | "onIndexTick"
   | "getBatchQuotes"
   | "getSectorQuotes"
   | "analyzeSector"
   | "getProfessionalReview"
 >;
+
+const previewIndexLatest = [
+  ["000001", 3513.26, -0.99], ["399001", 10312.64, -1.06], ["399006", 2244.32, -1.52], ["000688", 1207.69, -3.39], ["899050", 783.12, 1.32],
+  ["000300", 3926.95, -0.93], ["000016", 2750.84, 0.35], ["000905", 6038.28, -1.21], ["000852", 5751.04, -0.83], ["932000", 2447.36, 0.09]
+].map(([code, latest, pct]) => ({ code: String(code), latest: Number(latest), preClose: Number(latest) / (1 + Number(pct) / 100) }));
+const previewIndexListeners = new Set<(tick: { at: string; atMs: number; quotes: Array<{ code: string; latest: number; change: number; changePct: number }> }) => void>();
+let previewIndexTimer: ReturnType<typeof setInterval> | null = null;
 
 const buildPreviewHistory = (security: Security, length = 260) => {
   const seed = Number(security.code.slice(-3)) || 519;
@@ -656,6 +666,59 @@ export function createPreviewMarketMethods(): PreviewMarketApi {
     async cancelSectorRequest() { return { cancelled: false }; },
     async getLimitEcology() {
       return buildPreviewLimitEcology();
+    },
+    async getIndexBoard() {
+      // 浏览器预览：固定的演示点位，分时用确定性的波动生成（上午收盘时画到一半）。
+      const rows: Array<[string, string, string, boolean, number, number, number, number, number, number]> = [
+        ["000001", "1.000001", "上证指数", true, 3513.26, -0.99, 3.32e11, 1226, 1071, 58],
+        ["399001", "0.399001", "深证成指", true, 10312.64, -1.06, 3.92e11, 1675, 1202, 61],
+        ["399006", "0.399006", "创业板指", true, 2244.32, -1.52, 1.98e11, 720, 674, 16],
+        ["000688", "1.000688", "科创50", true, 1207.69, -3.39, 4.33e10, 8, 41, 1],
+        ["899050", "0.899050", "北证50", false, 783.12, 1.32, 5.69e9, 266, 82, 9],
+        ["000300", "1.000300", "沪深300", false, 3926.95, -0.93, 2.0e11, 84, 204, 12],
+        ["000016", "1.000016", "上证50", false, 2750.84, 0.35, 5.36e10, 34, 14, 2],
+        ["000905", "1.000905", "中证500", false, 6038.28, -1.21, 1.15e11, 191, 289, 20],
+        ["000852", "1.000852", "中证1000", false, 5751.04, -0.83, 1.27e11, 440, 543, 16],
+        ["932000", "2.932000", "中证2000", false, 2447.36, 0.09, 1.69e11, 1131, 832, 37]
+      ];
+      const date = previewShanghaiDate();
+      const indices = rows.map(([code, secid, name, major, latest, changePct, amount, up, down, flat], seq) => {
+        const preClose = latest / (1 + changePct / 100);
+        const trend = Array.from({ length: 61 }, (_, i) => {
+          const progress = i / 60;
+          const wave = Math.sin(i / 6 + seq) * 0.0025 + Math.sin(i / 17 + seq * 2) * 0.002;
+          return Math.round(preClose * (1 + (changePct / 100) * progress + wave * (1 - progress * 0.3)) * 100) / 100;
+        });
+        trend[trend.length - 1] = latest;
+        return { code, secid, name, major, latest, change: Math.round((latest - preClose) * 100) / 100, changePct,
+          open: trend[0] ?? null, high: Math.max(...trend), low: Math.min(...trend), preClose: Math.round(preClose * 100) / 100,
+          amount, up, down, flat, date, time: "11:30", trend };
+      });
+      return { fetchedAt: new Date().toISOString(), tradingDate: date, indices,
+        totals: { amount: 7.24e11, up: 2901, down: 2273, flat: 119, scope: "沪深两市（不含北交所）" }, source: "浏览器预览演示数据" };
+    },
+    // 浏览器预览的实时推送：订阅后每 1.5 秒随机挑几个指数跳一下，用来检查跳动闪烁和推送标识。
+    async subscribeIndexStream(options?: { active?: boolean }) {
+      if (options?.active === false) {
+        if (previewIndexTimer) { clearInterval(previewIndexTimer); previewIndexTimer = null; }
+      } else if (!previewIndexTimer) {
+        previewIndexTimer = setInterval(() => {
+          const picked = previewIndexLatest.filter(() => Math.random() < 0.5);
+          if (!picked.length) return;
+          const quotes = picked.map(item => {
+            item.latest = Math.round(item.latest * (1 + (Math.random() - 0.5) * 0.0008) * 100) / 100;
+            const change = Math.round((item.latest - item.preClose) * 100) / 100;
+            return { code: item.code, latest: item.latest, change, changePct: Math.round((change / item.preClose) * 10000) / 100 };
+          });
+          const tick = { at: new Date().toISOString(), atMs: Date.now(), quotes };
+          previewIndexListeners.forEach(listener => listener(tick));
+        }, 1500);
+      }
+      return { active: Boolean(previewIndexTimer), connected: previewIndexTimer ? previewIndexLatest.length : 0, total: previewIndexLatest.length, lastTickAt: "", quotes: [] };
+    },
+    onIndexTick(listener: (tick: { at: string; atMs: number; quotes: Array<{ code: string; latest: number; change: number; changePct: number }> }) => void) {
+      previewIndexListeners.add(listener);
+      return () => { previewIndexListeners.delete(listener); };
     },
     async getEtfMarket() {
       const rows: Array<[string, string, EtfItem["category"], number, number, number, number | null]> = [

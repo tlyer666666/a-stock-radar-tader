@@ -249,7 +249,11 @@ export function QuickPlanDialogContent({
       const riskPct = Math.max(0.5, round2(((high - stop) / high) * 100));
       const updatedPlans: SavedTrendPlan[] = read.plans.map(plan => {
         if (plan.id !== res.plan.id) return plan;
-        const existingFields = plan.reviewDraft?.fields || {};
+        const mergedFields: Record<string, string> = { ...(plan.reviewDraft?.fields || {}) };
+        if (Number.isFinite(take)) mergedFields.targetPrice = take.toFixed(2);
+        else delete mergedFields.targetPrice;
+        if (trimmedNote) mergedFields.note = trimmedNote;
+        else delete mergedFields.note;
         const existingChecks = plan.reviewDraft?.checks || {};
         return {
           ...plan,
@@ -273,16 +277,17 @@ export function QuickPlanDialogContent({
             }
           },
           reviewDraft: {
-            fields: {
-              ...existingFields,
-              ...(Number.isFinite(take) ? { targetPrice: take.toFixed(2) } : {}),
-              ...(trimmedNote ? { note: trimmedNote } : {})
-            },
+            fields: mergedFields,
             checks: existingChecks
           }
         };
       });
-      writeTrendPlans(window.localStorage, updatedPlans);
+      if (!writeTrendPlans(window.localStorage, updatedPlans)) {
+        const msg = "计划参数保存失败，请检查本机存储空间后重试";
+        setFormError(msg);
+        onError?.(msg);
+        return;
+      }
     }
 
     const message = res.created
@@ -451,26 +456,35 @@ function OneClickCockpitAdd({ target, onClose, onSaved, onError, onNeedDialog }:
   onError?: QuickPlanModalProps["onError"];
   onNeedDialog: () => void;
 }) {
-  const started = useRef(false);
+  const callbacksRef = useRef({ onClose, onSaved, onError, onNeedDialog });
+  callbacksRef.current = { onClose, onSaved, onError, onNeedDialog };
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
     if (typeof window === "undefined" || !window.localStorage) {
-      onError?.("当前环境不支持本地存储");
-      onClose();
-      return;
+      callbacksRef.current.onError?.("当前环境不支持本地存储");
+      callbacksRef.current.onClose();
+      return undefined;
     }
-    void addToCockpit(window.localStorage, target, target.source || "手动加入").then(result => {
-      if (result.ok) {
-        emitAppToast(result.message, COCKPIT_TOAST_ACTION);
-        onSaved?.({ code: target.code, name: target.name, created: result.created, message: result.message });
-        onClose();
-        return;
-      }
-      onError?.(result.message);
-      onNeedDialog();
-    });
-  }, [onClose, onError, onNeedDialog, onSaved, target]);
+    let cancelled = false;
+    void addToCockpit(window.localStorage, target, target.source || "手动加入")
+      .then(result => {
+        if (cancelled) return;
+        if (result.ok) {
+          emitAppToast(result.message, COCKPIT_TOAST_ACTION);
+          callbacksRef.current.onSaved?.({ code: target.code, name: target.name, created: result.created, message: result.message });
+          callbacksRef.current.onClose();
+          return;
+        }
+        callbacksRef.current.onError?.(result.message);
+        callbacksRef.current.onNeedDialog();
+      })
+      .catch(() => {
+        if (cancelled) return null;
+        callbacksRef.current.onError?.("加入驾驶舱失败，请手动确认参数");
+        callbacksRef.current.onNeedDialog();
+        return null;
+      });
+    return () => { cancelled = true; };
+  }, [target]);
   return null;
 }
 

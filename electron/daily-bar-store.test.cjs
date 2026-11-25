@@ -357,3 +357,25 @@ test('clearAllBars removes only 6-digit bar files, resets stats, and getCoverage
   assert.deepEqual(day.stats(), { hits: 0, appended: 0, downloads: 0, writeFailures: 0 });
   assert.deepEqual(day.getCoverageSummary(), { fileCount: 0, totalBytes: 0, estimatedRatio: 0 });
 });
+
+test('M-10: bars > maxRows preserves identical row counts across fresh download and subsequent calls', async t => {
+  const dir = tempDir(t);
+  let downloads = 0;
+  const maxRows = 25;
+  const day = store(dir, { maxRows });
+  const fetchLong = async () => {
+    downloads += 1;
+    return download('2026-10-20', { count: 40 });
+  };
+
+  // bars=40 > maxRows=25: both first and second call must return all 40 rows (never silently truncated to 25)
+  const first = await day.history(security, '2026-10-20', fetchLong, { bars: 40 });
+  assert.equal(first.rows.length, 40);
+  const second = await store(dir, { maxRows }).history(security, '2026-10-20', fetchLong, { bars: 40 });
+  assert.equal(second.rows.length, 40);
+  assert.equal(downloads, 2, 'bars > maxRows must bypass the truncated maxRows cache');
+
+  // bars=20 <= maxRows=25: hits the cached 25-row file without downloading
+  const cached = await store(dir, { maxRows }).history(security, '2026-10-20', async () => { throw Error('must hit cache'); }, { bars: 20 });
+  assert.equal(cached.rows.length, 25);
+});

@@ -191,7 +191,6 @@ function compareSignals(left, right) {
     left.strategyId.localeCompare(right.strategyId) ||
     left.code.localeCompare(right.code) ||
     left.signalDate.localeCompare(right.signalDate) ||
-    left.exitDate.localeCompare(right.exitDate) ||
     left.sampleId.localeCompare(right.sampleId)
   );
 }
@@ -453,7 +452,8 @@ function simulateStrategyPortfolio(
   const entryGroups = new Map();
   for (const sample of ordered) {
     let bucketDate = sample.entryDate;
-    if (missingNextDaySample(sample)) {
+    const preRejectedOutOfRange = Boolean(sample.executionRejection) && (bucketDate < firstDate || bucketDate > lastDate);
+    if (missingNextDaySample(sample) || preRejectedOutOfRange) {
       if (sample.expectedMarketEntryDate && sample.expectedMarketEntryDate >= firstDate && sample.expectedMarketEntryDate <= lastDate) {
         bucketDate = sample.expectedMarketEntryDate;
       } else if (sample.signalDate >= firstDate && sample.signalDate <= lastDate) {

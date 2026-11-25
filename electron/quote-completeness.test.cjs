@@ -243,3 +243,64 @@ test("weekly/monthly history aggregation preserves null amount when absent and c
   assert.equal(typeof qc.emotionFromCounts({ currentDate: "20261124", limitUpCount: 80, limitDownCount: 5, previousLimitUpCount: 60, indexReturn: 0.8 }).score, "number");
   assert.equal(typeof qc.scoreAnnouncement("重大合同中标公告").score, "number");
 });
+
+test("H-4 & M-8: Eastmoney f292 trade status maps suspended accurately and convertible bond volumes divide by 10 across THS and Sina", async () => {
+  // Eastmoney f292 status: 2 -> trading (suspended: false), 5 -> suspended (true), absent -> undefined
+  services.fixture.setResponse({ data: { f57: "600000", f58: "离线样本", f43: 1000, f51: 1100, f52: 900, f86: 1792545900, f170: 0, f168: 100, f48: 50000, f292: 2 } });
+  const eastTrading = await services.fixture.eastQuote(security);
+  assert.equal(eastTrading.suspended, false);
+  assert.equal(eastTrading.marketStatus, "交易中");
+
+  services.fixture.setResponse({ data: { f57: "600000", f58: "离线样本", f43: 1000, f51: 1100, f52: 900, f86: 1792545900, f170: 0, f168: 0, f48: 0, f292: 5 } });
+  const eastSuspended = await services.fixture.eastQuote(security);
+  assert.equal(eastSuspended.suspended, true);
+
+  services.fixture.setResponse({ data: { f57: "600000", f58: "离线样本", f43: 1000, f170: 0, f168: 100, f48: 50000 } });
+  const eastAbsent = await services.fixture.eastQuote(security);
+  assert.equal(eastAbsent.suspended, undefined, "must never guess false when f292 is absent");
+
+  // M-8: Convertible bond volume divides by 10 (1 lot = 10 bonds), while stock divides by 100
+  const bondSecurity = { code: "113052", name: "兴业转债", secid: "1.113052", thscode: "113052.SH", assetType: "convertibleBond" };
+  services.fixture.setResponse({
+    errorcode: 0,
+    tables: [{
+      time: ["2026-10-21 09:25:00"],
+      table: { latest: [115.2], changeRatio: [0.5], turnoverRatio: [1.2], latestAmount: [115200], latestVolume: [1000], tradeStatus: ["trading"] }
+    }]
+  });
+  const bondQuote = await services.fixture.thsQuote(bondSecurity, { refreshToken: "offline" });
+  assert.equal(bondQuote.volume, 100, "1000 convertible bonds = 100 lots (/10)");
+  assert.equal(bondQuote.suspended, false);
+  assert.equal(bondQuote.quoteAt, "2026-10-21T09:25:00+08:00");
+
+  services.fixture.setResponse({
+    errorcode: 0,
+    tables: [{ table: { latest: [10.0], changeRatio: [0.5], turnoverRatio: [1.2], latestAmount: [10000], latestVolume: [1000] } }]
+  });
+  const stockQuote = await services.fixture.thsQuote(security, { refreshToken: "offline" });
+  assert.equal(stockQuote.volume, 10, "1000 stock shares = 10 lots (/100)");
+
+  // thsHistory & sinaKline convertible bond volume divisor = 10
+  const backtestMod = load("services/backtest.cjs", `
+    module.exports.fixture = { thsHistory, sinaKline, normalizeThsHistoryTable };
+  `);
+  rebindAll(backtestMod, "withThsToken", (_token, request) => request("offline-token"));
+  const recentDate = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  rebindAll(backtestMod, "fetchJson", async () => ({
+    errorcode: 0,
+    tables: [{
+      time: [recentDate],
+      table: { open: [115], high: [116], low: [114], close: [115.5], volume: [500], amount: [57750], changeRatio: [0.4], turnoverRatio: [1.1] }
+    }]
+  }));
+  const thsBondRows = await backtestMod.fixture.thsHistory(bondSecurity, { refreshToken: "offline" }, 1);
+  assert.equal(thsBondRows[0].volume, 50, "thsHistory must divide convertible bond volume by 10");
+
+  rebindAll(backtestMod, "fetchJson", async () => ([
+    { day: recentDate, open: "115", high: "116", low: "114", close: "115.5", volume: "500", amount: "57750" }
+  ]));
+  const sinaBondRows = await backtestMod.fixture.sinaKline(bondSecurity, "101", 1);
+  assert.equal(sinaBondRows[0].volume, 50, "sinaKline must divide convertible bond volume by 10");
+  const sinaStockRows = await backtestMod.fixture.sinaKline(security, "101", 1);
+  assert.equal(sinaStockRows[0].volume, 5, "sinaKline must divide stock volume by 100");
+});

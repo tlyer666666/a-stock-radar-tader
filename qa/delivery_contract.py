@@ -121,7 +121,9 @@ def verify_preserved(checks, expected_sha=PRESERVED_SHA256, expected_count=PRESE
 def validate_dependency_gate(report):
     require(isinstance(report, dict) and isinstance(report.get('runtime'), dict), 'Dependency runtime missing')
     audit = report.get('audit')
-    require(isinstance(audit, dict) and set(audit) == {'records', 'uniqueAdvisories', 'severity'},
+    required_audit_keys = {'records', 'uniqueAdvisories', 'severity'}
+    allowed_audit_keys = required_audit_keys | {'mitigatedAdvisories'}
+    require(isinstance(audit, dict) and required_audit_keys <= set(audit) <= allowed_audit_keys,
             'Live dependency audit missing or malformed')
     severity = audit.get('severity')
     require(isinstance(severity, dict) and set(severity) == {'info', 'low', 'moderate', 'high', 'critical'},

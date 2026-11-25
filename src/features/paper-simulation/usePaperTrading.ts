@@ -32,6 +32,7 @@ import {
   PAPER_SIM_STATE_KEY
 } from "./paperSimulationPersistence";
 import { normalizePaperState } from "./paperSimulationState";
+import { paperDate, paperEffectiveQuoteIso } from "./paperTradingRules";
 import type { ExecutionDecisionLog, PaperSimulationState } from "./paperSimulationTypes";
 
 type UsePaperTradingOptions = {
@@ -478,6 +479,7 @@ export function usePaperTrading({
 
   const openPositionsSignature = paperSummary.normalized.openPositions.map(p => p.code).sort().join(",");
   const paperPollBusyRef = useRef(false);
+  const gapHistoryCheckedRef = useRef<Map<string, string>>(new Map());
 
   const refreshPaperPositions = useCallback(async () => {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
@@ -494,13 +496,33 @@ export function usePaperTrading({
           const snapshot = await window.stockApi.getQuoteSnapshot(security);
           const latest = Number(snapshot?.quote?.latest);
           if (!paperMountedRef.current || !Number.isFinite(latest) || latest <= 0) continue;
-          const synthetic = {
+          let evalPayload = {
             security: { ...security, name: snapshot.quote?.name || code },
             quote: snapshot.quote,
             actualProvider: snapshot.actualProvider || settingsRef.current.provider,
             updatedAt: snapshot.updatedAt || new Date().toISOString()
           } as unknown as AnalysisPayload;
-          const res = advancePaperSimulationByQuote(paperStateRef.current, synthetic, settingsRef.current);
+          const preClose = Number(snapshot?.quote?.preClose);
+          const quoteDay = paperDate(paperEffectiveQuoteIso(evalPayload));
+          const hasPreCloseGap = Number.isFinite(preClose) && preClose > 0 && Boolean(quoteDay) && paperStateRef.current.openPositions.some(
+            pos => pos.code === code
+              && Boolean(pos.lastObservedClose && pos.lastObservedCloseDate)
+              && pos.lastObservedCloseDate! < quoteDay
+              && Math.abs(pos.lastObservedClose! - preClose) > 0.011
+          );
+          if (hasPreCloseGap && typeof window.stockApi?.analyze === "function" && gapHistoryCheckedRef.current.get(code) !== quoteDay) {
+            gapHistoryCheckedRef.current.set(code, quoteDay);
+            try {
+              const full = await window.stockApi.analyze(security);
+              if (paperMountedRef.current && full?.quote && Number(full.quote.latest) > 0) {
+                evalPayload = full;
+              }
+            } catch {
+              // Fall back to synthetic snapshot without history; engine won't stamp a permanent gap block.
+            }
+          }
+          if (!paperMountedRef.current) break;
+          const res = advancePaperSimulationByQuote(paperStateRef.current, evalPayload, settingsRef.current);
           if (res.changed) {
             paperStateRef.current = res.state;
             setPaperState(res.state);

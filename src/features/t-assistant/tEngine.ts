@@ -112,7 +112,7 @@ const OPEN_NOISE_SLOT = 15;
 const round2 = (value: number) => Math.round(value * 100 + 1e-7) / 100;
 const pct = (value: number, base: number) => base > 0 ? (value / base - 1) * 100 : 0;
 
-export function normalizeTConfig(input: Partial<TConfig> | null | undefined, code = ""): TConfig {
+export function normalizeTConfig(input: Partial<TConfig> | null | undefined, code = "", name = ""): TConfig {
   const num = (value: unknown, fallback: number, min: number, max: number) => {
     const n = Number(value);
     return Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : fallback;
@@ -120,17 +120,22 @@ export function normalizeTConfig(input: Partial<TConfig> | null | undefined, cod
   const baseShares = Math.floor(num(input?.baseShares, 0, 0, 1e8));
   const sellableShares = Math.min(baseShares, Math.floor(num(input?.sellableShares, baseShares, 0, 1e8)));
   const style: TStyle = input?.style === "steady" || input?.style === "active" ? input.style : "balanced";
+  const tradingRule: TradingRuleSetting = input?.tradingRule === "t0" || input?.tradingRule === "t1" ? input.tradingRule : "auto";
+  const t0 = resolveT0(code, name, tradingRule);
   const fallbackT = code ? paperRoundShares(code, baseShares / 3) : Math.floor(baseShares / 3 / 100) * 100;
   const rawT = Math.floor(num(input?.tShares, 0, 0, 1e8));
   const tShares = rawT > 0 ? rawT : fallbackT;
+  const lotMin = code ? paperLotRule(code).min : 100;
+  // T+0 品种买入当天可卖，不受底仓可卖上限约束；T+1 股票仅当可卖底仓至少满一手时按可卖收口，避免零股将做T股数清零。
+  const upperBound = t0 || sellableShares < lotMin ? tShares : Math.min(tShares, sellableShares);
   return {
     baseShares, sellableShares,
     costPrice: num(input?.costPrice, 0, 0, 1e6),
-    tShares: paperRoundShares(code, Math.min(tShares, sellableShares || tShares)),
+    tShares: paperRoundShares(code, upperBound),
     style,
     minSpreadPct: num(input?.minSpreadPct, DEFAULT_T_CONFIG.minSpreadPct, 0.3, 10),
     commissionPercent: num(input?.commissionPercent, DEFAULT_T_CONFIG.commissionPercent, 0, 1),
-    tradingRule: input?.tradingRule === "t0" || input?.tradingRule === "t1" ? input.tradingRule : "auto"
+    tradingRule
   };
 }
 
@@ -140,10 +145,31 @@ const buyFeeOf = (value: number, commissionPercent: number, code: string) =>
 const sellFeeOf = (value: number, commissionPercent: number, code: string) =>
   isExchangeFundCode(code) ? Math.max(5, value * commissionPercent / 100) : calcAshareSellFee(value, commissionPercent);
 
-export function priceLimits(code: string, name: string, preClose: number, date?: string) {
+const roundToTick = (value: number, code: string) => {
+  const invTick = Math.round(1 / priceTickOf(code));
+  return Math.round(value * invTick + 1e-7) / invTick;
+};
+const positiveLimit = (value: unknown): number | null => {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+};
+
+export function priceLimits(
+  code: string,
+  name: string,
+  preClose: number,
+  date?: string,
+  quoteLimits?: { limitUp?: number | null | undefined; limitDown?: number | null | undefined }
+) {
+  const upstreamUp = positiveLimit(quoteLimits?.limitUp);
+  const upstreamDown = positiveLimit(quoteLimits?.limitDown);
   const rate = paperPriceLimitRate(code, name, date);
-  if (rate === null || !(preClose > 0)) return { limitUp: null, limitDown: null };
-  return { limitUp: round2(preClose * (1 + rate)), limitDown: round2(preClose * (1 - rate)) };
+  const fallbackUp = rate !== null && preClose > 0 ? roundToTick(preClose * (1 + rate), code) : null;
+  const fallbackDown = rate !== null && preClose > 0 ? roundToTick(preClose * (1 - rate), code) : null;
+  return {
+    limitUp: upstreamUp !== null ? roundToTick(upstreamUp, code) : fallbackUp,
+    limitDown: upstreamDown !== null ? roundToTick(upstreamDown, code) : fallbackDown
+  };
 }
 
 /** 按时间顺序配对用户登记的成交：先卖后买是倒T，先买后卖是正T；返回已完成的盈亏和未完成的T。 */
@@ -308,8 +334,9 @@ function buildSmartCalibration(params: {
 /** 根据分时波动结构、格局及用户已结算T战绩，生成动态参数校准与做T适宜度建议。 */
 export function calibrateTAdvice(share: TimeShareSeries | null, item: TStockItem | TConfig, summary: TSignalSummary | null): TSmartCalibration {
   const code = "code" in item ? String(item.code || "") : "";
+  const name = "name" in item ? String(item.name || "") : "";
   const merged = "config" in item && item.config ? { ...item, ...item.config } : item;
-  const config = normalizeTConfig(merged, code);
+  const config = normalizeTConfig(merged, code, name);
   const trades = "trades" in item && Array.isArray(item.trades) ? item.trades : [];
   if (!share?.points.length) {
     const { stats } = settleTrades(trades, config, code);
@@ -334,7 +361,14 @@ export function calibrateTAdvice(share: TimeShareSeries | null, item: TStockItem
   };
 }
 
-type Context = { code: string; name: string; preClose: number; date?: string };
+type Context = {
+  code: string;
+  name: string;
+  preClose: number;
+  date?: string | undefined;
+  limitUp?: number | null | undefined;
+  limitDown?: number | null | undefined;
+};
 
 /** 用截至第 index 个分时点的数据评估一次（复盘回放时逐点调用）。 */
 export function evaluateAt(points: TimeSharePoint[], index: number, context: Context, config: TConfig, open: TOpen, stats: TStats, calibrationOptions?: TCalibrationOptions): TAnalysis {
@@ -351,7 +385,10 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
   const halfBandPct = Math.max(BAND_K[config.style] * sigmaPct, config.minSpreadPct / 2, 0.3);
   const upper = vwap * (1 + halfBandPct / 100), lower = vwap * (1 - halfBandPct / 100);
   const high = Math.max(...history.map(point => point.price)), low = Math.min(...history.map(point => point.price));
-  const { limitUp, limitDown } = priceLimits(context.code, context.name, preClose, context.date);
+  const { limitUp, limitDown } = priceLimits(context.code, context.name, preClose, context.date, {
+    limitUp: context.limitUp,
+    limitDown: context.limitDown
+  });
 
   // 当日格局：近 30 分钟均价线和价格的涨跌 + 近 60 分钟价格在均价线上方的时间占比。
   const back = history[Math.max(0, history.length - 31)]!;
@@ -385,9 +422,11 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
   // 急拉（急跌）远离均价线两倍带宽以上、并已从 5 分钟高点（低点）回落（反弹）0.3%：单边里也允许小仓位做一次。
   const spikeDown = deviationPct >= halfBandPct * 2 && pct(recentHigh, price) >= 0.3;
   const spikeUp = -deviationPct >= halfBandPct * 2 && pct(price, recentLow) >= 0.3;
+  const limitEps = priceTickOf(context.code) / 2;
   const nearLimitUp = limitUp !== null && price >= limitUp * 0.985;
-  const sealedUp = limitUp !== null && price >= limitUp - 0.005;
+  const sealedUp = limitUp !== null && price >= limitUp - limitEps;
   const nearLimitDown = limitDown !== null && price <= limitDown * 1.015;
+  const sealedDown = limitDown !== null && price <= limitDown + limitEps;
 
   const stopPct = Math.max(STOP_PCT[config.style], config.minSpreadPct * 1.5);
   let sellTarget: number | null = null, buyTarget: number | null = null, stop: number | null = null;
@@ -461,7 +500,7 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
     const short = sellable < open.shares ? [`今日可卖只剩 ${sellable} 股，少于买入的 ${open.shares} 股，其余要留到明天`] : [];
     const sellTitle = t0 ? "卖出" : "卖出底仓";
     const holdNote = t0 ? "14:45 后卖出当天买入的份额，避免隔夜多出仓位" : "14:45 后卖出等量底仓，保持持仓股数不变";
-    if (limitDown !== null && price <= limitDown + 0.005) return wait("跌停封板中，正T未完成", [...status, ...short, "卖出可能无法成交，新增仓位风险仍在；尾盘也不能视为已经卖出"], "normal");
+    if (sealedDown) return wait("跌停封板中，正T未完成", [...status, ...short, "卖出可能无法成交，新增仓位风险仍在；尾盘也不能视为已经卖出"], "normal");
     if (now.slot >= CLOSE_SLOT) return done({ action: "closeSellBack", strength: "strong", title: `尾盘${sellTitle}`, price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, holdNote] });
     if (price <= stop) return done({ action: "stopSellBack", strength: "strong", title: "止损卖出", price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, `已跌破止损位 ${fmt(stop)}，走势转弱，${t0 ? "卖出买入的份额" : "卖出等量底仓"}控制仓位`] });
     if (price < sellTarget && price >= profitable && turningDown && pct(recentHigh, price) >= 0.3) return done({ action: "sellBack", strength: "normal", title: sellTitle, price, shares: sellable, reasons: [...reasonsBase, ...status, ...short, `还没回到均价线，但扣费后达到净价差目标并开始回落，先卖出落袋`] });
@@ -502,7 +541,7 @@ export function evaluateAt(points: TimeSharePoint[], index: number, context: Con
   if (price <= lower) {
     if (nearLimitDown) return wait("接近跌停，不接", ["接近跌停时不做正T，等跌停打开、企稳后再说"], "normal");
     if (!turningUp) return wait("下探中，等企稳再买", [`已到下轨 ${fmt(lower)}，还在往下走`, volumeNote].filter(Boolean), "normal");
-    if (netProfit("forward", price, vwap, buyShares, config, undefined, context.code) < price * tShares * config.minSpreadPct / 100) return wait("价差不足以覆盖成本", ["回到均价线的预计空间不足以覆盖双边费用和最低净价差，不新开正T"]);
+    if (netProfit("forward", price, vwap, buyShares, config, undefined, context.code) < price * buyShares * config.minSpreadPct / 100) return wait("价差不足以覆盖成本", ["回到均价线的预计空间不足以覆盖双边费用和最低净价差，不新开正T"]);
     if (blockedForward) return wait("今天不再正T", ["今天的正T亏损卖出过，说明走势偏弱，先不做先买后卖"], "normal");
     if (regime === "down" && !spikeUp) return wait("单边下跌，谨慎正T", [regimeText, "弱势单边时低吸容易越买越跌"], "normal");
     const strong = regime !== "down" && (-deviationPct >= strongBand || price <= low * 1.003);
@@ -526,7 +565,22 @@ export const actionSide = (action: TAction): TSide | null =>
 export function analyzeT(share: TimeShare | null, context: Omit<Context, "preClose">, config: TConfig, trades: TTrade[], calibrationOptions?: TCalibrationOptions): TAnalysis | null {
   if (!share?.points.length) return null;
   const { open, stats } = settleTrades(trades, config, context.code);
-  return evaluateAt(share.points, share.points.length - 1, { ...context, preClose: share.preClose, date: share.date }, config, open, stats, calibrationOptions);
+  const shareLimits = share as { limitUp?: number | null; limitDown?: number | null };
+  return evaluateAt(
+    share.points,
+    share.points.length - 1,
+    {
+      ...context,
+      preClose: share.preClose,
+      date: share.date,
+      limitUp: context.limitUp ?? shareLimits.limitUp,
+      limitDown: context.limitDown ?? shareLimits.limitDown
+    },
+    config,
+    open,
+    stats,
+    calibrationOptions
+  );
 }
 
 /**
@@ -539,7 +593,14 @@ export function replayT(share: TimeShare | null, context: Omit<Context, "preClos
   if (!share?.points.length || (t0 ? config.tShares <= 0 && config.sellableShares <= 0 : config.sellableShares <= 0)) return empty;
   const trades: TTrade[] = [];
   const markers: TMarker[] = [];
-  const ctx = { ...context, preClose: share.preClose, date: share.date };
+  const shareLimits = share as { limitUp?: number | null; limitDown?: number | null };
+  const ctx = {
+    ...context,
+    preClose: share.preClose,
+    date: share.date,
+    limitUp: context.limitUp ?? shareLimits.limitUp,
+    limitDown: context.limitDown ?? shareLimits.limitDown
+  };
   for (let index = 4; index < share.points.length; index += 1) {
     const { open, stats } = settleTrades(trades, config, context.code);
     const result = evaluateAt(share.points, index, ctx, config, open, stats);

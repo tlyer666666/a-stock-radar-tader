@@ -2284,18 +2284,24 @@ function buildWalkForward(samples, options) {
   ).length;
   const passRate = folds.length ? passedFolds / folds.length : 0;
   const positiveFoldRate = folds.length ? positiveFolds / folds.length : 0;
-  const degradationPercent =
-    Number(training.averageReturn) > 0 && Number.isFinite(Number(outOfSample.averageReturn))
+  const hasInitialTraining =
+    initialTrainingRows.length > 0 &&
+    training.averageReturn !== null &&
+    Number.isFinite(Number(training.averageReturn));
+  const degradationPercent = !hasInitialTraining
+    ? null
+    : Number(training.averageReturn) > 0 && outOfSample.averageReturn !== null && Number.isFinite(Number(outOfSample.averageReturn))
       ? Math.max(
         0,
         ((Number(training.averageReturn) - Number(outOfSample.averageReturn)) /
           Math.max(Math.abs(Number(training.averageReturn)), 0.01)) * 100
       )
-      : Number(outOfSample.averageReturn) < Number(training.averageReturn) ? 100 : 0;
-  const overfitRisk =
-    Number(outOfSample.averageReturn) <= 0 ||
-    passRate < 0.5 ||
-    degradationPercent > 70
+      : outOfSample.averageReturn !== null && Number(outOfSample.averageReturn) < Number(training.averageReturn) ? 100 : 0;
+  const overfitRisk = !hasInitialTraining
+    ? "unknown"
+    : Number(outOfSample.averageReturn) <= 0 ||
+      passRate < 0.5 ||
+      degradationPercent > 70
       ? "high"
       : passRate < 2 / 3 || degradationPercent > 40
         ? "medium"
@@ -2331,7 +2337,7 @@ function buildWalkForward(samples, options) {
     passedFolds,
     passRate: round(passRate, 4),
     positiveFoldRate: round(positiveFoldRate, 4),
-    degradationPercent: round(degradationPercent, 2),
+    degradationPercent: degradationPercent === null ? null : round(degradationPercent, 2),
     overfitRisk,
     reason: accepted
       ? `走步验证通过：${passedFolds}/${folds.length} 个样本外窗口达标`

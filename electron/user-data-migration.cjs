@@ -26,7 +26,8 @@ const SENTINEL_FILES = Object.freeze([
   "backup-config.json",
   "stock-agent.json",
   "local-secret.key",
-  "radar-store.sqlite"
+  "radar-store.sqlite",
+  "radar-store.sqlite-wal"
 ]);
 
 const APP_DATA_FILE_RE =
@@ -36,6 +37,8 @@ function isAppDataFileName(name) {
   return name === "local-secret.key"
     || name === "runtime-errors.log"
     || name === "radar-store.sqlite"
+    || name === "radar-store.sqlite-wal"
+    || name === "radar-store.sqlite-shm"
     || APP_DATA_FILE_RE.test(name);
 }
 

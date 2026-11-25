@@ -27,6 +27,8 @@ const ALLOWED_HOST_SUFFIXES = ["10jqka.com.cn", "thsi.cn", "10jqka.com", "hexin.
 const MAX_CRASH_COUNT = 3;
 const MIN_ZOOM_FACTOR = 0.5;
 const MAX_ZOOM_FACTOR = 2.5;
+const EXTERNAL_OPEN_COOLDOWN_MS = 2000;
+const ALLOWED_EXTERNAL_DISPOSITIONS = new Set(["default", "foreground-tab", "new-window"]);
 
 function normalizeZoomFactor(factor) {
   const numeric = Number(factor);
@@ -72,7 +74,15 @@ function normalizeBounds(input, limits = null) {
   return { x, y, width, height };
 }
 
-function createThsWebViewManager({ WebContentsView, session, getWindow, openExternal = () => {}, onError = () => {} }) {
+function createThsWebViewManager({
+  WebContentsView,
+  session,
+  getWindow,
+  openExternal = () => {},
+  onError = () => {},
+  now = () => Date.now(),
+  externalOpenCooldownMs = EXTERNAL_OPEN_COOLDOWN_MS
+}) {
   let view = null;
   let attachedTo = null;
   let loadedPage = "";
@@ -83,14 +93,25 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
   let lastBounds = null;
   let desiredOpen = false;
   let zoomFactor = null;
+  let lastExternalOpenAt = -Infinity;
 
   const windowReady = () => {
     const win = getWindow();
     return win && !win.isDestroyed() ? win : null;
   };
-  const safeExternal = url => {
+  const safeExternal = (url, { bypassRateLimit = false } = {}) => {
     const safe = normalizeExternalHttpsUrl(url);
-    if (safe) Promise.resolve().then(() => openExternal(safe)).catch(onError);
+    if (!safe) return false;
+    const currentNow = Number(now());
+    const cooldown = Number.isFinite(Number(externalOpenCooldownMs)) && Number(externalOpenCooldownMs) >= 0
+      ? Number(externalOpenCooldownMs)
+      : EXTERNAL_OPEN_COOLDOWN_MS;
+    if (!bypassRateLimit && Number.isFinite(currentNow) && currentNow - lastExternalOpenAt < cooldown) {
+      return false;
+    }
+    if (Number.isFinite(currentNow)) lastExternalOpenAt = currentNow;
+    Promise.resolve().then(() => openExternal(safe)).catch(onError);
+    return true;
   };
 
   function ensureView() {
@@ -107,11 +128,19 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
     });
     const createdView = view;
     const contents = createdView.webContents;
-    contents.setWindowOpenHandler(({ url }) => {
+    contents.setWindowOpenHandler((details = {}) => {
       if (view !== createdView) return { action: "deny" };
+      const { url, disposition, userGesture } = details || {};
       // 同花顺页面里弹出的同站页面（登录框、个股页）就在本视图打开；站外链接交给系统浏览器。
-      if (allowedThsUrl(url)) void loadUrl(url);
-      else safeExternal(url);
+      if (allowedThsUrl(url)) {
+        void loadUrl(url);
+        return { action: "deny" };
+      }
+      const blockedByGesture = userGesture === false;
+      const blockedByDisposition = typeof disposition === "string" && !ALLOWED_EXTERNAL_DISPOSITIONS.has(disposition);
+      if (!blockedByGesture && !blockedByDisposition) {
+        safeExternal(url);
+      }
       return { action: "deny" };
     });
     contents.on("will-navigate", (event, url) => {
@@ -119,7 +148,13 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
       const target = typeof url === "string" ? url : event.url;
       if (allowedThsUrl(target)) { loadGeneration++; lastError = ""; pendingUrl = String(target || ""); return; }
       event.preventDefault();
-      safeExternal(target);
+      const blockedByGesture = event?.userGesture === false || event?.isUserGesture === false;
+      const blockedByFrame = typeof event?.isMainFrame === "boolean" && !event.isMainFrame;
+      const blockedBySameDoc = event?.isSameDocument === true;
+      const blockedByLoading = Boolean(contents.isLoading?.());
+      if (!blockedByGesture && !blockedByFrame && !blockedBySameDoc && !blockedByLoading) {
+        safeExternal(target);
+      }
     });
     contents.on("will-redirect", (event, url, _isInPlace, isMainFrame) => {
       if (view !== createdView) {
@@ -132,7 +167,6 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
         : isMainFrame !== false;
       if (!allowedThsUrl(target)) {
         event?.preventDefault?.();
-        if (mainFrame) safeExternal(target);
         return;
       }
       if (mainFrame) pendingUrl = String(target || "");
@@ -300,7 +334,7 @@ function createThsWebViewManager({ WebContentsView, session, getWindow, openExte
         loadGeneration++; lastError = "";
         if (contents.navigationHistory?.canGoBack?.()) contents.navigationHistory.goBack();
         else if (contents.canGoBack?.()) contents.goBack();
-      } else if (action === "external") safeExternal(contents.getURL());
+      } else if (action === "external") safeExternal(contents.getURL(), { bypassRateLimit: true });
       else if (action === "logout") {
         // 只清除这个嵌入网页自己的会话数据（同花顺登录状态与缓存），不影响软件其他数据。
         const ses = session.fromPartition(THS_WEB_PARTITION);

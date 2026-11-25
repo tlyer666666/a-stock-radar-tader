@@ -12,6 +12,8 @@ function registerMarketIpc({
   resetMarketSourceHealth = () => ({ ok: true }),
   getConvertibleBonds,
   getEtfMarket,
+  getIndexBoard = async () => { throw new Error("指数行情暂不可用"); },
+  subscribeIndexStream = () => ({ active: false, connected: 0, total: 0, lastTickAt: "", quotes: [] }),
   getBatchQuotes,
   getFuyaoReviewData,
   getDataFederation,
@@ -36,6 +38,8 @@ function registerMarketIpc({
   handleTrustedIpc("market:source-reset", () => resetMarketSourceHealth());
   handleTrustedIpc("bond:list", (_, options = {}) => getConvertibleBonds(options));
   handleTrustedIpc("etf:list", (_, options = {}) => getEtfMarket({ forceRefresh: options?.forceRefresh === true }));
+  handleTrustedIpc("market:index-board", (_, options = {}) => getIndexBoard({ forceRefresh: options?.forceRefresh === true, withTrends: options?.withTrends !== false }));
+  handleTrustedIpc("market:index-stream", (_, options = {}) => subscribeIndexStream({ active: options?.active !== false }));
   handleTrustedIpc("market:batch-quotes", (_, securities) => getBatchQuotes(securities));
   // 沪深港通：同花顺数据中心网页嵌入（独立会话，用户自行登录同花顺账号）。
   handleTrustedIpc("ths-web:show", (_, options = {}) =>

@@ -59,12 +59,16 @@ test("a profitable sell folded into cost counts as a win and is reported separat
   assert.equal(summary.cumulativeDilutedPnl, 1000);
 });
 
-test("clearing the ledger also clears the archived totals", () => {
+test("clearing the ledger also clears the archived totals and returns persistence status", () => {
   const storage = memory();
   for (let i = 0; i < L.MAX_HOLDING_TRADES + 2; i += 1) L.appendHoldingTradeRecord(sell(i, 1), storage);
-  L.clearHoldingTrades(storage);
+  assert.equal(L.clearHoldingTrades(storage), true);
   const ledger = L.loadHoldingTradeLedger(storage);
   assert.equal(L.summarizeHoldingTrades(ledger.records, ledger.archived).totalCount, 0);
+
+  const failing = { setItem() { throw new Error("QuotaExceededError"); } };
+  assert.equal(L.clearHoldingTrades(failing), false);
+  assert.equal(L.clearHoldingTrades(null), false);
 });
 
 test("clampHoldingCostPrice rounds to 3 decimals and enforces the 0.001 RMB floor across all callers", () => {

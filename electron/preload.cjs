@@ -31,6 +31,14 @@ contextBridge.exposeInMainWorld("stockApi", {
   resetMarketSourceHealth: () => invoke("market:source-reset"),
   getConvertibleBonds: (options = {}) => invoke("bond:list", options),
   getEtfMarket: (options = {}) => invoke("etf:list", options),
+  getIndexBoard: (options = {}) => invoke("market:index-board", options),
+  subscribeIndexStream: (options = {}) => invoke("market:index-stream", options),
+  onIndexTick: (listener) => {
+    if (typeof listener !== "function") return () => {};
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("market:index-tick", handler);
+    return () => ipcRenderer.removeListener("market:index-tick", handler);
+  },
   getBatchQuotes: (securities) => invoke("market:batch-quotes", securities),
   getLimitEcology: (options = {}) => invoke("market:limit-ecology", options),
   ai: {

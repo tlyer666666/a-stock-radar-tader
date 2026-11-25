@@ -105,17 +105,20 @@ function createEtfMarket({ fetchJson, now = () => Date.now(), concurrency = 3 } 
   let pending = null;
   let generation = 0;
 
+  const MAX_PAGES = 50;
   const pageUrl = (bucket, page) => `${EAST_LIST}?pn=${page}&pz=${PAGE_SIZE}&po=1&np=1&fltt=2&invt=2&fid=f6&fs=b:${bucket}&fields=${FIELDS}`;
 
   async function readGroup(group, signal) {
     const first = await fetchJson(pageUrl(group.bucket, 1), { signal }, 15000);
     const total = Math.max(0, Number(first?.data?.total) || 0);
     const rows = Array.isArray(first?.data?.diff) ? [...first.data.diff] : [];
-    const pages = Math.ceil(total / PAGE_SIZE);
+    const pages = Math.min(MAX_PAGES, Math.ceil(total / PAGE_SIZE));
     for (let page = 2; page <= pages; page += 1) {
       signal?.throwIfAborted?.();
       const next = await fetchJson(pageUrl(group.bucket, page), { signal }, 15000);
-      if (Array.isArray(next?.data?.diff)) rows.push(...next.data.diff);
+      const diff = Array.isArray(next?.data?.diff) ? next.data.diff : [];
+      if (!diff.length) break;
+      rows.push(...diff);
     }
     return rows.map(raw => normalizeRow(raw, group.bucket)).filter(Boolean);
   }

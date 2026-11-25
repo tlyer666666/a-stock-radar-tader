@@ -327,4 +327,60 @@ test("R3-Preview: previewApi AI, news and workspace methods return structured pr
   assert.ok(await api.getVersion());
 });
 
+test("Track C regressions (H-11, M-11, M-13, M-14, M-15, M-16, L-5, L-6, L-7)", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const read = rel => fs.readFileSync(path.join(__dirname, rel), "utf8");
+
+  // H-11: agent polling stops & clears run on AGENT_RUN_GONE or 3 consecutive failures
+  const agentSrc = read("features/ai-agent/useAgentConversation.ts");
+  assert.match(agentSrc, /AGENT_RUN_GONE/);
+  assert.match(agentSrc, /consecutiveErrors >= 3/);
+
+  // M-11: copilot fingerprint dedupe, stable monitorItems & addNoteToT, monitor diff guard, memoized ProfessionalReview wrapper
+  const copilotSrc = read("features/copilot/useWorkspaceCopilot.ts");
+  assert.match(copilotSrc, /lastWorkspaceSyncJsonRef/);
+  assert.match(copilotSrc, /monitorItemsRef/);
+  assert.match(copilotSrc, /const addTStock = tAssistant\.addStock;/);
+  const monitorSrc = read("useStockMonitors.ts");
+  assert.match(monitorSrc, /sameRuntimesMap/);
+  const routesSrc = read("components/AppWorkspaceRoutes.tsx");
+  assert.match(routesSrc, /function KeepAliveProfessionalReview/);
+  const feedSrc = read("features/market/useMarketWorkspaceFeed.ts");
+  assert.match(feedSrc, /if \(\s*!rowsChanged &&\s*trigger === "auto"/);
+
+  // M-13 & M-14: backtest awaits persistSettings before APPROVED log; clearBacktestHistory & CollectionViews check return value + ConfirmDialog
+  const btSrc = read("features/backtest/useBacktestWorkspace.ts");
+  assert.match(btSrc, /const applyBacktestProfile = async/);
+  assert.match(btSrc, /await persistSettings\(\(current\) =>/);
+  assert.match(btSrc, /const applied = await applyBacktestProfile\(/);
+  assert.match(btSrc, /if \(!saved\) \{\s*showToast\(/);
+  const colSrc = read("features/collections/CollectionViews.tsx");
+  assert.match(colSrc, /<ConfirmDialog/);
+  assert.match(colSrc, /if \(!clearHoldingTrades\(\)\)/);
+
+  // M-15: QuickPlanModal deletes cleared targetPrice/note, checks writeTrendPlans return, cancels OneClickCockpitAdd on unmount + catches errors
+  const qpSrc = read("components/QuickPlanModal.tsx");
+  assert.match(qpSrc, /delete mergedFields\.targetPrice/);
+  assert.match(qpSrc, /delete mergedFields\.note/);
+  assert.match(qpSrc, /if \(!writeTrendPlans\(window\.localStorage, updatedPlans\)\)/);
+  assert.match(qpSrc, /let cancelled = false;[\s\S]*\.catch\(\(\) => \{/);
+
+  // M-16: SectorView passes boardSnapshot to SectorGainersTable to avoid 200ms drain/observer resets
+  const secSrc = read("features/sectors/SectorView.tsx");
+  assert.match(secSrc, /boardSnapshot=\{boardSnapshot\}/);
+  assert.match(secSrc, /\[sort\.key, snapshotIdentity, onCountVisible\]/);
+
+  // L-5, L-6, L-7: openExternal guards, atomic toggleFavorite & batch favorite merge, try/catch on DEFAULT_VIEW_STORAGE_KEY
+  assert.match(read("features/information/NewsView.tsx"), /disabled=\{!item\.sourceUrl\?\.trim\(\)\}/);
+  assert.match(read("SectorExplorerPanel.tsx"), /openExternal\?\.\(target\)\)\.catch\(\(\) => \{\}\)/);
+  const sigSrc = read("features/strategy-selection/StrategySignalsView.tsx");
+  assert.match(sigSrc, /disabled=\{!url\}/);
+  assert.match(sigSrc, /saveWatchlist\(\[\.\.\.byCode\.values\(\)\]\)/);
+  const wcSrc = read("features/collections/useWorkspaceCollections.ts");
+  assert.match(wcSrc, /await watchlistWriter\.current!\(current => \{\s*const existing = current\.find\(item => item\.code === security\.code\);\s*const currentlyFavorite =/);
+  const appSrc = read("App.tsx");
+  assert.match(appSrc, /const \[view, setView\] = useState<View>\(\(\) => \{\s*try \{/);
+});
+
 test.after(() => restore?.());

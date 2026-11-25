@@ -76,3 +76,32 @@ test('macOS packaging preserves vendor locale folders and licenses and removes t
   assert.equal(fs.existsSync(path.join(resources, 'default_app.asar')), false);
   assert.equal(fs.readFileSync(path.join(resources, 'app.asar'), 'utf8'), 'real-application');
 });
+
+test('afterPack normalizes restrictive 0600 permissions inside app.asar.unpacked to 0644 before signing', async (t) => {
+  if (process.platform === 'win32') return;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'radar-unpacked-perms-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const unpacked = path.join(root, 'out', 'resources', 'app.asar.unpacked', 'electron');
+  fs.mkdirSync(unpacked, { recursive: true });
+  const targetFile = path.join(unpacked, 'main.cjs');
+  fs.writeFileSync(targetFile, '"use strict";\n', { mode: 0o600 });
+  fs.chmodSync(targetFile, 0o600);
+  const originalLoad = Module._load;
+  Module._load = function(request, parent, isMain) {
+    const actual = originalLoad.call(this, request, parent, isMain);
+    return request === '@electron/fuses' ? { ...actual, flipFuses: async () => {} } : actual;
+  };
+  delete require.cache[require.resolve('./after-pack-fuses.cjs')];
+  try {
+    const hook = require('./after-pack-fuses.cjs');
+    await hook({
+      appOutDir: path.join(root, 'out'),
+      electronPlatformName: 'linux',
+      packager: { projectDir: root, appInfo: { productFilename: 'Fixture' } }
+    });
+  } finally {
+    Module._load = originalLoad;
+    delete require.cache[require.resolve('./after-pack-fuses.cjs')];
+  }
+  assert.equal(fs.statSync(targetFile).mode & 0o777, 0o644);
+});

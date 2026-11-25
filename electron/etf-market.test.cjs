@@ -151,3 +151,29 @@ test("caller abort does not fail a concurrent ETF market waiter", async () => {
   const result = await second;
   assert.ok(result.items.length > 0);
 });
+
+test("M-9: readGroup caps pagination at 50 pages and stops early when a page returns an empty diff", async () => {
+  const pageCalls = { byBucket: new Map() };
+  const market = createEtfMarket({
+    fetchJson: async (url) => {
+      const parsed = new URL(url);
+      const bucket = parsed.searchParams.get("fs").replace(/^b:/, "");
+      const page = Number(parsed.searchParams.get("pn"));
+      pageCalls.byBucket.set(bucket, (pageCalls.byBucket.get(bucket) || 0) + 1);
+      // First bucket claims huge total (100000 -> 1000 pages) and always returns 1 row -> must stop at page 50
+      if (bucket === "MK0021") {
+        return { data: { total: 100000, diff: [{ f12: String(510000 + page), f14: `ETF${page}`, f13: 1, f2: 1.0, f3: 0.5, f6: 1e7 }] } };
+      }
+      // Second bucket claims total 5000 (50 pages) but page 2 returns empty diff -> must break early after page 2
+      if (bucket === "MK0022") {
+        if (page === 1) return { data: { total: 5000, diff: [{ f12: "511001", f14: "国债ETF", f13: 1, f2: 100, f3: 0.1, f6: 1e7 }] } };
+        return { data: { total: 5000, diff: [] } };
+      }
+      return { data: { total: 0, diff: [] } };
+    }
+  });
+  const snapshot = await market.load({ forceRefresh: true });
+  assert.equal(pageCalls.byBucket.get("MK0021"), 50, "pagination must be capped at MAX_PAGES=50");
+  assert.equal(pageCalls.byBucket.get("MK0022"), 2, "pagination must break immediately on empty diff");
+  assert.ok(snapshot.items.length >= 50);
+});

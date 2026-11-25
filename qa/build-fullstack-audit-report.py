@@ -10,7 +10,7 @@ from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 
 ROOT = Path(__file__).resolve().parents[1]
 ART = ROOT / 'artifacts/fullstack-audit-20261001'
-OUT = Path('~/Desktop/a股/全栈审计优化版1.5.1/全栈审计与优化报告.docx')
+OUT = Path('~/Desktop/a股/全栈审计优化版1.5.1/全栈审计与优化报告.docx').expanduser()
 validation = json.loads((ART / 'test-validation.json').read_text())
 deps = json.loads((ART / 'dependency-review.json').read_text())
 review = json.loads((ART / 'final-review.json').read_text())

@@ -9,7 +9,8 @@ const { registerTypeScript } = require("../../../qa/register-typescript.cjs");
 const previousCssLoader = require.extensions[".css"];
 require.extensions[".css"] = () => {};
 const restoreTypeScript = registerTypeScript();
-const { Dashboard, resolvePaperCloseAllHandler } = require("./MarketWorkspace.tsx");
+const { Dashboard, resolvePaperCloseAllHandler, ema } = require("./MarketWorkspace.tsx");
+const { restoredCompareSelection } = require("./MultiStockCompareView.tsx");
 const { initialSettings } = require("../../domain/settings.ts");
 const { limitPoolProviderLabel, tradeSignalLabel } = require("./marketLabels.ts");
 const { paperCloseReasonLabel } = require("../../domain/paperSimulationTypes.ts");
@@ -195,6 +196,55 @@ test("MarketWorkspace infers assetType on paper position open and traps focus in
   assert.match(source, /onOpen\(\{ code: position\.code, name: position\.name, secid: "", assetType: inferAssetType\(position\.code\) \} as Security\)/);
   assert.match(source, /id="mw-agent-drawer" ref=\{agentDrawerRef\} tabIndex=\{-1\}/);
   assert.match(source, /if \(event\.key !== "Tab"\) return;/);
+});
+
+test("C-1, M-12, L-5: ema accumulates prior EMA output, paper row subtracts entryFee & shows total open slots, empty art_code is disabled", () => {
+  const series = ema([10, 20, 30, 40], 3);
+  // k = 2 / (3 + 1) = 0.5 -> [10, 15, 22.5, 31.25]; buggy map(3rd arg) produced [10, 15, 25, 35].
+  assert.deepEqual(series, [10, 15, 22.5, 31.25]);
+
+  const positions = [paperPosition("600001"), paperPosition("600002")];
+  const html = renderAnalysis({}, {
+    paperSummary: paperSummaryWith(positions),
+    paperCurrentPositions: [positions[0]],
+    settings: { ...initialSettings, maxOpenPositions: 5 },
+    payload: {
+      ...analysisPayload(),
+      announcements: [{ art_code: "", title: "无编号公告", category: "公告", direction: "neutral", score: 0, display_time: "2026-10-21 10:00" }]
+    }
+  });
+  assert.match(html, /可用仓位 2 \/ 5/, "slot counter must use total openPositions.length, not single-stock count");
+  assert.match(html, /未实 495\.00元/, "per-position unrealized PnL must subtract entryFee (500 - 5 = 495.00)");
+  assert.match(html, /<button[^>]*class="news-item"[^>]*disabled=""/, "announcement without art_code must be disabled");
+});
+
+test("H-10: restoredCompareSelection always reads fresh localStorage after prior initialization", () => {
+  const prevWindow = global.window;
+  const prevLocal = global.localStorage;
+  const prevSession = global.sessionStorage;
+  const store = new Map();
+  const mockLocal = {
+    getItem: k => store.get(k) ?? null,
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: k => { store.delete(k); }
+  };
+  const mockSession = { getItem: () => null, setItem() {}, removeItem() {} };
+  global.localStorage = mockLocal;
+  global.sessionStorage = mockSession;
+  global.window = { ...(prevWindow || {}), localStorage: mockLocal, sessionStorage: mockSession };
+  try {
+    store.set("a-stock-radar:compare-selection", JSON.stringify([{ code: "600001", name: "首只", secid: "1.600001" }]));
+    assert.deepEqual(restoredCompareSelection().map(s => s.code), ["600001"]);
+    store.set("a-stock-radar:compare-selection", JSON.stringify([
+      { code: "600519", name: "贵州茅台", secid: "1.600519" },
+      { code: "000001", name: "平安银行", secid: "0.000001" }
+    ]));
+    assert.deepEqual(restoredCompareSelection().map(s => s.code), ["600519", "000001"]);
+  } finally {
+    global.window = prevWindow;
+    global.localStorage = prevLocal;
+    global.sessionStorage = prevSession;
+  }
 });
 
 after(() => {

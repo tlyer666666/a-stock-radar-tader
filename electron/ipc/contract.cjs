@@ -72,6 +72,8 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "market:chart",
   "market:concept-chain",
   "market:federation",
+  "market:index-board",
+  "market:index-stream",
   "market:limit-ecology",
   "market:limit-up-sectors",
   "market:limit-ups",
@@ -140,6 +142,7 @@ const REVIEW_IPC_CHANNELS = Object.freeze([
 const IPC_EVENT_CHANNELS = Object.freeze([
   "ai:stream",
   "app:notification-clicked",
+  "market:index-tick",
   "review-window:theme-changed"
 ]);
 
@@ -241,6 +244,8 @@ const NO_ARG_CHANNELS = new Set([
 const OPTIONAL_OBJECT_CHANNELS = new Set([
   "bond:list",
   "etf:list",
+  "market:index-board",
+  "market:index-stream",
   "ths-web:show",
   "ths-web:bounds",
   "ths-web:command",

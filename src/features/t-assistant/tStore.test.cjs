@@ -136,3 +136,12 @@ test('新交易日 T+1 自动滚动可卖底仓、同步持仓成本，且对同
   assert.equal('shares' in summary[0], false);
   assert.equal('sellableShares' in summary[0], false);
 });
+
+test('M-7: shouldAlert 对齐午间休市（11:30→13:00/13:01）与开盘集合竞价（09:25–09:27→09:30）新鲜度规则', () => {
+  const at = text => Date.parse(`${text}+08:00`);
+  assert.equal(store.shouldAlert({}, '600000', 'sell', '11:30', at('2026-11-09T13:00:00'), '13:00', '2026-11-09'), true);
+  assert.equal(store.shouldAlert({}, '600000', 'sell', '11:30', at('2026-11-09T13:01:00'), '13:01', '2026-11-09'), true);
+  assert.equal(store.shouldAlert({}, '600000', 'sell', '11:30', at('2026-11-09T13:03:00'), '13:03', '2026-11-09'), false);
+  assert.equal(store.shouldAlert({}, '600000', 'buy', '09:30', at('2026-11-09T09:25:00'), '09:25', '2026-11-09'), true);
+  assert.equal(store.shouldAlert({}, '600000', 'buy', '09:30', at('2026-11-09T09:27:00'), '09:27', '2026-11-09'), true);
+});

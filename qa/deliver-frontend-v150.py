@@ -3,7 +3,7 @@ from pathlib import Path
 import datetime, hashlib, json, re, shutil, subprocess, sys, zipfile
 repo = Path(__file__).resolve().parents[1]
 checks = repo / 'artifacts/frontend-v150'
-base = Path('~/Desktop/a股')
+base = Path('~/Desktop/a股').expanduser()
 preserved = base / '改版前保留_1.4.6'
 destination = base / '重构版1.5.0'
 app = repo / 'release-builder/mac-arm64/A股雷达趋势版.app'

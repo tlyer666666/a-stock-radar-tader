@@ -69,14 +69,29 @@ function isAllowedRendererNavigation(targetUrl, rendererEntryUrl) {
   }
 }
 
-function resolveStoredSecret(nextValue, previousEncrypted, encryptSecret) {
+function isSameOriginUrl(a, b) {
+  try {
+    return new URL(String(a)).origin === new URL(String(b)).origin;
+  } catch {
+    return false;
+  }
+}
+
+function resolveStoredSecret(nextValue, previousEncrypted, encryptSecret, storageOrIsLocked) {
   if (typeof nextValue === 'string' && nextValue.includes(MASK_CHARACTER) && !/^•+$/.test(nextValue.trim())) {
     throw Object.assign(new TypeError('请清空掩码后完整输入新密钥'), { code: 'INVALID_SECRET_MASK' });
   }
   if (typeof nextValue !== "string" || /^•+$/.test(nextValue.trim())) {
     return previousEncrypted || "";
   }
-  return encryptSecret(nextValue.trim());
+  const trimmed = nextValue.trim();
+  const locked = typeof storageOrIsLocked === "function"
+    ? Boolean(storageOrIsLocked())
+    : isStorageLocked(storageOrIsLocked);
+  if (!trimmed && previousEncrypted && locked) {
+    throw secretStorageLockedError();
+  }
+  return encryptSecret(trimmed);
 }
 
 function resolveTestSecret(nextValue, savedPlaintext) {
@@ -117,9 +132,14 @@ function isStorageLocked(storage) {
   }
 }
 
-function encryptSecretForStorage(value, storage) {
+function encryptSecretForStorage(value, storage, options = {}) {
   const plaintext = typeof value === "string" ? value : "";
-  if (!plaintext) return "";
+  if (!plaintext) {
+    if (options?.previousEncrypted && isStorageLocked(storage)) {
+      throw secretStorageLockedError();
+    }
+    return "";
+  }
   if (isStorageLocked(storage)) throw secretStorageLockedError();
   if (!safeStorageIsAvailable(storage)) throw secretStorageUnavailableError();
   try {
@@ -408,6 +428,8 @@ module.exports = {
   encryptSecretForStorage,
   isAllowedRendererNavigation,
   isExpectedRendererEntry,
+  isSameOriginUrl,
+  isStorageLocked,
   isTrustedMainFrameIpcEvent,
   migrateLegacyStoredSecrets,
   normalizeExternalHttpsUrl,

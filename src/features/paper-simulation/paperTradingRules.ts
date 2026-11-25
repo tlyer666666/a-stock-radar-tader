@@ -1,4 +1,5 @@
 import { shanghaiDateTag } from "../../dateUtils";
+import { isExchangeFundCode, priceTickOf } from "../../domain/etfTradingRule";
 import { nullableNumber } from "../../numericValue";
 import type { PaperPosition } from "../../domain/paperSimulationTypes";
 import type { AnalysisPayload } from "../market/analysisTypes";
@@ -6,12 +7,18 @@ import { isTradingDay } from "../notes/notesModel";
 
 const positive = (value: unknown) => { const n = nullableNumber(value); return n !== null && n > 0 ? n : null; };
 export const paperPriceLimitRate = (code: string, name = "", date = shanghaiDateTag()): number | null => {
-  const beijing = /^(?:(?:43|83|87|88)\d{4}|920\d{3})$/.test(code);
-  if (!beijing && !/^(?:60|00|30|68)\d{4}$/.test(code)) return null;
+  const normalized = String(code || "").trim();
+  if (isExchangeFundCode(normalized)) {
+    // 科创板（588/589 或名称含科创/双创）与创业板主题 ETF 涨跌幅限制为 20%，其余场内基金默认 10%。
+    if (/^58[89]\d{3}$/.test(normalized) || /科创|双创|创业板|创50|创成长|创蓝筹|创大盘/.test(name)) return .2;
+    return .1;
+  }
+  const beijing = /^(?:(?:43|83|87|88)\d{4}|920\d{3})$/.test(normalized);
+  if (!beijing && !/^(?:60|00|30|68)\d{4}$/.test(normalized)) return null;
   // 上市首日（N）及创业板/科创板前五日（C）无涨跌幅限制；北交所新股同样先判断。
   if (/^[NC]/i.test(name)) return null;
   if (beijing) return .3;
-  if (/^(?:30|68)/.test(code)) return .2;
+  if (/^(?:30|68)/.test(normalized)) return .2;
   // 与 electron/price-limit-rules.cjs 的 MAIN_BOARD_ST_RATE_EFFECTIVE 同步：
   // 沪深主板 ST/*ST 自 2026-07-06 起由 5% 调整为 10%（新规）。
   return /\*?ST/i.test(name) && date < "2026-07-06" ? .05 : .1;
@@ -150,12 +157,15 @@ export const paperMatchBlock = (position: PaperPosition, side: "buy" | "sell", e
   const rate = paperPriceLimitRate(position.code, position.quoteName || position.name, today);
   if (rate === null && !/^[NC]/i.test(position.quoteName || position.name)) return "当前证券不属于支持的A股撮合范围";
   if (rate !== null) {
+    const tick = priceTickOf(position.code);
+    const invTick = Math.round(1 / tick);
     // 与 electron/price-limit-rules.cjs 的 roundPrice 一致：+1e-7 修正浮点（17.15×1.1 应为 18.87）。
-    const upper = Math.round(reference * (1 + rate) * 100 + 1e-7) / 100;
-    const lower = Math.round(reference * (1 - rate) * 100 + 1e-7) / 100;
+    const upper = Math.round(reference * (1 + rate) * invTick + 1e-7) / invTick;
+    const lower = Math.round(reference * (1 - rate) * invTick + 1e-7) / invTick;
+    const eps = tick / 10;
     // No order book is available: a quote at the limit is conservatively unfillable.
-    if (side === "buy" && (position.latestPrice >= upper - .001 || executionPrice > upper + .001)) return "涨停或含滑点成交价超涨停价，暂停买入";
-    if (side === "sell" && (position.latestPrice <= lower + .001 || executionPrice < lower - .001)) return "跌停或含滑点成交价低于跌停价，暂停卖出";
+    if (side === "buy" && (position.latestPrice >= upper - eps || executionPrice > upper + eps)) return "涨停或含滑点成交价超涨停价，暂停买入";
+    if (side === "sell" && (position.latestPrice <= lower + eps || executionPrice < lower - eps)) return "跌停或含滑点成交价低于跌停价，暂停卖出";
   }
   return "";
 };

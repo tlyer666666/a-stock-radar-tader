@@ -18,7 +18,15 @@ const AS2_TOTAL_BYTES = AS2_MAGIC.length + 1 + SALT_BYTES + IV_BYTES + TAG_BYTES
 const MASTER_SCRYPT_OPTIONS = Object.freeze({ N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
 const MIN_MASTER_PASSWORD_LENGTH = 8;
 const MAX_MASTER_PASSWORD_LENGTH = 200;
+const MASTER_BACKOFF_BASE_MS = 200;
+const MASTER_BACKOFF_MAX_MS = 15_000;
 const LINK_FALLBACK_CODES = new Set(["ENOTSUP", "EPERM", "ENOSYS", "EXDEV"]);
+
+function defaultSleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
 
 function lockedStorageError() {
   return Object.assign(new Error("密钥库已锁定，请先输入主密码解锁"), { code: "SECRET_STORAGE_LOCKED" });
@@ -44,12 +52,46 @@ function deriveMasterEnvelopeKey(password, salt) {
   });
 }
 
-function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } = {}) {
+function createLocalSecretStorage({
+  keyPath,
+  randomBytes = crypto.randomBytes,
+  now = () => Date.now(),
+  backoffBaseMs = MASTER_BACKOFF_BASE_MS,
+  backoffMaxMs = MASTER_BACKOFF_MAX_MS,
+  sleep = defaultSleep
+} = {}) {
   if (!keyPath) throw new TypeError("缺少本机密钥文件路径");
   let cachedKey = null;
+  let masterOpQueue = Promise.resolve();
+  let failedMasterAttempts = 0;
+  let masterBackoffUntil = 0;
+
+  function runMasterOpSerialized(task) {
+    const run = masterOpQueue.then(task, task);
+    masterOpQueue = run.then(() => {}, () => {});
+    return run;
+  }
+
+  function assertKeyPathNotSymlink() {
+    try {
+      const stat = fs.lstatSync(keyPath);
+      if (stat.isSymbolicLink()) {
+        throw Object.assign(new TypeError("本机密钥文件路径不能为符号链接"), { code: "INVALID_SECRET_KEY_PATH" });
+      }
+      if (!stat.isFile()) {
+        throw Object.assign(new TypeError("本机密钥文件路径不是普通文件"), { code: "INVALID_SECRET_KEY_PATH" });
+      }
+      return stat;
+    } catch (error) {
+      if (error?.code === "ENOENT") return null;
+      throw error;
+    }
+  }
 
   function readKeyFileState() {
     try {
+      const stat = assertKeyPathNotSymlink();
+      if (!stat) return { kind: "missing" };
       const existing = fs.readFileSync(keyPath);
       if (existing.length === KEY_BYTES) return { kind: "raw", key: existing };
       if (isAs2Envelope(existing)) return { kind: "as2", buffer: existing };
@@ -61,6 +103,7 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
   }
 
   function writeKeyFileAtomic(bytes) {
+    assertKeyPathNotSymlink();
     fs.mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o700 });
     const tmpPath = `${keyPath}.tmp.${process.pid}.${crypto.randomUUID()}`;
     const fd = fs.openSync(tmpPath, "wx", 0o600);
@@ -88,10 +131,14 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
     const salt = Buffer.from(randomBytes(SALT_BYTES));
     const iv = Buffer.from(randomBytes(IV_BYTES));
     const derived = await deriveMasterEnvelopeKey(password, salt);
-    const cipher = crypto.createCipheriv("aes-256-gcm", derived, iv);
-    const encrypted = Buffer.concat([cipher.update(masterKey), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return Buffer.concat([AS2_MAGIC, Buffer.from([AS2_VERSION]), salt, iv, tag, encrypted]);
+    try {
+      const cipher = crypto.createCipheriv("aes-256-gcm", derived, iv);
+      const encrypted = Buffer.concat([cipher.update(masterKey), cipher.final()]);
+      const tag = cipher.getAuthTag();
+      return Buffer.concat([AS2_MAGIC, Buffer.from([AS2_VERSION]), salt, iv, tag, encrypted]);
+    } finally {
+      if (Buffer.isBuffer(derived)) derived.fill(0);
+    }
   }
 
   async function unwrapMasterKey(envelope, password) {
@@ -113,6 +160,28 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
       return plain;
     } catch {
       throw invalidMasterPasswordError();
+    } finally {
+      if (Buffer.isBuffer(derived)) derived.fill(0);
+    }
+  }
+
+  async function unwrapMasterKeyWithBackoff(envelope, password) {
+    const waitMs = masterBackoffUntil - now();
+    if (waitMs > 0) await sleep(waitMs);
+    try {
+      const masterKey = await unwrapMasterKey(envelope, password);
+      failedMasterAttempts = 0;
+      masterBackoffUntil = 0;
+      return masterKey;
+    } catch (error) {
+      if (error?.code === "MASTER_PASSWORD_INVALID") {
+        failedMasterAttempts += 1;
+        const base = Number.isFinite(Number(backoffBaseMs)) && Number(backoffBaseMs) >= 0 ? Number(backoffBaseMs) : MASTER_BACKOFF_BASE_MS;
+        const max = Number.isFinite(Number(backoffMaxMs)) && Number(backoffMaxMs) >= 0 ? Number(backoffMaxMs) : MASTER_BACKOFF_MAX_MS;
+        const delay = Math.min(max, base * (2 ** Math.min(failedMasterAttempts - 1, 10)));
+        masterBackoffUntil = now() + delay;
+      }
+      throw error;
     }
   }
 
@@ -176,53 +245,59 @@ function createLocalSecretStorage({ keyPath, randomBytes = crypto.randomBytes } 
     isMasterPasswordEnabled,
     isLocked,
     status,
-    async setMasterPassword(newPassword, currentPassword = "") {
-      if (typeof newPassword !== "string" || newPassword.length < MIN_MASTER_PASSWORD_LENGTH) {
-        throw Object.assign(new Error("主密码至少需要 8 位字符"), { code: "MASTER_PASSWORD_SHORT" });
-      }
-      if (newPassword.length > MAX_MASTER_PASSWORD_LENGTH) {
-        throw Object.assign(new Error("主密码最多 200 个字符"), { code: "MASTER_PASSWORD_TOO_LONG" });
-      }
-      const state = readKeyFileState();
-      let masterKey;
-      if (state.kind === "as2") {
-        masterKey = await unwrapMasterKey(state.buffer, currentPassword);
-      } else if (cachedKey) {
-        masterKey = cachedKey;
-      } else if (state.kind === "raw") {
-        masterKey = state.key;
-      } else {
-        if (state.kind === "corrupt") {
-          try { renameWithRetrySync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
-          catch (error) { if (error?.code !== "ENOENT") throw error; }
+    setMasterPassword(newPassword, currentPassword = "") {
+      return runMasterOpSerialized(async () => {
+        if (typeof newPassword !== "string" || newPassword.length < MIN_MASTER_PASSWORD_LENGTH) {
+          throw Object.assign(new Error("主密码至少需要 8 位字符"), { code: "MASTER_PASSWORD_SHORT" });
         }
-        masterKey = Buffer.from(randomBytes(KEY_BYTES));
-      }
-      const envelope = await wrapMasterKey(masterKey, newPassword);
-      writeKeyFileAtomic(envelope);
-      cachedKey = masterKey;
-      return status();
-    },
-    async unlockMasterPassword(password) {
-      const state = readKeyFileState();
-      if (state.kind !== "as2") {
-        if (state.kind === "raw") cachedKey = state.key;
+        if (newPassword.length > MAX_MASTER_PASSWORD_LENGTH) {
+          throw Object.assign(new Error("主密码最多 200 个字符"), { code: "MASTER_PASSWORD_TOO_LONG" });
+        }
+        const state = readKeyFileState();
+        let masterKey;
+        if (state.kind === "as2") {
+          masterKey = await unwrapMasterKeyWithBackoff(state.buffer, currentPassword);
+        } else if (cachedKey) {
+          masterKey = cachedKey;
+        } else if (state.kind === "raw") {
+          masterKey = state.key;
+        } else {
+          if (state.kind === "corrupt") {
+            try { renameWithRetrySync(keyPath, `${keyPath}.corrupt-${Date.now()}`); }
+            catch (error) { if (error?.code !== "ENOENT") throw error; }
+          }
+          masterKey = Buffer.from(randomBytes(KEY_BYTES));
+        }
+        const envelope = await wrapMasterKey(masterKey, newPassword);
+        writeKeyFileAtomic(envelope);
+        cachedKey = masterKey;
         return status();
-      }
-      const masterKey = await unwrapMasterKey(state.buffer, password);
-      cachedKey = masterKey;
-      return status();
+      });
     },
-    async clearMasterPassword(currentPassword) {
-      const state = readKeyFileState();
-      if (state.kind !== "as2") {
-        if (state.kind === "raw") cachedKey = state.key;
+    unlockMasterPassword(password) {
+      return runMasterOpSerialized(async () => {
+        const state = readKeyFileState();
+        if (state.kind !== "as2") {
+          if (state.kind === "raw") cachedKey = state.key;
+          return status();
+        }
+        const masterKey = await unwrapMasterKeyWithBackoff(state.buffer, password);
+        cachedKey = masterKey;
         return status();
-      }
-      const masterKey = await unwrapMasterKey(state.buffer, currentPassword);
-      writeKeyFileAtomic(masterKey);
-      cachedKey = masterKey;
-      return status();
+      });
+    },
+    clearMasterPassword(currentPassword) {
+      return runMasterOpSerialized(async () => {
+        const state = readKeyFileState();
+        if (state.kind !== "as2") {
+          if (state.kind === "raw") cachedKey = state.key;
+          return status();
+        }
+        const masterKey = await unwrapMasterKeyWithBackoff(state.buffer, currentPassword);
+        writeKeyFileAtomic(masterKey);
+        cachedKey = masterKey;
+        return status();
+      });
     },
     isEncryptionAvailable() {
       try { return Boolean(loadKey(true)); } catch { return false; }

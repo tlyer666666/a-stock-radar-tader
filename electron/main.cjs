@@ -76,6 +76,7 @@ const {
   decryptStoredSecret,
   encryptSecretForStorage,
   isAllowedRendererNavigation,
+  isSameOriginUrl,
   migrateLegacyStoredSecrets,
   normalizeExternalHttpsUrl,
   redactRuntimeText,
@@ -92,6 +93,8 @@ const {
   getEtfMarket,
   getGlobalMarkets,
   getGlobalNews,
+  getIndexBoard,
+  pollIndexQuotes,
   getBatchQuotes,
   getReviewIndexChart,
   getFuyaoReviewData,
@@ -161,6 +164,7 @@ const { registerAllIpc } = require("./ipc/register-all.cjs");
 const { buildNewsImpactPromptInput } = require("./news-service.cjs");
 const trendScreener = createTrendScreenerService(createTrendMarketData({ ths: trendThsLane, dailyStore: dailyBarStore, asOf: dailyBarAsOf }));
 let restoreInProgress = false;
+let restoreCommitting = false;
 const reviewWindows = createReviewWindowManager({
   BrowserWindow,
   screen,
@@ -203,15 +207,38 @@ function applyWindowTheme(mode = "system") {
   return themeMode;
 }
 
+const DEBUG_LOG_MAX_BYTES = 1024 * 1024;
 function debugLog(message) {
   if (!process.env.ASTOCK_DEBUG) return;
   try {
     const safeMessage = redactRuntimeText(message).replace(/[\r\n]+/g, " ");
-    fs.appendFileSync(
-      path.join(app.getPath("temp"), "astock-monitor-startup.log"),
-      `${new Date().toISOString()} ${safeMessage}\n`,
-      "utf8"
-    );
+    const logDir = app.getPath("userData");
+    if (!logDir) return;
+    fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
+    const logPath = path.join(logDir, "astock-monitor-startup.log");
+    let currentSize = 0;
+    try {
+      const stat = fs.lstatSync(logPath);
+      if (stat.isSymbolicLink() || !stat.isFile()) return;
+      currentSize = stat.size;
+    } catch (error) {
+      if (error?.code !== "ENOENT") return;
+    }
+    const line = `${new Date().toISOString()} ${safeMessage}\n`;
+    const exceedCap = currentSize + Buffer.byteLength(line, "utf8") > DEBUG_LOG_MAX_BYTES;
+    const noFollow = fs.constants?.O_NOFOLLOW || 0;
+    const flags = exceedCap
+      ? (fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | noFollow)
+      : (fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | noFollow);
+    const fd = fs.openSync(logPath, flags, 0o600);
+    try {
+      fs.writeSync(fd, line, 0, "utf8");
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (process.platform !== "win32") {
+      try { fs.chmodSync(logPath, 0o600); } catch { /* ignore */ }
+    }
   } catch {
     // Debug logging must never affect application startup.
   }
@@ -266,9 +293,12 @@ function getCorruptedOnLoad() {
   return [...corruptedOnLoad];
 }
 
-function writeJson(name, value, validator, synchronizeBackup = false) {
+function writeJson(name, value, validator, synchronizeBackup = false, options = {}) {
   if (restoredProfilePendingRestart) {
     throw Object.assign(new Error("备份恢复完成，应用正在重启"), { code: "BACKUP_RESTARTING" });
+  }
+  if (typeof restoreCommitting !== "undefined" && restoreCommitting && options?.allowDuringRestoreCommit !== true) {
+    throw Object.assign(new Error("正在恢复备份，请稍后再试"), { code: "BACKUP_BUSY" });
   }
   return writeJsonAtomic(jsonPath(name), backupJsonPath(name), value, validator,
     error => runtimeErrorLog("persistence-backup-degraded", error, name), { synchronizeBackup });
@@ -884,6 +914,74 @@ function serviceRequestId(value, required = false) {
   return value.trim();
 }
 
+const activeRequestControllers = new Map();
+
+function createCancelError() {
+  return Object.assign(new Error("任务已取消"), { code: "JOB_CANCELLED", name: "AbortError" });
+}
+
+function trackAbortableRequest(runtime) {
+  const controller = new AbortController();
+  const owner = runtime?.owner;
+  const requestId = runtime?.requestId;
+  const entry = { requestId, controller };
+  if (owner !== undefined) {
+    let set = activeRequestControllers.get(owner);
+    if (!set) {
+      set = new Set();
+      activeRequestControllers.set(owner, set);
+    }
+    set.add(entry);
+  }
+  let cleaned = false;
+  const cleanup = () => {
+    if (cleaned) return;
+    cleaned = true;
+    if (owner !== undefined) {
+      const set = activeRequestControllers.get(owner);
+      if (set) {
+        set.delete(entry);
+        if (!set.size) activeRequestControllers.delete(owner);
+      }
+    }
+  };
+  return { signal: controller.signal, abort: reason => controller.abort(reason ?? createCancelError()), cleanup };
+}
+
+function cancelAbortableOwner(owner, reason = createCancelError()) {
+  const set = activeRequestControllers.get(owner);
+  if (!set) return 0;
+  activeRequestControllers.delete(owner);
+  let count = 0;
+  for (const entry of set) {
+    if (!entry.controller.signal.aborted) {
+      entry.controller.abort(reason);
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function cancelAbortableRequest(request, reason = createCancelError()) {
+  const owner = request?.owner;
+  const requestId = request?.requestId;
+  if (owner === undefined || !requestId) return false;
+  const set = activeRequestControllers.get(owner);
+  if (!set) return false;
+  let cancelled = false;
+  for (const entry of [...set]) {
+    if (entry.requestId === requestId) {
+      set.delete(entry);
+      if (!entry.controller.signal.aborted) {
+        entry.controller.abort(reason);
+        cancelled = true;
+      }
+    }
+  }
+  if (!set.size) activeRequestControllers.delete(owner);
+  return cancelled;
+}
+
 function serviceRequestRuntime(event, input = {}) {
   const requestId = serviceRequestId(input?.requestId);
   const timeoutMs = input?.timeoutMs;
@@ -898,6 +996,7 @@ function serviceRequestRuntime(event, input = {}) {
     serviceJobOwners.add(sender);
     const cancelOwner = () => {
       cancelServiceOwner(sender.id);
+      if (typeof cancelAbortableOwner === "function") cancelAbortableOwner(sender.id);
       // Ownership survives destruction; resolving the current trusted window
       // here excludes a destroyed sender and can also select its replacement.
       if (trendScanOwner?.sender === sender) {
@@ -1048,7 +1147,7 @@ function createWindow() {
   };
   createdWindow.on?.("resize", scheduleSaveMainBounds);
   createdWindow.on?.("move", scheduleSaveMainBounds);
-  createdWindow.once?.("close", () => {
+  createdWindow.on?.("close", () => {
     if (boundsTimer) { clearTimeout(boundsTimer); boundsTimer = null; }
     saveMainBounds();
   });
@@ -1402,12 +1501,21 @@ async function loadAiStockProfiles(securities, { signal, track = factory => fact
   let cursor = 0;
   let noticesStopped = false;
   let deadlineTimer;
+  let onNoticeAbort;
   const noticeDeadline = new Promise(resolve => {
     deadlineTimer = setTimeout(() => {
       noticesStopped = true;
       resolve();
     }, 15000);
     deadlineTimer.unref?.();
+    if (signal) {
+      onNoticeAbort = () => {
+        noticesStopped = true;
+        resolve();
+      };
+      if (signal.aborted) onNoticeAbort();
+      else signal.addEventListener("abort", onNoticeAbort, { once: true });
+    }
   });
   const noticesDone = track(() => Promise.all(Array.from({ length: Math.min(4, list.length) }, async () => {
     while (!noticesStopped && cursor < list.length && !signal?.aborted) {
@@ -1438,6 +1546,9 @@ async function loadAiStockProfiles(securities, { signal, track = factory => fact
   } finally {
     noticesStopped = true;
     clearTimeout(deadlineTimer);
+    if (signal && onNoticeAbort) {
+      try { signal.removeEventListener("abort", onNoticeAbort); } catch { /* ignore */ }
+    }
   }
   signal?.throwIfAborted();
   const profiles = [];
@@ -1455,15 +1566,26 @@ let workspaceAgentSnapshot = { tItems: [], plans: [], paperPositions: [], notes:
 let stockAgentInstance = null;
 function stockAgent() {
   if (stockAgentInstance) return stockAgentInstance;
-  let reviewSkillsInstance;
-  const reviewSkills = () => (reviewSkillsInstance ||= createReviewSkills({
-    loadFuyao: () => getFuyaoReviewData(),
+  const createAgentReviewSkills = () => createReviewSkills({
+    loadFuyao: ({ signal } = {}) => getFuyaoReviewData({ signal }),
     loadSectorBoard: () => getSectorStrengthBoard(settingsForService()),
     analyzeSector: name => analyzeSector({ name }, settingsForService()),
-    loadProfiles: list => loadAiStockProfiles(list),
+    loadProfiles: (list, { signal } = {}) => loadAiStockProfiles(list, { signal }),
     previousReviews: count => (typeof aiService === "function" ? aiService().recentMarketReviews("", count) : []),
     situationOf
-  }));
+  });
+  const reviewSkillsByLifecycle = new WeakMap();
+  const reviewSkillsFor = lifecycle => {
+    if (lifecycle && typeof lifecycle === "object") {
+      let instance = reviewSkillsByLifecycle.get(lifecycle);
+      if (!instance) {
+        instance = createAgentReviewSkills();
+        reviewSkillsByLifecycle.set(lifecycle, instance);
+      }
+      return instance;
+    }
+    return createAgentReviewSkills();
+  };
   const tools = createStockAgentTools({
     search: query => searchSecurities(query),
     quote: security => getQuoteSnapshot(security, settingsForService()),
@@ -1485,7 +1607,7 @@ function stockAgent() {
     strategies: security => strategyHitsForStock(security),
     diagnosis: security => analyzeSecurity(security, settingsForService()),
     sectorBoard: () => getSectorStrengthBoard(settingsForService()),
-    reviewSkill: (skill, args, lifecycle) => reviewSkills().runSkill(skill, args, { signal: lifecycle?.signal }),
+    reviewSkill: (skill, args, lifecycle) => reviewSkillsFor(lifecycle).runSkill(skill, args, { signal: lifecycle?.signal }),
     indexCharts: () => Promise.all([["1.000001", "上证指数"], ["0.399001", "深证成指"], ["0.399006", "创业板指"], ["1.000300", "沪深300"], ["1.000985", "中证全指"]]
       .map(([secid, name]) => getReviewIndexChart(secid, { range: "3m", limit: 90 }).then(chart => ({ code: secid.slice(2), name, rows: chart?.rows || [] }), () => ({ code: secid.slice(2), name, rows: [] })))),
     etfMarket: () => getEtfMarket(),
@@ -1540,6 +1662,25 @@ function stockAgent() {
     store: { read: () => readJson("stock-agent", null, isAgentStore), write: value => writeJson("stock-agent", value, isAgentStore, true) }
   });
   return stockAgentInstance;
+}
+
+// 驾驶舱指数实时推送：页面订阅并每 10 秒续租，行情一变就经 market:index-tick 推给主窗口。
+let indexStreamInstance = null;
+function indexStream() {
+  if (!indexStreamInstance) {
+    const { createIndexStream, createFetchSse } = require("./index-stream.cjs");
+    indexStreamInstance = createIndexStream({
+      openSse: createFetchSse(),
+      pollQuotes: ({ signal }) => pollIndexQuotes({ signal }),
+      emit: payload => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const contents = mainWindow.webContents;
+        if (contents && !contents.isDestroyed()) contents.send("market:index-tick", payload);
+      },
+      log: message => debugLog(message)
+    });
+  }
+  return indexStreamInstance;
 }
 
 function emitAiStream(payload) {
@@ -1629,14 +1770,15 @@ if (!hasSingleInstanceLock) {
     customStrategyStore,
     kvGet: key => localKvStore().get(key),
     kvSet: (key, value) => {
-      if (restoredProfilePendingRestart || isQuitting) return false;
+      if (restoredProfilePendingRestart || isQuitting || restoreCommitting) return false;
       return localKvStore().set(key, value);
     },
     localKvMirror: {
       keys: () => localKvStore().keys(),
       get: key => localKvStore().get(key),
       set: (key, value) => localKvStore().set(key, value),
-      remove: key => localKvStore().remove(key)
+      remove: key => localKvStore().remove(key),
+      replaceKeys: (entries, removeKeys) => localKvStore().replaceKeys(entries, removeKeys)
     },
     isSecretLocked: () => secretStorage().isLocked(),
     getMasterPasswordStatus: () => secretStorage().status(),
@@ -1671,6 +1813,9 @@ if (!hasSingleInstanceLock) {
     reviewWindows,
     closeReviewWindow: () => reviewWindows.closeWindow(),
     setRestoreInProgress: active => { restoreInProgress = Boolean(active); },
+    setRestoreCommitting: active => { restoreCommitting = Boolean(active); },
+    isSameOriginUrl,
+    trackAbortableRequest,
     showSystemNotification,
     intervalReminders,
     noteWatcher,
@@ -1688,6 +1833,8 @@ if (!hasSingleInstanceLock) {
     resetMarketSourceHealth,
     getConvertibleBonds,
     getEtfMarket,
+    getIndexBoard,
+    subscribeIndexStream: options => indexStream().subscribe({ active: options?.active !== false }),
     getBatchQuotes,
     getFuyaoReviewData,
     getDataFederation,
@@ -1711,7 +1858,11 @@ if (!hasSingleInstanceLock) {
     strategyLeaderboard,
     getStrategyLeaderboardProgress,
     getDailyBarCoverage: () => dailyBarStore?.getCoverageSummary?.() || null,
-    cancelServiceJob,
+    cancelServiceJob: request => {
+      const cancelledService = cancelServiceJob(request);
+      const cancelledTracked = cancelAbortableRequest(request);
+      return Boolean(cancelledService || cancelledTracked);
+    },
     getStrategyDefinitions,
     evaluateTrendResearch,
     checkTrendExecution,
@@ -1772,17 +1923,33 @@ const finishShutdown = createShutdownGate({
 
 app.on("before-quit", (event) => {
   isQuitting = true;
+  try {
+    localKvStoreInstance?.close?.();
+  } catch (error) {
+    runtimeErrorLog("shutdown-resource", error);
+  }
+  for (const owner of [...activeRequestControllers.keys()]) {
+    cancelAbortableOwner(owner);
+  }
   activeNotifications.clear();
   cancelRendererRecovery();
   trendScanOwner = undefined;
   trendScreener.cancel();
+  indexStreamInstance?.shutdown();
   dailyBarStore?.shutdown?.();
   noteWatcherInstance?.stop();
   intervalReminders.stop();
   finishShutdown(event);
 });
 
-app.on("will-quit", destroyTray);
+app.on("will-quit", () => {
+  try {
+    localKvStoreInstance?.close?.();
+  } catch (error) {
+    runtimeErrorLog("shutdown-resource", error);
+  }
+  destroyTray();
+});
 
 app.on("window-all-closed", () => {
   if (process.platform === "darwin") {

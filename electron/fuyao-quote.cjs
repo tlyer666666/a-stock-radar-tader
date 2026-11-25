@@ -186,6 +186,15 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
     const turnover = profile?.floatShares && volumeLots !== null ? (volumeLots * 100) / profile.floatShares * 100 : null;
     const changePct = finiteOrNull(snap.changePct) ?? (preClose ? (latest / preClose - 1) * 100 : null);
     const amount = finiteOrNull(snap.amount);
+    const rawStatus = snap.tradeStatus ?? snap.marketStatus ?? "";
+    const marketStatus = String(rawStatus || "").trim();
+    const suspended = typeof snap.suspended === "boolean"
+      ? snap.suspended
+      : marketStatus
+        ? (/^(?:suspended|delisted|halted)$/i.test(marketStatus) || /停牌|暂停交易|暂停上市/.test(marketStatus)
+          ? true
+          : (/^(?:trading|open|closed|normal)$/i.test(marketStatus) || /交易|竞价|盘中|闭市|收盘|休市|午间|午休|未开盘|盘后|正常|开市/.test(marketStatus) ? false : null))
+        : null;
     const missingFields = [["latest", latest], ["changePct", changePct], ["turnover", turnover], ["volume", volumeLots], ["amount", amount]].filter(([, value]) => value === null || !Number.isFinite(value)).map(([key]) => key);
     return {
       code, name, secid: security.secid, thscode: security.thscode || thscode,
@@ -203,7 +212,8 @@ function createFuyaoQuoteSource({ fuyao, loadProfile = null, now = () => Date.no
       quoteAt: Number.isFinite(quoteMs) ? new Date(quoteMs).toISOString() : new Date(now()).toISOString(),
       ...(snap.quoteAtIsTradeTime === true ? { quoteAtIsTradeTime: true, quoteAtIsBatchTime: false } : {}),
       ...(snap.quoteAtIsBatchTime === true ? { quoteAtIsTradeTime: false, quoteAtIsBatchTime: true } : {}),
-      marketStatus: "",
+      marketStatus,
+      ...(suspended !== null ? { suspended } : {}),
       lagSeconds: snap.quoteAtIsBatchTime === true
         ? null
         : (Number.isFinite(quoteMs) && inTradingSession(now()) ? Math.max(0, Math.round((now() - quoteMs) / 1000)) : null),

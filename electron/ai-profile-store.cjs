@@ -101,7 +101,9 @@ function createAiProfileStore({ read, write, encrypt, decrypt, legacy = () => nu
 
   function remove(id) {
     const store = load();
-    if (!store.profiles.some(item => item.id === id)) throw profileError("配置不存在");
+    const target = store.profiles.find(item => item.id === id);
+    if (!target) throw profileError("配置不存在");
+    if (target.apiKey && locked()) throw lockedStorageError();
     const profiles = store.profiles.filter(item => item.id !== id);
     write({ activeId: store.activeId === id ? profiles[0]?.id || "" : store.activeId, rankIds: store.rankIds.filter(item => item !== id), profiles });
     return list();

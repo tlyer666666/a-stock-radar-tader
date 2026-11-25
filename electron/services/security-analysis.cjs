@@ -3,6 +3,7 @@
 // services.cjs 通过顶部解构回本模块并继续按原契约 re-export，勿在这里引入
 // 对 services.cjs 的反向依赖。
 const { priceLimitRate, upperLimitPrice, isLimitUpBar } = require("../price-limit-rules.cjs");
+const { DEFAULT_COSTS, roundTripBps } = require("../backtest-costs.cjs");
 const { anchoredVwap } = require("../market-history-rules.cjs");
 const { computePatternStrategies, scoreFirstBoardQuality, computeRegimeWeightProfile } = require("../strategy-intelligence.cjs");
 const { buildQuoteConsensus } = require("../data-federation.cjs");
@@ -136,7 +137,7 @@ function buildTradeExecutionReadiness(analysis = {}, tradePlan = {}, settings = 
 function calculateAtr(history, period = 14) {
   if (!Array.isArray(history) || history.length <= period) return null;
   const ranges = [];
-  for (let index = Math.max(period, 1); index < history.length; index += 1) {
+  for (let index = Math.max(1, history.length - period); index < history.length; index += 1) {
     const current = history[index];
     const previous = history[index - 1];
     if (!current || !previous) continue;
@@ -154,18 +155,24 @@ function calculateAtr(history, period = 14) {
 
 function buildTradePlan(analysis, quote, history, settings) {
   const latest = Number(quote?.latest || quote?.close || 0);
-  if (!latest || !analysis) return null;
+  if (!Number.isFinite(latest) || latest <= 0 || !analysis) return null;
   const atr = calculateAtr(history, 14);
   const atrMultipleStop = Math.max(1, Math.min(8, Number(settings?.stopLossATRMultiple) || 2));
   const atrMultipleTake = Math.max(1.2, Math.min(12, Number(settings?.takeProfitATRMultiple) || 3.2));
   const atrDistance = Number.isFinite(atr) && atr > 0
     ? atr
     : Math.abs((quote.open || latest) - (quote.preClose || latest)) || latest * 0.012;
+  const tick = Number(quote?.pricePrecision) === 3 ? 0.001 : 0.01;
   const stopLossDistance = atrDistance * atrMultipleStop;
   const targetDistance = atrDistance * atrMultipleTake;
-  const stopLossPrice = roundPrice(latest - stopLossDistance);
+  const rawStopPrice = roundPrice(latest - stopLossDistance);
+  const stopInvalid = stopLossDistance >= latest || !(rawStopPrice > 0) || !(latest > tick);
+  const stopLossPrice = Math.max(tick, rawStopPrice);
+  const effectiveStopDistance = Math.max(0, latest - stopLossPrice);
   const takeProfitPrice = roundPrice(latest + targetDistance);
-  const stopLossPercent = (stopLossDistance / latest) * 100;
+  const stopLossPercent = stopInvalid
+    ? (stopLossDistance / latest) * 100
+    : (effectiveStopDistance / latest) * 100;
   const takeProfitPercent = (targetDistance / latest) * 100;
   const riskDistancePercent = Math.max(0.5, stopLossPercent);
   const accountRiskPercent = Math.max(0.1, Math.min(20, Number(settings?.maxRiskPerTradePercent) || 1));
@@ -177,16 +184,18 @@ function buildTradePlan(analysis, quote, history, settings) {
   const riskFactor = Math.max(0.1, 1 - ((analysis.riskPenalty || 0) / 120));
   const confidence = clamp(scoreRate * historicalPenalty * nodePenalty * riskFactor, 0.1, 1);
   const stopLossExposureRatio = accountRiskPercent / riskDistancePercent;
-  const basePosition = clamp(stopLossExposureRatio * 100, 5, maxPositionPercent);
-  const positionSizePercent = clamp(basePosition * confidence, 5, maxPositionPercent);
-  const riskReward = Number(targetDistance / stopLossDistance);
-  const maxLossBudgetPercent = clamp(
-    positionSizePercent * riskDistancePercent / 100,
-    0,
-    accountRiskPercent
-  );
+  const basePosition = clamp(stopLossExposureRatio * 100, 0, maxPositionPercent);
+  const positionSizePercent = stopInvalid
+    ? 0
+    : clamp(basePosition * confidence, 0, maxPositionPercent);
+  const riskReward = !stopInvalid && effectiveStopDistance > 0
+    ? Number(targetDistance / effectiveStopDistance)
+    : Number.NaN;
+  const maxLossBudgetPercent = stopInvalid
+    ? 0
+    : Math.max(0, (positionSizePercent * riskDistancePercent) / 100);
   let signal = "WAIT";
-  if (analysis.alertQualified && analysis.strategyQualified && historicalPass) {
+  if (!stopInvalid && analysis.alertQualified && analysis.strategyQualified && historicalPass) {
     if (analysis.mrs >= 82 && riskReward >= 1.7) signal = "BUY_AGGRESSIVE";
     else if (analysis.mrs >= 70 && riskReward >= 1.2) signal = "BUY";
     else signal = "OBSERVE";
@@ -198,6 +207,7 @@ function buildTradePlan(analysis, quote, history, settings) {
     maxPositionPercent,
     maxLossBudgetPercent: Number(maxLossBudgetPercent.toFixed(2)),
     stopLossPrice,
+    stopInvalid,
     takeProfitPrice,
     stopLossDistancePercent: Number(stopLossPercent.toFixed(2)),
     takeProfitDistancePercent: Number(takeProfitPercent.toFixed(2)),
@@ -227,16 +237,23 @@ function edgeGateFromStats(historicalStats, options = {}) {
   const combination = Array.isArray(historicalStats?.stats)
     ? historicalStats.stats.find((item) => item.id === "currentCombination")
     : null;
-  const sampleCount = Number(combination?.sampleCount || 0);
-  const winRate5 = Number.isFinite(Number(combination?.winRate5))
-    ? Number(combination.winRate5)
-    : null;
-  const average5 = Number.isFinite(Number(combination?.average5))
-    ? Number(combination.average5)
-    : null;
-  const worstMdd5 = Number.isFinite(Number(combination?.worstMdd5))
-    ? Number(combination.worstMdd5)
-    : null;
+  const rawSampleCount = finiteOrNull(combination?.sampleCount) ?? 0;
+  const settledN5 = finiteOrNull(combination?.n5);
+  const independentEventCount = finiteOrNull(combination?.independentEventCount);
+  const independentN5 = finiteOrNull(combination?.independentN5);
+  const sampleCount = independentN5 !== null
+    ? independentN5
+    : settledN5 !== null
+      ? settledN5
+      : independentEventCount !== null
+        ? independentEventCount
+        : rawSampleCount;
+  const winRate5 = finiteOrNull(combination?.winRate5);
+  const rawAverage5 = finiteOrNull(combination?.average5);
+  const costsIncluded = historicalStats?.costsIncluded === true || options.costDeducted === true;
+  const roundTripCostPercent = costsIncluded ? 0 : roundTripBps(DEFAULT_COSTS) / 100;
+  const average5 = rawAverage5 === null ? null : rawAverage5 - roundTripCostPercent;
+  const worstMdd5 = finiteOrNull(combination?.worstMdd5);
   const confidence = combination?.confidence || "不足";
   const minimumSamples = Math.max(
     12,
@@ -250,17 +267,29 @@ function edgeGateFromStats(historicalStats, options = {}) {
     penalty += 12;
     reasons.push(`历史独立样本不足（${sampleCount}/${minimumSamples} 条）`);
   } else {
-    if (winRate5 !== null && winRate5 < 45) {
+    if (winRate5 === null) {
+      passed = false;
+      penalty += 14;
+      reasons.push("5日胜率缺失");
+    } else if (winRate5 < 45) {
       passed = false;
       penalty += 14;
       reasons.push(`5日胜率不足（${winRate5.toFixed(1)}%，低于45%）`);
     }
-    if (average5 !== null && average5 <= 0.3) {
+    if (average5 === null) {
       passed = false;
       penalty += 12;
-      reasons.push(`5日平均收益偏弱（${average5.toFixed(2)}%）`);
+      reasons.push("5日平均净收益缺失");
+    } else if (average5 <= 0.3) {
+      passed = false;
+      penalty += 12;
+      reasons.push(`5日平均净收益偏弱（${average5.toFixed(2)}%）`);
     }
-    if (worstMdd5 !== null && worstMdd5 < -22) {
+    if (worstMdd5 === null) {
+      passed = false;
+      penalty += 10;
+      reasons.push("历史最差5日回撤缺失");
+    } else if (worstMdd5 < -22) {
       passed = false;
       penalty += 10;
       reasons.push(`历史最差5日回撤过大（${worstMdd5.toFixed(2)}%）`);
@@ -277,6 +306,10 @@ function edgeGateFromStats(historicalStats, options = {}) {
   return {
     passed,
     sampleCount,
+    rawSampleCount,
+    settledN5,
+    independentEventCount,
+    independentN5,
     winRate5,
     average5,
     worstMdd5,

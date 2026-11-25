@@ -52,11 +52,12 @@ export function normalizeTStore(value: unknown): TStore {
     const rolledTradeIds = Array.isArray(raw.rolledTradeIds)
       ? [...new Set(raw.rolledTradeIds.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(-2000)
       : undefined;
+    const name = String(raw.name || code).slice(0, 16);
     items.push({
       code,
-      name: String(raw.name || code).slice(0, 16),
+      name,
       secid: typeof raw.secid === "string" && /^[01]\.\d{6}$/.test(raw.secid) ? raw.secid : secidForCode(code),
-      config: normalizeTConfig(isRecord(raw.config) ? raw.config : null, code),
+      config: normalizeTConfig(isRecord(raw.config) ? raw.config : null, code, name),
       addedAt: String(raw.addedAt || ""),
       ...(rolledTradeIds ? { rolledTradeIds } : {})
     });
@@ -108,17 +109,21 @@ export function shanghaiDay(now = new Date()): string {
   return new Date(now.getTime() + 8 * 3600_000).toISOString().slice(0, 10);
 }
 
-/** 以行情所属日和交易时段有效分钟为准，兼容 09:25–09:30 集合竞价归一及 11:30–13:00 午间休市跨度。 */
-export function isFreshTQuote(date: string | undefined, time: string | undefined, now = new Date()): boolean {
-  if (date !== shanghaiDay(now) || !time || !TIME.test(time)) return false;
+function isFreshSessionClock(quoteTime: string | undefined, clockTime: string | undefined): boolean {
+  if (!quoteTime || !clockTime || !TIME.test(quoteTime) || !TIME.test(clockTime)) return false;
   const minutes = (value: string) => Number(value.slice(0, 2)) * 60 + Number(value.slice(3, 5));
-  const nowMin = minutes(shanghaiClock(now));
-  const quoteMin = minutes(time);
+  const nowMin = minutes(clockTime);
+  const quoteMin = minutes(quoteTime);
   if (nowMin >= 565 && nowMin <= 570 && quoteMin === 570) return true;
   if (quoteMin > nowMin) return false;
   const toSessionMinutes = (m: number) => m <= 570 ? m : m <= 690 ? m : m < 780 ? 690 : m - 90;
   const lag = toSessionMinutes(nowMin) - toSessionMinutes(quoteMin);
   return lag >= 0 && lag <= 2;
+}
+
+/** 以行情所属日和交易时段有效分钟为准，兼容 09:25–09:30 集合竞价归一及 11:30–13:00 午间休市跨度。 */
+export function isFreshTQuote(date: string | undefined, time: string | undefined, now = new Date()): boolean {
+  return date === shanghaiDay(now) && isFreshSessionClock(time, shanghaiClock(now));
 }
 
 export type AlertMemory = Record<string, { action: TAction; at: number; date?: string; signalTime?: string }>;
@@ -128,8 +133,7 @@ export type AlertMemory = Record<string, { action: TAction; at: number; date?: s
  */
 export function shouldAlert(memory: AlertMemory, code: string, action: TAction, signalTime: string, nowMs: number, nowClock: string, signalDate = shanghaiDay(new Date(nowMs))): boolean {
   if (action === "wait" || !isFreshTQuote(signalDate, signalTime, new Date(nowMs))) return false;
-  const toMinutes = (time: string) => Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5));
-  if (!TIME.test(signalTime) || !TIME.test(nowClock) || Math.abs(toMinutes(nowClock) - toMinutes(signalTime)) > 2) return false;
+  if (!isFreshSessionClock(signalTime, nowClock)) return false;
   const last = memory[code];
   if (last?.date && last.date !== signalDate) return true;
   if (last?.action === action && last.signalTime === signalTime) return false;
@@ -173,7 +177,7 @@ export function rolloverTStoreForDay(
       const h = holdingByCode.get(item.code);
       if (h && item.config.costPrice <= 0 && Number(h.costPrice) > 0) {
         filledCost = true;
-        return { ...item, config: normalizeTConfig({ ...item.config, costPrice: Number(h.costPrice) }, item.code) };
+        return { ...item, config: normalizeTConfig({ ...item.config, costPrice: Number(h.costPrice) }, item.code, item.name) };
       }
       return item;
     });
@@ -226,7 +230,7 @@ export function rolloverTStoreForDay(
       baseShares: nextBase,
       sellableShares: nextSellable,
       costPrice: nextCost
-    }, item.code);
+    }, item.code, item.name);
     if (normalizedConfig.sellableShares !== item.config.sellableShares || normalizedConfig.baseShares !== item.config.baseShares) {
       rolled.push({ code: item.code, name: item.name, sellableShares: normalizedConfig.sellableShares, baseShares: normalizedConfig.baseShares });
     }

@@ -272,8 +272,8 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
     const code = safeCode(security?.code);
     if (!code || !asOf) return fetchFull();
     let stored = await read(code);
-    // 当初下载的根数少于这次需要的根数：重新完整下载（新股本来就短，下载时记录的是请求根数，不会反复下载）。
-    if (stored && bars > 0 && (stored.requested || 0) < bars) stored = null;
+    // 当初下载的根数少于这次需要的根数，或本次请求的根数超出缓存上限 maxRows：重新完整下载，避免返回被截断的缓存结果。
+    if (stored && bars > 0 && ((stored.requested || 0) < bars || bars > maxRows)) stored = null;
     const lastDate = stored?.rows.at(-1)?.date;
     if (stored && lastDate === asOf) { stats.hits += 1; return result(stored, "local"); }
     if (stored && prepared.asOf === asOf && lastDate === previousSession(asOf)) {
@@ -300,10 +300,15 @@ function createDailyBarStore({ directory = null, snapshot = null, previousSessio
       ? validateDailyBarRows(fresh?.rows) : [];
     const rows = allRows.filter(row => row.date <= asOf);
     const cleanRow = row => Object.fromEntries(FIELDS.filter(key => row[key] !== undefined && row[key] !== null).map(key => [key, row[key]]));
-    if (rows.length) await write(code, { rows: rows.slice(-maxRows).map(cleanRow),
-      source: String(fresh.source || ""), checkedAsOf: asOf, checkedAt: now(), requested: Math.max(bars, rows.length) });
-    // 下载与之后命中缓存返回同样的日期范围与字段口径（都截到 asOf 并去掉 null 占位），结果不随缓存状态变化。
-    return fresh?.adjustment === "none" && Array.isArray(fresh?.rows) ? { ...fresh, rows: fresh.rows.filter(row => String(row?.date || "") <= asOf).map(cleanRow) } : fresh;
+    const cachedRows = rows.slice(-maxRows).map(cleanRow);
+    if (rows.length) await write(code, { rows: cachedRows,
+      source: String(fresh.source || ""), checkedAsOf: asOf, checkedAt: now(), requested: Math.min(maxRows, Math.max(bars, rows.length)) });
+    // 下载与之后命中缓存返回同样的日期范围与字段口径（bars <= maxRows 时统一按 maxRows 截尾，bars > maxRows 时绕过缓存返回完整结果），结果不随缓存状态变化。
+    if (fresh?.adjustment === "none" && Array.isArray(fresh?.rows)) {
+      const filtered = fresh.rows.filter(row => String(row?.date || "") <= asOf).map(cleanRow);
+      return { ...fresh, rows: bars > maxRows ? filtered : filtered.slice(-maxRows) };
+    }
+    return fresh;
   }
 
   function result(entry, cacheState) {

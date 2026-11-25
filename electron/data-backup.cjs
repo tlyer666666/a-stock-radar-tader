@@ -247,6 +247,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     return items;
   };
   const safeFile = (folder, name) => {
+    if (!folder) throw fail("BACKUP_FOLDER", "还没有选择备份文件夹");
     if (!FILE_PATTERN.test(String(name || ""))) throw fail("BACKUP_INVALID", "备份文件名不对");
     return path.join(folder, name);
   };
@@ -320,6 +321,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
 
   async function prepareRestore(name, password) {
     const current = config();
+    if (!current.folder) throw fail("BACKUP_FOLDER", "还没有选择备份文件夹");
     const file = safeFile(current.folder, name);
     const text = readBackupFile(file);
     const backup = await decodeBackup(text, resolveSavedPassword(current, password));
@@ -335,6 +337,13 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     const incomingKeys = Object.keys(nextLocal).filter(
       key => isAppLocalKey(key) && typeof nextLocal[key] === "string" && MIRROR_KEY_RE.test(key)
     );
+    const incomingSet = new Set(incomingKeys);
+    const entriesToSet = incomingKeys.map(key => [key, nextLocal[key]]);
+    const keysToRemove = existingKeys.filter(key => !incomingSet.has(key));
+    if (typeof localMirror.replaceKeys === "function") {
+      localMirror.replaceKeys(entriesToSet, keysToRemove);
+      return;
+    }
     const keys = [...new Set([...existingKeys, ...incomingKeys])];
     const previous = keys.map(key => [key, localMirror.get(key)]);
     const restore = () => {
@@ -391,6 +400,9 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
       if (typeof patch?.auto === "boolean") next.auto = patch.auto;
       if (Number.isFinite(Number(patch?.keep)) && patch?.keep !== undefined) next.keep = Math.max(3, Math.min(365, Math.floor(Number(patch.keep))));
       if (typeof patch?.password === "string") {
+        if (current.password && patch.password === "" && secretLocked()) {
+          throw lockedError();
+        }
         if (patch.password.length > 0 && patch.password.length < MIN_PASSWORD_LENGTH) {
           throw fail("BACKUP_PASSWORD_SHORT", "备份加密密码至少需要 8 位字符");
         }
@@ -466,6 +478,7 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
     /** 读出备份内容（不写入），用于恢复前预览。 */
     async inspect(name, password) {
       const current = config();
+      if (!current.folder) throw fail("BACKUP_FOLDER", "还没有选择备份文件夹");
       const file = safeFile(current.folder, name);
       const text = readBackupFile(file);
       const backup = await decodeBackup(text, resolveSavedPassword(current, password));

@@ -62,7 +62,10 @@ function registerWorkspaceIpc({
   normalizeExternalHttpsUrl,
   getRestoredProfilePendingRestart,
   setRestoredProfilePendingRestart,
-  setRestoreInProgress = () => {}
+  setRestoreInProgress = () => {},
+  setRestoreCommitting = () => {},
+  sameOrigin,
+  isSameOriginUrl
 }) {
   handleTrustedIpc("watchlist:get", () => normalizeWatchlist(readJson("watchlist", [], usableWatchlist)));
   handleTrustedIpc("watchlist:save", (_, items) => {
@@ -81,10 +84,26 @@ function registerWorkspaceIpc({
   handleTrustedIpc("settings:save", (_, next) => {
     const input = next && typeof next === "object" && !Array.isArray(next) ? next : {};
     const previous = loadStoredSettings();
-    const refreshToken = resolveStoredSecret(input.refreshToken, previous.refreshToken, encryptSecret);
-    const tushareToken = resolveStoredSecret(input.tushareToken, previous.tushareToken, encryptSecret);
-    const fuyaoApiKey = resolveStoredSecret(input.fuyaoApiKey, previous.fuyaoApiKey, encryptSecret);
-    const aiApiKey = resolveStoredSecret(input.aiApiKey, previous.aiApiKey, encryptSecret);
+    const secretLocked = typeof isSecretLocked === "function" ? isSecretLocked : () => false;
+    const nextAiBaseUrl = typeof input.aiBaseUrl === "string"
+      ? input.aiBaseUrl.trim().slice(0, 300)
+      : (previous.aiBaseUrl || "");
+    const keepSavedAiKey = typeof input.aiApiKey !== "string" || /^•+$/.test(input.aiApiKey.trim());
+    const originMatches = typeof isSameOriginUrl === "function"
+      ? isSameOriginUrl(previous.aiBaseUrl, nextAiBaseUrl)
+      : (typeof sameOrigin === "function" ? sameOrigin(previous.aiBaseUrl, nextAiBaseUrl) : false);
+    if (
+      previous.aiApiKey
+      && keepSavedAiKey
+      && nextAiBaseUrl !== (previous.aiBaseUrl || "")
+      && !originMatches
+    ) {
+      throw Object.assign(new TypeError("更换了接口地址的域名，请重新填写这个平台的 API Key"), { code: "INVALID_AI_PROFILE", field: "apiKey" });
+    }
+    const refreshToken = resolveStoredSecret(input.refreshToken, previous.refreshToken, encryptSecret, secretLocked);
+    const tushareToken = resolveStoredSecret(input.tushareToken, previous.tushareToken, encryptSecret, secretLocked);
+    const fuyaoApiKey = resolveStoredSecret(input.fuyaoApiKey, previous.fuyaoApiKey, encryptSecret, secretLocked);
+    const aiApiKey = resolveStoredSecret(input.aiApiKey, previous.aiApiKey, encryptSecret, secretLocked);
     const secretsChanged = refreshToken !== previous.refreshToken
       || tushareToken !== previous.tushareToken
       || fuyaoApiKey !== previous.fuyaoApiKey
@@ -106,7 +125,7 @@ function registerWorkspaceIpc({
   handleTrustedIpc("app:set-zoom", (_, factor) => setAppZoomFactor(factor));
   handleTrustedIpc("storage:kv-get", (_, key) => kvGet(key));
   handleTrustedIpc("storage:kv-set", (_, input) => {
-    if (getRestoredProfilePendingRestart()) return false;
+    if (getRestoredProfilePendingRestart() || restoreCommitting) return false;
     return kvSet(input?.key, input?.value);
   });
   handleTrustedIpc("storage:cleanup", (_, input) => cleanupStorageCache(input));
@@ -139,7 +158,7 @@ function registerWorkspaceIpc({
     readStore: name => readJson(name, null, backupValidators[name]),
     writeStore: (name, value) => {
       if (!backupValidators[name](value)) throw Object.assign(new Error(`备份里的「${name}」数据格式不对，已跳过恢复`), { code: "BACKUP_INVALID" });
-      writeJson(name, value, backupValidators[name], true);
+      writeJson(name, value, backupValidators[name], true, { allowDuringRestoreCommit: true });
     },
     validateStore: (name, value) => Boolean(backupValidators[name]?.(value)),
     removeStore: name => {
@@ -190,10 +209,11 @@ function registerWorkspaceIpc({
 
   let stagedRestore = null;
   let restoreExpiry;
+  let restorePreparing = false;
   let restoreCommitting = false;
   const restoreBusy = () => Object.assign(new Error("正在恢复备份，请稍后再试"), { code: "BACKUP_BUSY" });
   handleTrustedIpc("backup:run", async (_, local, options) => {
-    if (stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
+    if (restorePreparing || stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
     const reason = options && options.reason === "auto" ? "auto" : "manual";
     const res = await backup.run(backupLocal(local), { reason });
     return { ...res, status: { ...res.status, suggestions: backup.suggestions() } };
@@ -206,15 +226,24 @@ function registerWorkspaceIpc({
     setRestoreInProgress(false);
   };
   handleTrustedIpc("backup:prepare-restore", async (event, name, password) => {
-    if (stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
-    closeReviewWindow?.();
-    const snapshot = await backup.prepareRestore(String(name || ""), typeof password === "string" ? password : "");
-    const token = require("node:crypto").randomUUID();
-    stagedRestore = { token, owner: event.sender.id, snapshot };
+    if (restorePreparing || stagedRestore || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
+    restorePreparing = true;
     setRestoreInProgress(true);
-    restoreExpiry = setTimeout(clearStagedRestore, 60_000);
-    restoreExpiry.unref?.();
-    return { token, local: snapshot.local };
+    try {
+      closeReviewWindow?.();
+      const snapshot = await backup.prepareRestore(String(name || ""), typeof password === "string" ? password : "");
+      const token = require("node:crypto").randomUUID();
+      clearTimeout(restoreExpiry);
+      stagedRestore = { token, owner: event.sender.id, snapshot };
+      restoreExpiry = setTimeout(clearStagedRestore, 60_000);
+      restoreExpiry.unref?.();
+      return { token, local: snapshot.local };
+    } catch (error) {
+      if (!stagedRestore) setRestoreInProgress(false);
+      throw error;
+    } finally {
+      restorePreparing = false;
+    }
   });
   handleTrustedIpc("backup:cancel-restore", (event, token) => {
     if (stagedRestore?.owner === event.sender.id && stagedRestore.token === token) clearStagedRestore();
@@ -223,10 +252,11 @@ function registerWorkspaceIpc({
     if (!stagedRestore || stagedRestore.token !== token || stagedRestore.owner !== event.sender.id) {
       throw Object.assign(new Error("恢复准备已失效，请重新选择备份"), { code: "BACKUP_EXPIRED" });
     }
-    if (restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
+    if (restorePreparing || restoreCommitting || getRestoredProfilePendingRestart()) throw restoreBusy();
     const { snapshot } = stagedRestore;
     clearStagedRestore();
     restoreCommitting = true;
+    setRestoreCommitting(true);
     setRestoreInProgress(true);
     try {
       closeReviewWindow?.();
@@ -241,6 +271,7 @@ function registerWorkspaceIpc({
       return { ok: true };
     } finally {
       restoreCommitting = false;
+      setRestoreCommitting(false);
       setRestoreInProgress(getRestoredProfilePendingRestart());
     }
   });

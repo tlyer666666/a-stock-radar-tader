@@ -590,7 +590,15 @@ export function NewsView({
                       <Sparkles size={13} />
                       {impactById[item.id]?.loading ? "拆解中…" : impactById[item.id]?.data ? "收起拆解" : "AI 拆解供应链与持仓"}
                     </button>
-                    <button onClick={() => window.stockApi.openExternal(item.sourceUrl || "")}>查看原文 <ExternalLink size={14} /></button>
+                    <button
+                      type="button"
+                      disabled={!item.sourceUrl?.trim()}
+                      onClick={() => {
+                        const url = item.sourceUrl?.trim();
+                        if (!url) return;
+                        void Promise.resolve(window.stockApi?.openExternal?.(url)).catch(() => {});
+                      }}
+                    >查看原文 <ExternalLink size={14} /></button>
                   </div>
                 </div>
                 {(() => {

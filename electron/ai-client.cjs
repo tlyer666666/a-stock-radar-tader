@@ -129,7 +129,11 @@ function createAiClient({ getConfig, fetchImpl, getSignal = () => undefined, tra
       const delta = parsed?.choices?.[0]?.delta;
       if (!delta || typeof delta !== "object") return;
       const textDelta = typeof delta.content === "string" ? delta.content : "";
-      const reasonDelta = typeof delta.reasoning_content === "string" ? delta.reasoning_content : "";
+      const reasonDelta = typeof delta.reasoning_content === "string"
+        ? delta.reasoning_content
+        : typeof delta.reasoning === "string"
+          ? delta.reasoning
+          : "";
       if (!textDelta && !reasonDelta) return;
       content += textDelta;
       reasoning += reasonDelta;

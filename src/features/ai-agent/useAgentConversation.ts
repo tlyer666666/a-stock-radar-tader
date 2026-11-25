@@ -271,7 +271,8 @@ export function useAgentConversation(
           messages: message && !base.messages.some(item => item.id === message.id) ? [...base.messages, message] : base.messages };
       });
     };
-    let stopped = false, inFlight = false, finished = false;
+    let stopped = false, inFlight = false, finished = false, consecutiveErrors = 0;
+    let timer = 0;
     const ownsRun = () => !stopped && isCurrent(owner) && active.current === conversationId && currentRun.current?.runId === runId;
     const tick = whenVisible(async () => {
       if (!ownsRun() || inFlight || finished) return;
@@ -280,6 +281,7 @@ export function useAgentConversation(
       try {
         const value = await api.poll(runId);
         if (!ownsRun()) return;
+        consecutiveErrors = 0;
         if (value.status === "running") { setRun(value); return; }
         terminal = value; finished = true;
         // Keep the effect alive until its final IPC read is delivered. Updating
@@ -290,10 +292,18 @@ export function useAgentConversation(
         setRun(null); void refreshState();
       } catch (reason) {
         if (!ownsRun()) return;
-        setError(errorText(reason));
+        const gone = /已结束或已过期|AGENT_RUN_GONE/.test(String(reason));
+        consecutiveErrors += 1;
+        setError(gone ? "上次的对话运行已中断或已过期，请重新发送" : errorText(reason));
         if (terminal) {
           deliverTerminal(null, terminal);
           setRun(null); void refreshState();
+        } else if (gone || consecutiveErrors >= 3) {
+          finished = true;
+          stopped = true;
+          window.clearInterval(timer);
+          setRun(null);
+          void refreshState();
         }
       } finally { inFlight = false; }
     });
@@ -310,7 +320,7 @@ export function useAgentConversation(
         })
       : undefined;
     // Active AI run progress continues polling briefly while minimized so completed replies are ready on return.
-    const timer = window.setInterval(() => { void tick(); }, POLL_MS);
+    timer = window.setInterval(() => { void tick(); }, POLL_MS);
     void tick();
     return () => { stopped = true; window.clearInterval(timer); unsubscribeStream?.(); };
     // run's progress fields may change without replacing the polling owner.

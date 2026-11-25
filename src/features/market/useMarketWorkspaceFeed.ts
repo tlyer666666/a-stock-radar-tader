@@ -196,9 +196,10 @@ export function useMarketWorkspaceFeed({
     const providers = Array.isArray(responseMeta.providers)
       ? responseMeta.providers.map(String)
       : [...new Set(rows.map((item) => String(item?.dataProvider || "")).filter(Boolean))];
+    const responseFetchedAt = String(responseMeta.fetchedAt || "");
     const nextMeta: LimitPoolMeta = {
       dataDate,
-      fetchedAt: String(responseMeta.fetchedAt || new Date().toISOString()),
+      fetchedAt: responseFetchedAt || new Date().toISOString(),
       checkedAt: new Date().toISOString(),
       providers,
       count: rows.length,
@@ -209,7 +210,19 @@ export function useMarketWorkspaceFeed({
     const rowsChanged = rowsJson !== limitPoolRowsJsonRef.current;
     limitPoolRowsJsonRef.current = rowsJson;
     if (rowsChanged) setLimitUps(rows);
-    setLimitPoolMeta(nextMeta);
+    setLimitPoolMeta(prev => {
+      if (
+        !rowsChanged &&
+        trigger === "auto" &&
+        prev.dataDate === nextMeta.dataDate &&
+        prev.count === nextMeta.count &&
+        prev.providers.join(",") === nextMeta.providers.join(",") &&
+        (!responseFetchedAt || prev.fetchedAt === responseFetchedAt)
+      ) {
+        return prev;
+      }
+      return nextMeta;
+    });
     return {
       changed: signature !== previousSignature,
       meta: nextMeta,

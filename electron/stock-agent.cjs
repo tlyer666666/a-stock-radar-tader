@@ -36,6 +36,7 @@ const MAX_QUESTION = 2000;
 const MAX_MEMORY = 800;
 const MAX_STORE_BYTES = 4 * 1024 * 1024;
 const HISTORY_TURNS = 6;
+const MAX_CONTEXT_CHARS = 36000;
 const RUN_RETENTION_MS = 10 * 60 * 1000;
 // 同时进行的问股对话数（每段对话同一时间只跑一个）。模型请求各自独立，工具数据有 2 分钟共享缓存，6 个并发不会把行情源打满。
 const MAX_ACTIVE_RUNS = 6;
@@ -269,13 +270,97 @@ const argsText = args => {
   return entries.length ? oneLine(entries.map(([key, value]) => `${key}=${Array.isArray(value) ? value.join("/") : value}`).join(" "), 40) : "";
 };
 
+function compactToolPayloadMessage(content) {
+  const raw = String(content || "");
+  if (raw.length <= 1200) return raw;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!isRecord(parsed)) return clip(raw, 1200);
+    const shrinkList = list => list.map(item => isRecord(item)
+      ? { tool: item.tool, ok: item.ok, summary: clip(item.summary || "", 160) }
+      : item);
+    let changed = false;
+    const copy = { ...parsed };
+    if (Array.isArray(copy.toolResults)) {
+      copy.toolResults = shrinkList(copy.toolResults);
+      changed = true;
+    }
+    if (Array.isArray(copy.initialData)) {
+      copy.initialData = shrinkList(copy.initialData);
+      changed = true;
+    }
+    if (changed) {
+      const compacted = JSON.stringify(copy);
+      if (compacted.length < raw.length) return compacted;
+    }
+  } catch { /* fall through to clip */ }
+  return clip(raw, 1200);
+}
+
+/**
+ * 在每次调用模型前裁剪累计上下文，防止多轮工具返回叠加撑爆窗口。
+ * 优先级：先删最早的历史对话轮 → 再压缩较早工具轮的明细 data（保留摘要）→
+ * 再移除较早中间工具轮 → 最后兜底截断，始终保留当前提问与最新工具返回。
+ */
+function trimMessagesToBudget(messages, maxChars = MAX_CONTEXT_CHARS, historyCount = 0) {
+  const budget = Math.max(1000, Math.floor(Number(maxChars) || MAX_CONTEXT_CHARS));
+  const list = (Array.isArray(messages) ? messages : []).map(item => ({
+    role: item.role,
+    content: String(item.content || "")
+  }));
+  const totalChars = () => list.reduce((sum, item) => sum + item.content.length, 0);
+  if (totalChars() <= budget) return list;
+
+  // 1. Drop oldest prior conversation history turns first.
+  let anchorIndex = Math.max(0, Math.min(historyCount, list.length - 1));
+  while (anchorIndex > 0 && totalChars() > budget) {
+    list.shift();
+    anchorIndex -= 1;
+  }
+  if (totalChars() <= budget) return list;
+
+  // 2. Compact bulky JSON payloads on older messages (keep latest message intact first).
+  for (let i = 0; i < list.length - 1 && totalChars() > budget; i += 1) {
+    if (list[i].role === "user") {
+      list[i].content = compactToolPayloadMessage(list[i].content);
+    } else if (list[i].content.length > 600) {
+      list[i].content = clip(list[i].content, 600);
+    }
+  }
+  if (totalChars() <= budget) return list;
+
+  // 3. Drop oldest intermediate tool-round (assistant, user) pairs between anchor and latest pair.
+  while (list.length - anchorIndex > 3 && totalChars() > budget) {
+    list.splice(anchorIndex + 1, 2);
+  }
+  if (totalChars() <= budget) return list;
+
+  // 4. Compact the latest message payload if still over budget.
+  if (list.length > 0 && totalChars() > budget) {
+    const last = list[list.length - 1];
+    last.content = compactToolPayloadMessage(last.content);
+  }
+  if (totalChars() <= budget) return list;
+
+  // 5. Final hard proportional clip to strictly satisfy the cumulative budget.
+  for (let i = 0; i < list.length && totalChars() > budget; i += 1) {
+    const excess = totalChars() - budget;
+    const minKeep = i === list.length - 1 ? 200 : 120;
+    const target = Math.max(minKeep, list[i].content.length - excess);
+    if (target < list[i].content.length) {
+      list[i].content = clip(list[i].content, target);
+    }
+  }
+  return list;
+}
+
 /**
  * 跑一轮问答。
  * @param {{ ai: { chat: Function, model: () => string }, tools: { runTool: Function }, history: Array<{role: string, content: string}>,
  *   question: string, focus: {code: string, name: string} | null, prefetch: boolean, memory?: string, clock: {text: string, session: string},
  *   signal?: AbortSignal, onSteps?: (steps: any[]) => void }} input
  */
-async function runAgentTurn({ ai, tools, history = [], question, focus = null, prefetch = false, marketIntent = false, memory = "", skills = [], userContext = null, allowPersonalContext = true, clock, signal, onSteps = () => {}, onStream = null, now = () => Date.now() }) {
+async function runAgentTurn({ ai, tools, history = [], question, focus = null, prefetch = false, marketIntent = false, memory = "", skills = [], userContext = null, allowPersonalContext = true, clock, signal, onSteps = () => {}, onStream = null, now = () => Date.now(), maxContextChars = MAX_CONTEXT_CHARS }) {
   const turnStartedAt = now();
   let wrapUpAsked = false;
   const cleanContext = allowPersonalContext ? sanitizeUserContext(userContext) : null;
@@ -313,10 +398,14 @@ async function runAgentTurn({ ai, tools, history = [], question, focus = null, p
     initialData = packResults(await execute(`先读取${focus ? focus.name : !focus && marketIntent ? "大盘与外围" : ""}${skills.length ? `（按${skills.map(skill => `「${skill.name}」`).join("")}）` : ""}的${names}`, prefetchCalls, "prefetch"));
   }
   const turns = history.filter(item => item && (item.role === "user" || item.role === "assistant") && String(item.content || "").trim())
+    .slice(-(HISTORY_TURNS * 2))
     .map(item => ({ role: item.role, content: clip(item.content, item.role === "assistant" ? 1800 : 600) }));
   const messages = [...turns, { role: "user", content: fitJson({ question: clip(question, MAX_QUESTION), ...(focus ? { focus } : {}),
     ...(cleanContext ? { userContext: cleanContext } : {}),
     ...(initialData ? { initialData } : {}), remainingRounds: MAX_TOOL_ROUNDS }, 18000) }];
+  const effectiveContextChars = Number.isFinite(Number(maxContextChars)) && Number(maxContextChars) > 0
+    ? Number(maxContextChars)
+    : MAX_CONTEXT_CHARS;
 
   const finish = (final, extra = {}) => ({ ...final, steps, model: ai.model(), toolCalls: callCount, ...extra });
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
@@ -326,8 +415,10 @@ async function runAgentTurn({ ai, tools, history = [], question, focus = null, p
       const preview = extractStreamPreview(acc || meta?.reasoning || "");
       if (preview) onStream({ phase: "token", text: preview });
     } : undefined;
+    const messageBudget = Math.max(4000, effectiveContextChars - system.length);
+    const budgetedMessages = trimMessagesToBudget(messages, messageBudget, turns.length);
     // 按打法分析时回答更长（逐条对照），给足输出长度，避免 JSON 被截断。
-    try { reply = await ai.chat({ system, messages, json: true, temperature: 0.3, maxTokens: skills.length ? 6000 : 4000, signal, ...(onJsonToken ? { onToken: onJsonToken } : {}) }); }
+    try { reply = await ai.chat({ system, messages: budgetedMessages, json: true, temperature: 0.3, maxTokens: skills.length ? 6000 : 4000, signal, ...(onJsonToken ? { onToken: onJsonToken } : {}) }); }
     catch (error) {
       if (signal?.aborted || error?.code !== "AI_BAD_JSON") throw error;
       // 模型没按 JSON 回答：用已经查到的数据让它直接写正文。
@@ -665,5 +756,5 @@ function compactSteps(steps) {
       status: call.status === "running" ? "failed" : call.status, summary: oneLine(call.summary, 110) })) }));
 }
 
-module.exports = { createStockAgentService, runAgentTurn, systemPrompt, validateFinal, fitJson, defaultClock, isAgentStore, compactSteps, securityOf, normalizeFocus, focusPrefetchCalls,
-  sanitizeUserContext, isMarketQuestion, MARKET_PREFETCH, MAX_ACTIVE_RUNS, MAX_TOOL_ROUNDS, MAX_CALLS_PER_ROUND, STANCES, PREFETCH_TOOLS, MAX_STORE_BYTES, TURN_WRAP_UP_MS };
+module.exports = { createStockAgentService, runAgentTurn, systemPrompt, validateFinal, fitJson, trimMessagesToBudget, defaultClock, isAgentStore, compactSteps, securityOf, normalizeFocus, focusPrefetchCalls,
+  sanitizeUserContext, isMarketQuestion, MARKET_PREFETCH, MAX_ACTIVE_RUNS, MAX_TOOL_ROUNDS, MAX_CALLS_PER_ROUND, MAX_CONTEXT_CHARS, STANCES, PREFETCH_TOOLS, MAX_STORE_BYTES, TURN_WRAP_UP_MS };

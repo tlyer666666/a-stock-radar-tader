@@ -1045,3 +1045,53 @@ test("Phase 3B/C: allowPersonalContext=false blocks personal tools & userContext
   const summary = service.state().conversations.find(item => item.id === started.conversationId);
   assert.match(summary.preview || "", /量价结构/);
 });
+
+test("M-9: runAgentTurn trims cumulative history and prior tool rounds to stay within context budget on every LLM call", async () => {
+  const seenMessageLengths = [];
+  const longHistory = Array.from({ length: 12 }, (_, idx) => ({
+    role: idx % 2 === 0 ? "user" : "assistant",
+    content: `历史对话轮次${idx}：` + "分析内容".repeat(300)
+  }));
+  const bigToolOutput = "详细行情数据".repeat(900);
+  const tools = {
+    catalog: [{ id: "kline", name: "K线" }, { id: "news", name: "资讯" }, { id: "sector", name: "板块" }],
+    runTool: async (tool, args) => ({
+      tool,
+      name: tool,
+      args,
+      ok: true,
+      summary: `${tool} 摘要正常`,
+      data: { payload: bigToolOutput }
+    })
+  };
+  let callIndex = 0;
+  const ai = {
+    model: () => "budget-test-model",
+    chat: async ({ system, messages }) => {
+      const msgChars = messages.reduce((sum, m) => sum + String(m.content || "").length, 0);
+      seenMessageLengths.push({ total: system.length + msgChars, msgChars, count: messages.length, last: messages.at(-1)?.content || "" });
+      callIndex += 1;
+      if (callIndex === 1) return { thought: "查K线", calls: [{ tool: "kline", args: { code: "600519", days: 30 } }] };
+      if (callIndex === 2) return { thought: "查资讯", calls: [{ tool: "news", args: { code: "600519" } }] };
+      if (callIndex === 3) return { thought: "查板块", calls: [{ tool: "sector", args: { code: "600519" } }] };
+      return { thought: "总结", final: { answer: "已完成多轮分析", stance: "中性", confidence: "中", followUps: ["继续跟踪量能？"] } };
+    }
+  };
+  const budget = 14000;
+  const res = await runAgentTurn({
+    ai,
+    tools,
+    history: longHistory,
+    question: "请结合多轮工具结果给出贵州茅台的综合判断",
+    focus: { code: "600519", name: "贵州茅台", assetType: "stock" },
+    prefetch: false,
+    clock,
+    maxContextChars: budget
+  });
+  assert.equal(res.answer, "已完成多轮分析");
+  assert.equal(seenMessageLengths.length, 4);
+  for (const snapshot of seenMessageLengths) {
+    assert.ok(snapshot.msgChars <= Math.max(4000, budget - 2000), `cumulative messages (${snapshot.msgChars}) exceeded budget`);
+  }
+  assert.match(seenMessageLengths[3].last, /sector/, "latest tool round must be preserved");
+});

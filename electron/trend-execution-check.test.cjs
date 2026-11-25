@@ -33,3 +33,69 @@ test('unknown-year calendar, provider failure and inconsistent identity stay unk
  const b=await create({fetchQuote:async()=>{throw Error('offline')}})({security,signalDate:'2026-10-20'});assert.equal(b.state,'unknown');
  await assert.rejects(()=>create()({security:{...security,secid:'0.600001'},signalDate:'2026-10-20'}),/证券/);
 });
+
+test('H-4: normalized live quotes with explicit status reach ready/blocked while absent status stays unknown', async () => {
+  const { normalizeThsFreeQuote } = require('./ths-free-market.cjs');
+  const { normalizeTencentQuote } = require('./services/backtest.cjs');
+  const { createFuyaoQuoteSource } = require('./fuyao-quote.cjs');
+
+  // 1) THS free quote with explicit trading status -> suspended: false -> execution check ready
+  const thsTrading = normalizeThsFreeQuote(security, {
+    5: '688001', 10: '10.00', 6: '10.00', 7: '10.00', 8: '10.10', 9: '9.90',
+    13: '100000', 19: '1000000', 69: '12.00', 70: '8.00',
+    time: '2026-10-21 09:25:10 北京时间', updateTime: '2026-10-21 09:25:00', stockStatus: '集合竞价', name: '示例股票'
+  });
+  assert.equal(thsTrading.suspended, false);
+  const thsReady = await create({ fetchQuote: async () => thsTrading })({ security, signalDate: '2026-10-20' });
+  assert.equal(thsReady.state, 'ready');
+
+  // THS free quote with explicit suspension status -> suspended: true -> blocked
+  const thsHalted = normalizeThsFreeQuote(security, {
+    5: '688001', 10: '10.00', 6: '10.00', 7: '10.00', 8: '10.00', 9: '10.00',
+    13: '0', 19: '0', 69: '12.00', 70: '8.00',
+    time: '2026-10-21 09:25:10 北京时间', updateTime: '2026-10-21 09:25:00', stockStatus: '停牌', name: '示例股票'
+  });
+  assert.equal(thsHalted.suspended, true);
+  assert.equal((await create({ fetchQuote: async () => thsHalted })({ security, signalDate: '2026-10-20' })).state, 'blocked');
+
+  // THS free quote without stockStatus -> never guesses false -> unknown
+  const thsNoStatus = normalizeThsFreeQuote(security, {
+    5: '688001', 10: '10.00', 6: '10.00', 7: '10.00', 8: '10.10', 9: '9.90',
+    13: '100000', 19: '1000000', 69: '12.00', 70: '8.00',
+    time: '2026-10-21 09:25:10 北京时间', updateTime: '2026-10-21 09:25:00', stockStatus: '', name: '示例股票'
+  });
+  assert.equal(thsNoStatus.suspended, undefined);
+  assert.equal((await create({ fetchQuote: async () => thsNoStatus })({ security, signalDate: '2026-10-20' })).state, 'unknown');
+
+  // 2) Tencent normalized quote adds +08:00 quoteAt and explicit suspended boolean
+  const txReadyQuote = normalizeTencentQuote(security, {
+    securityCode: '688001', securityName: '示例股票', latest: 10, limitUp: 12, limitDown: 8,
+    updatedAt: '20261021092500', tradeStatus: 'trading'
+  });
+  assert.equal(txReadyQuote.quoteAt, '2026-10-21T09:25:00+08:00');
+  assert.equal(txReadyQuote.suspended, false);
+  assert.equal((await create({ fetchQuote: async () => txReadyQuote })({ security, signalDate: '2026-10-20' })).state, 'ready');
+
+  const txNoStatus = normalizeTencentQuote(security, {
+    securityCode: '688001', securityName: '示例股票', latest: 10, limitUp: 12, limitDown: 8,
+    updatedAt: '2026-10-21 09:25:00'
+  });
+  assert.equal(txNoStatus.quoteAt, '2026-10-21T09:25:00+08:00');
+  assert.equal(txNoStatus.suspended, undefined);
+  assert.equal((await create({ fetchQuote: async () => txNoStatus })({ security, signalDate: '2026-10-20' })).state, 'unknown');
+
+  // 3) Fuyao quote only populates suspended when snapshot explicitly carries trade status
+  const fuyaoWithStatus = createFuyaoQuoteSource({
+    fuyao: {
+      snapshot: async () => new Map([['688001.SH', {
+        thscode: '688001.SH', latest: 10, preClose: 10, open: 10, high: 10.1, low: 9.9,
+        volume: 1000, amount: 1e6, quoteAt: '2026-10-21T09:25:00+08:00', tradeStatus: 'trading'
+      }]])
+    },
+    now: () => Date.parse('2026-10-21T01:25:30Z'),
+    batchWindowMs: 1
+  });
+  const fuyaoQuote = await fuyaoWithStatus.quote(security);
+  assert.equal(fuyaoQuote.suspended, false);
+  assert.equal((await create({ fetchQuote: async () => fuyaoQuote })({ security, signalDate: '2026-10-20' })).state, 'ready');
+});

@@ -108,3 +108,51 @@ test("history_reviews exposes lookbackHitRatePct and lookbackLessons when availa
   assert.equal(res.data.reviews[0].lookbackHitRatePct, 75);
   assert.deepEqual(res.data.reviews[0].lookbackLessons, ["避免追高四板以上孤立妖股"]);
 });
+
+test("C-2: review-skills expires stale cache by TTL, clears failed promises, and supports reset()", async () => {
+  let clock = 1_000_000;
+  let fuyaoCalls = 0;
+  let boardCalls = 0;
+  let failBoardOnce = true;
+  const skills = createReviewSkills(sources({
+    loadFuyao: async () => {
+      fuyaoCalls += 1;
+      return { ...fuyao, limitUp: { ...fuyao.limitUp, count: 40 + fuyaoCalls } };
+    },
+    loadSectorBoard: async () => {
+      boardCalls += 1;
+      if (failBoardOnce) {
+        failBoardOnce = false;
+        throw new Error("transient network error");
+      }
+      return board;
+    }
+  }), { cacheTtlMs: 5000, now: () => clock });
+
+  // Deduplicates within TTL
+  const first = await skills.runSkill("limit_reasons");
+  const second = await skills.runSkill("limit_reasons");
+  assert.equal(fuyaoCalls, 1);
+  assert.equal(first.data.limitUpCount, 41);
+  assert.equal(second.data.limitUpCount, 41);
+
+  // Refetches after TTL expiry
+  clock += 6000;
+  const third = await skills.runSkill("limit_reasons");
+  assert.equal(fuyaoCalls, 2);
+  assert.equal(third.data.limitUpCount, 42);
+
+  // Transient board failure does not poison cache permanently
+  const badBoard = await skills.runSkill("sector_strength", { kind: "industry" });
+  assert.equal(badBoard.ok, false);
+  const goodBoard = await skills.runSkill("sector_strength", { kind: "industry" });
+  assert.equal(goodBoard.ok, true);
+  assert.equal(boardCalls, 2);
+
+  // reset() clears sectorCalls quota as well as cached promises
+  await skills.runSkill("sector_members", { name: "电池" });
+  await skills.runSkill("sector_members", { name: "白酒" });
+  assert.equal((await skills.runSkill("sector_members", { name: "保险" })).ok, false);
+  skills.reset();
+  assert.equal((await skills.runSkill("sector_members", { name: "保险" })).ok, true);
+});

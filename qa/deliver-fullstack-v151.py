@@ -9,7 +9,7 @@ import zipfile
 
 repo = Path(__file__).resolve().parents[1]
 checks = repo / 'artifacts/fullstack-audit-20261001'
-destination = Path('~/Desktop/a股/全栈审计优化版1.5.1')
+destination = Path('~/Desktop/a股/全栈审计优化版1.5.1').expanduser()
 built_app = repo / 'release-builder/mac-arm64/A股雷达趋势版.app'
 resources = built_app / 'Contents/Resources/app'
 installed_app = destination / built_app.name

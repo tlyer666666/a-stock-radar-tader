@@ -573,6 +573,7 @@ const limitUpNames = (item: SectorViewRow): string => (item?.rankLimitUpStocks ?
 /** B-09：板块涨幅排行表（原生 table；展开的个股明细作为整行 <td> 附属行）。 */
 export function SectorGainersTable({
   rows,
+  boardSnapshot,
   limit,
   expandedName,
   detailOrigin,
@@ -582,6 +583,7 @@ export function SectorGainersTable({
   onCountVisible
 }: {
   rows: SectorViewRow[];
+  boardSnapshot?: BoardSnapshotRef | undefined;
   /** 只显示排序后的前 limit 行（概念榜很长，分批显示）。 */
   limit?: number | undefined;
   expandedName: string;
@@ -598,12 +600,23 @@ export function SectorGainersTable({
     return limit ? ordered.slice(0, limit) : ordered;
   }, [rows, sort, limit]);
   const bodyRef = useRef<HTMLTableSectionElement | null>(null);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const sortedRef = useRef(sorted);
+  sortedRef.current = sorted;
+  // 200ms 批量回填 detailCounts 只更新已有行的统计值，不改变上游榜单快照；
+  // 用 boardSnapshot（缺省时退化为行名签名）做依赖，避免反复重启全表队列或重建 IntersectionObserver。
+  const fallbackSnapshotKey = useMemo(
+    () => (boardSnapshot === undefined ? rows.map(row => row.name).join("\n") : ""),
+    [boardSnapshot, rows]
+  );
+  const snapshotIdentity = boardSnapshot ?? fallbackSnapshotKey;
   useEffect(() => {
     if (!onCountVisible || (sort.key !== "limitUps" && sort.key !== "memberCount")) return;
     // Sorting a lazy column needs the entire board, including concepts beyond
     // the first rendered page. Two consumers prevent an IPC request burst.
     let active = true;
-    const queue = [...rows];
+    const queue = [...rowsRef.current];
     const drain = async () => {
       while (active && queue.length) {
         const row = queue.shift();
@@ -612,23 +625,23 @@ export function SectorGainersTable({
     };
     void Promise.all([drain(), drain()]);
     return () => { active = false; };
-  }, [sort.key, rows, onCountVisible]);
+  }, [sort.key, snapshotIdentity, onCountVisible]);
   useEffect(() => {
     if (!onCountVisible || !bodyRef.current) return;
     if (typeof IntersectionObserver === "undefined") {
-      sorted.slice(0, 12).forEach(onCountVisible);
+      sortedRef.current.slice(0, 12).forEach(onCountVisible);
       return;
     }
     const observer = new IntersectionObserver(entries => {
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
-        const item = sorted[Number((entry.target as HTMLElement).dataset.countIndex)];
+        const item = sortedRef.current[Number((entry.target as HTMLElement).dataset.countIndex)];
         if (item) onCountVisible(item);
       }
     }, { rootMargin: "180px" });
     bodyRef.current.querySelectorAll("[data-count-index]").forEach(row => observer.observe(row));
     return () => observer.disconnect();
-  }, [sorted, onCountVisible]);
+  }, [snapshotIdentity, limit, sort.key, sort.direction, sorted.length, onCountVisible]);
   const onSort = (key: GainerSortKey) => setSort((current) => toggleColumnSort(current, key));
   return (
     <table className="sector-comparison-table" style={TABLE_BLOCK}>
@@ -1270,6 +1283,7 @@ function SectorView({ rows, extra, loading, loadError, onRefresh, onOpenStock, f
           <SectorGainersTable
             key={boardKind}
             rows={boardRows}
+            boardSnapshot={boardSnapshot}
             limit={boardKind === "concept" ? conceptLimit : undefined}
             expandedName={expandedName}
             detailOrigin={detailOrigin}

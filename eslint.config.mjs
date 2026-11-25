@@ -69,8 +69,8 @@ export default [
       // The rule targets the obsolete `const self = this` React workaround. The single
       // site is a test fixture's Worker subclass capturing itself, which is legitimate.
       "@typescript-eslint/no-this-alias": ["error", { allowedNames: ["worker"] }],
-      // Deferred to the IPC-contract phase: 224 `any` sites exist today, all in the
-      // renderer. Enabling this now would produce noise, not signal.
+      // CommonJS (.cjs) files do not use TypeScript annotations; renderer TypeScript
+      // files enforce `@typescript-eslint/no-explicit-any: "error"` below.
       "@typescript-eslint/no-explicit-any": "off",
       // CommonJS modules legitimately use require().
       "@typescript-eslint/no-require-imports": "off"

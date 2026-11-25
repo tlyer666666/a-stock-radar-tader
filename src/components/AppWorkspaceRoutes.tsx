@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, type MutableRefObject } from "react";
+import { lazy, memo, Suspense, useCallback, useRef, type MutableRefObject } from "react";
 import { LoadingState } from "./terminal/TerminalPrimitives";
 import { WorkspaceErrorBoundary } from "./AppErrorBoundary";
 import type { FailedBoardCache, FailedBoardViewState } from "../features/dashboard/PreviousLimitUpFailedBoards";
@@ -29,6 +29,44 @@ const BacktestView = lazy(() =>
   import("../features/backtest/BacktestView").then((module) => ({ default: module.BacktestView }))
 );
 const ProfessionalReview = lazy(() => import("../ProfessionalReview").then((module) => ({ default: memo(module.default) })));
+
+function KeepAliveProfessionalReview({
+  openAnalysis,
+  addNoteToT,
+  openBacktest,
+  navigateTo,
+  holdings
+}: {
+  openAnalysis: AppWorkspaceRoutesProps["openAnalysis"];
+  addNoteToT: AppWorkspaceRoutesProps["addNoteToT"];
+  openBacktest: AppWorkspaceRoutesProps["openBacktest"];
+  navigateTo: AppWorkspaceRoutesProps["navigateTo"];
+  holdings: HoldingItem[];
+}) {
+  const handlersRef = useRef({ openAnalysis, openBacktest, navigateTo });
+  handlersRef.current = { openAnalysis, openBacktest, navigateTo };
+  const handleOpenStock = useCallback(
+    (stock: Security) => handlersRef.current.openAnalysis(stock, { view: "review", label: "返回专业复盘" }),
+    []
+  );
+  const handleOpenBacktest = useCallback(
+    (stock?: Security) => handlersRef.current.openBacktest(stock),
+    []
+  );
+  const handleNavigate = useCallback(
+    (next: string) => (next === "backtest" ? handlersRef.current.openBacktest() : handlersRef.current.navigateTo(next as View)),
+    []
+  );
+  return (
+    <ProfessionalReview
+      onOpenStock={handleOpenStock}
+      onAddToT={addNoteToT}
+      onOpenBacktest={handleOpenBacktest}
+      onNavigate={handleNavigate}
+      holdings={holdings}
+    />
+  );
+}
 const StrategySignalsView = lazy(() => import("../features/strategy-selection/StrategySignalsView"));
 const SectorExplorerPanel = lazy(() => import("../SectorExplorerPanel"));
 const LazyNewsView = lazy(() => import("../features/information/NewsView").then(module => ({ default: module.NewsView })));
@@ -729,11 +767,11 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
         <div hidden={view !== "review"}>
           <WorkspaceErrorBoundary key="review" label="专业复盘" onReturnHome={() => navigateTo("signals")}>
             <Suspense fallback={<LoadingState />}>
-              <ProfessionalReview
-                onOpenStock={(stock: Security) => openAnalysis(stock, { view: "review", label: "返回专业复盘" })}
-                onAddToT={addNoteToT}
-                onOpenBacktest={(stock?: Security) => openBacktest(stock)}
-                onNavigate={(next: string) => next === "backtest" ? openBacktest() : navigateTo(next as View)}
+              <KeepAliveProfessionalReview
+                openAnalysis={openAnalysis}
+                addNoteToT={addNoteToT}
+                openBacktest={openBacktest}
+                navigateTo={navigateTo}
                 holdings={holdings}
               />
             </Suspense>

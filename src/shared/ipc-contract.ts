@@ -6,6 +6,7 @@
 import type { SectorExplorerApi } from "../sectorExplorerTypes";
 import type { ConvertibleBondSnapshot } from "../features/bonds/bondTypes";
 import type { EtfMarketSnapshot } from "../features/etf/etfTypes";
+import type { IndexBoardSnapshot, IndexStreamStatus, IndexTick } from "../features/cockpit/indexBoardModel";
 import type { BatchQuoteRequest, BatchQuoteResult } from "../domain/batchQuoteTypes";
 import type { AnalysisPayload } from "../features/market/analysisTypes";
 import type { CustomStrategy } from "../features/strategy-selection/customStrategyModel";
@@ -81,6 +82,8 @@ export const MAIN_IPC_CHANNELS = [
   "market:analyze",
   "market:analyze-sector",
   "market:batch-quotes",
+  "market:index-board",
+  "market:index-stream",
   "market:chart",
   "market:concept-chain",
   "market:federation",
@@ -152,6 +155,7 @@ export const REVIEW_IPC_CHANNELS = [
 export const IPC_EVENT_CHANNELS = [
   "ai:stream",
   "app:notification-clicked",
+  "market:index-tick",
   "review-window:theme-changed"
 ] as const;
 
@@ -306,6 +310,9 @@ export type StockApi = SectorExplorerApi & {
   resetMarketSourceHealth?(): Promise<{ ok: boolean }>;
   getConvertibleBonds?(options?: { forceRefresh?: boolean; waitForQuotes?: boolean }): Promise<ConvertibleBondSnapshot>;
   getEtfMarket?(options?: { forceRefresh?: boolean }): Promise<EtfMarketSnapshot>;
+  getIndexBoard?(options?: { forceRefresh?: boolean; withTrends?: boolean }): Promise<IndexBoardSnapshot>;
+  subscribeIndexStream?(options?: { active?: boolean }): Promise<IndexStreamStatus>;
+  onIndexTick?(listener: (tick: IndexTick) => void): () => void;
   /** 策略实测榜（回测中心）：全市场日线按批回放后的排行榜；statusOnly 只取进度。 */
   getStrategyLeaderboard?(options?: { refresh?: boolean; statusOnly?: boolean }): Promise<StrategyLeaderboardReport>;
   getBatchQuotes?(securities: BatchQuoteRequest[]): Promise<BatchQuoteResult>;

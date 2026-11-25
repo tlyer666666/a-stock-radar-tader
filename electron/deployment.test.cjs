@@ -553,3 +553,43 @@ test('Windows hardening happens before the manifest and a fuse failure cannot pu
   assert.equal(calls,1);assert.equal(fs.existsSync(path.join(root,'release','win-unpacked')),false);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test("L-2: acquireArtifactLock recovers when a competing lockfile vanishes with ENOENT between EEXIST and statSync/unlinkSync", () => {
+  const root = temporaryRoot("lock-vanish");
+  try {
+    let openCalls = 0;
+    const lockPath = path.join(root, ARTIFACT_LOCK);
+    const fsImpl = proxyFs({
+      openSync(target, flags) {
+        if (path.resolve(target) === path.resolve(lockPath) && flags === "wx" && openCalls === 0) {
+          openCalls += 1;
+          throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
+        }
+        return fs.openSync(target, flags);
+      },
+      readFileSync(target, enc) {
+        if (path.resolve(target) === path.resolve(lockPath) && openCalls === 1 && !fs.existsSync(target)) {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        return fs.readFileSync(target, enc);
+      },
+      statSync(target) {
+        if (path.resolve(target) === path.resolve(lockPath) && !fs.existsSync(target)) {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        return fs.statSync(target);
+      },
+      unlinkSync(target) {
+        if (path.resolve(target) === path.resolve(lockPath) && !fs.existsSync(target)) {
+          throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+        }
+        return fs.unlinkSync(target);
+      }
+    });
+    const acquired = acquireArtifactLock(root, { fsImpl, token: "vanished-race-token" });
+    assert.equal(acquired.token, "vanished-race-token");
+    assert.equal(acquired.release(), "");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

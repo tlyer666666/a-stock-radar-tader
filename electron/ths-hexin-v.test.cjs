@@ -153,3 +153,13 @@ test("★ 榜单评分不得写死为 null：必须用真实公式算", () => {
   const boardBlock = src.slice(start, end > 0 ? end : start + 6000);
   assert.doesNotMatch(boardBlock, /score:\s*null/, "主榜单行不得写死 score: null");
 });
+
+test("L-3: ths-hexin-v VM context uses null-prototype sandbox and disables dynamic code generation", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const src = fs.readFileSync(path.join(__dirname, "ths-hexin-v.cjs"), "utf8");
+  assert.match(src, /Object\.create\(null\)/);
+  assert.match(src, /codeGeneration:\s*\{\s*strings:\s*false,\s*wasm:\s*false\s*\}/);
+  const token = getHexinToken(true);
+  assert.ok(typeof token === "string" && token.length >= 20);
+});

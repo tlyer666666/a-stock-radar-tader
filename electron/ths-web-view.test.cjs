@@ -235,3 +235,81 @@ test('setZoomFactor stores zoomFactor and applies it immediately and in place()'
   zoomed.destroy();
   manager.destroy();
 });
+
+test('H-3: will-redirect never launches openExternal; will-navigate & setWindowOpenHandler enforce rate limit and ignore programmatic navigations', async () => {
+  let clock = 10_000;
+  let loading = false;
+  const log = { loads: [], external: [] };
+  const listeners = {};
+  const contents = {
+    isDestroyed: () => false,
+    loadURL: async (target) => { log.loads.push(target); },
+    getURL: () => PAGES.hsgt,
+    getTitle: () => '沪股通',
+    isLoading: () => loading,
+    navigationHistory: { canGoBack: () => false, goBack: () => {} },
+    reload: () => {},
+    setWindowOpenHandler: (handler) => { listeners.open = handler; },
+    on: (name, handler) => { listeners[name] = handler; },
+    close: () => {}
+  };
+  class FakeView {
+    constructor() { this.webContents = contents; }
+    setBounds() {}
+  }
+  const win = {
+    isDestroyed: () => false,
+    getContentSize: () => [1400, 900],
+    webContents: { getZoomFactor: () => 1 },
+    contentView: { addChildView() {}, removeChildView() {} }
+  };
+  const manager = createThsWebViewManager({
+    WebContentsView: FakeView,
+    session: { fromPartition: () => ({ on() {}, setPermissionCheckHandler() {}, setPermissionRequestHandler() {} }) },
+    getWindow: () => win,
+    openExternal: (target) => log.external.push(target),
+    now: () => clock,
+    externalOpenCooldownMs: 2000
+  });
+  manager.show({ bounds: { x: 0, y: 0, width: 900, height: 600 } });
+
+  // 1) will-redirect to off-site URL only prevents default and NEVER calls openExternal
+  let redirectPrevented = false;
+  listeners['will-redirect']({ preventDefault: () => { redirectPrevented = true; }, isMainFrame: true }, 'https://evil.example/redirect');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(redirectPrevented, true);
+  assert.deepEqual(log.external, []);
+
+  // 2) Programmatic will-navigate (userGesture: false, subframe, or while loading) must NOT open external
+  listeners['will-navigate']({ preventDefault() {}, userGesture: false }, 'https://evil.example/no-gesture');
+  listeners['will-navigate']({ preventDefault() {}, isMainFrame: false }, 'https://evil.example/subframe');
+  loading = true;
+  listeners['will-navigate']({ preventDefault() {} }, 'https://evil.example/while-loading');
+  loading = false;
+
+  // 3) Background/non-user setWindowOpenHandler dispositions must NOT open external
+  listeners.open({ url: 'https://evil.example/bg', disposition: 'background-tab' });
+  listeners.open({ url: 'https://evil.example/other', disposition: 'other' });
+  listeners.open({ url: 'https://evil.example/pop-no-gesture', userGesture: false });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(log.external, []);
+
+  // 4) Rate limit: 1 external open per 2000ms window
+  listeners.open({ url: 'https://example.com/first', disposition: 'foreground-tab' });
+  listeners.open({ url: 'https://example.com/burst-2', disposition: 'foreground-tab' });
+  listeners['will-navigate']({ preventDefault() {} }, 'https://example.com/burst-3');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(log.external, ['https://example.com/first']);
+
+  // After cooldown, another legitimate click opens
+  clock += 2000;
+  listeners['will-navigate']({ preventDefault() {} }, 'https://example.com/after-cooldown');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(log.external, ['https://example.com/first', 'https://example.com/after-cooldown']);
+
+  // Explicit UI button action bypasses rate limit
+  await manager.command({ action: 'external' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(log.external.at(-1), PAGES.hsgt);
+  manager.destroy();
+});

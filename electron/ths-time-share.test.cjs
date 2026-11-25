@@ -39,3 +39,24 @@ test("开盘前源端日期已换成当天但分时仍是上一交易日：日�
   assert.equal(rebaseStaleTimeShare(share, { date: "2026-11-10", minute: 15 * 60 + 30 }, "2026-11-09"), share, "收盘后是当天数据");
   assert.equal(rebaseStaleTimeShare(share, { date: "2026-11-10", minute: 9 * 60 + 26 }, null), share, "上一交易日未知时不改");
 });
+
+test("H-8: sub-1.00 and sub-0.316 yuan ETFs/stocks preserve amount/volume order and exact lot conversion", () => {
+  // 0.85 yuan ETF: amount=8500 < volume=10000 shares -> must NOT swap columns or multiply volume by 100x
+  const etfSub1 = parseThsTimeShare(wrap("0930,0.850,8500,0.850,10000;0931,0.860,17200,0.855,20000", { pre: "0.850" }));
+  assert.equal(etfSub1.rows[0].amount, 8500);
+  assert.equal(etfSub1.rows[0].volume, 100, "10000 shares = 100 lots");
+  assert.equal(etfSub1.rows[1].amount, 17200);
+  assert.equal(etfSub1.rows[1].volume, 200, "20000 shares = 200 lots");
+
+  // 0.25 yuan penny stock (< 0.316 yuan): amount=2500, shares=10000 -> must NOT confuse with swapped lot-denominated columns
+  const penny = parseThsTimeShare(wrap("0930,0.25,2500,0.25,10000;0931,0.24,4800,0.245,20000", { pre: "0.25" }));
+  assert.equal(penny.rows[0].amount, 2500);
+  assert.equal(penny.rows[0].volume, 100, "10000 shares = 100 lots");
+  assert.equal(penny.rows[1].amount, 4800);
+  assert.equal(penny.rows[1].volume, 200);
+
+  // 0.50 yuan ETF with volume already in lots (amount=5000, volume=100 lots)
+  const etfLots = parseThsTimeShare(wrap("0930,0.500,5000,0.500,100;0931,0.500,10000,0.500,200", { pre: "0.500" }));
+  assert.equal(etfLots.rows[0].amount, 5000);
+  assert.equal(etfLots.rows[0].volume, 100);
+});

@@ -52,3 +52,42 @@ test("long reasoning SSE streams (>2MB wire framing) succeed through the real HT
     /上限|AI_HTTP/
   );
 });
+
+test("L-9: SSE streaming accumulates delta.reasoning alongside delta.reasoning_content", async () => {
+  const makeSse = (chunks) => {
+    const body = chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join("") + "data: [DONE]\n\n";
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(Buffer.from(body, "utf8"));
+        controller.close();
+      }
+    }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  };
+
+  let nextResponse = makeSse([
+    { choices: [{ delta: { reasoning: "先看量价" } }] },
+    { choices: [{ delta: { reasoning: "，再看结构" } }] },
+    { choices: [{ delta: { content: "{\"ok\":true}" } }] }
+  ]);
+  const client = createAiClient({
+    getConfig: () => ({ baseUrl: "https://example.com/v1", model: "reasoning-model", apiKey: "sk-test" }),
+    fetchImpl: async () => nextResponse
+  });
+  const metas = [];
+  const parsed = await client.chat({
+    system: "s",
+    user: "u",
+    json: true,
+    onToken: (_delta, _full, meta) => { metas.push({ ...meta }); }
+  });
+  assert.deepEqual(parsed, { ok: true });
+  assert.equal(metas.at(-1).reasoning, "先看量价，再看结构");
+  assert.equal(metas[0].reasoningDelta, "先看量价");
+
+  // Reasoning-only stream with empty content surfaces the reasoning-exhausted AI_EMPTY message
+  nextResponse = makeSse([{ choices: [{ delta: { reasoning: "思考过程超限" } }] }]);
+  await assert.rejects(
+    client.chat({ system: "s", user: "u", json: true, onToken: () => {} }),
+    /思考过程超出输出上限/
+  );
+});

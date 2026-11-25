@@ -52,19 +52,27 @@ function closureOf(entries) {
   return [...seen].sort();
 }
 
+function findWorkerEntries(dir = ELECTRON) {
+  const found = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...findWorkerEntries(full));
+    else if (entry.name.endsWith('-worker.cjs')) found.push(full);
+  }
+  return found.sort();
+}
+
 test('asar is enabled and the worker entry points are unpacked', () => {
   assert.equal(build.asar, true, 'asar must stay enabled for this guard to matter');
-  const workers = fs.readdirSync(ELECTRON).filter((name) => name.endsWith('-worker.cjs'));
-  assert.ok(workers.length >= 3, `expected the worker entry points, found ${workers.join(', ')}`);
+  const workers = findWorkerEntries();
+  assert.ok(workers.length >= 3, `expected the worker entry points, found ${workers.map(relative).join(', ')}`);
   for (const worker of workers) {
-    assert.ok(isUnpacked(path.join(ELECTRON, worker)), `${worker} would not be unpacked`);
+    assert.ok(isUnpacked(worker), `${relative(worker)} would not be unpacked`);
   }
 });
 
 test('every file reachable from a worker is covered by build.asarUnpack', () => {
-  const entries = fs.readdirSync(ELECTRON)
-    .filter((name) => name.endsWith('-worker.cjs'))
-    .map((name) => path.join(ELECTRON, name));
+  const entries = findWorkerEntries();
   const closure = closureOf(entries);
   const uncovered = closure.filter((file) => !isUnpacked(file)).map(relative);
   assert.deepEqual(uncovered, [],

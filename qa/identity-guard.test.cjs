@@ -7,9 +7,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.resolve(__dirname, "..");
-const SCAN_DIRS = ["src", "electron", "qa", "config", "assets", ".github", "docs"];
+const SCAN_DIRS = ["src", "electron", "qa", "config", "assets", ".github", "docs", "patches"];
 const SCAN_FILES = [
   "package.json",
+  "pnpm-workspace.yaml",
+  "eslint.config.mjs",
+  "tsconfig.json",
+  "tsconfig.review.json",
   "vite.config.ts",
   "review.vite.config.ts",
   "index.html",
@@ -19,7 +23,7 @@ const SCAN_FILES = [
   "PROFESSIONAL_REVIEW.md",
   "AGENTS.md"
 ];
-const TEXT_EXT = /\.(?:c?js|mjs|ts|tsx|json|ya?ml|html|css|md|sh|command|cmd|ps1|py)$/i;
+const TEXT_EXT = /\.(?:c?js|mjs|ts|tsx|json|ya?ml|html|css|md|txt|patch|sh|command|cmd|ps1|py)$/i;
 // 测试与夹具里允许出现的示例主目录名。
 const ALLOWED_HOME_NAMES = new Set(["demo", "me", "u", "user", "test", "runner", "example", "shared"]);
 

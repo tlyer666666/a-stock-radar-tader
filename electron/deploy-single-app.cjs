@@ -160,6 +160,8 @@ async function main() {
   const { verifyAppBundleIntegrity } = require("../qa/delivery-verification.cjs");
   // The staging bundle is signed below; never modify the installed app to sign it.
   verifyAppBundleIntegrity(built, { verifySignature: false });
+  log("核对独立复盘模块与样式表完整性");
+  node([path.join(repo, "qa", "verify-review-build.cjs"), built]);
   const watched = [path.join("Contents", "Resources", "app.asar"), EXECUTABLE];
   const expected = Object.fromEntries(watched.map(rel => [rel, sha256(path.join(built, rel))]));
 

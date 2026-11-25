@@ -312,9 +312,49 @@ function missingMonitorQuoteFields(values, upstream = []) {
   });
 }
 
+const EAST_MARKET_STATUS_MAP = Object.freeze({
+  1: { marketStatus: "集合竞价", suspended: false },
+  2: { marketStatus: "交易中", suspended: false },
+  3: { marketStatus: "午间休市", suspended: false },
+  4: { marketStatus: "已收盘", suspended: false },
+  5: { marketStatus: "停牌", suspended: true },
+  6: { marketStatus: "退市", suspended: true },
+  10: { marketStatus: "盘前交易", suspended: false },
+  11: { marketStatus: "盘后交易", suspended: false }
+});
+
+function parseExplicitSuspendedStatus(status) {
+  if (typeof status === "boolean") return status;
+  const text = String(status || "").trim();
+  if (!text) return null;
+  if (/^(?:suspended|delisted|halted)$/i.test(text) || /停牌|暂停交易|暂停上市/.test(text)) return true;
+  if (/^(?:trading|open|closed|normal)$/i.test(text) || /交易|竞价|盘中|闭市|收盘|休市|午间|午休|未开盘|盘后|正常|开市/.test(text)) return false;
+  return null;
+}
+
+function normalizeQuoteIsoTimestamp(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return new Date(value < 1e12 ? value * 1000 : value).toISOString();
+  }
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^\d{14}$/.test(text)) {
+    return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}T${text.slice(8, 10)}:${text.slice(10, 12)}:${text.slice(12, 14)}+08:00`;
+  }
+  const localMatch = text.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?)$/);
+  if (localMatch) {
+    const timePart = localMatch[2].length === 5 ? `${localMatch[2]}:00` : localMatch[2];
+    return `${localMatch[1]}T${timePart}+08:00`;
+  }
+  if (/(?:Z|[+-]\d{2}:\d{2})$/.test(text) && Number.isFinite(Date.parse(text))) {
+    return text;
+  }
+  return "";
+}
+
 async function eastQuote(security, timeoutMs = 12000) {
   const fields =
-    "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f59,f60,f86,f116,f117,f127,f168,f169,f170,f171";
+    "f43,f44,f45,f46,f47,f48,f50,f51,f52,f57,f58,f59,f60,f86,f116,f117,f127,f168,f169,f170,f171,f292";
   const json = await fetchJson(
     `${EAST_QUOTE}/stock/get?secid=${encodeURIComponent(String(security.secid))}&fields=${fields}`,
     {},
@@ -342,10 +382,24 @@ async function eastQuote(security, timeoutMs = 12000) {
       provider: "eastmoney"
     });
   }
+  const statusCode = finiteOrNull(d.f292);
+  const mappedStatus = statusCode !== null && Object.hasOwn(EAST_MARKET_STATUS_MAP, statusCode)
+    ? EAST_MARKET_STATUS_MAP[statusCode]
+    : null;
+  const suspended = typeof d.suspended === "boolean"
+    ? d.suspended
+    : mappedStatus
+      ? mappedStatus.suspended
+      : parseExplicitSuspendedStatus(d.tradeStatus ?? d.marketStatus);
+  const marketStatus = mappedStatus
+    ? mappedStatus.marketStatus
+    : String(d.marketStatus || "");
   return {
     code: d.f57,
     name: d.f58,
     ...(Number.isFinite(Number(d.f86)) && Number(d.f86) > 0 && Number(d.f86) < 8640000000000 ? { quoteAt: new Date(Number(d.f86) * 1000).toISOString() } : {}),
+    ...(marketStatus ? { marketStatus } : {}),
+    ...(suspended !== null ? { suspended } : {}),
     secid: security.secid,
     thscode: security.thscode,
     assetType: security.assetType || "stock",
@@ -397,6 +451,10 @@ function normalizeTencentQuote(security, quote = {}) {
     Number.isInteger(rawPrecision) && rawPrecision >= 0 && rawPrecision <= 6
       ? rawPrecision
       : 2;
+  const quoteAt = normalizeQuoteIsoTimestamp(quote.quoteAt ?? quote.updatedAt);
+  const suspended = typeof quote.suspended === "boolean"
+    ? quote.suspended
+    : parseExplicitSuspendedStatus(quote.tradeStatus ?? quote.marketStatus);
   const normalized = {
     code: String(quote.securityCode || security.code),
     name: String(quote.securityName || security.name || security.code),
@@ -423,7 +481,11 @@ function normalizeTencentQuote(security, quote = {}) {
     change: optionalQuoteNumber(quote.change),
     changePct: optionalQuoteNumber(quote.changePct),
     amplitude: optionalQuoteNumber(quote.amplitude),
-    updatedAt: String(quote.updatedAt || ""),
+    updatedAt: String(quote.updatedAt || quoteAt || ""),
+    ...(quoteAt ? { quoteAt } : {}),
+    ...(suspended !== null ? { suspended } : {}),
+    ...(quote.tradeStatus ? { tradeStatus: String(quote.tradeStatus) } : {}),
+    ...(quote.marketStatus ? { marketStatus: String(quote.marketStatus) } : {}),
     source: "tencent"
   };
   // 缺失清单覆盖全部价格/量能字段。上游（data-federation）声明的缺失项只保留本模块
@@ -872,13 +934,14 @@ async function sinaKline(security, interval = "101", limit = 160) {
       ? json
       : [];
   if (!lines.length) throw new Error(`新浪历史行情为空：${symbol}/${scale}`);
+  const volumeDivisor = String(security?.assetType || "stock") === "convertibleBond" ? 10 : 100;
   const rows = validateHistoryRows(lines.map((row) => ({
     date: String(row?.day || row?.date || ""),
     open: Number(row?.open),
     close: Number(row?.close),
     high: Number(row?.high),
     low: Number(row?.low),
-    volume: finiteOrNull(row?.volume) === null ? null : Number(row.volume) / 100,
+    volume: finiteOrNull(row?.volume) === null ? null : Number(row.volume) / volumeDivisor,
     volumeUnit: "lots",
     amount: finiteOrNull(row?.amount),
     amplitude: null,
@@ -1000,7 +1063,7 @@ function thsHistoryNumber(value) {
   return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
 
-function normalizeThsHistoryTable(table, limit = 160) {
+function normalizeThsHistoryTable(table, limit = 160, volumeDivisor = 100) {
   const dates = thsSeries(table, ["time", "date"]);
   const columns = {
     open: thsSeries(table, ["open"]),
@@ -1013,6 +1076,7 @@ function normalizeThsHistoryTable(table, limit = 160) {
     turnover: thsSeries(table, ["turnoverRatio", "turnover"])
   };
   const safeLimit = Math.max(1, Math.round(Number(limit) || 160));
+  const divisor = Number.isFinite(Number(volumeDivisor)) && Number(volumeDivisor) > 0 ? Number(volumeDivisor) : 100;
   const start = Math.max(0, dates.length - safeLimit);
   return dates.slice(start).map((date, offset) => {
     const index = start + offset;
@@ -1022,7 +1086,7 @@ function normalizeThsHistoryTable(table, limit = 160) {
       high: thsHistoryNumber(columns.high[index]),
       low: thsHistoryNumber(columns.low[index]),
       close: thsHistoryNumber(columns.close[index]),
-      volume: thsHistoryNumber(columns.volume[index]) / 100,
+      volume: thsHistoryNumber(columns.volume[index]) / divisor,
       volumeUnit: "lots",
       amount: thsHistoryNumber(columns.amount[index]),
       changePct: thsHistoryNumber(columns.changePct[index]),
@@ -1056,7 +1120,8 @@ async function thsHistory(security, settings, limit = 160) {
     })
   );
   const t = extractThsTable(json);
-  const rows = validateHistoryRows(normalizeThsHistoryTable(t, limit), {
+  const volumeDivisor = String(security?.assetType || "stock") === "convertibleBond" ? 10 : 100;
+  const rows = validateHistoryRows(normalizeThsHistoryTable(t, limit, volumeDivisor), {
     source: "ths",
     minimumRows: Math.min(20, Math.max(1, Number(limit) || 1))
   });
@@ -1098,14 +1163,14 @@ function buildBacktestExecutionReadinessFromMetrics(metrics = {}, options = {}) 
   const warnings = [];
 
   const accepted = Boolean(metrics.accepted);
-  const replayableSignals = Number(metrics.replayableSignals);
-  const projectedNetEdge = Number(metrics.projectedNetEdge);
-  const expectancy5 = Number(metrics.expectancy5);
-  const winRate5 = Number(metrics.winRate5);
-  const worstMdd5 = Number(metrics.worstMdd5);
+  const replayableSignals = finiteOrNull(metrics.replayableSignals) ?? Number.NaN;
+  const projectedNetEdge = finiteOrNull(metrics.projectedNetEdge) ?? Number.NaN;
+  const expectancy5 = finiteOrNull(metrics.expectancy5) ?? Number.NaN;
+  const winRate5 = finiteOrNull(metrics.winRate5) ?? Number.NaN;
+  const worstMdd5 = finiteOrNull(metrics.worstMdd5) ?? Number.NaN;
   const walkForwardAvailable = metrics.walkForwardAvailable === true;
-  const oosProjectedNetEdge = Number(metrics.oosProjectedNetEdge);
-  const walkForwardPassRate = Number(metrics.walkForwardPassRate);
+  const oosProjectedNetEdge = finiteOrNull(metrics.oosProjectedNetEdge) ?? Number.NaN;
+  const walkForwardPassRate = finiteOrNull(metrics.walkForwardPassRate) ?? Number.NaN;
   const overfitRisk = String(metrics.overfitRisk || "insufficient");
   const minHistorySamples = Math.max(
     8,
@@ -1202,14 +1267,13 @@ function buildBacktestExecutionReadinessFromMetrics(metrics = {}, options = {}) 
 }
 
 function summarizeWalkForwardSamples(samples = [], expectedCostPercent = 0) {
-  const usable = samples.filter((item) => Number.isFinite(Number(item?.r5)));
+  const usable = (Array.isArray(samples) ? samples : []).filter((item) => finiteOrNull(item?.r5) !== null);
   const returns = usable.map((item) => Number(item.r5));
   const averageReturn = returns.length ? average(returns) : 0;
   const wins = returns.filter((value) => value > 0).length;
   const winRate5 = returns.length ? (wins / returns.length) * 100 : 0;
-  const worstMdd5 = usable.some((item) => Number.isFinite(Number(item?.mdd5)))
-    ? Math.min(...usable.map((item) => Number(item.mdd5)).filter(Number.isFinite))
-    : 0;
+  const mddValues = usable.map((item) => finiteOrNull(item?.mdd5)).filter((value) => value !== null);
+  const worstMdd5 = mddValues.length ? Math.min(...mddValues) : null;
   return {
     samples: usable.length,
     winRate5,
@@ -1225,7 +1289,7 @@ function buildWalkForwardValidationFromSamples(samples = [], options = {}) {
   const minExpectancyPoints = Number(options.minExpectancyPoints) || 0;
   const minimumSamples = Math.max(18, Math.round(Number(options.minSamples) || 18));
   const usable = (Array.isArray(samples) ? samples : [])
-    .filter((item) => Number.isFinite(Number(item?.r5)))
+    .filter((item) => finiteOrNull(item?.r5) !== null)
     .sort((left, right) =>
       String(left.entryDate || left.date || "").localeCompare(String(right.entryDate || right.date || ""))
     );
@@ -1243,12 +1307,21 @@ function buildWalkForwardValidationFromSamples(samples = [], options = {}) {
       oosWinRate5: 0,
       oosExpectancy5: 0,
       oosProjectedNetEdge: 0,
-      oosWorstMdd5: 0,
+      oosWorstMdd5: null,
       degradationPercent: 100,
       overfitRisk: "insufficient",
       reason: `滚动样本外验证不足：${usable.length}/${minimumSamples}`
     };
   }
+
+  const purgeTrainingForTestStart = (rawTrain, testStart) => {
+    const boundary = String(testStart || "").slice(0, 10);
+    if (!boundary) return rawTrain;
+    return rawTrain.filter((item) => {
+      const exitDate = String(item?.exitDate || "").slice(0, 10);
+      return !exitDate || exitDate < boundary;
+    });
+  };
 
   const initialTrainSize = Math.max(9, Math.floor(usable.length * 0.5));
   const folds = [];
@@ -1258,60 +1331,72 @@ function buildWalkForwardValidationFromSamples(samples = [], options = {}) {
     const remainingFolds = 3 - index;
     const testSize = Math.max(1, Math.floor(remaining / remainingFolds));
     const end = index === 2 ? usable.length : Math.min(usable.length, cursor + testSize);
-    const trainSamples = usable.slice(0, cursor);
+    const rawTrainSamples = usable.slice(0, cursor);
     const testSamples = usable.slice(cursor, end);
+    const testStart = testSamples[0]?.entryDate || testSamples[0]?.date || "";
+    const trainSamples = purgeTrainingForTestStart(rawTrainSamples, testStart);
     const train = summarizeWalkForwardSamples(trainSamples, expectedCostPercent);
     const test = summarizeWalkForwardSamples(testSamples, expectedCostPercent);
     const accepted =
       test.samples > 0 &&
       test.projectedNetEdge >= minProjectedNetEdgePercent &&
       test.expectancy5 >= minExpectancyPoints &&
-      test.worstMdd5 > -22;
+      (test.worstMdd5 === null || test.worstMdd5 > -22);
     folds.push({
       fold: index + 1,
       trainStart: trainSamples[0]?.entryDate || trainSamples[0]?.date || "",
       trainEnd: trainSamples.at(-1)?.entryDate || trainSamples.at(-1)?.date || "",
-      testStart: testSamples[0]?.entryDate || testSamples[0]?.date || "",
+      testStart,
       testEnd: testSamples.at(-1)?.entryDate || testSamples.at(-1)?.date || "",
       trainSamples: train.samples,
+      purgedTrainingSamples: rawTrainSamples.length - trainSamples.length,
       testSamples: test.samples,
       trainProjectedNetEdge: Number(train.projectedNetEdge.toFixed(3)),
       oosProjectedNetEdge: Number(test.projectedNetEdge.toFixed(3)),
       oosWinRate5: Number(test.winRate5.toFixed(3)),
-      oosWorstMdd5: Number(test.worstMdd5.toFixed(3)),
+      oosWorstMdd5: test.worstMdd5 === null ? null : Number(test.worstMdd5.toFixed(3)),
       accepted
     });
     cursor = end;
   }
 
-  const training = summarizeWalkForwardSamples(usable.slice(0, initialTrainSize), expectedCostPercent);
-  const outOfSample = summarizeWalkForwardSamples(usable.slice(initialTrainSize), expectedCostPercent);
+  const rawInitialTrain = usable.slice(0, initialTrainSize);
+  const oosSamples = usable.slice(initialTrainSize);
+  const oosStart = oosSamples[0]?.entryDate || oosSamples[0]?.date || "";
+  const initialTrainSamples = purgeTrainingForTestStart(rawInitialTrain, oosStart);
+  const training = summarizeWalkForwardSamples(initialTrainSamples, expectedCostPercent);
+  const outOfSample = summarizeWalkForwardSamples(oosSamples, expectedCostPercent);
   const passedFolds = folds.filter((item) => item.accepted).length;
   const positiveFolds = folds.filter((item) => item.oosProjectedNetEdge > 0).length;
   const foldPassRate = passedFolds / folds.length;
   const positiveFoldRate = positiveFolds / folds.length;
-  const degradationPercent = training.projectedNetEdge > 0
-    ? Math.max(
-      0,
-      ((training.projectedNetEdge - outOfSample.projectedNetEdge) /
-        Math.max(Math.abs(training.projectedNetEdge), 0.01)) * 100
-    )
-    : outOfSample.projectedNetEdge < training.projectedNetEdge
-      ? 100
-      : 0;
+  const hasTraining = training.samples > 0;
+  const degradationPercent = !hasTraining
+    ? null
+    : training.projectedNetEdge > 0
+      ? Math.max(
+        0,
+        ((training.projectedNetEdge - outOfSample.projectedNetEdge) /
+          Math.max(Math.abs(training.projectedNetEdge), 0.01)) * 100
+      )
+      : outOfSample.projectedNetEdge < training.projectedNetEdge
+        ? 100
+        : 0;
   const overfitRisk =
-    outOfSample.projectedNetEdge <= 0 || foldPassRate < 0.5 || degradationPercent > 70
+    outOfSample.projectedNetEdge <= 0 || foldPassRate < 0.5 || (degradationPercent !== null && degradationPercent > 70)
       ? "high"
-      : foldPassRate < 2 / 3 || degradationPercent > 40
-        ? "medium"
-        : "low";
+      : !hasTraining
+        ? "unknown"
+        : foldPassRate < 2 / 3 || degradationPercent > 40
+          ? "medium"
+          : "low";
   const accepted =
     outOfSample.samples >= 9 &&
     foldPassRate >= 2 / 3 &&
     positiveFoldRate >= 2 / 3 &&
     outOfSample.projectedNetEdge >= minProjectedNetEdgePercent &&
     outOfSample.expectancy5 >= minExpectancyPoints &&
-    outOfSample.worstMdd5 > -22 &&
+    (outOfSample.worstMdd5 === null || outOfSample.worstMdd5 > -22) &&
     overfitRisk !== "high";
   const reason = accepted
     ? `样本外通过：${passedFolds}/${folds.length} 个窗口，净边际 ${outOfSample.projectedNetEdge.toFixed(2)}%`
@@ -1324,7 +1409,7 @@ function buildWalkForwardValidationFromSamples(samples = [], options = {}) {
       outOfSample.expectancy5 >= minExpectancyPoints
         ? ""
         : `样本外期望 ${outOfSample.expectancy5.toFixed(2)} 低于阈值`,
-      degradationPercent <= 70 ? "" : `训练至样本外退化 ${degradationPercent.toFixed(0)}%`,
+      degradationPercent === null || degradationPercent <= 70 ? "" : `训练至样本外退化 ${degradationPercent.toFixed(0)}%`,
       overfitRisk !== "high" ? "" : "过拟合风险高"
     ].filter(Boolean).join("；");
 
@@ -1334,15 +1419,16 @@ function buildWalkForwardValidationFromSamples(samples = [], options = {}) {
     sampleCount: usable.length,
     minimumSamples,
     trainingSamples: training.samples,
+    purgedInitialTrainingSamples: rawInitialTrain.length - initialTrainSamples.length,
     oosSampleCount: outOfSample.samples,
     foldPassRate: Number(foldPassRate.toFixed(4)),
     positiveFoldRate: Number(positiveFoldRate.toFixed(4)),
-    trainingProjectedNetEdge: Number(training.projectedNetEdge.toFixed(3)),
+    trainingProjectedNetEdge: hasTraining ? Number(training.projectedNetEdge.toFixed(3)) : null,
     oosWinRate5: Number(outOfSample.winRate5.toFixed(3)),
     oosExpectancy5: Number(outOfSample.expectancy5.toFixed(3)),
     oosProjectedNetEdge: Number(outOfSample.projectedNetEdge.toFixed(3)),
-    oosWorstMdd5: Number(outOfSample.worstMdd5.toFixed(3)),
-    degradationPercent: Number(degradationPercent.toFixed(2)),
+    oosWorstMdd5: outOfSample.worstMdd5 === null ? null : Number(outOfSample.worstMdd5.toFixed(3)),
+    degradationPercent: degradationPercent === null ? null : Number(degradationPercent.toFixed(2)),
     overfitRisk,
     reason,
     folds
@@ -2898,7 +2984,7 @@ async function executeBacktest(input, serviceSettings = {}, options = {}) {
     security.name,
     strategyIds,
     benchmarkHistory,
-    { includeSamples: true, ...(externalSnapshots ? { externalSnapshots } : {}) }
+    { includeSamples: true, roundTripCostBps: 0, ...(externalSnapshots ? { externalSnapshots } : {}) }
   );
   const combination = Array.isArray(historicalStats?.stats)
     ? historicalStats.stats.find((item) => item?.id === "currentCombination")
@@ -2917,26 +3003,19 @@ async function executeBacktest(input, serviceSettings = {}, options = {}) {
     ...publicHistoricalStats
   } = historicalStats;
 
-  const tradeSamples = Number(combination?.sampleCount || 0);
-  const avgR5 = Number.isFinite(Number(combination?.average5))
-    ? Number(combination.average5)
-    : 0;
-  const medianR5 = Number.isFinite(Number(combination?.median5))
-    ? Number(combination.median5)
-    : 0;
-  const winRate5 = Number.isFinite(Number(combination?.winRate5))
-    ? Number(combination.winRate5)
-    : 0;
-  const worstMdd5 = Number.isFinite(Number(combination?.worstMdd5))
-    ? Number(combination.worstMdd5)
-    : -Math.abs(avgR5);
-  const n5 = Number(combination?.n5 || 0);
-  const expectancy5 = n5 ? avgR5 : 0;
-  const projectedNetEdge = expectancy5 - expectedCostPercent;
-  const edgePass = Number.isFinite(projectedNetEdge) && projectedNetEdge >= minProjectedNetEdgePercent;
-  const expectancyPass = Number.isFinite(expectancy5) && expectancy5 >= minExpectancyPoints;
+  const n5 = finiteOrNull(combination?.n5) ?? 0;
+  const tradeSamples = n5;
+  const avgR5 = finiteOrNull(combination?.average5);
+  const medianR5 = finiteOrNull(combination?.median5);
+  const winRate5 = finiteOrNull(combination?.winRate5);
+  const worstMdd5 = finiteOrNull(combination?.worstMdd5);
+  const avgExcess5 = finiteOrNull(combination?.averageExcess5);
+  const expectancy5 = n5 > 0 && avgR5 !== null ? avgR5 : null;
+  const projectedNetEdge = expectancy5 !== null ? expectancy5 - expectedCostPercent : null;
+  const edgePass = projectedNetEdge !== null && projectedNetEdge >= minProjectedNetEdgePercent;
+  const expectancyPass = expectancy5 !== null && expectancy5 >= minExpectancyPoints;
   const samplePass = tradeSamples >= minHistorySamples;
-  const maxDdOk = !Number.isFinite(worstMdd5) || worstMdd5 > -22;
+  const maxDdOk = worstMdd5 !== null && worstMdd5 > -22;
   const accepted =
     samplePass &&
     edgePass &&
@@ -2947,9 +3026,9 @@ async function executeBacktest(input, serviceSettings = {}, options = {}) {
   const nodeSummary = (historicalStats.nodeStats || []).map((node) => ({
     node: node.node,
     sampleCount: Number(node.sampleCount || 0),
-    winRate5: Number(node.winRate5 || 0),
-    average5: Number(node.average5 || 0),
-    averageExcess5: Number(node.averageExcess5 || 0)
+    winRate5: finiteOrNull(node.winRate5) ?? 0,
+    average5: finiteOrNull(node.average5) ?? 0,
+    averageExcess5: finiteOrNull(node.averageExcess5) ?? 0
   }));
   const stats = {
     source: "historical backtest",
@@ -2966,13 +3045,13 @@ async function executeBacktest(input, serviceSettings = {}, options = {}) {
       totalSignals: Number(historicalStats.totalEvents || 0),
       replayableSignals: tradeSamples,
       untradeableSignals: Number(historicalStats.untradeableCount || 0),
-      winRate5: Number(winRate5.toFixed(3)),
-      averageR5: Number(avgR5.toFixed(3)),
-      medianR5: Number(medianR5.toFixed(3)),
-      expectancy5: Number(expectancy5.toFixed(3)),
-      projectedNetEdge: Number(projectedNetEdge.toFixed(3)),
-      worstMdd5: Number(worstMdd5.toFixed(3)),
-      avgExcess5: Number(Number(combination?.averageExcess5 || 0).toFixed(3)),
+      winRate5: winRate5 === null ? null : Number(winRate5.toFixed(3)),
+      averageR5: avgR5 === null ? null : Number(avgR5.toFixed(3)),
+      medianR5: medianR5 === null ? null : Number(medianR5.toFixed(3)),
+      expectancy5: expectancy5 === null ? null : Number(expectancy5.toFixed(3)),
+      projectedNetEdge: projectedNetEdge === null ? null : Number(projectedNetEdge.toFixed(3)),
+      worstMdd5: worstMdd5 === null ? null : Number(worstMdd5.toFixed(3)),
+      avgExcess5: avgExcess5 === null ? null : Number(avgExcess5.toFixed(3)),
       walkForwardAvailable: walkForwardValidation.available,
       walkForwardAccepted: walkForwardValidation.accepted,
       walkForwardPassRate: walkForwardValidation.foldPassRate,
@@ -2988,9 +3067,9 @@ async function executeBacktest(input, serviceSettings = {}, options = {}) {
         ? "满足回测门槛"
         : [
             tradeSamples >= minHistorySamples ? "" : `样本不足：${tradeSamples}/${minHistorySamples}`,
-            edgePass ? "" : `期望净值不足：${projectedNetEdge.toFixed(2)}%`,
-            expectancyPass ? "" : `期望值不足：${expectancy5.toFixed(2)}`,
-            maxDdOk ? "" : `最差回撤过深：${worstMdd5.toFixed(2)}%`,
+            edgePass ? "" : `期望净值不足：${projectedNetEdge === null ? "--" : `${projectedNetEdge.toFixed(2)}%`}`,
+            expectancyPass ? "" : `期望值不足：${expectancy5 === null ? "--" : expectancy5.toFixed(2)}`,
+            maxDdOk ? "" : `最差回撤${worstMdd5 === null ? "缺失" : `过深：${worstMdd5.toFixed(2)}%`}`,
             walkForwardValidation.accepted ? "" : walkForwardValidation.reason
           ].filter(Boolean).join("；") || "不满足回测条件"
     },

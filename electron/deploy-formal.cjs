@@ -217,9 +217,9 @@ function acquireArtifactLock(projectRoot, options = {}) {
         // Lockfile content may be partially written or corrupt; fall back to mtime age check.
         try {
           ageMs = Math.max(0, now - fsImpl.statSync(lockPath).mtimeMs);
-        } catch {
+        } catch (statError) {
           // Lockfile vanished between EEXIST and statSync; treat as expired.
-          ageMs = 0;
+          ageMs = statError?.code === "ENOENT" ? staleMs : 0;
         }
       }
       const ownerPid = Number(lockInfo?.pid);
@@ -232,7 +232,11 @@ function acquireArtifactLock(projectRoot, options = {}) {
           { cause: error }
         );
       }
-      fsImpl.unlinkSync(lockPath);
+      try {
+        fsImpl.unlinkSync(lockPath);
+      } catch (unlinkError) {
+        if (unlinkError?.code !== "ENOENT") throw unlinkError;
+      }
     }
   }
 

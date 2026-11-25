@@ -5,8 +5,6 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  nanoid@3.3.16: 3.3.18
-  nanoid@3.3.17: 3.3.18
   '@xmldom/xmldom@0.8.13': 0.8.15
   js-yaml@4.3.1: 4.3.2
   axios@1.18.1: 1.20.0
@@ -16,8 +14,6 @@ overrides:
   joi@18.2.3: 18.3.1
   follow-redirects: 1.16.2
   minimatch: 11.0.3
-  brace-expansion@1.1.18: 1.1.21
-  brace-expansion@2.1.4: 2.1.7
   brace-expansion@5.0.9: 5.0.12
   http-cache-semantics: 4.3.0
   shell-quote: 1.12.0
@@ -25,7 +21,7 @@ overrides:
 patchedDependencies:
   glob@7.2.3: 306a03fe0882c72334dbd2950064eb7ca86c8d7e9a0bb463efc1650892f429c5
   minimatch@11.0.3: 7dd6c58800e4aef4b3d66553526b7de9277328d8b4bbfa879dd4c35717fdbd3f
-  picomatch@4.0.7: 956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c
+  picomatch@4.0.7: 5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a
 
 importers:
 
@@ -2708,9 +2704,9 @@ snapshots:
 
   fast-uri@3.1.9: {}
 
-  fdir@6.5.0(picomatch@4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)):
+  fdir@6.5.0(picomatch@4.0.7(patch_hash=5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a)):
     optionalDependencies:
-      picomatch: 4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)
+      picomatch: 4.0.7(patch_hash=5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a)
 
   file-entry-cache@11.1.5:
     dependencies:
@@ -3182,7 +3178,7 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  picomatch@4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c): {}
+  picomatch@4.0.7(patch_hash=5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a): {}
 
   pkijs@3.4.0:
     dependencies:
@@ -3436,8 +3432,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c))
-      picomatch: 4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a))
+      picomatch: 4.0.7(patch_hash=5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a)
 
   tmp-promise@3.0.3:
     dependencies:
@@ -3509,7 +3505,7 @@ snapshots:
   vite@8.3.3(@types/node@26.1.1)(jiti@2.7.0):
     dependencies:
       lightningcss: 1.33.0
-      picomatch: 4.0.7(patch_hash=956a056362120de9524d0d29f2a5c8609a34f807eeae242c94b78200739aa68c)
+      picomatch: 4.0.7(patch_hash=5853371f3308f1401bad594a0c724df58e241fce99408197de198922b2391e1a)
       postcss: 8.5.29
       rolldown: 1.2.12
       tinyglobby: 0.2.17

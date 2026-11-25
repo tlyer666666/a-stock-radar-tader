@@ -301,4 +301,69 @@ test("ai-profile-store 在主密码锁定时推迟旧配置迁移、保留 hasKe
   const cleared = lockedStore.save({ id: "p1", name: "主模型改名", baseUrl: "https://api.example.com/v1", model: "m2", apiKey: "" });
   assert.equal(cleared.saved.hasKey, false);
   assert.equal(stored2.profiles[0].apiKey, "");
+
+  // H-1: 锁定时禁止删除带加密 apiKey 的模型配置，但允许删除无 apiKey 的配置；解锁后允许删除
+  stored2.profiles[0].apiKey = "safe:CIPHERTEXT";
+  isLocked2 = true;
+  assert.throws(
+    () => lockedStore.remove("p1"),
+    (err) => err?.code === "SECRET_STORAGE_LOCKED"
+  );
+  assert.equal(stored2.profiles.some(item => item.id === "p1"), true);
+  // 无 apiKey 的配置 p2 仍可删除
+  lockedStore.remove("p2");
+  assert.equal(stored2.profiles.some(item => item.id === "p2"), false);
+  // 解锁后允许删除 p1
+  isLocked2 = false;
+  lockedStore.remove("p1");
+  assert.equal(stored2.profiles.length, 0);
+});
+
+test("M-3: rejects symlinked key file, serializes master password ops, and applies exponential backoff on invalid attempts", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "astock-m3-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 1) Symlink rejection
+  const realKey = path.join(dir, "real.key");
+  const linkKey = path.join(dir, "link.key");
+  fs.writeFileSync(realKey, Buffer.alloc(32, 7));
+  try {
+    fs.symlinkSync(realKey, linkKey);
+    const linkedStorage = createLocalSecretStorage({ keyPath: linkKey });
+    assert.throws(() => linkedStorage.encryptString("x"), { code: "INVALID_SECRET_KEY_PATH" });
+    await assert.rejects(() => linkedStorage.unlockMasterPassword("MasterPass#2026"), { code: "INVALID_SECRET_KEY_PATH" });
+  } catch (error) {
+    if (error?.code !== "EPERM" && error?.code !== "ENOTSUP") throw error;
+  }
+
+  // 2) Exponential backoff with injectable clock & sleep, reset on valid unlock
+  const keyPath = path.join(dir, "local-secret.key");
+  let clock = 10_000;
+  const sleeps = [];
+  const setup = createLocalSecretStorage({ keyPath });
+  await setup.setMasterPassword("MasterPass#2026");
+
+  const locked = createLocalSecretStorage({
+    keyPath,
+    now: () => clock,
+    backoffBaseMs: 200,
+    backoffMaxMs: 1000,
+    sleep: async (ms) => { sleeps.push(ms); clock += ms; }
+  });
+  await assert.rejects(() => locked.unlockMasterPassword("bad-pass-1"), { code: "MASTER_PASSWORD_INVALID" });
+  await assert.rejects(() => locked.unlockMasterPassword("bad-pass-2"), { code: "MASTER_PASSWORD_INVALID" });
+  await assert.rejects(() => locked.unlockMasterPassword("bad-pass-3"), { code: "MASTER_PASSWORD_INVALID" });
+  await assert.rejects(() => locked.unlockMasterPassword("bad-pass-4"), { code: "MASTER_PASSWORD_INVALID" });
+  assert.deepEqual(sleeps, [200, 400, 800]);
+  await locked.unlockMasterPassword("MasterPass#2026");
+  assert.deepEqual(sleeps, [200, 400, 800, 1000], "capped at backoffMaxMs before valid attempt");
+
+  // 3) Single-flight serialization: concurrent setMasterPassword + clearMasterPassword execute sequentially without corrupting key file
+  const results = await Promise.all([
+    locked.setMasterPassword("RotatedPass#2026", "MasterPass#2026"),
+    locked.clearMasterPassword("RotatedPass#2026")
+  ]);
+  assert.deepEqual(results[0], { enabled: true, locked: false });
+  assert.deepEqual(results[1], { enabled: false, locked: false });
+  assert.equal(fs.statSync(keyPath).size, 32);
 });

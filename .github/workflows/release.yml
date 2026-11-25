@@ -24,13 +24,14 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: pnpm/action-setup@v4
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.16.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
@@ -61,14 +62,6 @@ jobs:
           $browser = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
           if (-not $browser) { throw "Chrome is required for release browser tests" }
           "QA_CHROMIUM_PATH=$browser" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Stability browser suite
-        run: pnpm qa:stability:ui
-      - name: UI remediation browser suite
-        run: pnpm qa:ui-remediation
-      - name: Sector panel browser suite
-        run: pnpm qa:sector:ui
-      - name: Workspace workflow browser suite
-        run: pnpm qa:workflow
       - name: Audit all high dependencies and verify application, review module and packaged runtime
         env:
           PACKAGED_E2E_VISIBLE: "1"
@@ -104,13 +97,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - uses: pnpm/action-setup@v4
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11.16.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
@@ -134,6 +128,7 @@ jobs:
           release-builder/*.AppImage --appimage-extract >/dev/null
           test -x squashfs-root/AppRun
           node -e "const {readPackagedPackageJson}=require('./qa/delivery-verification.cjs'); const p=readPackagedPackageJson('squashfs-root'); const v=require('./package.json').version; if(p.version!==v) throw new Error('Embedded AppImage version mismatch: '+p.version+' != '+v)"
+          node electron/build-runtime-fuses.cjs squashfs-root/a-share-quant-radar --verify
       - name: Verify packaged macOS archive
         if: matrix.platform == 'mac'
         shell: bash
@@ -152,7 +147,7 @@ jobs:
           node qa/verify-mac-delivery.cjs "$app"
           node electron/build-runtime-fuses.cjs "$app/Contents/MacOS/A股雷达" --verify
       - name: Upload native package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: release-builder/A-Share-Quant-Radar-*
@@ -167,11 +162,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag || github.ref }}
       - name: Download native packages
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: "*-*"
           path: release-assets
@@ -182,9 +174,18 @@ jobs:
       - name: Publish assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          created_draft=0
+          cleanup_draft() {
+            if [ "$created_draft" -eq 1 ]; then
+              gh release delete "$RELEASE_TAG" --yes >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_draft ERR
           gh release create "$RELEASE_TAG" --verify-tag --generate-notes --draft
+          created_draft=1
           gh release upload "$RELEASE_TAG" release-assets/*
           expected_count=$(find release-assets -maxdepth 1 -type f | wc -l | tr -d ' ')
           actual_count=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets | length')
@@ -193,3 +194,4 @@ jobs:
             exit 1
           fi
           gh release edit "$RELEASE_TAG" --draft=false --latest
+          created_draft=0

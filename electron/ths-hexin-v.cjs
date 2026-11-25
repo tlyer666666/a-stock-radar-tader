@@ -84,18 +84,22 @@ function buildFactory() {
   }
   try {
     // 该算法预期在浏览器里运行，需要 window/navigator/document 的最小 stub。
-    const sandbox = {
-      navigator: {
+    const sandbox = Object.assign(Object.create(null), {
+      navigator: Object.freeze({
         userAgent:
           "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      },
-      document: { cookie: "", createElement: () => ({}) },
+      }),
+      document: { cookie: "", createElement: () => Object.create(null) },
       setTimeout: () => 0,
       clearTimeout: () => {}
-    };
+    });
     sandbox.window = sandbox;
     sandbox.top = sandbox;
-    const context = vm.createContext(sandbox, { name: "ths-hexin-v" });
+    const context = vm.createContext(sandbox, {
+      name: "ths-hexin-v",
+      codeGeneration: { strings: false, wasm: false },
+      microtaskMode: "afterEvaluate"
+    });
     const factory = new vm.Script(
       `${HEXIN_V_SOURCE}\n;(typeof v === "function") ? v : null;`,
       { filename: "ths-hexin-v.js" }

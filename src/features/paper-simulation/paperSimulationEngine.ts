@@ -1372,8 +1372,9 @@ export const advancePaperSimulationByQuote = (
   settings: Settings
 ) => {
   const hydrated = normalizePaperState(state);
-  const sourceEquityPeak = Number.isFinite(Number(state?.equityPeak)) ? Number(state.equityPeak) : hydrated.equityPeak;
-  const sourceMaxDrawdown = Number.isFinite(Number(state?.maxDrawdownPercent)) ? Number(state.maxDrawdownPercent) : hydrated.maxDrawdownPercent;
+  const baselineMetrics = getPaperAccountMetrics(hydrated);
+  const sourceEquityPeak = Number.isFinite(Number(state?.equityPeak)) ? Number(state.equityPeak) : baselineMetrics.equityPeak;
+  const sourceMaxDrawdown = Number.isFinite(Number(state?.maxDrawdownPercent)) ? Number(state.maxDrawdownPercent) : baselineMetrics.maxDrawdownPercent;
   const normalized = resetPaperStateForNewDay(hydrated);
   if (!payload || !normalized.openPositions.length) return { state: normalized, changed: false, message: "" };
   const code = String(payload.security?.code || "");
@@ -1401,6 +1402,7 @@ export const advancePaperSimulationByQuote = (
     if (corporateBlock) {
       const quoteName = String(payload.quote?.name || payload.security?.name || "");
       const explicitCorporateAction = /^(?:XR|XD|DR)/i.test(quoteName) || Boolean(payload.quote?.corporateAction);
+      const persistBlock = explicitCorporateAction || Array.isArray(payload.history);
       const evidence = paperQuoteEvidence(payload);
       // Wait for close observation to record the shifted post-DR close ONLY when the quote
       // explicitly carries a corporate-action marker; never overwrite on an unexplained preClose gap.
@@ -1412,19 +1414,26 @@ export const advancePaperSimulationByQuote = (
             ...(evidence.quoteVolume !== undefined ? { quoteVolume: evidence.quoteVolume } : {}),
             ...(evidence.quotePreClose !== undefined ? { quotePreClose: evidence.quotePreClose } : {})
           };
+      const nextSettlementBlock = persistBlock ? corporateBlock : (position.settlementBlockedReason || "");
       const blockedPos: PaperPosition = {
         ...position,
         ...nextEvidence,
         latestPrice: latest,
-        settlementBlockedReason: corporateBlock
+        ...(nextSettlementBlock ? { settlementBlockedReason: nextSettlementBlock } : {})
       };
       openPositions.push(blockedPos);
-      changed ||= position.settlementBlockedReason !== corporateBlock
+      changed ||= (position.settlementBlockedReason || "") !== nextSettlementBlock
         || latest !== position.latestPrice
         || Object.entries(nextEvidence).some(([key, value]) => position[key as keyof PaperPosition] !== value);
       blocks.push(corporateBlock); continue;
     }
-    const barProgress = advancePaperHoldingBars(position, payload.history);
+    const quoteEvidence = paperQuoteEvidence(payload);
+    const observedTradingDate = !Array.isArray(payload.history)
+      && quoteEvidence.quoteDate
+      && (quoteEvidence.quoteVolume ?? 0) > 0
+      ? quoteEvidence.quoteDate
+      : undefined;
+    const barProgress = advancePaperHoldingBars(position, payload.history, undefined, observedTradingDate);
     const holdingBars = barProgress.holdingBars;
     const observedHigh = paperDate(position.openedAt) < todayTag() ? Number(payload.quote?.high) : latest;
     const highWaterMark = Math.max(position.highWaterMark, latest, Number.isFinite(observedHigh) ? observedHigh : latest);
@@ -1434,7 +1443,7 @@ export const advancePaperSimulationByQuote = (
     const { settlementBlockedReason: previousBlock, ...unblockedPosition } = position;
     const withPrice: PaperPosition = {
       ...unblockedPosition,
-      ...paperQuoteEvidence(payload),
+      ...quoteEvidence,
       latestPrice: latest,
       highWaterMark,
       ...barProgress
@@ -1456,13 +1465,13 @@ export const advancePaperSimulationByQuote = (
       openPositions.push(withPrice);
       changed ||= Boolean(previousBlock) || latest !== position.latestPrice || highWaterMark !== position.highWaterMark
         || holdingBars !== position.holdingBars || barProgress.lastHoldingBarDate !== position.lastHoldingBarDate
-        || Object.entries(paperQuoteEvidence(payload)).some(([key, value]) => position[key as keyof PaperPosition] !== value);
+        || Object.entries(quoteEvidence).some(([key, value]) => position[key as keyof PaperPosition] !== value);
     }
   }
 
   const beforeEquityRecord = { ...normalized, cash, dailyRealizedPnl, openPositions, closedPositions };
   const nextState = recordPaperEquity(beforeEquityRecord);
-  changed ||= normalized.equityPeak !== sourceEquityPeak || normalized.maxDrawdownPercent !== sourceMaxDrawdown;
+  changed ||= nextState.equityPeak !== sourceEquityPeak || nextState.maxDrawdownPercent !== sourceMaxDrawdown;
 
   const killSwitch = evaluatePaperKillSwitch(nextState, settings);
   if (killSwitch.hardTriggered && nextState.openPositions.length) {

@@ -58,27 +58,56 @@ test("SEC-1: the embedded hexin-v script is byte-for-byte the audited copy (any 
 test("DEP-4: the main process requires only electron, Node built-ins and its own files (zero runtime npm dependencies)", () => {
   const builtins = new Set([...builtinModules, ...builtinModules.map((name) => `node:${name}`)]);
   const offenders = [];
-  for (const file of fs.readdirSync(path.join(root, "electron")).filter((name) => name.endsWith(".cjs") && !name.endsWith(".test.cjs"))) {
-    const source = fs.readFileSync(path.join(root, "electron", file), "utf8");
+  const electronRoot = path.join(root, "electron");
+  const walkCjs = (dir) => {
+    const out = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...walkCjs(full));
+      else if (entry.name.endsWith(".cjs") && !entry.name.endsWith(".test.cjs")) out.push(full);
+    }
+    return out;
+  };
+  for (const fullPath of walkCjs(electronRoot)) {
+    const rel = path.relative(electronRoot, fullPath).split(path.sep).join("/");
+    const source = fs.readFileSync(fullPath, "utf8");
     for (const match of source.matchAll(/require\(\s*["']([^"']+)["']\s*\)/g)) {
       const id = match[1];
       if (id === "electron" || builtins.has(id) || (typeof isBuiltin === "function" && isBuiltin(id))) continue;
       if (id.startsWith(".")) {
         // 相对路径只能指向 electron/ 或 config/ 里的文件（随安装包一起打包）。
-        const target = path.resolve(root, "electron", id);
+        const target = path.resolve(path.dirname(fullPath), id);
         const inside = ["electron", "config"].some((dir) => target.startsWith(path.join(root, dir) + path.sep));
         if (inside) continue;
       }
-      offenders.push(`${file}: ${id}`);
+      offenders.push(`${rel}: ${id}`);
     }
     // 动态加载无法静态核对依赖：非字面量 require、import()、createRequire 一律拒绝。
-    for (const match of source.matchAll(/\brequire\(\s*(?!["'])([^)]{0,40})/g)) offenders.push(`${file}: require(${match[1]})`);
-    for (const match of source.matchAll(/\bimport\(\s*([^)]{0,40})/g)) offenders.push(`${file}: import(${match[1]})`);
-    if (/\bcreateRequire\b/.test(source)) offenders.push(`${file}: createRequire`);
+    for (const match of source.matchAll(/\brequire\(\s*(?!["'])([^)]{0,40})/g)) offenders.push(`${rel}: require(${match[1]})`);
+    for (const match of source.matchAll(/\bimport\(\s*([^)]{0,40})/g)) offenders.push(`${rel}: import(${match[1]})`);
+    if (/\bcreateRequire\b/.test(source)) offenders.push(`${rel}: createRequire`);
   }
   // 构建/打包脚本只在开发机运行，不进安装包。
   const buildOnly = /^(build-unpacked|build-platform|deploy-formal|after-pack-fuses|deploy-single-app|build-runtime-fuses)\.cjs:/;
   assert.deepEqual(offenders.filter((item) => !buildOnly.test(item)), []);
+});
+
+test("SEC-2: production electron modules route HTTP through electron/http-client.cjs instead of direct fetch()", () => {
+  const electronRoot = path.join(root, "electron");
+  const offenders = [];
+  const walkCjs = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walkCjs(full); continue; }
+      if (!entry.name.endsWith(".cjs") || entry.name.endsWith(".test.cjs")) continue;
+      const rel = path.relative(electronRoot, full).split(path.sep).join("/");
+      if (rel === "http-client.cjs") continue;
+      const source = fs.readFileSync(full, "utf8");
+      if (/(?<![.\w$])\bfetch\s*\(/.test(source)) offenders.push(rel);
+    }
+  };
+  walkCjs(electronRoot);
+  assert.deepEqual(offenders, [], "Direct global fetch() bypasses shared native-http isolation for embedded undici");
 });
 
 test('unit-test isolation blocks public fetch and native HTTPS before network access', () => {

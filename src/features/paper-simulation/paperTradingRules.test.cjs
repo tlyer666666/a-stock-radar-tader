@@ -61,3 +61,57 @@ test('1.6.52: STAR market lot rule, Beijing new listings without a limit, and ex
   const position = { code: '600001', name: '样本', quoteName: '样本', openedAt: '2026-01-01T02:00:00Z', quoteDate: require('../../dateUtils').shanghaiDateTag(), quoteVolume: 100, latestPrice: 18.87, quotePreClose: 17.15 };
   assert.match(rules.paperMatchBlock(position, 'buy', 18.87), /涨停/, '17.15 × 1.1 rounds to 18.87, so 18.87 is the limit');
 });
+
+test('C-3 & H-6: ETF price limits use 10%/20% & 0.001 tick; synthetic snapshot does not stamp persistent gap block and advances holdingBars', () => {
+  const rules = require('./paperTradingRules.ts');
+  const engine = require('./paperSimulationEngine.ts');
+  const { initialSettings } = require('../../domain/settings.ts');
+  const { advancePaperHoldingBars } = require('../../paperHoldingBars.ts');
+  const { shanghaiDateTag } = require('../../dateUtils.ts');
+
+  assert.equal(rules.paperPriceLimitRate('510300', '沪深300ETF'), 0.1);
+  assert.equal(rules.paperPriceLimitRate('513180', '恒生科技ETF'), 0.1);
+  assert.equal(rules.paperPriceLimitRate('588000', '科创50ETF'), 0.2);
+  assert.equal(rules.paperPriceLimitRate('159915', '创业板ETF'), 0.2);
+
+  const etfPos = {
+    code: '513180', name: '恒生科技ETF', quoteName: '恒生科技ETF',
+    openedAt: '2026-01-01T02:00:00Z', quoteDate: shanghaiDateTag(),
+    quoteVolume: 10000, latestPrice: 0.792, quotePreClose: 0.720
+  };
+  assert.match(rules.paperMatchBlock(etfPos, 'buy', 0.792), /涨停/);
+  assert.equal(rules.paperMatchBlock({ ...etfPos, latestPrice: 0.791 }, 'buy', 0.791), '');
+
+  // Background quote snapshot without history advances holdingBars by calendar trading days.
+  const barRes = advancePaperHoldingBars(
+    { openedAt: '2026-10-16T02:00:00Z', holdingBars: 0, lastHoldingBarDate: '2026-10-16' },
+    undefined,
+    '2026-10-21',
+    '2026-10-20'
+  );
+  assert.equal(barRes.holdingBars, 2, '2026-10-19 (Mon) and 2026-10-20 (Tue) are 2 trading days');
+  assert.equal(barRes.lastHoldingBarDate, '2026-10-20');
+
+  // Synthetic snapshot (history omitted) with preClose gap must NOT stamp a persistent settlementBlockedReason.
+  const baseState = {
+    initialCapital: 100000,
+    cash: 90000,
+    equityPeak: 100000,
+    maxDrawdownPercent: 0,
+    openPositions: [{
+      id: 'syn-1', code: '600519', name: '贵州茅台', shares: 100, entryPrice: 100, latestPrice: 100,
+      stopPrice: 80, takePrice: 120, holdingBars: 1, lastHoldingBarDate: '2026-10-16', highWaterMark: 100,
+      openedAt: '2026-10-15T02:00:00Z', entryFee: 5, feeRatePercent: 0.03,
+      lastObservedClose: 100, lastObservedCloseDate: '2026-10-16', settlementBlockedReason: ''
+    }],
+    closedPositions: []
+  };
+  const synthetic = {
+    security: { code: '600519', name: '贵州茅台', assetType: 'stock' },
+    quote: { name: '贵州茅台', latest: 105, preClose: 104, high: 106, low: 104, volume: 10000 },
+    updatedAt: '2026-10-20T02:00:00Z'
+  };
+  const res = engine.advancePaperSimulationByQuote(baseState, synthetic, { ...initialSettings, maxHoldingBars: 30, trailingStopPercent: 0 });
+  assert.equal(res.state.openPositions[0].settlementBlockedReason || '', '', 'synthetic quote snapshot without history must not stamp persistent corporate-action block');
+  assert.equal(res.changed, true, 'equityPeak / latestPrice change must report changed: true');
+});

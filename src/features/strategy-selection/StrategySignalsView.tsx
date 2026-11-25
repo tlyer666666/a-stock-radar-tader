@@ -96,8 +96,22 @@ export function StrategyRuleSources({ group }: { group: Pick<StrategySignalGroup
     {!!group.sources?.length && <div className="strategy-rule-field conditions">
       <span>公式来源与适配 · {group.version}</span>
       <div>
-        {group.sources.map(source => <button key={source.url} className="secondary-btn" type="button"
-          onClick={() => void window.stockApi.openExternal(source.url)} title={source.url}>{source.title}</button>)}
+        {group.sources.map(source => {
+          const url = String(source.url || "").trim();
+          return (
+            <button
+              key={source.url || source.title}
+              className="secondary-btn"
+              type="button"
+              disabled={!url}
+              onClick={() => {
+                if (!url) return;
+                void Promise.resolve(window.stockApi?.openExternal?.(url)).catch(() => {});
+              }}
+              title={url || source.title}
+            >{source.title}</button>
+          );
+        })}
         <p>{group.adaptationNote}</p>
       </div>
     </div>}
@@ -733,10 +747,41 @@ export default function StrategySignalsView({
       emitFeedback("所选股票均已在自选监控中");
       return;
     }
-    toAdd.forEach(sec => handleQuickFavorite(sec));
-    emitFeedback(`已批量加入自选 ${toAdd.length} 只`);
-    setSelectedCodes(new Set());
-  }, [onBatchAddFavorites, effectiveFavoriteCodes, handleQuickFavorite, emitFeedback]);
+    if (onToggleFavorite) {
+      toAdd.forEach(sec => { void onToggleFavorite(sec); });
+      emitFeedback(`已批量加入自选 ${toAdd.length} 只`);
+      setSelectedCodes(new Set());
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.stockApi?.getWatchlist !== "function" || typeof window.stockApi?.saveWatchlist !== "function") return;
+    void window.stockApi.getWatchlist().then(async current => {
+      const list = Array.isArray(current) ? [...current] : [];
+      const byCode = new Map(list.map(item => [item.code, item]));
+      const now = new Date().toISOString();
+      let addedCount = 0;
+      for (const sec of toAdd) {
+        const existing = byCode.get(sec.code);
+        if (existing && (existing.favorite || !existing.autoAdded)) continue;
+        if (existing) {
+          byCode.set(sec.code, { ...existing, favorite: true, favoriteAddedAt: now });
+        } else {
+          byCode.set(sec.code, { ...sec, createdAt: now, favoriteAddedAt: now, favorite: true, autoAdded: false, note: "" });
+        }
+        addedCount += 1;
+      }
+      if (!addedCount) {
+        emitFeedback("所选股票均已在自选监控中");
+        setSelectedCodes(new Set());
+        return;
+      }
+      const saved = await window.stockApi.saveWatchlist([...byCode.values()]);
+      setLocalFavCodes(new Set(saved.filter(item => item.favorite || !item.autoAdded).map(item => item.code)));
+      emitFeedback(`已批量加入自选 ${addedCount} 只`);
+      setSelectedCodes(new Set());
+    }).catch(() => {
+      emitFeedback("自选保存失败");
+    });
+  }, [onBatchAddFavorites, onToggleFavorite, effectiveFavoriteCodes, emitFeedback]);
   const handleBatchAddPlans = useCallback((stocks: StrategySignalStock[], livePrices: Record<string, number | null>) => {
     if (!stocks.length || typeof window === "undefined" || !window.localStorage) return;
     const result = saveQuickObservationPlansBatch(

@@ -548,3 +548,47 @@ test("entry-bar corporate action is rejected as corporate_action_on_entry withou
   assert.equal(result.trades[0].sampleId, "clean-peer");
   assert.equal(result.metrics.endingCapital, 1100);
 });
+
+test("L-8: compareSignals has no post-settlement exitDate lookahead and out-of-range pre-rejected signals are recorded in rejections", () => {
+  // 1) Two identical-priority same-day signals on same stock/strategy with different sampleIds:
+  // swapping their exitDates must NOT change which signal wins the single slot.
+  const runPair = (exitA, exitB) => simulateStrategyPortfolio(
+    [
+      sample("600001", { sampleId: "sig-A", priority: 50, exitDate: exitA }),
+      sample("600001", { sampleId: "sig-B", priority: 50, exitDate: exitB })
+    ],
+    { "600001": history([10, 10, 10.5, 11, 11.2, 11.5]) },
+    benchmark(),
+    { startingCapital: 1000, maxPositions: 1, lotSize: 1 }
+  );
+  const normalOrder = runPair(DATES[3], DATES[4]);
+  const swappedExits = runPair(DATES[5], DATES[2]);
+  assert.equal(normalOrder.trades[0].sampleId, "sig-A");
+  assert.equal(swappedExits.trades[0].sampleId, "sig-A", "exitDate must never alter entry-day signal ordering");
+
+  // 2) Pre-rejected signal (e.g., suspended/zero volume on entry) whose entryDate is outside benchmark window
+  // must be recorded in rejections rather than silently dropped.
+  const bench = benchmark(DATES.slice(0, 4));
+  const stockRows = [
+    ...history([10, 10, 10, 10], DATES.slice(0, 4)),
+    { date: DATES[4], open: 10, high: 10, low: 10, close: 10, volume: 0, amount: 0 },
+    { date: DATES[5], open: 10, high: 10.2, low: 9.8, close: 10, volume: 1000, amount: 100000 }
+  ];
+  const outOfRangeRejected = simulateStrategyPortfolio(
+    [
+      sample("600001", {
+        sampleId: "out-of-window-pre-rejected",
+        signalDate: DATES[3],
+        entryDate: DATES[4],
+        exitDate: DATES[5]
+      })
+    ],
+    { "600001": stockRows },
+    bench,
+    { startingCapital: 1000, maxPositions: 1, lotSize: 1 }
+  );
+  assert.equal(outOfRangeRejected.trades.length, 0);
+  assert.equal(outOfRangeRejected.rejections.length, 1, "out-of-range pre-rejected signal must not be silently dropped");
+  assert.equal(outOfRangeRejected.rejections[0].sampleId, "out-of-window-pre-rejected");
+  assert.equal(outOfRangeRejected.rejections[0].reason, "suspended_or_no_liquidity");
+});
