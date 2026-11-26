@@ -80,6 +80,7 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "market:previous-limit-up-failed-boards",
   "market:quote",
   "market:recent-limit-ups",
+  "market:seal-stream",
   "market:search",
   "market:search-sectors",
   "market:sector-limit-count",
@@ -143,6 +144,7 @@ const IPC_EVENT_CHANNELS = Object.freeze([
   "ai:stream",
   "app:notification-clicked",
   "market:index-tick",
+  "market:seal-tick",
   "review-window:theme-changed"
 ]);
 
@@ -195,6 +197,13 @@ const VALIDATORS = new Map([
   ["market:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "证券搜索关键词无效"],
   ["market:search-sectors", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "板块搜索关键词无效"],
   ["market:analyze-sector", args => (args[0] === undefined || args[0] === null || isSecurityOrText(args[0])) ? null : "板块分析参数无效"],
+  ["market:seal-stream", args => {
+    const input = args[0];
+    if (!isPlainObject(input)) return "封单订阅参数无效";
+    if (input.owner !== undefined && (typeof input.owner !== "string" || input.owner.length > 24)) return "封单订阅参数无效";
+    if (input.codes !== undefined && !(Array.isArray(input.codes) && input.codes.length <= 300 && input.codes.every(code => typeof code === "string" && /^\d{6}$/.test(code)))) return "封单订阅代码无效";
+    return null;
+  }],
   ["market:batch-quotes", args => (Array.isArray(args[0]) && args[0].length <= 1200 && args[0].every(item => isPlainObject(item) && typeof item.code === "string" && /^\d{6}$/.test(item.code))) ? null : "批量行情参数无效"],
   ["sector:cancel", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 256) ? null : "板块取消请求编号无效"],
   ["review-window:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "复盘搜索关键词无效"],

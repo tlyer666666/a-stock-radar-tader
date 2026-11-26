@@ -9,6 +9,9 @@ export const LIMIT_COLUMNS = [
   { key: 'name', label: '名称', width: 104 },
   { key: 'latest', label: '现价', width: 70, numeric: true },
   { key: 'changePct', label: '涨幅', width: 76, numeric: true },
+  // 实时封单两列紧跟涨幅（窄窗口不用横向滚动就能看到），由涨停池订阅的封单推送每秒刷新。
+  { key: 'sealedAmount', label: '封单额', width: 92, numeric: true },
+  { key: 'status', label: '封板状态', width: 86 },
   { key: 'consecutiveBoards', label: '连板', width: 54, numeric: true },
   { key: 'turnover', label: '换手', width: 68, numeric: true },
   { key: 'amount', label: '成交额', width: 90, numeric: true },
@@ -17,8 +20,6 @@ export const LIMIT_COLUMNS = [
   { key: 'sealFloatRatio', label: '封单/流通', width: 86, numeric: true },
   { key: 'quality', label: '质量', width: 142, numeric: true },
   { key: 'industry', label: '板块', width: 110 },
-  { key: 'sealedAmount', label: '封单额', width: 92, numeric: true, optional: true },
-  { key: 'status', label: '封板状态', width: 100, optional: true },
   { key: 'limitReason', label: '涨停原因', width: 200, optional: true }
 ] as const;
 

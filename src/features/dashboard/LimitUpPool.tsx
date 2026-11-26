@@ -6,9 +6,36 @@ import { PanelTitle } from '../../components/terminal/TerminalPrimitives';
 import { fmt, fmtMoney, nullableNumber } from '../../domain/formatters';
 import { inferSecid } from '../../domain/securityIdentifiers';
 import { loadSafeLocalJson, saveSafeLocalJson } from '../../safeStorage';
+import { useLimitSeals } from './useLimitSeals';
+import { formatSealAmount, type LimitSealRecord } from './limitSealModel';
 import { LIMIT_COLUMNS, limitPoolWindow, limitUpMarketAnalysis, normalizeColumnPreferences, selectLimitUpRows, type LimitPoolSort, type LimitUpStock } from './limitUpPoolModel';
 
-const STORAGE_KEY = 'a-stock-radar:limit-pool-columns:v3';
+const STORAGE_KEY = 'a-stock-radar:limit-pool-columns:v4';
+const LEGACY_STORAGE_KEY = 'a-stock-radar:limit-pool-columns:v3';
+const isColumnPrefsRecord = (value: unknown): boolean => value !== null && typeof value === 'object' && !Array.isArray(value);
+/** v4 起「封单额」「封板状态」默认显示（实时刷新）；老用户的列设置迁移时补上这两列。 */
+function loadColumnPreferences() {
+  const current = loadSafeLocalJson<{ visible?: unknown; widths?: unknown } | null>(STORAGE_KEY, null, isColumnPrefsRecord);
+  if (current) return normalizeColumnPreferences(current);
+  const legacy = loadSafeLocalJson<{ visible?: unknown; widths?: unknown } | null>(LEGACY_STORAGE_KEY, null, isColumnPrefsRecord);
+  if (legacy && Array.isArray(legacy.visible)) return normalizeColumnPreferences({ ...legacy, visible: [...legacy.visible, 'sealedAmount', 'status'] });
+  return normalizeColumnPreferences(null);
+}
+
+/** 把实时封单合并进涨停池行：封单额、封单/流通、现价、涨幅用实时值；炸板时封单额为空（不是 0）。 */
+function withLiveSeal(item: LimitUpStock, live: LimitSealRecord | undefined): LimitUpStock {
+  if (!live) return item;
+  return {
+    ...item,
+    latest: live.latest ?? item.latest,
+    changePct: live.changePct ?? item.changePct,
+    sealedAmount: live.status === 'sealed' || live.status === 'contested' ? live.sealAmount : null,
+    sealFloatRatio: live.status === 'sealed' || live.status === 'contested' ? live.sealFloatRatio : null,
+    liveSealStatus: live.status,
+    liveSealLabel: live.statusLabel,
+    liveSealChange1mPct: live.change1mPct
+  };
+}
 const percent = (value: unknown, signed = false) => {
   const n = nullableNumber(value);
   return n === null ? '--' : `${signed && n > 0 ? '+' : ''}${fmt(n)}%`;
@@ -26,7 +53,7 @@ const CONTENT_MIN_WIDTH: Record<string, number> = { name: 84, latest: 60, change
 const COMPACT_LIMIT_COLUMNS = new Set(['latest', 'turnover', 'amount', 'firstSealTime', 'lastSealTime', 'openBoardCount', 'consecutiveBoards']);
 
 export default memo(function LimitUpPool({
-  items,
+  items: snapshotItems,
   meta,
   onOpen,
   onAdd,
@@ -49,7 +76,15 @@ export default memo(function LimitUpPool({
 }) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<LimitPoolSort>({ key: 'changePct', direction: 'desc' });
-  const [preferences, setPreferences] = useState(() => normalizeColumnPreferences(loadSafeLocalJson(STORAGE_KEY, {})));
+  const [preferences, setPreferences] = useState(loadColumnPreferences);
+  // 实时封单：订阅整张涨停池（最多 300 只），封单一变就更新封单额、封单/流通和封板状态。
+  const poolCodes = useMemo(() => snapshotItems.map(item => item.code), [snapshotItems]);
+  const { records: liveSeals, lastTickAt: sealTickAt } = useLimitSeals(poolCodes, { owner: 'pool' });
+  const items = useMemo(() => snapshotItems.map(item => withLiveSeal(item, liveSeals[item.code])), [snapshotItems, liveSeals]);
+  const brokenCount = useMemo(() => {
+    const active = new Set(poolCodes);
+    return Object.values(liveSeals).filter(seal => seal.status === 'broken' && active.has(seal.code)).length;
+  }, [liveSeals, poolCodes]);
   const [selectedCode, setSelectedCode] = useState('');
   const [storageError, setStorageError] = useState(false);
   const [planTarget, setPlanTarget] = useState<QuickPlanTarget | null>(null);
@@ -128,10 +163,16 @@ export default memo(function LimitUpPool({
       case 'changePct': return <em className={value === null || value === 0 ? '' : value > 0 ? 'up' : 'down'}>{percent(value, true)}</em>;
       case 'turnover': return percent(value);
       case 'sealFloatRatio': return percent(value === null ? null : value * 100);
-      case 'amount': case 'sealedAmount': return value === null ? '--' : fmtMoney(value);
+      case 'amount': return value === null ? '--' : fmtMoney(value);
+      case 'sealedAmount': {
+        if (item.liveSealStatus === 'broken') return <em className="seal-cell broken">炸板</em>;
+        const change = nullableNumber(item.liveSealChange1mPct);
+        const arrow = change !== null && change <= -10 ? <i className="seal-arrow down" title={`1 分钟 ${change.toFixed(0)}%`}>▼</i> : change !== null && change >= 10 ? <i className="seal-arrow up" title={`1 分钟 +${change.toFixed(0)}%`}>▲</i> : null;
+        return value === null ? '--' : <span className="seal-cell">{item.liveSealStatus ? formatSealAmount(value) : fmtMoney(value)}{arrow}</span>;
+      }
       case 'consecutiveBoards': return value === null ? '--' : <b className={`board-tag ${value >= 3 ? 'high' : ''}`}>{value === 1 ? '首板' : `${value}板`}</b>;
       case 'quality': return insight.qualityScore === null ? `${insight.state} · ${insight.coreFieldCount}/3` : `${insight.state} · ${insight.qualityScore}分`;
-      case 'status': return insight.state;
+      case 'status': return item.liveSealLabel ? <em className={`seal-cell status-${String(item.liveSealStatus)}`}>{String(item.liveSealLabel)}</em> : insight.state;
       case 'openBoardCount': return value === null ? '--' : value;
       default: return String(item[key] || '--');
     }
@@ -139,12 +180,12 @@ export default memo(function LimitUpPool({
   const cellTitle = (item: LimitUpStock, key: string) => {
     const insight = insights.get(item.code)!;
     if (key === 'quality') return insight.qualityScore === null ? `${insight.state} · 核心字段 ${insight.coreFieldCount}/3` : `${insight.state} · ${insight.qualityScore}分`;
-    if (key === 'status') return insight.state;
+    if (key === 'status') return item.liveSealLabel ? `${String(item.liveSealLabel)}（实时） · 质量：${insight.state}` : insight.state;
     return String(item[key] || '');
   };
   if (!items.length) return null;
   return <section className="panel discover-panel discover-panel-top compact-limit-pool">
-    <PanelTitle title="涨停池" subtitle={meta?.dataDate ? `完整涨停名单 · 数据日 ${meta.dataDate}` : '最近交易日完整涨停名单'} icon={Sparkles} badge={`${items.length} 只`} />
+    <PanelTitle title="涨停池" subtitle={`${meta?.dataDate ? `完整涨停名单 · 数据日 ${meta.dataDate}` : '最近交易日完整涨停名单'}${sealTickAt ? ' · 封单：同花顺涨停池实时' : ''}`} icon={Sparkles} badge={`${items.length} 只${brokenCount > 0 ? ` · 炸板 ${brokenCount}` : ''}`} />
     <div className="limit-pool-tools">
       <label className="limit-pool-search"><Search size={14} /><input aria-label="筛选涨停池" value={query} onChange={event => {setQuery(event.target.value); if (scroll.current) scroll.current.scrollTop = 0;}} placeholder="筛选股票、代码、板块或原因" />{query && <button aria-label="清除涨停池筛选" onClick={() => { setQuery(''); if (scroll.current) { scroll.current.scrollTop = 0; measureViewport(); } }}>×</button>}</label>
       <span className="limit-keyboard-hint">↑↓ / Home / End 选择 · 回车打开 · {query.trim() ? `匹配 ${filtered.length}` : `显示 ${visible.length} / ${items.length}`} 只</span>

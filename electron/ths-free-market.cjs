@@ -9,6 +9,7 @@
  *   实时快照  /v6/realhead/hs_{code}/last.js        JSONP，items 为字段编号 → 值
  *   日K线      /v6/line/hs_{code}/{00|01|02}/{year}.js  按年整年；00 不复权 / 01 前复权 / 02 后复权
  *   最近日K    /v6/line/hs_{code}/{adj}/last.js       只含最近约 140 根，作年文件失败时的兜底
+ *   五档盘口  /v2/fiverange/hs_{code}/last.js        JSONP，买一~买五、卖一~卖五（量单位为「股」）
  *
  * 2026-10-21 实测要点（写测试用的样本即来自这些响应的格式）：
  *   · realhead 的 `time` 是服务器出数时间（"2026-10-21 23:13:51 北京时间"），
@@ -243,6 +244,33 @@ async function thsFreeQuote(security, { signal } = {}) {
     return normalizeThsFreeQuote(security, { ...items, ...outer });
   }
   return normalizeThsFreeQuote(security, items);
+}
+
+/**
+ * 五档字段编号（2026-11-26 实测）：买一 24/25、买二 26/27、买三 28/29、买四 150/151、买五 154/155；
+ * 卖一 30/31、卖二 32/33、卖三 34/35、卖四 152/153、卖五 156/157。量是「股」，换算成「手」。
+ * 涨停封死时卖盘价为空、量为 0，这些档位不列出。
+ */
+const FIVE_RANGE_FIELDS = Object.freeze({
+  bids: [["24", "25"], ["26", "27"], ["28", "29"], ["150", "151"], ["154", "155"]],
+  asks: [["30", "31"], ["32", "33"], ["34", "35"], ["152", "153"], ["156", "157"]]
+});
+
+function parseThsFiveRange(items, unitsPerLot = 100) {
+  if (!items || typeof items !== "object") throw thsFreeError("同花顺五档未返回数据", "THS_FREE_EMPTY");
+  const side = pairs => pairs.map(([priceKey, volumeKey]) => {
+    const price = num(items[priceKey]);
+    const shares = num(items[volumeKey]);
+    return price > 0 && shares > 0 ? { price, volumeLots: shares / unitsPerLot } : null;
+  }).filter(Boolean);
+  return { bids: side(FIVE_RANGE_FIELDS.bids), asks: side(FIVE_RANGE_FIELDS.asks), preClose: num(items["6"]) };
+}
+
+async function thsFreeFiveRange(security, { signal } = {}) {
+  const target = resolveThsFreeSymbol(security);
+  if (!target) throw thsFreeError("同花顺五档只覆盖A股个股与可转债", "THS_FREE_UNSUPPORTED");
+  const payload = await readJsonp(`${THS_FREE_HOST}/v2/fiverange/${target.market}_${target.code}/last.js`, QUOTE_POLICY, signal);
+  return parseThsFiveRange(payload?.items, lotSize(security));
 }
 
 /** K线 data 串 → 行（丢弃当天只有收盘价的占位行）。 */
@@ -581,6 +609,8 @@ module.exports = {
   isTradingStatus,
   normalizeThsFreeQuote,
   thsFreeQuote,
+  thsFreeFiveRange,
+  parseThsFiveRange,
   parseThsLineData,
   mergeQuoteIntoDailyRows,
   withDerivedFields,

@@ -33,6 +33,13 @@ contextBridge.exposeInMainWorld("stockApi", {
   getEtfMarket: (options = {}) => invoke("etf:list", options),
   getIndexBoard: (options = {}) => invoke("market:index-board", options),
   subscribeIndexStream: (options = {}) => invoke("market:index-stream", options),
+  subscribeLimitSeals: (input = {}) => invoke("market:seal-stream", input),
+  onLimitSealTick: (listener) => {
+    if (typeof listener !== "function") return () => {};
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on("market:seal-tick", handler);
+    return () => ipcRenderer.removeListener("market:seal-tick", handler);
+  },
   onIndexTick: (listener) => {
     if (typeof listener !== "function") return () => {};
     const handler = (_event, payload) => listener(payload);

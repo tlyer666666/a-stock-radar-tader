@@ -1,5 +1,6 @@
 import type { StockApi } from "../shared/ipc-contract";
 import type { EtfItem } from "../features/etf/etfTypes";
+import type { LimitSealRecord, LimitSealTick } from "../features/dashboard/limitSealModel";
 import type { BatchQuote, BatchQuoteRequest } from "../domain/batchQuoteTypes";
 import {
   previewShanghaiDate,
@@ -35,6 +36,8 @@ export type PreviewMarketApi = Pick<
   | "getIndexBoard"
   | "subscribeIndexStream"
   | "onIndexTick"
+  | "subscribeLimitSeals"
+  | "onLimitSealTick"
   | "getBatchQuotes"
   | "getSectorQuotes"
   | "analyzeSector"
@@ -47,6 +50,48 @@ const previewIndexLatest = [
 ].map(([code, latest, pct]) => ({ code: String(code), latest: Number(latest), preClose: Number(latest) / (1 + Number(pct) / 100) }));
 const previewIndexListeners = new Set<(tick: { at: string; atMs: number; quotes: Array<{ code: string; latest: number; change: number; changePct: number }> }) => void>();
 let previewIndexTimer: ReturnType<typeof setInterval> | null = null;
+
+type PreviewSealState = { lots: number; limitUp: number; status: LimitSealRecord["status"]; history: NonNullable<LimitSealRecord["history"]> };
+const previewSealOwners = new Map<string, string[]>();
+const previewSealListeners = new Set<(tick: LimitSealTick) => void>();
+const previewSealStates = new Map<string, PreviewSealState>();
+let previewSealTimer: ReturnType<typeof setInterval> | null = null;
+const previewSealState = (code: string): PreviewSealState => {
+  let state = previewSealStates.get(code);
+  if (!state) {
+    const seed = Number(code.slice(-3)) || 1;
+    const limitUp = Math.round((8 + (seed % 40)) * 1.1 * 100) / 100;
+    const broken = previewSealStates.size === 2;
+    const lots = 20000 + (seed % 9) * 15000;
+    const start = Date.now() - 9 * 60_000;
+    const history = Array.from({ length: 10 }, (_, index) => ({ t: start + index * 60_000, amount: Math.round(lots * (0.6 + index * 0.05)) * 100 * limitUp, status: "sealed" as const }));
+    state = { lots, limitUp, status: broken ? "broken" : "sealed", history };
+    previewSealStates.set(code, state);
+  }
+  return state;
+};
+const previewSealRecord = (code: string, state: PreviewSealState, { includeQuote = true } = {}): LimitSealRecord => {
+  const sealed = state.status === "sealed";
+  const amount = sealed ? state.lots * 100 * state.limitUp : null;
+  const peak = Math.max(...state.history.map(point => point.amount ?? 0));
+  const ago = state.history.at(-2)?.amount ?? null;
+  return {
+    code, name: previewSecurities.find(item => item.code === code)?.name || code,
+    latest: includeQuote ? (sealed ? state.limitUp : Math.round(state.limitUp * 0.965 * 100) / 100) : null,
+    changePct: includeQuote ? (sealed ? 10 : 6.15) : null,
+    high: state.limitUp,
+    limitUp: state.limitUp, limitDown: Math.round(state.limitUp / 1.1 * 0.9 * 100) / 100, floatMarketCap: 4.2e9,
+    status: state.status, statusLabel: sealed ? "封死涨停" : "炸板",
+    sealLots: sealed ? state.lots : null, sealAmount: amount, sealFloatRatio: amount === null ? null : amount / 4.2e9,
+    peakAmount: peak || null, fromPeakPct: amount !== null && peak > 0 ? ((amount - peak) / peak) * 100 : null,
+    change1mAmount: amount !== null && ago ? amount - ago : null, change1mPct: amount !== null && ago ? ((amount - ago) / ago) * 100 : null,
+    bids: sealed ? [{ price: state.limitUp, volumeLots: state.lots }, { price: state.limitUp - 0.01, volumeLots: 1820 }, { price: state.limitUp - 0.02, volumeLots: 640 }, { price: state.limitUp - 0.03, volumeLots: 310 }, { price: state.limitUp - 0.04, volumeLots: 205 }]
+      : [{ price: state.limitUp * 0.965 - 0.01, volumeLots: 420 }, { price: state.limitUp * 0.965 - 0.02, volumeLots: 380 }],
+    asks: sealed ? [] : [{ price: state.limitUp * 0.965, volumeLots: 260 }, { price: state.limitUp * 0.965 + 0.01, volumeLots: 510 }],
+    source: "预览演示（桌面版：同花顺涨停池封单 + 腾讯实时五档）",
+    quoteAt: new Date().toISOString(), quoteDate: previewShanghaiDate()
+  };
+};
 
 const buildPreviewHistory = (security: Security, length = 260) => {
   const seed = Number(security.code.slice(-3)) || 519;
@@ -719,6 +764,40 @@ export function createPreviewMarketMethods(): PreviewMarketApi {
     onIndexTick(listener: (tick: { at: string; atMs: number; quotes: Array<{ code: string; latest: number; change: number; changePct: number }> }) => void) {
       previewIndexListeners.add(listener);
       return () => { previewIndexListeners.delete(listener); };
+    },
+    // 浏览器预览的实时封单：订阅的代码按「封死涨停」演示，封单每 1.5 秒随机增减；第 3 只演示炸板。
+    async subscribeLimitSeals(input: { owner: string; codes?: string[]; active?: boolean; withHistory?: boolean }) {
+      if (input.active === false) { previewSealOwners.delete(input.owner); }
+      else previewSealOwners.set(input.owner, (input.codes || []).filter(code => /^\d{6}$/.test(code)));
+      const codes = [...new Set([...previewSealOwners.values()].flat())];
+      if (!codes.length && previewSealTimer) { clearInterval(previewSealTimer); previewSealTimer = null; }
+      if (codes.length && !previewSealTimer) {
+        previewSealTimer = setInterval(() => {
+          const detailCodes = new Set(
+            [...previewSealOwners.entries()]
+              .filter(([owner]) => owner.startsWith("detail"))
+              .flatMap(([, list]) => list)
+          );
+          const all = [...new Set([...previewSealOwners.values()].flat())];
+          const items = all.filter(() => Math.random() < 0.6).map(code => {
+            const state = previewSealState(code);
+            state.lots = Math.max(800, Math.round(state.lots * (1 + (Math.random() - 0.55) * 0.08)));
+            state.history.push({ t: Date.now(), amount: state.lots * 100 * state.limitUp, status: state.status });
+            return { ...previewSealRecord(code, state, { includeQuote: detailCodes.has(code) }), point: state.history.at(-1) ?? null };
+          });
+          if (items.length) previewSealListeners.forEach(listener => listener({ atMs: Date.now(), at: new Date().toISOString(), items }));
+        }, 1500);
+      }
+      const includeQuote = input.owner.startsWith("detail");
+      const requested = input.active === false ? [] : (input.codes || []).filter(code => /^\d{6}$/.test(code));
+      return { active: Boolean(previewSealTimer), items: requested.map(code => {
+        const state = previewSealState(code);
+        return { ...previewSealRecord(code, state, { includeQuote }), ...(input.withHistory ? { history: state.history.slice() } : {}) };
+      }) };
+    },
+    onLimitSealTick(listener: (tick: LimitSealTick) => void) {
+      previewSealListeners.add(listener);
+      return () => { previewSealListeners.delete(listener); };
     },
     async getEtfMarket() {
       const rows: Array<[string, string, EtfItem["category"], number, number, number, number | null]> = [

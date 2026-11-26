@@ -96,6 +96,7 @@ const {
   getIndexBoard,
   pollIndexQuotes,
   getBatchQuotes,
+  readLimitSeals,
   getReviewIndexChart,
   getFuyaoReviewData,
   configureConvertibleRosterStore,
@@ -1683,6 +1684,24 @@ function indexStream() {
   return indexStreamInstance;
 }
 
+// 涨停封单实时推送：涨停池与个股页按 owner 订阅并续租，封单一变就经 market:seal-tick 推给主窗口。
+let limitSealInstance = null;
+function limitSealStream() {
+  if (!limitSealInstance) {
+    const { createLimitSealStream } = require("./limit-seal-stream.cjs");
+    limitSealInstance = createLimitSealStream({
+      readSeals: (input, options) => readLimitSeals(input, options),
+      emit: payload => {
+        if (!mainWindow || mainWindow.isDestroyed()) return;
+        const contents = mainWindow.webContents;
+        if (contents && !contents.isDestroyed()) contents.send("market:seal-tick", payload);
+      },
+      log: message => debugLog(message)
+    });
+  }
+  return limitSealInstance;
+}
+
 function emitAiStream(payload) {
   if (!payload || !mainWindow || mainWindow.isDestroyed()) return;
   const contents = mainWindow.webContents;
@@ -1835,6 +1854,7 @@ if (!hasSingleInstanceLock) {
     getEtfMarket,
     getIndexBoard,
     subscribeIndexStream: options => indexStream().subscribe({ active: options?.active !== false }),
+    subscribeLimitSeals: input => limitSealStream().subscribe(input),
     getBatchQuotes,
     getFuyaoReviewData,
     getDataFederation,
@@ -1936,6 +1956,7 @@ app.on("before-quit", (event) => {
   trendScanOwner = undefined;
   trendScreener.cancel();
   indexStreamInstance?.shutdown();
+  limitSealInstance?.shutdown();
   dailyBarStore?.shutdown?.();
   noteWatcherInstance?.stop();
   intervalReminders.stop();

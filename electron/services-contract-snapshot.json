@@ -89,6 +89,7 @@
   "parseSinaSectorCatalog:function",
   "pollIndexQuotes:function",
   "priceLimitRate:function",
+  "readLimitSeals:function",
   "resetMarketSourceHealth:function",
   "resetNewsCache:function",
   "resolveBacktestSecurity:function",

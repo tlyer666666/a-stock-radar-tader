@@ -50,6 +50,18 @@ async function getBatchQuotes(securities) {
   const result = await readTencentBatchQuotes(securities, { signal: serviceSignal() });
   return { quotes: Object.fromEntries(result.quotes), missing: result.missing, source: result.source, fetchedAt: result.fetchedAt };
 }
+// 实时封单数据源：同花顺实时报价 + 五档（个股页）、同花顺涨停池 / 炸板池（涨停池），腾讯五档只兜底。
+const { createThsSealSource } = require("./ths-seal-source.cjs");
+const thsSealSource = createThsSealSource({
+  fetchJson: (url, options, timeoutMs) => _runtime.fetchJson(url, options, timeoutMs),
+  thsQuote: (security, options) => require("./ths-free-market.cjs").thsFreeQuote(security, options),
+  thsFiveRange: (security, options) => require("./ths-free-market.cjs").thsFreeFiveRange(security, options),
+  tencentBatch: (securities, options) => readTencentBatchQuotes(securities, options),
+  log: message => { if (process.env.ASTOCK_DEBUG) console.warn(message); }
+});
+async function readLimitSeals(input = {}, options = {}) {
+  return thsSealSource.read(input, { signal: options?.signal || serviceSignal() });
+}
 const { createConvertibleSource } = require("./ths-convertible.cjs");
 const convertibleBatchQuotes = (bonds, signal) =>
   readTencentBatchQuotes(bonds.map((bond) => ({ code: bond.code, thscode: `${bond.code}.${bond.market === 19 ? "SH" : "SZ"}` })), { signal })
@@ -268,6 +280,7 @@ module.exports = {
   getIndexBoard,
   pollIndexQuotes,
   getBatchQuotes,
+  readLimitSeals,
   configureConvertibleRosterStore,
   configureStockIndustryStore,
   configureDailyBarStore,

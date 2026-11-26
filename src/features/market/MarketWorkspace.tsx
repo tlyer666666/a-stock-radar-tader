@@ -47,6 +47,7 @@ import { averageAt, calculateBollingerBands, calculatePriceMovingAverages } from
 import TimeShareChart from "./TimeShareChart";
 import QuickNote from "../notes/QuickNote";
 import { userErrorText } from "../../userErrorText";
+import LimitSealPanel from "../dashboard/LimitSealPanel";
 
 function MiniBar({ label, value }: { label: string; value: number }) {
   return <div className="mini-bar"><span>{label}<b>{value}</b></span><i><em style={{ width: `${value}%` }} /></i></div>;
@@ -1038,6 +1039,9 @@ export function Dashboard({
           )}
         </div>
       </section>
+
+      {/* 涨停（或炸板、跌停）时显示实时封单与五档盘口；未涨停的股票不占位置。 */}
+      {!assetLabel ? <LimitSealPanel code={String(quote.code || security.code || "")} /> : null}
 
       <section className="signal-grid">
         {assetLabel ? (

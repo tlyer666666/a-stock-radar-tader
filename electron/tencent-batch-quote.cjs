@@ -9,7 +9,8 @@
  * [30] 北京时间 YYYYMMDDHHMMSS，[31] 涨跌额，[32] 涨跌幅%，[33] 最高，[34] 最低，
  * [35] 现价/量/成交额(元)，[36] 成交量(手)，[37] 成交额(万元)，[38] 换手%，
  * [40] 交易状态（"" 正常 / S 停牌 / D 退市摘牌 / U 未上市），[43] 振幅%，
- * [44] 流通市值(亿)，[45] 总市值(亿)，[47] 涨停价，[48] 跌停价。
+ * [44] 流通市值(亿)，[45] 总市值(亿)，[47] 涨停价，[48] 跌停价；
+ * 五档盘口：[9]/[10] 买一价/量(手) … [17]/[18] 买五，[19]/[20] 卖一价/量 … [27]/[28] 卖五（涨停封单 = 涨停价上的买一量）。
  * 查不到的代码只回一行 v_pv_none_match="1";。
  */
 
@@ -33,6 +34,17 @@ function decodeResponse(bytes) {
   } catch {
     return new TextDecoder("utf-8").decode(bytes);
   }
+}
+
+/** 五档：从 start 起 5 组「价、量(手)」；价或量缺失/为 0 的档位跳过（涨停时卖盘为空是正常的）。 */
+function bookLevels(fields, start) {
+  const levels = [];
+  for (let index = 0; index < 5; index += 1) {
+    const price = positiveOrNull(fields[start + index * 2]);
+    const volumeLots = positiveOrNull(fields[start + index * 2 + 1]);
+    if (price !== null && volumeLots !== null) levels.push({ price, volumeLots });
+  }
+  return levels;
 }
 
 function parseTencentBatch(text) {
@@ -74,6 +86,8 @@ function parseTencentBatch(text) {
       totalMarketCap: scaledNumber(fields[45], 1e8),
       limitUp: positiveOrNull(fields[47]),
       limitDown: positiveOrNull(fields[48]),
+      bids: bookLevels(fields, 9),
+      asks: bookLevels(fields, 19),
       quoteAt: parsedDate.toISOString(),
       quoteDate: timeText.slice(0, 10),
       tradeStatus: TRADE_STATUS[fields[40]] || "trading",
