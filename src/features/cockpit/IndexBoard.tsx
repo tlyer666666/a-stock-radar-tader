@@ -6,6 +6,7 @@ import {
   indexBoardHeadline,
   indexBoardStale,
   indexTone,
+  normalizeIndexTime,
   sparklinePath,
   tickClock,
   type IndexBoardQuote,
@@ -58,7 +59,7 @@ function IndexCard({ quote, trendText, selected, onSelect }: {
   const tooltip = [
     `${quote.name} ${quote.code}`,
     `今开 ${quote.open?.toFixed(2) ?? "--"} · 最高 ${quote.high?.toFixed(2) ?? "--"} · 最低 ${quote.low?.toFixed(2) ?? "--"} · 昨收 ${quote.preClose?.toFixed(2) ?? "--"}`,
-    `成交额 ${formatAmount(quote.amount)}${quote.time ? ` · ${quote.time}` : ""}`
+    `成交额 ${formatAmount(quote.amount)}${quote.time ? ` · ${quote.time.slice(0, 5)}` : ""}`
   ].join("\n");
   return (
     <button type="button" className={`index-card tone-${tone}${quote.major ? " major" : ""}${selected ? " selected" : ""}${flash ? ` ${flash}` : ""}`}
@@ -103,6 +104,16 @@ export default function IndexBoard({ snapshot, state, today, trendByName, tickAt
   onAskAi?: (() => void) | undefined;
 }) {
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
+  // 收到推送后只排一次 60 秒到期定时器，让「实时推送」的圆点在推送静默满 60 秒时自动熄灭，之后不再空转。
+  const [, setLiveExpired] = useState(0);
+  useEffect(() => {
+    if (!tickAt || typeof window === "undefined") return undefined;
+    const remaining = 60_000 - (Date.now() - tickAt);
+    if (remaining <= 0) return undefined;
+    const timer = window.setTimeout(() => setLiveExpired(value => value + 1), Math.max(0, remaining) + 50);
+    return () => window.clearTimeout(timer);
+  }, [tickAt]);
+  const liveTick = tickAt > 0 && Date.now() - tickAt < 60_000;
 
   if (!snapshot) {
     return (
@@ -119,21 +130,25 @@ export default function IndexBoard({ snapshot, state, today, trendByName, tickAt
   const headline = indexBoardHeadline(snapshot);
   const selected = snapshot.indices.find(item => item.code === selectedCode) || null;
   const breadthTotal = totals && totals.up !== null && totals.down !== null ? totals.up + totals.down + (totals.flat ?? 0) : 0;
-  const lastTime = snapshot.indices.map(item => item.time).filter(Boolean).sort().at(-1) || "";
+  const lastTime = snapshot.indices
+    .map(item => item.time)
+    .filter(Boolean)
+    .sort((a, b) => normalizeIndexTime(a).localeCompare(normalizeIndexTime(b)))
+    .at(-1) || "";
 
   return (
     <div className="index-board-inner">
       <header className="index-board-head">
         <div className="index-board-title">
           <h3>指数</h3>
-          {tickAt > 0 && !stale
+          {liveTick && !stale
             ? <span className="index-board-live" title="主进程订阅了东方财富实时推送，行情一变就推到这里；交易所快照本身约每 3 秒更新一次">
                 <i aria-hidden="true" />实时推送 · 最后跳动 {tickClock(tickAt)}
               </span>
             : null}
           <small>
-            {stale ? `上个交易日 ${snapshot.tradingDate} 收盘` : `${snapshot.tradingDate} ${lastTime}`}
-            {tickAt > 0 && !stale ? "" : ` · ${updatedText(snapshot.fetchedAt)} 刷新`}
+            {stale ? `上个交易日 ${snapshot.tradingDate} 收盘` : `${snapshot.tradingDate} ${lastTime.slice(0, 5)}`.trim()}
+            {liveTick && !stale ? "" : ` · ${updatedText(snapshot.fetchedAt)} 刷新`}
             {state === "error" ? " · 刷新失败，显示上次数据" : ""}
           </small>
         </div>

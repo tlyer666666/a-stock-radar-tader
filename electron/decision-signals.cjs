@@ -34,6 +34,7 @@ const finite = value => {
 const price = value => { const n = finite(value); return n !== null && n > 0 && n < 1e6 ? Math.round(n * 1000) / 1000 : null; };
 const clip = (value, max) => { const text = String(value ?? "").replace(/\s+/g, " ").trim(); return [...text].length > max ? `${[...text].slice(0, max - 1).join("")}…` : text; };
 const cnDate = ms => Number.isFinite(ms) ? new Date(ms + 8 * 3600_000).toISOString().slice(0, 10) : "";
+const cnMinutes = ms => { if (!Number.isFinite(ms)) return NaN; const d = new Date(ms + 8 * 3600_000); return d.getUTCHours() * 60 + d.getUTCMinutes(); };
 const round2 = value => value === null ? null : Math.round(value * 100) / 100;
 
 /**
@@ -96,11 +97,19 @@ function expiryOf(createdMs, horizon) {
 function evaluateSignal(signal, bars) {
   const rows = (Array.isArray(bars) ? bars : []).filter(row => row && typeof row.date === "string" && finite(row.close) !== null && row.close > 0)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const created = cnDate(Date.parse(signal.createdAt));
+  const createdMs = Date.parse(signal.createdAt);
+  const created = cnDate(createdMs);
   if (!created) return {};
-  const base = [...rows].reverse().find(row => row.date <= created);
+  // 开盘前（北京时间 9:30 前）给出的建议，当天就是第 1 个交易日：基准价取前一交易日收盘（不能拿当天收盘，否则首日收益恒为 0%），
+  // 当天的最低价要参与止损判断，当天收盘就是 1 日结果。
+  // 盘中或收盘后给出的建议从下一个交易日开始算——日线分不清当天的高低点出现在建议之前还是之后。
+  const createdMinutes = cnMinutes(createdMs);
+  const preOpen = Number.isFinite(createdMs) && createdMinutes < 9 * 60 + 30;
+  const base = [...rows].reverse().find(row => preOpen ? row.date < created : row.date <= created);
   const start = price(signal.referencePrice) ?? (base ? price(base.close) : null);
-  const forward = rows.filter(row => row.date > created);
+  const stopLoss = price(signal.stopLoss);
+  const targetPrice = price(signal.targetPrice);
+  const forward = rows.filter(row => preOpen ? row.date >= created : row.date > created);
   const out = {};
   for (const days of EVAL_DAYS) {
     if (signal.outcomes?.[days]) continue;
@@ -116,8 +125,8 @@ function evaluateSignal(signal, bars) {
     const adverse = bullish
       ? lows.length ? Math.max(0, (start - Math.min(...lows)) / start * 100) : null
       : highs.length ? Math.max(0, (Math.max(...highs) - start) / start * 100) : null;
-    const stopHit = bullish && signal.stopLoss !== null && lows.some(low => low <= signal.stopLoss);
-    const targetHit = bullish && signal.targetPrice !== null && highs.some(high => high >= signal.targetPrice);
+    const stopHit = bullish && stopLoss !== null && lows.some(low => low <= stopLoss);
+    const targetHit = bullish && targetPrice !== null && highs.some(high => high >= targetPrice);
     const directional = bullish ? returnPct : -returnPct;
     const verdict = stopHit ? "miss" : directional >= HIT_PCT ? "hit" : directional <= -HIT_PCT ? "miss" : "neutral";
     out[days] = { status: "done", verdict, returnPct: round2(returnPct), maxAdversePct: round2(adverse), stopHit, targetHit, endDate: end.date, endClose: price(end.close), startPrice: start };
@@ -275,8 +284,21 @@ function createDecisionSignals({ store, loadBars = null, now = () => Date.now(),
     }
     const task = (async () => {
       const snapshot = read();
-      const cutoff = now() - 60 * DAY_MS; // 两个月前的建议不再补评
-      const pending = snapshot.signals.filter(item => Date.parse(item.createdAt) >= cutoff && EVAL_DAYS.some(days => !item.outcomes?.[days]));
+      const currentMs = now();
+      const cutoff = currentMs - 60 * DAY_MS; // 两个月前的建议不再补评
+      // 昨天及以前的建议，或今天盘前（09:30 前）给出且已收盘（15:05 后）的建议，才有可评的交易日；其余不为它们读日线。最老的优先：一次最多 60 只，避免老建议排不上队直到过期。
+      const today = cnDate(currentMs);
+      const closedToday = cnMinutes(currentMs) >= 15 * 60 + 5;
+      const pending = snapshot.signals
+        .filter(item => {
+          const createdMs = Date.parse(item.createdAt);
+          if (!Number.isFinite(createdMs) || createdMs < cutoff) return false;
+          if (!EVAL_DAYS.some(days => !item.outcomes?.[days])) return false;
+          const createdDate = cnDate(createdMs);
+          if (createdDate < today) return true;
+          return createdDate === today && closedToday && cnMinutes(createdMs) < 9 * 60 + 30;
+        })
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
       const codes = [...new Set(pending.map(item => item.code))].slice(0, 60);
       const updates = new Map(); // id → 新评出的结果
       let failed = 0;

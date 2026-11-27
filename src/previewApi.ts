@@ -15,26 +15,117 @@ const PREVIEW_INDUSTRIES: Record<string, string> = {
   "002594": "汽车整车"
 };
 
-const emptySignalSummary = (): SignalSummary => ({
-  total: 0, completed: 0, hit: 0, miss: 0, neutral: 0, unable: 0,
-  enough: false, minSample: 10, hitRatePct: null, avgReturnPct: null, maxAdversePct: null
-});
+const summarizePreviewHorizon = (signals: DecisionSignal[], day: "1" | "3" | "5" | "10"): SignalSummary => {
+  let completed = 0;
+  let hit = 0;
+  let miss = 0;
+  let neutral = 0;
+  let unable = 0;
+  const returns: number[] = [];
+  for (const item of signals) {
+    const outcome = item.outcomes?.[day];
+    if (!outcome) continue;
+    if (outcome.status === "unable") { unable += 1; continue; }
+    completed += 1;
+    if (outcome.verdict === "hit") hit += 1;
+    else if (outcome.verdict === "miss") miss += 1;
+    else neutral += 1;
+    if (typeof outcome.returnPct === "number" && Number.isFinite(outcome.returnPct)) returns.push(outcome.returnPct);
+  }
+  const judged = hit + miss;
+  return {
+    total: signals.length,
+    completed,
+    hit,
+    miss,
+    neutral,
+    unable,
+    enough: completed >= 10,
+    minSample: 10,
+    hitRatePct: completed >= 10 && judged > 0 ? Math.round((hit / judged) * 100) : null,
+    avgReturnPct: returns.length ? Number((returns.reduce((sum, value) => sum + value, 0) / returns.length).toFixed(1)) : null,
+    maxAdversePct: null
+  };
+};
 
-const buildPreviewSignalList = (signals: DecisionSignal[]): DecisionSignalList => ({
+const createPreviewSignals = (): DecisionSignal[] => [
+  {
+    id: "preview-sig-600519",
+    code: "600519",
+    name: "贵州茅台",
+    assetType: "stock",
+    status: "active",
+    createdAt: "2026-11-23T02:15:00.000Z",
+    updatedAt: "2026-11-26T07:10:00.000Z",
+    expiresAt: "2026-12-01T07:00:00.000Z",
+    action: "buy",
+    horizon: "5d",
+    entryLow: 1450,
+    entryHigh: 1475,
+    stopLoss: 1410,
+    targetPrice: 1560,
+    invalidation: "放量跌破 1410 元",
+    watch: ["回踩 20 日均线量能是否收缩", "北向资金是否持续回流"],
+    reason: "预览样例：回踩 20 日均线企稳，量价结构健康，可按计划分批观察（浏览器预览演示数据）",
+    guardrail: "",
+    stance: "偏多",
+    confidence: "中",
+    referencePrice: 1468.5,
+    source: { conversationId: "preview-conv-1", messageId: "preview-msg-1", model: "preview", skills: [] },
+    outcomes: {
+      "1": { status: "done", verdict: "hit", returnPct: 1.8, maxAdversePct: 0.4, stopHit: false, targetHit: false, endDate: "2026-11-24", endClose: 1494.9, startPrice: 1468.5 },
+      "3": { status: "done", verdict: "hit", returnPct: 3.2, maxAdversePct: 0.6, stopHit: false, targetHit: false, endDate: "2026-11-26", endClose: 1515.5, startPrice: 1468.5 }
+    },
+    feedback: "useful"
+  },
+  {
+    id: "preview-sig-300750",
+    code: "300750",
+    name: "宁德时代",
+    assetType: "stock",
+    status: "expired",
+    createdAt: "2026-11-19T05:30:00.000Z",
+    updatedAt: "2026-11-26T07:10:00.000Z",
+    expiresAt: "2026-11-25T07:00:00.000Z",
+    action: "hold",
+    horizon: "3d",
+    entryLow: 248,
+    entryHigh: 254,
+    stopLoss: 238,
+    targetPrice: 272,
+    invalidation: "跌破前低 238 元",
+    watch: ["确认放量突破 258 元颈线位再评估介入"],
+    reason: "预览样例：短线震荡整固、暂按持有跟踪，等待放量突破确认（浏览器预览演示数据）",
+    guardrail: "",
+    stance: "偏多",
+    confidence: "中",
+    referencePrice: 252.4,
+    source: { conversationId: "preview-conv-2", messageId: "preview-msg-2", model: "preview", skills: [] },
+    outcomes: {
+      "1": { status: "done", verdict: "neutral", returnPct: 0.4, maxAdversePct: 0.9, stopHit: false, targetHit: false, endDate: "2026-11-20", endClose: 253.4, startPrice: 252.4 },
+      "3": { status: "done", verdict: "miss", returnPct: -2.6, maxAdversePct: 3.1, stopHit: false, targetHit: false, endDate: "2026-11-24", endClose: 245.8, startPrice: 252.4 },
+      "5": { status: "done", verdict: "neutral", returnPct: -0.5, maxAdversePct: 3.1, stopHit: false, targetHit: false, endDate: "2026-11-26", endClose: 251.1, startPrice: 252.4 }
+    },
+    feedback: null,
+    endedReason: "已过观察期"
+  }
+];
+
+const buildPreviewSignalList = (signals: DecisionSignal[], allSignals: DecisionSignal[] = signals): DecisionSignalList => ({
   signals: structuredClone(signals),
   stats: {
-    total: signals.length,
-    active: signals.filter(item => item.status === "active").length,
+    total: allSignals.length,
+    active: allSignals.filter(item => item.status === "active").length,
     byDays: {
-      "1": emptySignalSummary(),
-      "3": emptySignalSummary(),
-      "5": emptySignalSummary(),
-      "10": emptySignalSummary()
+      "1": summarizePreviewHorizon(allSignals, "1"),
+      "3": summarizePreviewHorizon(allSignals, "3"),
+      "5": summarizePreviewHorizon(allSignals, "5"),
+      "10": summarizePreviewHorizon(allSignals, "10")
     },
     byAction: {},
     feedback: {
-      useful: signals.filter(item => item.feedback === "useful").length,
-      notUseful: signals.filter(item => item.feedback === "not_useful").length
+      useful: allSignals.filter(item => item.feedback === "useful").length,
+      notUseful: allSignals.filter(item => item.feedback === "not_useful").length
     },
     minSample: 10,
     hitPct: 1
@@ -50,7 +141,7 @@ export function createPreviewApi(): Window["stockApi"] {
   let previewRuleHistory: AlertRulesState["history"] = [];
   let previewLastRunAt = "";
   let previewFeeds: Array<{ id: string; name: string; url: string; enabled: boolean }> = [];
-  let previewSignals: DecisionSignal[] = [];
+  let previewSignals: DecisionSignal[] = createPreviewSignals();
   let previewAgentMemory = "";
   let previewAgentSkillIds: string[] = [];
 
@@ -212,7 +303,7 @@ export function createPreviewApi(): Window["stockApi"] {
               if (input.code && item.code !== input.code) return false;
               return true;
             });
-            return buildPreviewSignalList(filtered);
+            return buildPreviewSignalList(filtered, previewSignals);
           },
           async updateSignal(input) {
             if (input.remove) {

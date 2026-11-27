@@ -5,7 +5,7 @@ const { createLimitSealStream, computeSeal } = require("./limit-seal-stream.cjs"
 const { parseTencentBatch } = require("./tencent-batch-quote.cjs");
 
 const until = async (check, ms = 2000) => { const end = Date.now() + ms; while (!check()) { if (Date.now() > end) throw new Error("timeout"); await new Promise(r => setTimeout(r, 5)); } };
-const base = { name: "测试股份", latest: 11, changePct: 10, high: 11, limitUp: 11, limitDown: 9, floatMarketCap: 2e9, quoteAt: "2026-11-26T02:30:00.000Z", quoteDate: "2026-11-26" };
+const base = { name: "测试股份", latest: 11, changePct: 10, high: 11, limitUp: 11, limitDown: 9, floatMarketCap: 2e9, quoteAt: "2026-11-26T02:30:00.000Z", quoteDate: new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10) }; // 快照只返回「今天」的记录，夹具日期跟着真实日期走
 
 test("Tencent five-level book is parsed; empty sell side at limit-up is kept empty", () => {
   const fields = Array(50).fill("");
@@ -140,5 +140,131 @@ test("new codes wake idle sleep immediately, peak survives historyMax trimming, 
     assert.equal(hub.status().owners, 0);
   } finally {
     hub.shutdown();
+  }
+});
+
+test("off-session polling slows down, the detail stock keeps its slot in a full pool, yesterday's record is not served, and a pool row without a seal size is still sealed", async () => {
+  let live = false;
+  let calls = 0;
+  const today = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
+  const asked = [];
+  const emitted = [];
+  const hub = createLimitSealStream({
+    pollMs: 10, idlePollMs: 10, offSessionPollMs: 400, maxCodes: 3, inSession: () => live, isTradingDate: () => true,
+    emit: tick => emitted.push(...tick.items),
+    readSeals: async ({ codes, detailCodes }) => { calls += 1; asked.push({ codes, detailCodes });
+      return { quotes: new Map(codes.map(code => [code, { ...base, name: code, quoteDate: code === "600009" ? "2020-01-01" : today, bids: [{ price: 11, volumeLots: 100 }], asks: [] }])) }; }
+  });
+  try {
+    hub.subscribe({ owner: "detail", codes: ["600009"] });
+    hub.subscribe({ owner: "pool", codes: ["600001", "600002", "600003"] });
+    await until(() => calls >= 2);
+    assert.ok(asked[1].codes.includes("600009"), "the stock being viewed is polled even when the pool fills the cap");
+    assert.equal(asked[1].codes.length, 3);
+    assert.deepEqual(asked[1].detailCodes, ["600009"]);
+    await new Promise(r => setTimeout(r, 150));
+    assert.ok(calls <= 3, `off session the loop waits offSessionPollMs between polls (calls=${calls})`);
+    assert.equal(emitted.some(item => item.code === "600009"), false, "stale quoteDate must never be emitted on a trading day");
+    assert.deepEqual(hub.subscribe({ owner: "detail", codes: ["600009"] }).items, [], "a record dated another day is not returned as current");
+    live = true;
+  } finally { hub.shutdown(); }
+  const unknown = computeSeal({ ...base, bids: [], asks: [], sealUnknown: true });
+  assert.equal(unknown.status, "sealed");
+  assert.equal(unknown.sealLots, null, "unknown seal size stays null");
+  assert.equal(computeSeal({ ...base, bids: [], asks: [] }).status, "contested", "without the THS-pool marker an empty book at the limit is still treated as contested");
+});
+
+test("H2 & H3: consistent weekend/holiday snapshot, pre-open stale rejection, no emit or leaked timers on shutdown mid-read, and off-session wake probe", async () => {
+  // 1. Weekend revisit preserves Friday's snapshot consistently across pollOnce() and snapshot()
+  const saturdayMs = Date.parse("2026-11-28T03:00:00.000Z"); // 2026-11-28 11:00 Beijing (Saturday)
+  const weekendTicks = [];
+  const weekendHub = createLimitSealStream({
+    pollMs: 10,
+    idlePollMs: 10,
+    offSessionPollMs: 200,
+    now: () => saturdayMs,
+    inSession: () => false,
+    readBatch: async () => ({
+      quotes: new Map([
+        ["600001", { ...base, quoteDate: "2026-11-27", quoteAt: "2026-11-27T07:00:00.000Z", bids: [{ price: 11, volumeLots: 25000 }], asks: [] }]
+      ])
+    }),
+    emit: tick => weekendTicks.push(tick)
+  });
+  try {
+    weekendHub.subscribe({ owner: "detail", codes: ["600001"] });
+    await until(() => weekendTicks.length >= 1);
+    assert.equal(weekendTicks[0].items[0].quoteDate, "2026-11-27");
+    // Unsubscribe and revisit the same stock on weekend: snapshot must still serve Friday's record
+    weekendHub.subscribe({ owner: "detail", active: false });
+    const revisit = weekendHub.subscribe({ owner: "detail", codes: ["600001"] });
+    assert.equal(revisit.items.length, 1, "weekend revisit must not blank the panel");
+    assert.equal(revisit.items[0].quoteDate, "2026-11-27");
+    assert.equal(revisit.items[0].sealLots, 25000);
+  } finally {
+    weekendHub.shutdown();
+  }
+
+  // 2. Shutdown during in-flight read() never emits and leaves zero active timers
+  let releaseRead;
+  const inFlight = new Promise(resolve => { releaseRead = resolve; });
+  const activeTimers = new Set();
+  const postShutdownTicks = [];
+  let inFlightCalls = 0;
+  const raceHub = createLimitSealStream({
+    pollMs: 10,
+    idlePollMs: 10,
+    offSessionPollMs: 30_000,
+    inSession: () => false,
+    isTradingDate: () => true,
+    setTimer: (fn, ms) => {
+      const handle = setTimeout(() => { activeTimers.delete(handle); fn(); }, ms);
+      activeTimers.add(handle);
+      return handle;
+    },
+    clearTimer: handle => { activeTimers.delete(handle); clearTimeout(handle); },
+    readBatch: async () => {
+      inFlightCalls += 1;
+      await inFlight;
+      return { quotes: new Map([["600001", { ...base, bids: [{ price: 11, volumeLots: 1000 }], asks: [] }]]) };
+    },
+    emit: tick => postShutdownTicks.push(tick)
+  });
+  raceHub.subscribe({ owner: "pool", codes: ["600001"] });
+  await until(() => inFlightCalls === 1);
+  raceHub.shutdown();
+  releaseRead();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(postShutdownTicks.length, 0, "shutdown during in-flight read must never emit");
+  assert.equal(activeTimers.size, 0, "shutdown during in-flight read must not leak sleep or probe timers");
+
+  // 3. Off-session wake probe wakes promptly when session opens without waiting 30s
+  let live = false;
+  let wakeCalls = 0;
+  let enteredLongSleep = false;
+  const wakeHub = createLimitSealStream({
+    pollMs: 20,
+    idlePollMs: 20,
+    offSessionPollMs: 30_000,
+    inSession: () => live,
+    isTradingDate: () => true,
+    setTimer: (fn, ms) => {
+      if (ms >= 20_000) enteredLongSleep = true;
+      return setTimeout(fn, ms);
+    },
+    readBatch: async () => {
+      wakeCalls += 1;
+      return { quotes: new Map([["600001", { ...base, bids: [{ price: 11, volumeLots: 1000 + wakeCalls }], asks: [] }]]) };
+    }
+  });
+  try {
+    wakeHub.subscribe({ owner: "pool", codes: ["600001"] });
+    await until(() => wakeCalls === 1 && enteredLongSleep, 1000);
+    const t0 = Date.now();
+    live = true;
+    await until(() => wakeCalls >= 2, 2500);
+    assert.ok(Date.now() - t0 < 2500, "opening session must wake off-session sleep via 1s probe instead of waiting 30s");
+  } finally {
+    wakeHub.shutdown();
   }
 });

@@ -97,3 +97,49 @@ test('跨域重定向不重发请求体、不降级 HTTPS、去掉 refresh_token
     for (const name of ['refresh_token', 'x-access-token', 'api-key']) assert.equal(seen[0][name], undefined);
   } finally { source.close(); target.close(); }
 });
+
+test('M2: IPv6 global-unicast allowlist blocks NAT64/SIIT/Teredo/documentation/6to4 and publicOnly always wraps custom lookup', async () => {
+  const { fetchNative, isPublicUnicastIp } = require('./native-http.cjs');
+  for (const allowed of ['2606:4700:4700::1111', '2001:4860:4860::8888', '2400:3200::1', '3fff:1000::1']) {
+    assert.equal(isPublicUnicastIp(allowed), true, allowed);
+  }
+  for (const blocked of [
+    '64:ff9b::127.0.0.1',
+    '64:ff9b:1::127.0.0.1',
+    '::ffff:0:127.0.0.1',
+    '2001::1',
+    '2001:2::1',
+    '2001:10::1',
+    '2001:1f::1',
+    '2001:20::1',
+    '2001:2f::1',
+    '100::1',
+    '2001:db8::1',
+    '3fff::1',
+    '3fff:0fff::1',
+    '2002:7f00:1::1'
+  ]) {
+    assert.equal(isPublicUnicastIp(blocked), false, blocked);
+  }
+
+  let lookupCalled = 0;
+  await assert.rejects(
+    fetchNative('http://localhost:1/feed', {
+      publicOnly: true,
+      lookup: (_host, _opts, cb) => {
+        lookupCalled += 1;
+        cb(null, [{ address: '127.0.0.1', family: 4 }]);
+      }
+    }),
+    { code: 'PUBLIC_IP_REQUIRED' }
+  );
+  assert.equal(lookupCalled, 1, 'publicOnly must still run custom lookup wrapped with createPublicLookup');
+
+  await assert.rejects(
+    fetchNative('http://localhost:1/feed-v6', {
+      publicOnly: true,
+      lookup: (_host, _opts, cb) => cb(null, '64:ff9b:1::127.0.0.1', 6)
+    }),
+    { code: 'PUBLIC_IP_REQUIRED' }
+  );
+});

@@ -1,4 +1,4 @@
-# 项目架构与维护边界（v1.6.71）
+# 项目架构与维护边界（v1.7.0）
 
 本项目是基于 **Electron 44 + React 19 + TypeScript 5.9 + Vite 8** 的本地优先跨平台 A 股研究桌面工作台。整体架构遵循 **渲染层只做视图与交互、主进程掌管安全与状态持久化、服务层负责多源行情编排、工作线程承担密集计算** 的严格分层原则，主进程保持 **零运行时第三方 npm 依赖**（由 `qa/audit-guards.test.cjs` 的 `DEP-4` 守卫强制校验）。
 
@@ -9,27 +9,27 @@
 ```mermaid
 flowchart TB
   subgraph Renderer["渲染层（src/ · React 19 + TypeScript）"]
-    Features["功能模块 src/features/*<br/>今日驾驶舱 / 涨停监控 / 板块 / 策略选股 / 趋势 / 做T助手 / AI选股·问股·复盘 / 随心记 / 回测 / 模拟仓 / 备份"]
+    Features["功能模块 src/features/*（23 个业务域）<br/>今日驾驶舱 / 涨停与封单 / 板块 / 策略选股 / 趋势 / 决策中心 / ETF / 做T助手 / AI选股·问股·复盘 / 随心记 / 回测与实测榜 / 模拟仓 / 备份"]
     Domain["领域纯函数 src/domain/* & src/dateUtils.ts<br/>Asia/Shanghai 交易时钟 · 格式化 · 证券标识 · 风险预设"]
     ReviewApp["独立复盘入口 src/review-entry.tsx<br/>副屏只读复盘视图"]
   end
 
   subgraph Bridge["安全桥接与契约层"]
     Preload["electron/preload.cjs & review-preload.cjs<br/>contextIsolation + sandbox 最小暴露面"]
-    Contract["electron/ipc/contract.cjs & src/shared/ipc-contract.ts<br/>全通道注册表 + 结构化载荷校验"]
+    Contract["electron/ipc/contract.cjs & src/shared/ipc-contract.ts<br/>全通道注册表（含事件通道）+ 结构化载荷校验"]
     IpcRouters["electron/ipc/*.ipc.cjs<br/>market / sector / strategy / backtest / ai / news-review / workspace"]
   end
 
   subgraph MainCore["主进程安全与业务服务层（electron/）"]
     Main["electron/main.cjs<br/>单实例锁 · workAreaSize 窗口钳制 · 崩溃恢复 · 优雅退出闸门"]
     Services["服务门面 electron/services.cjs → electron/services/*<br/>runtime / quotes-and-charts / sectors / limit-pool / fuyao-review / strategy-scan / strategy-validation / security-analysis / backtest"]
-    DomainSvc["专项引擎<br/>strategy-selection-service · trend-screener-* · ai-* · stock-agent* · note-watch · review-service · ths-web-view"]
-    Storage["安全持久化<br/>persistence.cjs (0600 原子双写) · local-secret-storage.cjs (AES-256-GCM) · daily-bar-store.cjs · data-backup.cjs"]
+    DomainSvc["专项引擎与实时流<br/>index-board/stream · limit-seal-stream · decision-signals · alert-rules · factor-screen · etf-market/rotation · fundamentals · global-market · rss-feeds · strategy-leaderboard · stock-agent* · note-watch · review-service · ths-web-view"]
+    Storage["安全持久化<br/>persistence.cjs (0600 原子双写) · local-kv-sqlite.cjs · local-secret-storage.cjs (AES-256-GCM) · daily-bar-store.cjs · data-backup.cjs"]
   end
 
   subgraph Compute["隔离计算与外部数据源"]
-    Workers["Worker Threads<br/>strategy-signal-worker / backtest-worker / trend-research-worker / legacy-analysis-worker"]
-    Providers["多源行情与 AI 接口<br/>同花顺扶摇 & 免费网关（主）→ 东方财富（次）→ 腾讯 / 新浪 / 搜狐（应急核验）· OpenAI 兼容模型"]
+    Workers["Worker Threads<br/>strategy-signal-worker / portfolio-backtest-worker / trend-research-worker / legacy-analysis-worker"]
+    Providers["多源行情与 AI 接口<br/>同花顺扶摇 & 免费网关（主）→ 东方财富（次/SSE）→ 腾讯 / 新浪 / 搜狐（批量/应急核验）· OpenAI 兼容模型"]
   end
 
   Features --> Domain
@@ -62,15 +62,15 @@ flowchart TB
 
 所有 IPC 通道均由 `electron/ipc-contract.test.cjs` 强制锁定 `preload.cjs`、`review-preload.cjs`、`electron/ipc/contract.cjs` 与 `src/shared/ipc-contract.ts` 四处完全一致：
 
-- `contract.cjs`：集中定义 `MAIN_IPC_CHANNELS`、`REVIEW_IPC_CHANNELS`、`IPC_EVENT_CHANNELS` 与逐通道参数结构校验器。
+- `contract.cjs`：集中定义 `MAIN_IPC_CHANNELS`、`REVIEW_IPC_CHANNELS`、`IPC_EVENT_CHANNELS`（含 `market:index-tick`、`market:seal-tick`、`ai:stream`、`app:notification-clicked`、`review-window:theme-changed`）与逐通道参数结构校验器。
 - `register-all.cjs`：装配外部因子归档并统一注册 7 个域路由：
-  - `market.ipc.cjs`：实时报价、多源融合、分时/K 线、涨停/炸板池、可转债、沪深港通视图控制。
+  - `market.ipc.cjs`：实时报价、多源融合、分时/K 线、批量行情（`market:batch-quotes`）、十大核心指数与实时 SSE 流（`market:index-board` / `market:index-stream`）、涨停/炸板池与实时封单流（`market:seal-stream`）、行业归属查询（`market:industries`）、可转债（`bond:list`）、场内 ETF 与轮动（`etf:list` / `etf:rotation`）、沪深港通视图控制。
   - `sector.ipc.cjs`：行业/概念榜单、板块分类目录、成分详情、概念产业链与板块涨停计数。
-  - `strategy.ipc.cjs`：全市场策略选股（含 `statusOnly: true` 同步返回实时进度 `getStrategyScanProgress()`，零新增通道）、自定义策略增删改、趋势扫描与执行检查。
-  - `backtest.ipc.cjs`：单股回测与共享现金组合回测任务派发。
-  - `ai.ipc.cjs`：AI 模型多配置管理、框架编排、AI 选股打分/总结、大白话生成策略、AI 问股多轮对话与工作区快照同步。
+  - `strategy.ipc.cjs`：全市场策略选股（含 `statusOnly: true` 同步返回实时进度 `getStrategyScanProgress()`，零新增通道）、策略实测榜（`strategy:leaderboard`）、多因子选股（`screen:factors`）、自定义策略增删改、趋势扫描与执行检查。
+  - `backtest.ipc.cjs`：单股回测与共享现金组合回测（`portfolio-backtest-worker.cjs`）任务派发。
+  - `ai.ipc.cjs`：AI 模型多配置管理、框架编排、AI 选股打分/总结、大白话生成策略、AI 问股多轮对话（最多 6 路并发）、AI 建议池与事后核对（`agent:signals` / `agent:signal-update`）、自订 RSS 资讯源（`agent:feeds`）与工作区快照同步。
   - `news-review.ipc.cjs`：财联社/东财快讯与公司公告聚合、资讯影响 AI 解读、专业复盘与独立复盘窗口只读接口。
-  - `workspace.ipc.cjs`：自选、持仓、系统设置、随心记定时提醒与盘中价格盯盘、系统通知、网盘备份与跨窗安全恢复。
+  - `workspace.ipc.cjs`：自选、持仓、指标预警规则与定时评估（`alerts:rules`）、系统设置、随心记定时/盘中循环提醒与价格盯盘、系统通知、本机 SQLite 键值存储、网盘备份（含 `decision-signals` / `alert-rules` / `rss-feeds`）与跨窗安全恢复。
 
 ### 2.3 服务编排拆分层（`electron/services/*`）
 
@@ -86,17 +86,21 @@ flowchart TB
 - `security-analysis.cjs`：个股多维技术结构、策略命中与执行准备度综合研判。
 - `backtest.cjs`：单股历史信号回放、共享现金组合回测编排、搜索联想与基础历史拉取。
 
-### 2.4 专项业务引擎（`electron/*.cjs`）
+### 2.4 专项业务引擎与实时推送（`electron/*.cjs`）
 
-- `market-source-health.cjs`：数据源连续故障指数退避熔断器（30 秒起翻倍至 4 分钟）与 `humanizeSourceError` 可读中文错误归因。
+- `market-source-health.cjs` & `native-http.cjs` & `http-client.cjs`：数据源连续故障指数退避熔断器（30 秒起翻倍至 4 分钟）、`humanizeSourceError` 可读中文错误归因、公网单播 IPv4/IPv6 白名单校验、字节上限与跨站重定向凭据剥离；`tencent-batch-quote.cjs` 承担大名单批量快照。
+- `index-board.cjs` & `index-stream.cjs`：驾驶舱十大核心指数聚合（1 秒行情缓存 + 60 秒分时缓存）与 `stock/sse` + 1 秒快照双路实时流（按 `f86` 合并、仅变化推送 `market:index-tick`、按租约自动停流并在非交易时段休眠）。
+- `ths-seal-source.cjs` & `limit-seal-stream.cjs`：涨停实时封单引擎，以同花顺公开涨停池 `order_volume` 为准、腾讯实时五档补齐盘口，按 `pool`/`detail` 租约推 `market:seal-tick` 并严格校验当日交易日口径。
+- `decision-signals.cjs` & `alert-rules.cjs` & `factor-screen.cjs` & `etf-market.cjs` & `etf-rotation.cjs` & `rss-feeds.cjs`：支撑「决策中心」与「ETF」专区——AI 建议护栏入库与 T+1/3/5/10 事后评估、基于已收盘日线的技术指标预警与 15:10 自动调度、六策略多因子打分、场内 ETF 分类与溢价率自算、双动量 ETF 轮动回测与参数平原、仅放行公网 HTTPS 的自订 RSS/Atom 解析器。
+- `fundamentals.cjs` & `global-market.cjs`：东方财富近 8 期业绩报表与实时估值计算、全球股指/商品/汇率联动与外围财经快讯聚合，供 AI 问股工具调用。
 - `trend-screener-adapter.cjs` & `trend-screener-service.cjs` & `trend-screener-engine.cjs`：趋势选股多源适配器（含模块级带过期时间的 `ths.pausedUntil` 与 `failedHosts` 共享记忆，同时支持测试注入隔离）、跨源原价交叉核验与分阶段扫描引擎。
-- `strategy-selection-service.cjs` & `strategy-signal-engine.cjs`：全市场 400 只分批流式策略选股（非自选日线算完即释防内存膨胀）与实时进度统计（`active / processed / total / hits / fetched / startedAt / etaSeconds`）。
-- `ai-client.cjs` / `ai-frameworks.cjs` / `ai-service.cjs` / `stock-agent*.cjs`：OpenAI 兼容接口客户端（并发限流、HTTP 400 参数自适应降级、禁止跟随重定向防密钥泄露）、14 套情境策略编排 + 实测胜率打分框架、19 种内置打法与多轮工具调用 AI 问股引擎。
+- `strategy-selection-service.cjs` & `strategy-signal-engine.cjs` & `strategy-leaderboard-service.cjs` & `strategy-leaderboard.cjs`：全市场 400 只分批流式策略选股（非自选日线算完即释防内存膨胀）、实时进度统计，以及只读本机日线库的 Worker 分批「策略实测榜」汇总。
+- `ai-client.cjs` / `ai-frameworks.cjs` / `ai-service.cjs` / `stock-agent*.cjs`：OpenAI 兼容接口客户端（并发限流、HTTP 400 参数自适应降级、禁止跟随重定向防密钥泄露）、14 套情境策略编排 + 实测胜率打分框架、**34 种内置打法（6 大分组，含大盘与ETF）** 与多轮工具调用 AI 问股引擎（含买入/加仓独立风控复核与最多 6 路并发会话）。
 
 ### 2.5 前端功能模块层（`src/`）
 
 - `src/domain/` & `src/dateUtils.ts`：不依赖 React 的领域模型、数值格式化与固定 `Asia/Shanghai` 交易日计算（严禁用本地/UTC 时区替代北京时间）。
-- `src/features/`：按业务域完全模块化——`cockpit`（今日驾驶舱）、`copilot`（全局副驾驶提醒、状态协调与随心记转做T/盯盘）、`dashboard`（涨停监控与炸板观察）、`market`（个股分析与多股同列）、`sectors`（板块强度与北交所）、`bonds`（可转债）、`hsgt`（沪深港通与个股桥接）、`strategy-selection`（全市场策略选股与我的策略）、`trend`（趋势筛选、冻结计划与趋势研究）、`t-assistant`（做T助手、多周期画线工具箱与做T AI 追问）、`ai-picks`（AI 选股与我的股票）、`ai-agent`（AI 问股与打法管理）、`ai-review`（AI 复盘与解读面板）、`notes`（随心记与价格条件盯盘）、`paper-simulation`（模拟交易）、`backtest`（单股与组合回测中心）、`collections`（自选监控、观察池与持仓账本）、`information`（资讯与公告中心）、`review`（专业复盘协同组件）、`settings` & `backup`（系统设置、安全主密码与网盘加密备份）。
+- `src/features/`（23 个独立业务域目录，侧栏按「盯盘 / 选股决策 / 复盘与品种」三分区组织）：`cockpit`（今日驾驶舱与十大指数实时条）、`copilot`（全局副驾驶提醒、状态协调与随心记转做T/盯盘）、`dashboard`（涨停监控、实时封单面板与炸板观察）、`market`（个股分析与多股同列）、`sectors`（板块强度与北交所）、`bonds`（可转债）、`etf`（场内 ETF 专区与双动量轮动面板）、`hsgt`（沪深港通与个股桥接）、`decision`（决策中心：AI 建议 / 指标预警 / 多因子选股 / ETF 轮动 / 资讯源 5 页签保活工作台）、`strategy-selection`（全市场策略选股、我的策略与多因子选股面板）、`trend`（趋势筛选、冻结计划与趋势研究）、`t-assistant`（做T助手、多周期画线工具箱与做T AI 追问）、`ai-picks`（AI 选股与我的股票）、`ai-agent`（AI 问股、34 种内置打法管理、AI 建议与资讯源面板）、`ai-review`（AI 复盘与解读面板）、`notes`（随心记、盘中时段提醒与价格条件盯盘）、`paper-simulation`（模拟交易）、`backtest`（单股/组合回测中心与策略实测榜）、`collections`（自选监控、十日涨停跟踪、持仓账本、六维持仓风险看板与指标预警面板）、`information`（资讯与公告中心）、`review`（专业复盘协同组件）、`settings`（系统设置与安全主密码）、`backup`（网盘加密备份与本机存储治理）。
 
 ---
 

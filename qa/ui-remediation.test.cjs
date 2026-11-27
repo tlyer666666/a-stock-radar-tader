@@ -20,6 +20,13 @@ async function fixture(query = '') {
   return { page, errors };
 }
 const nav = async (page, name) => {
+  // 「观察池」不在侧栏单列：从「自选监控」页顶部的页签进入。
+  if (name === '观察池') {
+    await nav(page, '自选监控');
+    await page.getByRole('tab', { name: '十日涨停跟踪', exact: true }).click();
+    await page.locator('.app-shell[data-workspace="watchlist"]').waitFor();
+    return;
+  }
   const btn = page.locator('.workspace-navigation').getByRole('button', { name, exact: true });
   if (!(await btn.count())) {
     const expand = page.locator('.workspace-navigation').getByRole('button', { name: '显示全部模块', exact: true });

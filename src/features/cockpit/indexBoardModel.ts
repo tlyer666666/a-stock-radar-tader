@@ -1,3 +1,5 @@
+import { cnParts, isTradingDay } from "../notes/notesModel";
+
 /** 驾驶舱指数条的数据类型与展示用纯函数（主进程 electron/index-board.cjs 供数）。 */
 
 export type IndexBoardQuote = {
@@ -96,9 +98,21 @@ export type IndexStreamStatus = { active: boolean; connected: number; polling?: 
 
 const MERGE_KEYS = ["latest", "change", "changePct", "open", "high", "low", "preClose", "amount", "up", "down", "flat", "date", "time"] as const;
 
+/** 与主进程 marketStreamLive 同口径：交易日 09:15–11:35、12:55–15:05（含集合竞价与收盘前后缓冲）。 */
+export function inMarketStreamWindow(now = Date.now()): boolean {
+  const { date, minutes } = cnParts(now);
+  return isTradingDay(date) && ((minutes >= 9 * 60 + 15 && minutes <= 11 * 60 + 35) || (minutes >= 12 * 60 + 55 && minutes <= 15 * 60 + 5));
+}
+
+/** 统一补齐到 HH:mm:ss，保证同分钟内的 SSE 秒级推送与 HTTP 分钟级快照可准确比较新旧。 */
+export function normalizeIndexTime(value: string | null | undefined): string {
+  const text = String(value || "").trim();
+  return /^\d{2}:\d{2}$/.test(text) ? `${text}:00` : text;
+}
+
 /**
- * 把推送合并进快照：只用推送里有值的字段；同一交易日时把迷你分时的最后一个点换成最新价，让走势线跟着跳；
- * 两市合计按上证 + 深证重算。返回新对象（React 依赖引用变化重绘）。
+ * 把推送合并进快照：只用推送里有值的字段；保留秒级时间（HH:mm:ss）供新旧比较（界面展示再裁到 HH:mm）；
+ * 同一交易日时把迷你分时的最后一个点换成最新价，让走势线跟着跳；两市合计按上证 + 深证重算。返回新对象（React 依赖引用变化重绘）。
  */
 export function applyIndexTick(snapshot: IndexBoardSnapshot | null, tick: Pick<IndexTick, "quotes">): IndexBoardSnapshot | null {
   if (!snapshot || !tick?.quotes?.length) return snapshot;
@@ -113,8 +127,6 @@ export function applyIndexTick(snapshot: IndexBoardSnapshot | null, tick: Pick<I
       if (value === null || value === undefined || value === "") continue;
       (next as Record<string, unknown>)[key] = value;
     }
-    // 推送的时间到秒（HH:mm:ss），界面统一显示到分钟。
-    if (typeof next.time === "string" && next.time.length > 5) next.time = next.time.slice(0, 5);
     if (finite(next.latest) && next.trend.length && (!update.date || update.date === quote.date)) {
       next.trend = [...next.trend.slice(0, -1), next.latest];
     }
@@ -132,6 +144,40 @@ export function applyIndexTick(snapshot: IndexBoardSnapshot | null, tick: Pick<I
   const missing = indices.filter(item => item.latest === null).map(item => item.name);
   const { missing: _oldMissing, ...rest } = snapshot;
   return { ...rest, indices, totals, tradingDate, ...(missing.length ? { missing } : {}) };
+}
+
+/**
+ * 整页快照回来时不能覆盖推送刚写进去的更新：逐只指数比较（日期 + 规范化秒级时间），保留更新的一份。
+ * 分时就拿点位更多的那份（同日采用更长快照分时时，把最后一个点同步为 earlier.latest，保持折线末梢与现价一致）。
+ */
+export function mergeIndexSnapshot(prev: IndexBoardSnapshot | null, next: IndexBoardSnapshot): IndexBoardSnapshot {
+  if (!prev) return next;
+  const prevByCode = new Map(prev.indices.map(item => [item.code, item]));
+  const indices = next.indices.map(quote => {
+    const earlier = prevByCode.get(quote.code);
+    if (!earlier) return quote;
+    const earlierNewer = (earlier.date || "") > (quote.date || "")
+      || (earlier.date === quote.date && normalizeIndexTime(earlier.time) > normalizeIndexTime(quote.time));
+    if (!earlierNewer) return quote;
+    let trend = earlier.trend;
+    if (quote.trend.length > earlier.trend.length && (!quote.date || !earlier.date || quote.date === earlier.date)) {
+      trend = finite(earlier.latest) && earlier.latest > 0
+        ? [...quote.trend.slice(0, -1), earlier.latest]
+        : quote.trend;
+    }
+    return { ...earlier, trend };
+  });
+  const merged = { ...next, indices };
+  const tradingDate = indices.map(item => item.date).filter(Boolean).sort().at(-1) || merged.tradingDate;
+  const sh = indices.find(item => item.code === "000001");
+  const sz = indices.find(item => item.code === "399001");
+  const both = (key: "amount" | "up" | "down" | "flat") => sh && sz && finite(sh[key]) && finite(sz[key]) ? (sh[key] as number) + (sz[key] as number) : null;
+  const totals = merged.totals && sh && sz
+    ? { ...merged.totals, amount: both("amount") ?? merged.totals.amount, up: both("up") ?? merged.totals.up, down: both("down") ?? merged.totals.down, flat: both("flat") ?? merged.totals.flat }
+    : merged.totals;
+  const missing = indices.filter(item => item.latest === null).map(item => item.name);
+  const { missing: _oldMissing, ...rest } = merged;
+  return { ...rest, totals, tradingDate, ...(missing.length ? { missing } : {}) };
 }
 
 /** 收到推送的本地时间，精确到毫秒（HH:mm:ss.SSS）。 */

@@ -82,7 +82,9 @@ test('Beijing error can retry directly and leaving during a pending response pre
   assert.deepEqual(await page.evaluate(() => window.__beijingQa.calls.at(-1)), { name: '北交所', code: 'THS:BJ', forceRefresh: true, waitForQuotes: false });
   await page.evaluate(() => { window.__beijingQa.mode = 'pending'; });
   await page.getByRole('button', { name: '刷新北交所行情', exact: true }).click();
-  await page.locator('.workspace-navigation').getByRole('button', { name: '观察池', exact: true }).click();
+  // 「观察池」不在侧栏单列：先进「自选监控」，再点「十日涨停跟踪」页签。
+  await page.locator('.workspace-navigation').getByRole('button', { name: '自选监控', exact: true }).click();
+  await page.getByRole('tab', { name: '十日涨停跟踪', exact: true }).click();
   await page.waitForTimeout(500);
   assert.equal(await page.locator('.app-shell').getAttribute('data-workspace'), 'watchlist');
   assert.equal(await page.getByRole('region', { name: '北交所 成分股', exact: true }).count(), 0);

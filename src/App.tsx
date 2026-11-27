@@ -11,7 +11,7 @@ import { useMarketWorkspaceFeed } from "./features/market/useMarketWorkspaceFeed
 import { useWorkspaceCopilot } from "./features/copilot/useWorkspaceCopilot";
 import { renderAppHeaderBar } from "./components/AppHeaderBar";
 import { renderAppWorkspaceRoutes, type AnalysisOrigin } from "./components/AppWorkspaceRoutes";
-import type { WorkspaceView as View } from "./workspaceView";
+import { WORKSPACE_VIEWS, type WorkspaceView as View } from "./workspaceView";
 import { simpleAnalysisOrigin } from "./workspaceExperience";
 import type { PaperClosedPosition } from "./domain/paperSimulationTypes";
 import type {
@@ -291,7 +291,7 @@ function App() {
             );
             return;
           }
-          if (clicked?.targetView) setView(clicked.targetView as View);
+          if (clicked?.targetView && (WORKSPACE_VIEWS as readonly string[]).includes(String(clicked.targetView))) setView(clicked.targetView as View);
         })
       : undefined;
     return () => {
@@ -783,6 +783,7 @@ function App() {
     { id: "previous-limit-up-failed" as View, label: "炸板观察", icon: Activity },
     { id: "favorites" as View, label: "自选监控", icon: Star },
     { id: "holdings" as View, label: "持仓股", icon: WalletCards },
+    // 观察池：侧栏不单列（见 WorkspaceNavigation 的分组），标题栏和命令面板仍用这个名字。
     { id: "watchlist" as View, label: "观察池", icon: Bookmark },
     { id: "sectors" as View, label: "板块强度", icon: Layers3 },
     { id: "beijing" as View, label: "北交所", icon: Landmark },
@@ -794,6 +795,7 @@ function App() {
     { id: "signals" as View, label: "策略选股", icon: TrendingUp },
     { id: "ai-picks" as View, label: "AI 选股", icon: Bot },
     { id: "ai-agent" as View, label: "AI 问股", icon: MessagesSquare },
+    { id: "decision" as View, label: "决策中心", icon: ShieldCheck },
     { id: "compare" as View, label: "多股同列", icon: BarChart3 },
     { id: "review" as View, label: "专业复盘", icon: BookOpenCheck },
     { id: "backtest" as View, label: "回测中心", icon: LineChart }

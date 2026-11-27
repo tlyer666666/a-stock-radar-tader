@@ -8,7 +8,7 @@ const {views,createPreview,openView,theme,geometry} = require('./frontend-v150.c
 
 const output = path.resolve(__dirname,'../artifacts/frontend-v150/after');
 const actions = {
-  'trend-screener': {name:'扫描全 A 股'}, signals:{name:'重新选股'}, sectors:{name:'刷新目录'},
+  'trend-screener': {name:'扫描全 A 股'}, signals:{name:'重新选股'}, decision:{name:'核对最新结果'}, sectors:{name:'刷新目录'},
   dashboard:{name:'刷新涨停池'}, beijing:{name:'刷新北交所行情'}, watchlist:{name:/^全部十日/}, favorites:{name:'设置条件'},
   holdings:{name:'保存持仓'}, review:{name:'重新计算'}, compare:{name:'刷新全部分析'},
   backtest:{name:'从所选日期开始回测'}, news:{name:'立即刷新'}, settings:{name:'保存设置'}
@@ -53,6 +53,10 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
       await theme(page,appearance);
       for(const [id,label]of views) {
         await openView(page,id,label);
+        if(id==='decision') {
+          await page.locator('.agent-signals-table tbody tr').first().waitFor();
+          await page.locator('.main > .page').getByRole('button',{name:'核对最新结果',exact:true}).waitFor();
+        }
         if(id==='sectors') {
           await page.locator('.sector-gainers-row').first().waitFor();
           await page.locator('.sector-theme-strip').waitFor();
@@ -86,7 +90,9 @@ describe('v1.5.0 actual App navigation and responsive workspace layout',()=>{
         const bounds=await actionBounds(page,locator);
         record.primaryAction=bounds;
         if(!bounds.visible||bounds.width<20||bounds.height<20||bounds.left<0||bounds.right>width||bounds.top<0||bounds.bottom>960||!bounds.unobscured) failures.push(`${id}/${appearance}: primary action inaccessible ${JSON.stringify(bounds)}`);
-        const nav=page.getByRole('button',{name:label,exact:true}).first();
+        // 「观察池」不在侧栏：开着它时侧栏高亮的是「自选监控」（它挂在自选监控的页签下）。
+        const navLabel=id==='watchlist'?'自选监控':label;
+        const nav=page.getByRole('button',{name:navLabel,exact:true}).first();
         if(await nav.getAttribute('aria-current')!=='page') failures.push(`${id}/${appearance}: active navigation is not announced`);
         records.push(record);
       }

@@ -55,6 +55,7 @@ const COMPACT_LIMIT_COLUMNS = new Set(['latest', 'turnover', 'amount', 'firstSea
 export default memo(function LimitUpPool({
   items: snapshotItems,
   meta,
+  live = true,
   onOpen,
   onAdd,
   isFavorite,
@@ -65,6 +66,7 @@ export default memo(function LimitUpPool({
 }: {
   items: LimitUpStock[];
   meta?: { dataDate?: string } | null;
+  live?: boolean | undefined;
   onOpen: (stock: LimitUpStock) => void;
   onAdd: (stock: LimitUpStock) => void;
   /** 已在自选里的股票显示「已自选」，不会再点一次就取消。 */
@@ -79,7 +81,7 @@ export default memo(function LimitUpPool({
   const [preferences, setPreferences] = useState(loadColumnPreferences);
   // 实时封单：订阅整张涨停池（最多 300 只），封单一变就更新封单额、封单/流通和封板状态。
   const poolCodes = useMemo(() => snapshotItems.map(item => item.code), [snapshotItems]);
-  const { records: liveSeals, lastTickAt: sealTickAt } = useLimitSeals(poolCodes, { owner: 'pool' });
+  const { records: liveSeals, lastTickAt: sealTickAt } = useLimitSeals(poolCodes, { owner: 'pool', enabled: live });
   const items = useMemo(() => snapshotItems.map(item => withLiveSeal(item, liveSeals[item.code])), [snapshotItems, liveSeals]);
   const brokenCount = useMemo(() => {
     const active = new Set(poolCodes);

@@ -5,6 +5,7 @@ const { after, before, test } = require("node:test");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { registerTypeScript } = require("../../../qa/register-typescript.cjs");
+const { createHookHarness } = require("../../../qa/research-hook-harness.cjs");
 
 let restoreTypeScript;
 let panel;
@@ -57,4 +58,131 @@ test("draft validator supports negative CCI threshold, zero cooldown and rejects
 
   const badCooldown = model.validateAlertRuleDraft({ type: "ma_cross", direction: "above", windowDraft: "20", periodDraft: "14", thresholdDraft: "0", cooldownDraft: "241" });
   assert.equal(badCooldown.ok, false);
+});
+
+test("AlertRulesPanel silent focus refresh preserves dry-run & message, never cancels in-flight run, throttles burst events, and skips when inactive", async () => {
+  const prevWindow = global.window;
+  const prevDocument = global.document;
+  const prevNow = Date.now;
+  let now = 1_760_000_000_000;
+  Date.now = () => now;
+  const windowListeners = new Map();
+  const docListeners = new Map();
+  const calls = [];
+  const pending = [];
+  const baseRule = { id: "r1", type: "ma_cross", scope: "watchlist", code: "", name: "", params: { direction: "above", window: 20 }, enabled: true, cooldownHours: 24, createdAt: "", text: "全部自选：收盘价上穿 20 日线" };
+
+  global.window = {
+    addEventListener(type, fn) { windowListeners.set(type, fn); },
+    removeEventListener(type, fn) { if (windowListeners.get(type) === fn) windowListeners.delete(type); },
+    stockApi: {
+      alertRules(input) {
+        calls.push(input);
+        return new Promise((resolve, reject) => pending.push({ input, resolve, reject }));
+      }
+    }
+  };
+  global.document = {
+    visibilityState: "visible",
+    addEventListener(type, fn) { docListeners.set(type, fn); },
+    removeEventListener(type, fn) { if (docListeners.get(type) === fn) docListeners.delete(type); }
+  };
+
+  try {
+    // 1) Active panel: initial list, dry-run, then focus + visibilitychange burst
+    const harness = createHookHarness(panel.default, { props: { active: true } });
+    harness.render();
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].op, "list");
+    pending.shift().resolve({ rules: [baseRule], history: [], lastRunAt: "", types: {} });
+    await harness.flush();
+
+    // Trigger dry-run
+    harness.tree.props.onRequest({ op: "dry", id: "r1" });
+    harness.render();
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1].op, "dry");
+    pending.shift().resolve({
+      rules: [baseRule],
+      history: [],
+      lastRunAt: "",
+      types: {},
+      dry: [{ ruleId: "r1", target: "平安银行", code: "000001", status: "not_triggered", detail: "未触发" }]
+    });
+    await harness.flush();
+    assert.equal(harness.tree.props.state.dry.length, 1);
+
+    // Focus fires silent background list; visibilitychange 100ms later is throttled
+    windowListeners.get("focus")();
+    now += 100;
+    docListeners.get("visibilitychange")();
+    assert.equal(calls.length, 3, "visibilitychange within 1500ms is throttled");
+    assert.equal(harness.tree.props.busy, false, "silent refresh never flips busy");
+    pending.shift().resolve({
+      rules: [baseRule],
+      history: [{ id: "h1", at: "2026-11-26T07:12:00.000Z", ruleId: "r1", ruleText: baseRule.text, target: "贵州茅台", code: "600519", status: "triggered", detail: "上穿", date: "2026-11-26" }],
+      lastRunAt: "2026-11-26T07:12:00.000Z",
+      types: {}
+    });
+    await harness.flush();
+    assert.equal(harness.tree.props.state.dry.length, 1, "silent refresh preserves dry-run output");
+    assert.equal(harness.tree.props.state.history.length, 1, "silent refresh merges updated history");
+    assert.equal(harness.tree.props.state.lastRunAt, "2026-11-26T07:12:00.000Z");
+
+    // Start a slow foreground run; focus after 2000ms must NOT start silent refresh or cancel the run
+    now += 2_000;
+    harness.tree.props.onRequest({ op: "run" });
+    harness.render();
+    assert.equal(calls.length, 4);
+    assert.equal(harness.tree.props.busy, true);
+    windowListeners.get("focus")();
+    assert.equal(calls.length, 4, "in-flight foreground run suppresses silent refresh");
+    pending.shift().resolve({
+      rules: [baseRule],
+      history: [],
+      lastRunAt: "2026-11-26T07:15:00.000Z",
+      types: {},
+      run: { at: "2026-11-26T07:15:00.000Z", evaluated: 2, triggered: 1 }
+    });
+    await harness.flush();
+    assert.equal(harness.tree.props.busy, false);
+    assert.match(harness.tree.props.message, /评估了 2 项，1 条触发/);
+
+    // Foreground request started while a silent refresh is in flight aborts stale silent apply
+    now += 2_000;
+    windowListeners.get("focus")();
+    assert.equal(calls.length, 5);
+    const silentReq = pending.shift();
+    harness.tree.props.onRequest({ op: "clear" });
+    harness.render();
+    const clearReq = pending.shift();
+    clearReq.resolve({ rules: [baseRule], history: [], lastRunAt: "2026-11-26T07:20:00.000Z", types: {} });
+    await harness.flush();
+    silentReq.resolve({
+      rules: [baseRule],
+      history: [{ id: "stale", at: "2026-11-26T07:12:00.000Z", ruleId: "r1", ruleText: "", target: "旧记录", code: "000001", status: "triggered", detail: "", date: "2026-11-26" }],
+      lastRunAt: "2026-11-26T07:12:00.000Z",
+      types: {}
+    });
+    await harness.flush();
+    assert.equal(harness.tree.props.state.history.length, 0, "stale silent refresh aborts when seqRef advanced");
+    harness.dispose();
+
+    // 2) Inactive panel: registers no focus/visibility refresh
+    calls.length = 0;
+    windowListeners.clear();
+    docListeners.clear();
+    const inactive = createHookHarness(panel.default, { props: { active: false } });
+    inactive.render();
+    assert.equal(calls.length, 1, "initial mount still fetches list once");
+    pending.shift().resolve({ rules: [], history: [], lastRunAt: "", types: {} });
+    await inactive.flush();
+    assert.equal(windowListeners.size, 0, "inactive panel does not subscribe to window focus");
+    assert.equal(docListeners.size, 0, "inactive panel does not subscribe to document visibilitychange");
+    inactive.dispose();
+  } finally {
+    Date.now = prevNow;
+    global.window = prevWindow;
+    global.document = prevDocument;
+  }
 });

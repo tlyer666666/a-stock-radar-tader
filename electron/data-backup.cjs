@@ -56,7 +56,10 @@ function deriveKeyAsync(password, salt) {
   });
 }
 
-const SENSITIVE_FEED_QUERY = /(?:^|[_-])(?:token|key|secret|auth|pass|password|sig|signature|apikey|access[_-]?token)$/i;
+// 参数名里任何位置出现这些词都算敏感（authToken、feedToken、privateKey、sign、pwd…），宁可多删；
+// 仅豁免常见的纯检索/署名参数 keyword(s) 与 author，避免误伤常规 RSS 地址。
+const SENSITIVE_FEED_QUERY = /token|key|secret|auth|pass|pwd|sign|sig|credential/i;
+const BENIGN_FEED_QUERY = /^(?:keywords?|author)$/i;
 
 function sanitizeFeedUrlForBackup(rawUrl) {
   if (typeof rawUrl !== "string") return rawUrl;
@@ -69,7 +72,7 @@ function sanitizeFeedUrlForBackup(rawUrl) {
     changed = true;
   }
   for (const key of [...parsed.searchParams.keys()]) {
-    if (SENSITIVE_FEED_QUERY.test(key)) {
+    if (!BENIGN_FEED_QUERY.test(key) && SENSITIVE_FEED_QUERY.test(key)) {
       parsed.searchParams.delete(key);
       changed = true;
     }

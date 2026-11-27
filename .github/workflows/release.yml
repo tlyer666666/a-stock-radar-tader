@@ -124,10 +124,12 @@ jobs:
         if: matrix.platform == 'linux'
         shell: bash
         run: |
+          trap 'rm -rf squashfs-root' EXIT
           chmod +x release-builder/*.AppImage
           release-builder/*.AppImage --appimage-extract >/dev/null
           test -x squashfs-root/AppRun
           node -e "const {readPackagedPackageJson}=require('./qa/delivery-verification.cjs'); const p=readPackagedPackageJson('squashfs-root'); const v=require('./package.json').version; if(p.version!==v) throw new Error('Embedded AppImage version mismatch: '+p.version+' != '+v)"
+          node -e "const {verifyBuildArtifact}=require('./qa/build-artifact-verification.cjs'); const r=verifyBuildArtifact('squashfs-root', process.cwd()); if(!r.consistent||!r.artifactConsistent) throw new Error('Linux AppImage build artifact verification failed: '+JSON.stringify(r)); console.log(JSON.stringify(r));"
           node electron/build-runtime-fuses.cjs squashfs-root/a-share-quant-radar --verify
       - name: Verify packaged macOS archive
         if: matrix.platform == 'mac'

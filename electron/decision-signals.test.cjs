@@ -210,6 +210,8 @@ test("H7, M3 & L2: invalid createdAt/expiresAt do not throw, stopLoss>=entryLow 
 
   // M3: evaluatePending single-flight lock deduplicates concurrent runs
   api.record({ code: "000001", name: "平安银行", ...plan(), referencePrice: 10 });
+  // 今天盘中给的建议还没有可评的交易日，会被跳过——把这两条拨到昨天，模拟隔夜后的补评
+  for (const s of state.signals) if (s.code === "600519" || s.code === "000001") s.createdAt = "2026-11-19T02:00:00.000Z";
   const p1 = api.evaluatePending();
   const p2 = api.evaluatePending();
   releaseBars();
@@ -226,4 +228,80 @@ test("H7, M3 & L2: invalid createdAt/expiresAt do not throw, stopLoss>=entryLow 
   state = { version: 1, signals: overflow };
   api.record({ code: "600999", name: "测试", ...plan(), referencePrice: 10 });
   assert.equal(state.signals.length, 600, "active signals are strictly capped at MAX_SIGNALS");
+});
+
+test("H1, M1 & L4: pre-open signal without referencePrice uses prior close, evaluates same day after 15:05, and rejects malformed stopLoss/targetPrice", async () => {
+  // H1: pre-open signal without referencePrice must anchor on previous trading day's close, NOT day-1 close
+  const preOpenSignal = {
+    createdAt: new Date(cn("2026-11-20T09:00:00")).toISOString(),
+    action: "buy",
+    stopLoss: null,
+    targetPrice: null,
+    referencePrice: null,
+    outcomes: {}
+  };
+  const bars = [
+    bar("2026-11-19", 10.0),
+    bar("2026-11-20", 9.0, 8.9, 10.0),
+    bar("2026-11-23", 9.1, 8.95, 9.2),
+    bar("2026-11-24", 9.2, 9.0, 9.3)
+  ];
+  const evalOut = evaluateSignal(preOpenSignal, bars);
+  assert.equal(evalOut[1].startPrice, 10, "base price must come from 2026-11-19 close (< created), not 2026-11-20 close");
+  assert.equal(evalOut[1].endDate, "2026-11-20");
+  assert.equal(evalOut[1].returnPct, -10);
+  assert.equal(evalOut[1].verdict, "miss", "a -10% drop on day 1 must be a miss, not 0% neutral");
+  assert.equal(evalOut[3].returnPct, -8);
+  assert.equal(evalOut[3].verdict, "miss", "day-3 rebound from 9.0 to 9.2 is still -8% below pre-open close 10.0");
+
+  // If no bar exists strictly before created date and referencePrice is null, signal is unable (not anchored on day-1 close)
+  const noPrior = evaluateSignal(preOpenSignal, [bar("2026-11-20", 9.0)]);
+  assert.equal(noPrior[1].status, "unable");
+
+  // L4: corrupted targetPrice / stopLoss ("", 0, undefined, "bad") must not falsely trigger targetHit / stopHit
+  for (const badTarget of ["", 0, -5, undefined, "NaN"]) {
+    const out = evaluateSignal(
+      { createdAt: new Date(cn("2026-11-20T10:00:00")).toISOString(), action: "buy", referencePrice: 10, stopLoss: "", targetPrice: badTarget, outcomes: {} },
+      [bar("2026-11-20", 10), bar("2026-11-23", 10.3, 9.9, 10.5)]
+    );
+    assert.equal(out[1].targetHit, false, `bad targetPrice=${String(badTarget)} must not trigger targetHit`);
+    assert.equal(out[1].stopHit, false, "empty stopLoss must not trigger stopHit");
+    assert.equal(out[1].verdict, "hit");
+  }
+
+  // M1: evaluatePending evaluates same-day pre-open signals after 15:05, skips before 15:05, and skips same-day intraday signals
+  let loadCalls = 0;
+  let state = null;
+  let clock = cn("2026-11-20T09:10:00");
+  let seq = 0;
+  const api = createDecisionSignals({
+    store: { read: () => state, write: value => { state = structuredClone(value); } },
+    loadBars: async ({ code }) => {
+      loadCalls += 1;
+      if (code === "600519") return [bar("2026-11-19", 10), bar("2026-11-20", 10.5, 9.9, 10.6)];
+      return [bar("2026-11-19", 10), bar("2026-11-20", 10.5, 9.9, 10.6)];
+    },
+    now: () => clock,
+    id: () => `m1_${++seq}`
+  });
+  const pre = api.record({ code: "600519", name: "贵州茅台", ...plan(), referencePrice: null }).signal;
+  clock = cn("2026-11-20T10:00:00");
+  const intra = api.record({ code: "000001", name: "平安银行", ...plan(), referencePrice: 10 }).signal;
+
+  // Before 15:05: neither signal should trigger bar loads
+  clock = cn("2026-11-20T14:50:00");
+  assert.deepEqual(await api.evaluatePending(), { evaluated: 0, failed: 0 });
+  assert.equal(loadCalls, 0, "before 15:05 today's pre-open signal should not fetch bars yet");
+
+  // After 15:05: pre-open signal evaluates 1d using prior close; intraday signal is still skipped
+  clock = cn("2026-11-20T15:06:00");
+  assert.deepEqual(await api.evaluatePending(), { evaluated: 1, failed: 0 });
+  assert.equal(loadCalls, 1, "only the pre-open signal's code should be fetched");
+  const after = api.list();
+  const preAfter = after.find(item => item.id === pre.id);
+  const intraAfter = after.find(item => item.id === intra.id);
+  assert.equal(preAfter.outcomes[1].verdict, "hit");
+  assert.equal(preAfter.outcomes[1].startPrice, 10);
+  assert.equal(preAfter.outcomes[1].returnPct, 5);
+  assert.equal(intraAfter.outcomes[1], undefined, "intraday signal waits until next trading day");
 });

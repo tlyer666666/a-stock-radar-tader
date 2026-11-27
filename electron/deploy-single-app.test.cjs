@@ -25,7 +25,7 @@ function fixture(t, options = false) {
   fs.mkdirSync(path.join(repo, 'dist'));
   fs.mkdirSync(path.join(target, '升级备份'));
   fs.writeFileSync(path.join(target, '升级备份', 'existing'), 'preserve');
-  fs.writeFileSync(path.join(target, '当前版本.json'), '{"version":"old"}');
+  fs.writeFileSync(path.join(target, '当前版本.json'), opts.initialMeta || '{"version":"old"}');
   const filename = path.join(__dirname, 'deploy-single-app.cjs'), realRequire = createRequire(filename);
   const receipt = { version: '1.6.29', consistent: true, artifactConsistent: true,
     outputs: {}, productionFiles: 1, unpackedFiles: 1, recordedInputs: 1, currentInputs: 1, changed: [], missingInReceipt: [] };
@@ -37,6 +37,7 @@ function fixture(t, options = false) {
         const stdout = typeof opts.psOutput === 'function' ? opts.psOutput(args) : '';
         return { status: 0, stdout };
       }
+      if (command === 'git' && typeof opts.gitOutput === 'function') return opts.gitOutput(args);
       if (command === '/usr/bin/ditto') fs.cpSync(args[0], args[1], { recursive: true });
       if (command === '/usr/libexec/PlistBuddy') return { status: 0, stdout: '1.6.29\n' };
       if (command === '/usr/bin/open' && failLaunch) return { status: 1 };
@@ -126,4 +127,40 @@ test('version metadata records the release gate truthfully instead of claiming t
   await gated.main();
   const meta = JSON.parse(fs.readFileSync(path.join(gated.target, '当前版本.json')));
   assert.match(meta.verification.unitTests, /^已通过（本次部署前运行：类型检查、lint、全量单测/);
+});
+
+test('H9: workingTreeClean, dirtyFiles and -dirty provenance are computed from real git status rather than inherited', async t => {
+  const dirty = fixture(t, {
+    initialMeta: JSON.stringify({ version: '1.6.28', workingTreeClean: true }),
+    gitOutput: args => {
+      if (args.includes('status')) return { status: 0, stdout: ' M electron/main.cjs\n?? src/new.ts\n' };
+      if (args.includes('--short')) return { status: 0, stdout: '17b8059\n' };
+      if (args.includes('--abbrev-ref')) return { status: 0, stdout: 'main\n' };
+      return { status: 0, stdout: '' };
+    }
+  });
+  await dirty.main();
+  const dirtyMeta = JSON.parse(fs.readFileSync(path.join(dirty.target, '当前版本.json'), 'utf8'));
+  assert.equal(dirtyMeta.workingTreeClean, false, 'stale workingTreeClean: true must be overwritten');
+  assert.equal(dirtyMeta.sourceCommit, '17b8059-dirty');
+  assert.equal(dirtyMeta.source.commit, '17b8059-dirty');
+  assert.equal(dirtyMeta.source.dirtyFiles, 2);
+  assert.match(dirtyMeta.notes['1.6.29'], /17b8059-dirty/);
+
+  const clean = fixture(t, {
+    initialMeta: JSON.stringify({ version: '1.6.28', workingTreeClean: false }),
+    gitOutput: args => {
+      if (args.includes('status')) return { status: 0, stdout: '?? .a-stock-artifact.lock\n' };
+      if (args.includes('--short')) return { status: 0, stdout: 'abcdef1\n' };
+      if (args.includes('--abbrev-ref')) return { status: 0, stdout: 'main\n' };
+      return { status: 0, stdout: '' };
+    }
+  });
+  await clean.main();
+  const cleanMeta = JSON.parse(fs.readFileSync(path.join(clean.target, '当前版本.json'), 'utf8'));
+  assert.equal(cleanMeta.workingTreeClean, true);
+  assert.equal(cleanMeta.sourceCommit, 'abcdef1');
+  assert.equal(cleanMeta.source.commit, 'abcdef1');
+  assert.equal(cleanMeta.source.dirtyFiles, undefined);
+  assert.doesNotMatch(cleanMeta.notes['1.6.29'], /-dirty/);
 });

@@ -3,8 +3,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const {chromium} = require('playwright-core');
+async function openTrendWorkspace(page) {
+ await page.getByRole('button',{name:'策略选股',exact:true}).click();
+ await page.waitForFunction(() => document.querySelector('.app-shell')?.getAttribute('data-workspace') === 'signals', undefined, {timeout: 20_000});
+ await page.locator('.strategy-library-item.trend').first().click({timeout: 20_000});
+ await page.locator('.trend-screener').waitFor({timeout: 20_000});
+}
 async function run() {
- const browser = await chromium.launch({executablePath:'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
+ const browser = await chromium.launch({executablePath: process.env.QA_CHROMIUM_PATH || process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',headless:true});
  const page = await browser.newPage({viewport:{width:1480,height:1050},acceptDownloads:true});
  const output = path.resolve('artifacts/strategy-v2-qa');fs.mkdirSync(output,{recursive:true});
  const errors=[];page.on('pageerror', e=>errors.push(e.message));
@@ -18,7 +24,7 @@ async function run() {
  };
  try {
   await page.goto(process.env.QA_BASE_URL || 'http://127.0.0.1:5173',{waitUntil:'networkidle'});
-  await page.getByRole('heading',{name:'趋势筛选',exact:true}).waitFor();
+  await openTrendWorkspace(page);
   await page.locator('details.trend-scan-configuration > summary').click();
   await page.getByRole('button',{name:'单模型扫描',exact:true}).click();
   await page.getByLabel('扫描策略',{exact:true}).selectOption('quality-v2');
@@ -76,7 +82,7 @@ async function run() {
   assert.match(await card.locator('.trend-calculation-result').innerText(),/市场/);
   const downloadP=page.waitForEvent('download');await page.getByRole('button',{name:'导出计划 CSV',exact:true}).click();
   const csv=fs.readFileSync(await(await downloadP).path(),'utf8');assert.match(csv,/quality-v2@2.0.0/);assert.match(csv,/最低参考入场/);assert.match(csv,/DEMO/);
-  await page.reload({waitUntil:'networkidle'});await page.getByRole('button',{name:/^我的计划/}).click();await revealAllCandidates();assert.equal(await page.locator('.trend-candidate').count(),2);
+  await page.reload({waitUntil:'networkidle'});await openTrendWorkspace(page);await page.getByRole('button',{name:/^我的计划/}).click();await revealAllCandidates();assert.equal(await page.locator('.trend-candidate').count(),2);
   await page.getByRole('button',{name:/^研究候选/}).click();await page.getByRole('button',{name:'扫描全 A 股',exact:true}).first().click();
   for(const [width,theme] of [[1480,'dark'],[1024,'dark'],[760,'dark'],[1480,'light']]){
    await page.setViewportSize({width,height:1050});await page.getByRole('button',{name:theme==='dark'?'黑夜':'白天',exact:true}).count().then(async count=>{if(count) await page.getByRole('button',{name:theme==='dark'?'黑夜':'白天',exact:true}).click(); else await page.getByRole('button',{name:theme==='dark'?'暮夜':'白昼',exact:true}).click();});

@@ -5,6 +5,7 @@ const { after, before, test } = require("node:test");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { registerTypeScript } = require("../../../qa/register-typescript.cjs");
+const { createHookHarness, text } = require("../../../qa/research-hook-harness.cjs");
 
 let restoreTypeScript;
 let IndexBoard;
@@ -103,8 +104,11 @@ test("a pushed tick merges only the fields it carries, moves the sparkline tip a
   const sh = next.indices[0];
   assert.equal(sh.latest, 3515.01);
   assert.equal(sh.high, 3513.26, "null in a tick never overwrites a known value");
-  assert.equal(sh.time, "11:16");
+  assert.equal(sh.time, "11:16:03", "tick preserves second precision for snapshot comparison");
   assert.deepEqual(sh.trend, [3548, 3530, 3520, 3515.01]);
+  const rendered = renderToStaticMarkup(React.createElement(IndexBoard, { snapshot: next, state: "ready", today: "2026-11-25", onRetry: () => {} }));
+  assert.match(rendered, /2026-11-25 11:16\b/, "display still renders HH:mm");
+  assert.doesNotMatch(rendered, /11:16:03/);
   assert.equal(next.indices.find(item => item.code === "000688").latest, 1210.5);
   assert.equal(next.missing, undefined, "an index that starts ticking leaves the missing list");
   assert.equal(next.totals.up, 1300 + 1675);
@@ -114,9 +118,177 @@ test("a pushed tick merges only the fields it carries, moves the sparkline tip a
   assert.equal(model.tickClock(Date.parse("2026-11-25T05:31:05.123Z")), "13:31:05.123");
 });
 
+test("mergeIndexSnapshot keeps newer same-minute SSE tick over HH:mm snapshot and syncs adopted sparkline tip", () => {
+  const afterTick = model.applyIndexTick(SNAPSHOT, {
+    quotes: [{ code: "000001", latest: 3522.88, changePct: -0.71, time: "11:16:03", date: "2026-11-25" }]
+  });
+  const stalePoll = {
+    ...SNAPSHOT,
+    indices: SNAPSHOT.indices.map(item => item.code === "000001"
+      ? { ...item, latest: 3514.0, changePct: -0.96, time: "11:16", trend: [3548, 3535, 3530, 3520, 3514.0] }
+      : item)
+  };
+  const merged = model.mergeIndexSnapshot(afterTick, stalePoll);
+  const sh = merged.indices[0];
+  assert.equal(sh.latest, 3522.88, "11:16:03 SSE push beats 11:16 HTTP poll");
+  assert.equal(sh.time, "11:16:03");
+  assert.deepEqual(sh.trend, [3548, 3535, 3530, 3520, 3522.88], "longer snapshot trend adopts earlier.latest as tip");
+
+  const newerPoll = {
+    ...SNAPSHOT,
+    indices: SNAPSHOT.indices.map(item => item.code === "000001"
+      ? { ...item, latest: 3525.5, changePct: -0.64, time: "11:17", trend: [3548, 3535, 3530, 3520, 3525.5] }
+      : item)
+  };
+  const superseded = model.mergeIndexSnapshot(merged, newerPoll);
+  assert.equal(superseded.indices[0].latest, 3525.5, "11:17 HTTP poll supersedes 11:16:03 SSE push");
+});
+
+test("inMarketStreamWindow mirrors main process 09:15-11:35 / 12:55-15:05 trading-day stream window", () => {
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T09:14:00+08:00")), false);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T09:15:00+08:00")), true);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T11:35:00+08:00")), true);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T11:36:00+08:00")), false);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T12:55:00+08:00")), true);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T15:05:00+08:00")), true);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-25T15:06:00+08:00")), false);
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-11-28T10:00:00+08:00")), false, "Saturday closed");
+  assert.equal(model.inMarketStreamWindow(Date.parse("2026-10-01T10:00:00+08:00")), false, "National Day closed");
+});
+
+test("IndexBoard schedules a single one-shot setTimeout to expire the live badge instead of a forever setInterval", () => {
+  const prevWindow = global.window;
+  const prevNow = Date.now;
+  let now = 1_760_000_000_000;
+  Date.now = () => now;
+  const timeouts = [];
+  let intervalCalls = 0;
+  global.window = {
+    setTimeout(fn, delay) { const id = timeouts.length + 1; timeouts.push({ id, fn, delay, cleared: false }); return id; },
+    clearTimeout(id) { const item = timeouts.find(t => t.id === id); if (item) item.cleared = true; },
+    setInterval() { intervalCalls += 1; return 1; },
+    clearInterval() {}
+  };
+  try {
+    const harness = createHookHarness(IndexBoard, {
+      props: { snapshot: SNAPSHOT, state: "ready", today: "2026-11-25", tickAt: now - 5_000, onRetry: () => {} }
+    });
+    harness.render();
+    assert.equal(intervalCalls, 0, "never starts a forever setInterval");
+    assert.equal(timeouts.length, 1, "schedules exactly one timeout");
+    assert.equal(timeouts[0].delay, 55_050);
+    assert.match(text(harness.tree), /实时推送/);
+
+    now += 55_050;
+    timeouts[0].fn();
+    harness.render();
+    assert.doesNotMatch(text(harness.tree), /实时推送/, "badge clears after 60s expiry");
+    assert.equal(timeouts.length, 1, "no further timers scheduled after expiry");
+    harness.dispose();
+  } finally {
+    Date.now = prevNow;
+    global.window = prevWindow;
+  }
+});
+
+test("TodayCockpitView throttles failed getIndexBoard retries to 5m off-session and 60s in-session instead of 2s", async () => {
+  const TodayCockpitView = require("./TodayCockpitView.tsx").default;
+  const prevWindow = global.window;
+  const prevDocument = global.document;
+  const prevNow = Date.now;
+  // 2026-11-25 (Wednesday, trading day) 20:00 Beijing (off-session)
+  let now = Date.parse("2026-11-25T20:00:00+08:00");
+  Date.now = () => now;
+  const intervals = [];
+  let indexCalls = 0;
+  let shouldFail = true;
+  global.document = { visibilityState: "visible", addEventListener() {}, removeEventListener() {} };
+  global.window = {
+    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    setTimeout: () => 1,
+    clearTimeout() {},
+    setInterval(fn, delay) { const id = intervals.length + 1; intervals.push({ id, fn, delay, cleared: false }); return id; },
+    clearInterval(id) { const item = intervals.find(entry => entry.id === id); if (item) item.cleared = true; },
+    addEventListener() {},
+    removeEventListener() {},
+    stockApi: {
+      getIndexBoard: async () => {
+        indexCalls += 1;
+        if (shouldFail) throw new Error("network down");
+        return SNAPSHOT;
+      },
+      subscribeIndexStream: async () => ({}),
+      onIndexTick: () => () => {}
+    }
+  };
+  try {
+    const harness = createHookHarness(TodayCockpitView, {
+      props: {
+        phase: { id: "closed", label: "休市", hint: "" },
+        holdings: [],
+        favorites: [],
+        watchlist: [],
+        limitUps: [],
+        notesApi: { store: { notes: [], voice: false, systemNotify: false, aiAuto: false }, awaiting: [], addNote() {}, updateNote() {}, removeNote() {}, markDone() {} },
+        tAssistant: { store: { items: [], trades: {} }, runtimes: {}, activeCode: null, setActiveCode() {}, addStock() {}, removeStock() {}, updateParams() {}, logTrade() {} },
+        stockMonitors: { configs: {}, runtimes: {}, latestQuotes: {}, alerts: [] },
+        paperSummary: { normalized: { cash: 100000, openPositions: [] }, equity: 100000, openValue: 0, openPnl: 0, openPnlPercent: 0, cumulativeRealizedPnl: 0, closedCount: 0, winCount: 0 },
+        copilotAlerts: [],
+        live: true,
+        isDefaultView: false,
+        onToggleDefaultView() {},
+        onOpenStock() {},
+        onNavigate() {}
+      }
+    });
+    harness.render();
+    await harness.flush();
+    assert.equal(indexCalls, 1, "initial mount attempts getIndexBoard once");
+
+    const fallback = intervals.find(entry => entry.delay === 2_000 && !entry.cleared);
+    assert.ok(fallback, "2s fallback interval registered");
+
+    // Off-session: advancing 10s must NOT retry after failure (throttled to 5 min)
+    now += 10_000;
+    fallback.fn();
+    await harness.flush();
+    assert.equal(indexCalls, 1, "off-session failed getIndexBoard does not spam every 2s");
+
+    // Advancing past 5m retries once off-session
+    now += 5 * 60_000;
+    fallback.fn();
+    await harness.flush();
+    assert.equal(indexCalls, 2, "off-session retries after 5 minutes");
+
+    // In-session (09:20 Beijing, inside marketStreamWindow): failed retry throttles to 60s
+    now = Date.parse("2026-11-26T09:20:00+08:00");
+    fallback.fn();
+    await harness.flush();
+    assert.equal(indexCalls, 3);
+    now += 10_000;
+    fallback.fn();
+    await harness.flush();
+    assert.equal(indexCalls, 3, "in-session failed getIndexBoard throttles to 60s instead of retrying at 10s");
+
+    now += 55_000;
+    shouldFail = false;
+    fallback.fn();
+    await harness.flush();
+    assert.equal(indexCalls, 4, "in-session retries after 60s and recovers on success");
+    harness.dispose();
+  } finally {
+    Date.now = prevNow;
+    global.window = prevWindow;
+    global.document = prevDocument;
+  }
+});
+
 test("IndexBoard shows the live push badge with millisecond receive time while ticks arrive", () => {
-  const html = renderToStaticMarkup(React.createElement(IndexBoard, { snapshot: SNAPSHOT, state: "ready", today: "2026-11-25", tickAt: Date.parse("2026-11-25T05:31:05.123Z"), onRetry: () => {} }));
-  assert.match(html, /实时推送 · 最后跳动 13:31:05\.123/);
+  const html = renderToStaticMarkup(React.createElement(IndexBoard, { snapshot: SNAPSHOT, state: "ready", today: "2026-11-25", tickAt: Date.now() - 5_000, onRetry: () => {} }));
+  assert.match(html, /实时推送 · 最后跳动/);
+  // 一分钟以上没有新跳动：推送已断或已收盘，不再显示「实时推送」标识
+  const quiet = renderToStaticMarkup(React.createElement(IndexBoard, { snapshot: SNAPSHOT, state: "ready", today: "2026-11-25", tickAt: Date.now() - 61_000, onRetry: () => {} }));
+  assert.doesNotMatch(quiet, /实时推送/);
   const stale = renderToStaticMarkup(React.createElement(IndexBoard, { snapshot: SNAPSHOT, state: "ready", today: "2026-11-26", tickAt: Date.now(), onRetry: () => {} }));
   assert.doesNotMatch(stale, /实时推送/);
 });

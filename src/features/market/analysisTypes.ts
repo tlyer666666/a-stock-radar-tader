@@ -23,6 +23,8 @@ export type AnalysisQuote = {
   open?: number | null | undefined;
   high?: number | null | undefined;
   low?: number | null | undefined;
+  limitUp?: number | null | undefined;
+  limitDown?: number | null | undefined;
   change?: number | null | undefined;
   [key: string]: unknown;
 };

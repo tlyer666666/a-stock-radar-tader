@@ -265,4 +265,4 @@ function buildReport(seriesInput, rawConfig = {}, { names = {}, failed = [], una
   };
 }
 
-module.exports = { buildReport, backtest, selectTargets, alignPrices, metrics, normalizeConfig, ETF_ROTATION_DEFAULTS: DEFAULTS, POOL_NAMES };
+module.exports = { buildReport, backtest, selectTargets, alignPrices, metrics, normalizeConfig, POOL_NAMES };

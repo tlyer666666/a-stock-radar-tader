@@ -1861,6 +1861,14 @@ function stockAgent() {
   return stockAgentInstance;
 }
 
+/** 行情是否在走：交易日 9:15–11:35、12:55–15:05（含集合竞价和收盘前后各留几分钟）。实时推送只在这段时间保持高频。 */
+function marketStreamLive(nowMs = Date.now()) {
+  const cn = new Date(nowMs + 8 * 3600_000);
+  const minutes = cn.getUTCHours() * 60 + cn.getUTCMinutes();
+  if (!((minutes >= 555 && minutes <= 695) || (minutes >= 775 && minutes <= 905))) return false;
+  return require("./market-time-rules.cjs").tradingDateStatus(cn.toISOString().slice(0, 10)) !== false;
+}
+
 // 驾驶舱指数实时推送：页面订阅并每 10 秒续租，行情一变就经 market:index-tick 推给主窗口。
 let indexStreamInstance = null;
 function indexStream() {
@@ -1869,6 +1877,7 @@ function indexStream() {
     indexStreamInstance = createIndexStream({
       openSse: createFetchSse(),
       pollQuotes: ({ signal }) => pollIndexQuotes({ signal }),
+      inSession: () => marketStreamLive(),
       emit: payload => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         const contents = mainWindow.webContents;
@@ -1887,6 +1896,8 @@ function limitSealStream() {
     const { createLimitSealStream } = require("./limit-seal-stream.cjs");
     limitSealInstance = createLimitSealStream({
       readSeals: (input, options) => readLimitSeals(input, options),
+      inSession: () => marketStreamLive(),
+      isTradingDate: date => require("./market-time-rules.cjs").tradingDateStatus(date) !== false,
       emit: payload => {
         if (!mainWindow || mainWindow.isDestroyed()) return;
         const contents = mainWindow.webContents;

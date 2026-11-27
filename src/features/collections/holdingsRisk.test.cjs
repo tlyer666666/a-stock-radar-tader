@@ -5,6 +5,7 @@ const { after, before, test } = require("node:test");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { registerTypeScript } = require("../../../qa/register-typescript.cjs");
+const { createHookHarness } = require("../../../qa/research-hook-harness.cjs");
 
 let restoreTypeScript;
 let risk;
@@ -110,4 +111,47 @@ test("corrupted history, costPrice adjustment, non-finite shares/cost and null a
   assert.match(flag(badCost, "stop").detail, /成本价无效/);
   assert.equal(flag(badCost, "drawdown").state, "unavailable");
   assert.equal(badCost.ratio, null);
+});
+
+test("HoldingsRiskBoard schedules a one-shot 15:05:05 timer on trading days and records closing equity once crossed", () => {
+  const prevWindow = global.window;
+  const prevNow = Date.now;
+  // 2026-11-27 (Friday, trading day) 14:55:00 Beijing time = 06:55:00Z
+  let now = Date.parse("2026-11-27T06:55:00.000Z");
+  Date.now = () => now;
+  const storage = new Map();
+  const timeouts = [];
+  global.window = {
+    localStorage: {
+      getItem: key => (storage.has(key) ? storage.get(key) : null),
+      setItem: (key, val) => { storage.set(key, String(val)); },
+      removeItem: key => { storage.delete(key); }
+    },
+    setTimeout(fn, delay) { const id = timeouts.length + 1; timeouts.push({ id, fn, delay, cleared: false }); return id; },
+    clearTimeout(id) { const item = timeouts.find(t => t.id === id); if (item) item.cleared = true; },
+    stockApi: {}
+  };
+  try {
+    const { resetSafeStorageCache } = require("../../safeStorage.ts");
+    resetSafeStorageCache();
+    const harness = createHookHarness(board.default, { props: { holdings, quotes } });
+    harness.render();
+    assert.equal(timeouts.length, 1, "schedules one timer for Beijing 15:05:05");
+    assert.equal(timeouts[0].delay, 10 * 60_000 + 5_000);
+    assert.equal(storage.get(risk.EQUITY_KEY), undefined, "does not record intraday before 15:05");
+
+    // Advance clock to 15:05:05 Beijing and fire timer without any quote change
+    now = Date.parse("2026-11-27T07:05:05.000Z");
+    timeouts[0].fn();
+    harness.render();
+    harness.render();
+    const saved = JSON.parse(storage.get(risk.EQUITY_KEY) || "[]");
+    assert.equal(saved.length, 1);
+    assert.equal(saved[0].date, "2026-11-27");
+    assert.equal(saved[0].key, risk.holdingsKey(holdings));
+    harness.dispose();
+  } finally {
+    Date.now = prevNow;
+    global.window = prevWindow;
+  }
 });

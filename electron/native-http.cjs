@@ -50,12 +50,18 @@ function isPublicUnicastIp(ip) {
   if (family === 6) {
     const g = expandIPv6(addr);
     if (!g) return false;
-    // ::/96（含 ::、::1 及旧 IPv4 兼容）与 ::ffff:0:0/96（IPv4 映射）一律拒绝。
-    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && (g[5] === 0 || g[5] === 0xffff)) return false;
-    // fc00::/7（ULA）、fe80::/10（链路本地）、ff00::/8（组播）。
-    if ((g[0] & 0xfe00) === 0xfc00) return false;
-    if ((g[0] & 0xffc0) === 0xfe80) return false;
-    if ((g[0] & 0xff00) === 0xff00) return false;
+    // 仅放行 IANA 全局单播段 2000::/3，天然拦截 ::/96、::ffff:0:0/96、::ffff:0:0:0/96、
+    // 64:ff9b::/96、64:ff9b:1::/48、100::/64、fc00::/7、fe80::/10、fec0::/10、ff00::/8 及未分配段。
+    if ((g[0] & 0xe000) !== 0x2000) return false;
+    // 剔除 2000::/3 内的保留/隧道/文档/基准测试子段：
+    // 2001:0::/32（Teredo）、2001:2::/48（基准测试）、2001:10::/28 与 2001:20::/28（ORCHID/ORCHIDv2）、
+    // 2001:db8::/32（文档保留）、2002::/16（6to4）、3fff::/20（RFC 9637 文档保留）。
+    if (g[0] === 0x2001 && g[1] === 0x0000) return false;
+    if (g[0] === 0x2001 && g[1] === 0x0002 && g[2] === 0x0000) return false;
+    if (g[0] === 0x2001 && ((g[1] & 0xfff0) === 0x0010 || (g[1] & 0xfff0) === 0x0020)) return false;
+    if (g[0] === 0x2001 && g[1] === 0x0db8) return false;
+    if (g[0] === 0x2002) return false;
+    if (g[0] === 0x3fff && (g[1] & 0xf000) === 0x0000) return false;
     return true;
   }
   return false;
@@ -147,9 +153,8 @@ async function fetchNative(input, options = {}, limit = 32 * 1024 * 1024, depth 
       stream.end(bytes);
     });
     const abort = () => fail(aborted(signal));
-    const lookup = options.publicOnly
-      ? (typeof options.lookup === 'function' ? options.lookup : createPublicLookup())
-      : (typeof options.lookup === 'function' ? options.lookup : undefined);
+    const customLookup = typeof options.lookup === 'function' ? options.lookup : undefined;
+    const lookup = options.publicOnly ? createPublicLookup(customLookup || dns.lookup) : customLookup;
     const reqOptions = { method, headers: Object.fromEntries(headers), signal, ...(lookup ? { lookup } : {}) };
     const request = (url.protocol === 'https:' ? https : http).request(url, reqOptions, incoming => {
       response = incoming;

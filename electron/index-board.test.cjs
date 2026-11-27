@@ -74,3 +74,65 @@ test("helpers: totals need both markets, sampling keeps a whole day at 121 point
   const parsed = parseTrends({ data: { preClose: 10, trends: ["2026-11-25 09:30,10.1", "bad", "2026-11-25 09:31,-", "2026-11-25 09:32,10.3"] } });
   assert.deepEqual(parsed, { date: "2026-11-25", points: [10.1, 10.3], preClose: 10 });
 });
+
+test("M3 & L3: caller 1 aborting load() never poisons caller 2's quotes or trends, pre-aborted load skips fetch, and latest <= 0 is rejected", async () => {
+  const { normalizeIndexQuote, ulistToStockFields } = require("./index-board.cjs");
+
+  // L3: latest <= 0 is rejected in normalizeIndexQuote, load(), and ulistToStockFields()
+  assert.equal(normalizeIndexQuote({ f2: 0, f3: 0 }, INDEX_BOARD[0]).latest, null);
+  assert.equal(normalizeIndexQuote({ f2: -3, f3: 0 }, INDEX_BOARD[0]).latest, null);
+  assert.equal(ulistToStockFields({ f2: 0, f3: 0 }).f43, undefined);
+  const allZero = createIndexBoard({
+    fetchJson: async () => ({ data: { diff: [row("1.000001", { f2: 0 }), row("0.399001", { f2: -1 })] } }),
+    now: () => NOW
+  });
+  await assert.rejects(allZero.load({ withTrends: false }), /指数行情暂时没取到/);
+
+  // M3: pre-aborted signal rejects immediately without calling fetchJson
+  let calls = 0;
+  const preAborted = new AbortController();
+  preAborted.abort(new Error("already cancelled"));
+  const guarded = createIndexBoard({ fetchJson: async () => { calls += 1; return {}; }, now: () => NOW });
+  await assert.rejects(guarded.load({ signal: preAborted.signal }), /already cancelled/);
+  assert.equal(calls, 0, "pre-aborted load must not initiate any upstream requests");
+
+  // M3: caller 1 aborts mid-flight while sharing quotes() and trendOf() with caller 2
+  let releaseUlist;
+  let releaseTrends;
+  const ulistGate = new Promise(resolve => { releaseUlist = resolve; });
+  const trendsGate = new Promise(resolve => { releaseTrends = resolve; });
+  let ulistCalls = 0;
+  let shTrendCalls = 0;
+  const board = createIndexBoard({
+    now: () => NOW,
+    fetchJson: async (url, options) => {
+      assert.equal(options?.signal, undefined, "shared upstream fetchJson must not bind caller 1's signal");
+      if (url.includes("ulist")) {
+        ulistCalls += 1;
+        await ulistGate;
+        return { data: { diff: [row("1.000001", { f2: 3520 }), row("0.399001", { f2: 0 })] } };
+      }
+      if (url.includes("secid=1.000001")) {
+        shTrendCalls += 1;
+        await trendsGate;
+        return trendsJson("2026-11-25", 5, 3510);
+      }
+      throw new Error("no trend");
+    }
+  });
+  const c1 = new AbortController();
+  const c2 = new AbortController();
+  const p1 = board.load({ signal: c1.signal });
+  const p2 = board.load({ signal: c2.signal });
+  c1.abort(new Error("caller-1-cancelled"));
+  await assert.rejects(p1, /caller-1-cancelled/);
+  releaseUlist();
+  releaseTrends();
+  const result2 = await p2;
+  assert.equal(ulistCalls, 1, "quotes request shared once");
+  assert.equal(shTrendCalls, 1, "trend request shared once");
+  assert.equal(result2.indices[0].latest, 3520);
+  assert.deepEqual(result2.indices[0].trend, [3510, 3512, 3514], "caller 2 receives intact trend points");
+  assert.equal(result2.indices[1].latest, null, "zero latest is treated as missing");
+  assert.ok(result2.missing.includes("深证成指"));
+});

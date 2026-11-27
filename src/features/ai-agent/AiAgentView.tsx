@@ -3,8 +3,7 @@ import {
   Bot, Check, ChevronDown, CircleAlert, CircleStop, Copy, ExternalLink, LoaderCircle, MessagesSquare, PenLine, Plus, RotateCcw, Search, SendHorizontal, Settings, Trash2, Wrench, X
 } from "lucide-react";
 import { SkillBar, SkillTags, SkillVerdicts } from "./AgentSkills";
-import DecisionSignalsPanel, { DecisionCard } from "./DecisionSignalsPanel";
-import FeedsPanel from "./FeedsPanel";
+import { DecisionCard } from "./DecisionSignalsPanel";
 import { PageHeading } from "../../components/terminal/TerminalPrimitives";
 import { startVisibleInterval } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
@@ -39,9 +38,11 @@ const toSecurity = (focus: AgentFocus): Security => ({ code: focus.code, name: f
  * 框架打分、软件研判、涨停与龙虎榜、板块、公告、资讯、市场情绪），查完再写分析；可以连续追问。
  * 对话保存在本机；打开页面不会调用模型，发问题才调用。
  */
-export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus, embeddedMode = "t-analysis", userContext, holdings }: {
+export default function AiAgentView({ onOpenStock, onOpenSettings, onOpenSignals, embeddedFocus, embeddedMode = "t-analysis", userContext, holdings }: {
   onOpenStock?: ((security: Security) => void) | undefined;
   onOpenSettings?: (() => void) | undefined;
+  /** 打开「决策中心 → AI 建议」。 */
+  onOpenSignals?: (() => void) | undefined;
   embeddedFocus?: AgentFocus;
   embeddedMode?: "t-analysis" | "stock-drawer";
   userContext?: Record<string, unknown> | undefined;
@@ -55,7 +56,6 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
   };
   const { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, hasDraft, run, error, setError, sending, saving,
     persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api, embeddedFocus, userContext, allowPersonalContext, embeddedMode);
-  const [pane, setPane] = useState<"chat" | "signals" | "feeds">("chat");
   const buildContextForFocus = useCallback((targetFocus: { code: string; name: string } | null | undefined) => {
     const holding = targetFocus && holdings?.length ? holdings.find(item => item.code === targetFocus.code) : undefined;
     const merged: Record<string, unknown> = {
@@ -158,11 +158,6 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
     });
   };
 
-  const paneSwitch = <div className="agent-pane-switch" role="tablist" aria-label="AI 问股视图">
-    <button type="button" id="agent-pane-tab-chat" role="tab" aria-selected={pane === "chat"} aria-controls="agent-pane-panel-chat" className={pane === "chat" ? "active" : ""} onClick={() => setPane("chat")}>对话</button>
-    <button type="button" id="agent-pane-tab-signals" role="tab" aria-selected={pane === "signals"} aria-controls="agent-pane-panel-signals" className={pane === "signals" ? "active" : ""} onClick={() => setPane("signals")}>AI 建议</button>
-    <button type="button" id="agent-pane-tab-feeds" role="tab" aria-selected={pane === "feeds"} aria-controls="agent-pane-panel-feeds" className={pane === "feeds" ? "active" : ""} onClick={() => setPane("feeds")}>资讯源</button>
-  </div>;
   if (!api) return <div className="ai-agent-view"><PageHeading title="AI 问股" />
     <div className="panel strategy-stock-empty"><Bot size={28} /><b>浏览器预览不调用 AI</b><p>请在桌面版「数据源设置 → AI 助手」添加模型配置后使用。</p></div></div>;
 
@@ -172,16 +167,14 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
 
   return <div className={`ai-agent-view${embeddedFocus ? " ai-agent-embedded" : ""}`}>
     {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · {embeddedMode === "stock-drawer" ? "AI问股" : "AI做T分析"}</b>{allowPersonalContext && contextLabel && <span className="ai-agent-ctx-badge">{contextLabel}</span>}<label className="ai-agent-ctx-toggle" title="关闭后仅传公开行情与你的提问，不读取持仓、做T、计划与随心记工具"><input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />读取持仓/计划/随心记</label>{state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查公开行情、日线体检、K线、分时、策略、公告、板块等数据，支持开启个人工作区上下文（持仓成本/做T/计划/随心记，随时可一键关闭）；对话只保存在本机。"
-      actions={<>{paneSwitch}{state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />}</>} />}
+      actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />} />}
     {loadError && <div className="warning-banner" role="alert"><CircleAlert size={17} />{loadError}<button type="button" className="secondary-btn" onClick={() => void refreshState()}>重试</button></div>}
     {persistenceError && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>{persistenceError}。回答仍在本次运行中，关闭软件前请重试保存。</span>
       <button type="button" className="secondary-btn" disabled={saving} onClick={() => void retryPersistence()}>{saving ? "保存中…" : "重试保存"}</button></div>}
     {state && !state.configured && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>还没有可用的 AI 模型配置：请先在「数据源设置 → AI 助手」填写接口地址、模型名和 API Key。</span>
       {openAiSettings && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={15} />去设置</button>}</div>}
 
-    {!embeddedFocus && pane === "signals" ? <div id="agent-pane-panel-signals" role="tabpanel" aria-labelledby="agent-pane-tab-signals"><DecisionSignalsPanel onOpenStock={onOpenStock} /></div> : null}
-    {!embeddedFocus && pane === "feeds" ? <div id="agent-pane-panel-feeds" role="tabpanel" aria-labelledby="agent-pane-tab-feeds"><FeedsPanel /></div> : null}
-    <div id="agent-pane-panel-chat" role={!embeddedFocus ? "tabpanel" : undefined} aria-labelledby={!embeddedFocus ? "agent-pane-tab-chat" : undefined} className="ai-agent-layout" hidden={!embeddedFocus && pane !== "chat"}>
+    <div className="ai-agent-layout">
       {!embeddedFocus && <aside className="panel ai-agent-sidebar" aria-label="对话列表">
         <button type="button" className="primary-btn ai-agent-new" onClick={() => void openConversation(null)}><Plus size={16} />新对话</button>
         {((state?.conversations.length || 0) > 0 || localNotes.length > 0) && (
@@ -256,7 +249,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
               <small>{[message.focus ? focusLabel(message.focus) : "", message.skills?.length ? `打法：${message.skills.map(skill => skill.name).join("、")}` : ""].filter(Boolean).join(" · ")}</small></div>
             : <AnswerCard key={message.id} message={message} latest={message.id === lastAnswer?.id && !running} disabled={running || sending || !state?.configured}
               savedMemory={state?.memory || ""} onSaveMemory={saveMemoryCandidate}
-              onOpenSignals={!embeddedFocus ? () => setPane("signals") : undefined}
+              onOpenSignals={!embeddedFocus ? onOpenSignals : undefined}
               onFollowUp={text => void send(text, effectiveContext ? { userContext: effectiveContext } : undefined)}
               onRetry={() => {
                 const question = questionBefore(messages, message.id);

@@ -235,6 +235,8 @@ const VALIDATORS = new Map([
     if (input.id !== undefined && (typeof input.id !== "string" || input.id.length > 64)) return "指标预警规则编号无效";
     if (input.rule !== undefined && !isPlainObject(input.rule)) return "指标预警规则对象无效";
     if (input.op === "save" && !isPlainObject(input.rule)) return "指标预警保存缺少规则对象";
+    // 试跑和删除必须指明规则：没有编号的「试跑」会被当成一次真实评估（发通知、记历史）。
+    if ((input.op === "dry" || input.op === "remove") && !(typeof input.id === "string" && input.id.trim())) return "指标预警操作缺少规则编号";
     if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length > 128)) return "请求编号无效";
     return null;
   }],

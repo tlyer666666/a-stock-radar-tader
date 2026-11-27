@@ -5,7 +5,7 @@ const path = require('node:path');
 
 const views = [
   // 「涨停趋势」与「策略信号」已合并为「策略选股」；趋势模型在其策略库内打开（见 frontend-v150.test.cjs）。
-  ['signals', '策略选股'], ['sectors', '板块强度'],
+  ['signals', '策略选股'], ['decision', '决策中心'], ['sectors', '板块强度'],
   ['dashboard', '涨停监控'], ['beijing', '北交所'], ['watchlist', '观察池'], ['favorites', '自选监控'],
   ['holdings', '持仓股'], ['review', '专业复盘'], ['compare', '多股同列'],
   ['backtest', '回测中心'], ['news', '资讯中心'], ['settings', '数据源设置']
@@ -34,6 +34,21 @@ async function createPreview() {
       window.stockApi.getSectorDetail = async request => ({status:'ready',entry:[...entries,classification].find(entry => entry.id === (request.entry?.id || request.id)) || entries[0],fetchedAt:now,asOf:'2026-09-30',reportDate:null,
         members:Array.from({length:36},(_,index)=>({...samples[index%samples.length],code:String(600001+index),name:'板块样本'+String(index+1).padStart(2,'0'),latest:25.4+index,changePercent:index%3 ? 2.67 : -1.23,turnover:2.8+index/10,amount:180000000+index*1500000})),
         coverage:{loaded:36,declared:36,excluded:0,invalid:0,pagesLoaded:1,pagesTotal:1,complete:true,scope:'隔离界面样本'},metrics:{changePercent:2.67,amount:1800000000,rising:24,falling:12},sources:[],warnings:[],evidence:[],relatedTerms:[]});
+      const sampleSignals = [
+        { id: 'sig-1', code: '600519', name: '贵州茅台', assetType: 'stock', status: 'active', createdAt: now, updatedAt: now, expiresAt: '2026-10-15', action: 'buy', horizon: '5d',
+          entryLow: 1490, entryHigh: 1510, stopLoss: 1450, targetPrice: 1590, invalidation: '收盘跌破 20 日均线且量能放大', watch: ['1490 支撑承接', '板块联动'], reason: '缩量回踩支撑', guardrail: '',
+          stance: '偏多', confidence: '中', referencePrice: 1502, source: { conversationId: 'c1', messageId: 'm1', model: 'DeepSeek', skills: ['低吸回踩'] },
+          outcomes: { '1': { status: 'done', verdict: 'hit', returnPct: 2.15, maxAdversePct: -0.4, stopHit: false, targetHit: false, endDate: '2026-09-30', endClose: 1534.3, startPrice: 1502 } }, feedback: null },
+        { id: 'sig-2', code: '300750', name: '宁德时代', assetType: 'stock', status: 'active', createdAt: now, updatedAt: now, expiresAt: '2026-10-15', action: 'watch', horizon: '3d',
+          entryLow: 218, entryHigh: 222, stopLoss: 208, targetPrice: 240, invalidation: '跌破平台下沿 208', watch: ['放量突破 225'], reason: '等待右侧确认', guardrail: '原建议缺止损已降级观望',
+          stance: '中性', confidence: '低', referencePrice: 220, source: { conversationId: 'c2', messageId: 'm2', model: 'DeepSeek', skills: ['量价分析'] },
+          outcomes: {}, feedback: 'useful' }
+      ];
+      if (window.stockApi.ai?.agent) {
+        const emptySummary = () => ({ total: 0, completed: 0, hit: 0, miss: 0, neutral: 0, unable: 0, enough: false, minSample: 10, hitRatePct: null, avgReturnPct: null, maxAdversePct: null });
+        const buildSignals = list => ({ signals: structuredClone(list), stats: { total: list.length, active: list.filter(s => s.status === 'active').length, byDays: { '1': { ...emptySummary(), total: 1, completed: 1, hit: 1 }, '3': emptySummary(), '5': emptySummary(), '10': emptySummary() }, byAction: {}, feedback: { useful: list.filter(s => s.feedback === 'useful').length, notUseful: list.filter(s => s.feedback === 'not_useful').length }, minSample: 10, hitPct: 1 }, evaluation: null });
+        window.stockApi.ai.agent.signals = async () => buildSignals(sampleSignals);
+      }
     }
     await import('/src/main.tsx');
   </script></body></html>`;
@@ -56,16 +71,25 @@ async function createPreview() {
 }
 
 async function openView(page,id,label) {
-  const targetBtn = page.getByRole('button',{ name: label, exact: true });
-  if (!(await targetBtn.count())) {
-    const expandBtn = page.getByRole('button', { name: '显示全部模块', exact: true });
-    if (await expandBtn.count() && await expandBtn.first().isVisible()) {
-      await expandBtn.first().click();
+  // 「观察池」不在侧栏单列：先进「自选监控」，再点页面顶部的「十日涨停跟踪」页签。
+  if (id === 'watchlist') {
+    await openView(page, 'favorites', '自选监控');
+    await page.getByRole('tab', { name: '十日涨停跟踪', exact: true }).click();
+    await page.locator('.app-shell[data-workspace="watchlist"]').waitFor();
+    await page.locator('.main > .page').waitFor();
+    await page.locator('.main > .page h1').first().waitFor({ timeout: 15000 });
+  } else {
+    const targetBtn = page.getByRole('button',{ name: label, exact: true });
+    if (!(await targetBtn.count())) {
+      const expandBtn = page.getByRole('button', { name: '显示全部模块', exact: true });
+      if (await expandBtn.count() && await expandBtn.first().isVisible()) {
+        await expandBtn.first().click();
+      }
     }
+    await targetBtn.first().click();
+    await page.locator(`.app-shell[data-workspace="${id}"]`).waitFor();
+    await page.locator('.main > .page').waitFor();
   }
-  await targetBtn.first().click();
-  await page.locator(`.app-shell[data-workspace="${id}"]`).waitFor();
-  await page.locator('.main > .page').waitFor();
   // `data-workspace` flips and the `.page` container exists before the lazy-loaded view
   // has committed, so waiting on those alone leaves an empty container. Wait for the
   // view to actually have content; how many frames Suspense needs is an implementation

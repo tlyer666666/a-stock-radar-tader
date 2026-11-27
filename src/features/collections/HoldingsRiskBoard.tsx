@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { loadSafeLocalJson, saveSafeLocalJson } from "../../safeStorage";
 import { EQUITY_KEY, buildRiskReport, holdingsKey, recordEquity, sanitizeEquityHistory, type AiRiskSignal, type EquityPoint, type RiskHolding, type RiskQuote, type RiskReport } from "./holdingsRisk";
+import { cnParts, cnTime, isTradingDay } from "../notes/notesModel";
 
 /** 展示用（纯渲染，便于测试）。 */
 export function RiskBoardView({ report }: { report: RiskReport }) {
@@ -32,12 +33,11 @@ function Bars({ rows }: { rows: Array<{ id?: string; name: string; weightPct: nu
   return <ul>{rows.map((row, index) => <li key={row.id ?? `${row.name}-${index}`}><span>{row.name}</span><i><em style={{ width: `${Math.min(100, row.weightPct)}%` }} /></i><b>{row.weightPct.toFixed(1)}%</b></li>)}</ul>;
 }
 
-const todayCn = () => new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
-
 /** 持仓页的风险与暴露看板：用页面已取到的行情计算，另读 AI 建议里仍生效的防御信号。 */
 export default function HoldingsRiskBoard({ holdings, quotes }: { holdings: RiskHolding[]; quotes: Record<string, RiskQuote | undefined> }) {
   const [aiSignals, setAiSignals] = useState<AiRiskSignal[] | null>(null);
   const [history, setHistory] = useState<EquityPoint[]>(() => sanitizeEquityHistory(loadSafeLocalJson<unknown>(EQUITY_KEY, [])));
+  const [closeTick, setCloseTick] = useState(0);
   const persistedRef = useRef<string | null>(null);
   useEffect(() => {
     const api = window.stockApi?.ai?.agent?.signals;
@@ -62,16 +62,28 @@ export default function HoldingsRiskBoard({ holdings, quotes }: { holdings: Risk
   const fallbackIndustry = (code: string) => /^(?:5\d{5}|159\d{3})$/.test(code) ? "ETF" : /^(?:11\d{4}|12[3-8]\d{3})$/.test(code) ? "可转债" : "";
   const merged = useMemo(() => Object.fromEntries(Object.entries(quotes).map(([code, quote]) => [code, quote ? { ...quote, industry: industries[code] || quote.industry || fallbackIndustry(code) } : quote])), [quotes, industries]);
   const report = useMemo(() => buildRiskReport(holdings, merged, history, aiSignals), [holdings, merged, history, aiSignals]);
-  // 行情齐全时把今天的「市值 ÷ 成本」记一笔，供回撤使用。
+  // 若交易日 15:05 前打开页面并一直停留跨过收盘，在 15:05:05 补触发一次重算，避免 15:00 后行情静止漏记当日收盘净值。
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.setTimeout !== "function") return undefined;
+    const now = Date.now();
+    const { date, minutes } = cnParts(now);
+    if (!isTradingDay(date) || minutes >= 15 * 60 + 5) return undefined;
+    const targetMs = cnTime(date, 15 * 60 + 5) + 5_000;
+    const timer = window.setTimeout(() => setCloseTick(value => value + 1), Math.max(0, targetMs - now));
+    return () => window.clearTimeout(timer);
+  }, []);
+  // 行情齐全时把今天的「市值 ÷ 成本」记一笔，供回撤使用。只在交易日收盘后（北京时间 15:05 之后）记：
+  // 盘中的浮动会让回撤看起来比实际大，休市日用的是上个交易日的旧价，重复记同一个数没有意义。
   useEffect(() => {
     if (report.ratio === null) return;
-    const today = todayCn();
+    const { date: today, minutes } = cnParts(Date.now());
+    if (!isTradingDay(today) || minutes < 15 * 60 + 5) return;
     const key = holdingsKey(holdings);
     setHistory(current => {
       const next = recordEquity(current, today, report.ratio, key);
       return JSON.stringify(next) === JSON.stringify(current) ? current : next;
     });
-  }, [report.ratio, holdings]);
+  }, [report.ratio, holdings, closeTick]);
   useEffect(() => {
     const serialized = JSON.stringify(history);
     if (persistedRef.current === null) {

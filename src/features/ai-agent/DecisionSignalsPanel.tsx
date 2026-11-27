@@ -114,47 +114,82 @@ function SignalRow({ signal, confirmDelete, onRequestDelete, onCancelDelete, onU
   </tr>;
 }
 
-/** AI 建议页：读取建议池，打开时自动核对一次最新结果。 */
+const EMPTY_SIGNALS: DecisionSignalList = { signals: [], stats: null, evaluation: null };
+const SIGNAL_EVAL_TTL_MS = 60_000;
+const signalsCache: {
+  filter: "" | SignalStatus;
+  data: DecisionSignalList;
+  evaluatedAt: number;
+} = {
+  filter: "",
+  data: EMPTY_SIGNALS,
+  evaluatedAt: 0
+};
+
+/** 测试辅助：重置模块级 AI 建议缓存。 */
+export function resetDecisionSignalsCache() {
+  signalsCache.filter = "";
+  signalsCache.data = EMPTY_SIGNALS;
+  signalsCache.evaluatedAt = 0;
+}
+
+/** AI 建议页：读取建议池，点进个股再返回直接恢复筛选与列表，60 秒内不重复做全量事后核对（手动点「核对最新结果」始终核对）。 */
 export default function DecisionSignalsPanel({ onOpenStock }: { onOpenStock?: ((security: Security) => void) | undefined }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.ai?.agent;
-  const [data, setData] = useState<DecisionSignalList>({ signals: [], stats: null, evaluation: null });
+  const [data, setDataState] = useState<DecisionSignalList>(() => signalsCache.data);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [filter, setFilter] = useState<"" | SignalStatus>("");
+  const [filter, setFilterState] = useState<"" | SignalStatus>(() => signalsCache.filter);
   const mountedRef = useRef(true);
   const seqRef = useRef(0);
+  // 操作（反馈、关闭、删除）用自己的计数：不能让它把正在进行的「核对」判成过期，否则按钮会一直停在「核对中…」。
+  const updateSeqRef = useRef(0);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
   }, []);
 
+  const setFilter = useCallback((next: "" | SignalStatus) => {
+    signalsCache.filter = next;
+    setFilterState(next);
+  }, []);
+
   const load = useCallback(async (evaluate: boolean) => {
     if (typeof api?.signals !== "function") return;
     const seq = ++seqRef.current;
+    const mutationSeq = updateSeqRef.current;
     setBusy(true); setError("");
     try {
       const next = await api.signals({ evaluate });
       if (!mountedRef.current || seq !== seqRef.current) return;
-      setData(next);
+      if (updateSeqRef.current !== mutationSeq) return;
+      signalsCache.data = next;
+      if (evaluate) signalsCache.evaluatedAt = Date.now();
+      setDataState(next);
     } catch (reason) {
       if (!mountedRef.current || seq !== seqRef.current) return;
       setError(userErrorText(reason, "AI 建议读取失败"));
     } finally {
+      // 只要还挂载着、这是最新的一次读取，就解除「核对中」。
       if (mountedRef.current && seq === seqRef.current) setBusy(false);
     }
   }, [api]);
-  useEffect(() => { void load(true); }, [load]);
+  useEffect(() => {
+    const recentlyEvaluated = signalsCache.evaluatedAt > 0 && Date.now() - signalsCache.evaluatedAt < SIGNAL_EVAL_TTL_MS;
+    void load(!recentlyEvaluated);
+  }, [load]);
 
   const update = useCallback((input: { id: string; status?: "closed" | "invalidated"; feedback?: "useful" | "not_useful" | null; remove?: boolean }) => {
     if (typeof api?.updateSignal !== "function") return;
-    const seq = ++seqRef.current;
+    const seq = ++updateSeqRef.current;
     setError("");
     void api.updateSignal(input).then(next => {
-      if (!mountedRef.current || seq !== seqRef.current) return;
-      setData(next);
+      if (!mountedRef.current || seq !== updateSeqRef.current) return;
+      signalsCache.data = next;
+      setDataState(next);
       setError("");
     }).catch(reason => {
-      if (!mountedRef.current || seq !== seqRef.current) return;
+      if (!mountedRef.current || seq !== updateSeqRef.current) return;
       setError(userErrorText(reason, "操作失败"));
     });
   }, [api]);

@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useRef, type MutableRefObject } from "react";
-import FactorScreenPanel from "../features/strategy-selection/FactorScreenPanel";
+import { openDecisionTab } from "../features/decision/decisionTabs";
 import { LoadingState } from "./terminal/TerminalPrimitives";
 import { WorkspaceErrorBoundary } from "./AppErrorBoundary";
 import type { FailedBoardCache, FailedBoardViewState } from "../features/dashboard/PreviousLimitUpFailedBoards";
@@ -81,6 +81,7 @@ const AiPicksView = lazy(() => import("../features/ai-picks/AiPicksView"));
 const AiAgentView = lazy(() => import("../features/ai-agent/AiAgentView"));
 const TAssistantView = lazy(() => import("../features/t-assistant/TAssistantView"));
 const NotesView = lazy(() => import("../features/notes/NotesView"));
+const DecisionCenterView = lazy(() => import("../features/decision/DecisionCenterView"));
 const TodayCockpitView = lazy(() => import("../features/cockpit/TodayCockpitView"));
 const LazyFavoritesView = lazy(() => import("../features/collections/CollectionViews").then(module => ({ default: module.FavoritesView })));
 const LazyHoldingsView = lazy(() => import("../features/collections/CollectionViews").then(module => ({ default: module.HoldingsView })));
@@ -641,7 +642,6 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
       {researchView && (
         <WorkspaceErrorBoundary key={view} label="策略选股" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
-            {view === "signals" && <FactorScreenPanel onOpen={(stock: Security) => openAnalysis(stock, { view: "signals", label: "返回策略选股" })} />}
             <StrategySignalsView
               live={live}
               quoteRefreshSeconds={settings.quoteRefreshSeconds}
@@ -681,7 +681,15 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
               holdings={holdings}
               onOpenStock={(stock: Security) => openAnalysis(stock, { view: "ai-agent", label: "返回 AI 问股" })}
               onOpenSettings={handleOpenAiSettings}
+              onOpenSignals={() => { openDecisionTab("signals"); navigateTo("decision"); }}
             />
+          </Suspense>
+        </WorkspaceErrorBoundary>
+      )}
+      {view === "decision" && (
+        <WorkspaceErrorBoundary key={view} label="决策中心" onReturnHome={() => navigateTo("signals")}>
+          <Suspense fallback={<LoadingState />}>
+            <DecisionCenterView onOpenStock={(stock: Security) => openAnalysis(stock, { view: "decision", label: "返回决策中心" })} />
           </Suspense>
         </WorkspaceErrorBoundary>
       )}

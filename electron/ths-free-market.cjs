@@ -96,14 +96,6 @@ function thsFreeSupports(security) {
   return resolveThsFreeSymbol(security) !== null;
 }
 
-/**
- * 同花顺行情网关的市场前缀：A 股个股统一用 hs_；可转债按交易所用债券市场号
- * （19 = 上交所 110/111/113/118，35 = 深交所 123/127/128）。其他品种（ETF 等）暂不支持。
- */
-function thsMarketPrefix(security) {
-  return resolveThsFreeSymbol(security)?.market ?? null;
-}
-
 /** 成交量换算为「手」：股票 1 手 = 100 股；可转债 1 手 = 10 张。 */
 function lotSize(security) {
   return String(security?.assetType || "stock") === "convertibleBond" ? 10 : 100;
@@ -604,7 +596,6 @@ module.exports = {
   MAX_TRADING_LAG_SECONDS,
   resolveThsFreeSymbol,
   thsFreeSupports,
-  thsMarketPrefix,
   parseBeijingTime,
   isTradingStatus,
   normalizeThsFreeQuote,

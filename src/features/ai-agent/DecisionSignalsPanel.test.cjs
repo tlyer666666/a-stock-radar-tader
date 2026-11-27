@@ -5,6 +5,7 @@ const { after, before, test } = require("node:test");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { registerTypeScript } = require("../../../qa/register-typescript.cjs");
+const { createHookHarness, find } = require("../../../qa/research-hook-harness.cjs");
 
 let restoreTypeScript;
 let panel;
@@ -68,4 +69,97 @@ test("handles failed evaluation, all-neutral summaries, non-finite numbers, capp
   assert.match(html, /<strong>全持平<\/strong>/);
   assert.match(html, /aria-controls="agent-signals-tabpanel"/);
   assert.match(html, /role="tabpanel"/);
+});
+
+test("DecisionSignalsPanel prevents slow load from overwriting newer mutation and caches filter + data within 60s", async () => {
+  const prevWindow = global.window;
+  const prevNow = Date.now;
+  let now = 1_760_000_000_000;
+  Date.now = () => now;
+  panel.resetDecisionSignalsCache();
+
+  const signalCalls = [];
+  const pendingSignals = [];
+  const pendingUpdates = [];
+  const s1 = signal({ id: "s1", status: "active" });
+  const s2 = signal({ id: "s2", code: "300750", name: "宁德时代", status: "closed" });
+
+  global.window = {
+    stockApi: {
+      ai: {
+        agent: {
+          signals(input) {
+            signalCalls.push(input);
+            return new Promise((resolve, reject) => pendingSignals.push({ input, resolve, reject }));
+          },
+          updateSignal(input) {
+            return new Promise((resolve, reject) => pendingUpdates.push({ input, resolve, reject }));
+          }
+        }
+      }
+    }
+  };
+
+  try {
+    const first = createHookHarness(panel.default, { props: {} });
+    first.render();
+    first.render();
+    assert.deepEqual(signalCalls, [{ evaluate: true }]);
+    const table = () => find(first.tree, node => node.type === panel.DecisionSignalsTable);
+    assert.equal(table().props.busy, true);
+
+    // While slow initial load is in flight, user closes s1 via updateSignal
+    table().props.onUpdate({ id: "s1", status: "closed" });
+    pendingUpdates.shift().resolve({ signals: [s2], stats: null, evaluation: null });
+    await first.flush();
+    assert.deepEqual(table().props.data.signals.map(item => item.id), ["s2"]);
+
+    // Slow initial load now resolves with stale [s1, s2]: must NOT overwrite [s2], but MUST clear busy
+    pendingSignals.shift().resolve({ signals: [s1, s2], stats: null, evaluation: null });
+    await first.flush();
+    assert.deepEqual(table().props.data.signals.map(item => item.id), ["s2"], "stale load does not overwrite newer mutation");
+    assert.equal(table().props.busy, false, "finally still clears busy");
+
+    // Manual refresh always evaluates and populates cache; filter is also cached
+    table().props.onFilter("closed");
+    first.render();
+    table().props.onRefresh();
+    first.render();
+    assert.deepEqual(signalCalls.at(-1), { evaluate: true });
+    pendingSignals.shift().resolve({ signals: [s2], stats: null, evaluation: null });
+    await first.flush();
+    first.dispose();
+
+    // Remount within 60s restores filter + data immediately and skips evaluate: true
+    now += 15_000;
+    const second = createHookHarness(panel.default, { props: {} });
+    second.render();
+    const secondTable = () => find(second.tree, node => node.type === panel.DecisionSignalsTable);
+    assert.equal(secondTable().props.filter, "closed", "cached filter restored immediately");
+    assert.deepEqual(secondTable().props.data.signals.map(item => item.id), ["s2"], "cached data restored immediately");
+    assert.deepEqual(signalCalls.at(-1), { evaluate: false }, "remount within 60s skips redundant evaluate:true");
+    pendingSignals.shift().resolve({ signals: [s2], stats: null, evaluation: null });
+    await second.flush();
+
+    // Manual refresh still runs evaluate: true even within 60s
+    secondTable().props.onRefresh();
+    second.render();
+    assert.deepEqual(signalCalls.at(-1), { evaluate: true }, "manual refresh always runs evaluate:true");
+    pendingSignals.shift().resolve({ signals: [s2], stats: null, evaluation: null });
+    await second.flush();
+    second.dispose();
+
+    // Remount after 60s runs evaluate: true again
+    now += 61_000;
+    const third = createHookHarness(panel.default, { props: {} });
+    third.render();
+    assert.deepEqual(signalCalls.at(-1), { evaluate: true }, "remount after 60s evaluates again");
+    pendingSignals.shift().resolve({ signals: [s2], stats: null, evaluation: null });
+    await third.flush();
+    third.dispose();
+  } finally {
+    panel.resetDecisionSignalsCache();
+    Date.now = prevNow;
+    global.window = prevWindow;
+  }
 });

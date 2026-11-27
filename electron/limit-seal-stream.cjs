@@ -39,7 +39,9 @@ function computeSeal(quote) {
   let status = "open";
   let sealLots = null;
   let sealPrice = null;
-  if (atUp && bidAtUp && !ask1) { status = "sealed"; sealLots = bid1.volumeLots; sealPrice = limitUp; }
+  // 同花顺涨停池里的票但没给封单量：按「封死」记、封单未知（null），不能因为盘口为空就说成「涨停有抛压」。
+  if (atUp && quote?.sealUnknown === true && !bid1 && !ask1) { status = "sealed"; sealLots = null; sealPrice = limitUp; }
+  else if (atUp && bidAtUp && !ask1) { status = "sealed"; sealLots = bid1.volumeLots; sealPrice = limitUp; }
   else if (atUp) { status = "contested"; sealLots = bidAtUp ? bid1.volumeLots : null; sealPrice = limitUp; }
   else if (quote?.brokenHint === true || (limitUp !== null && finite(quote?.high) && quote.high >= limitUp - EPS)) status = "broken";
   else if (atDown && askAtDown && !bid1) { status = "downSealed"; sealLots = ask1.volumeLots; sealPrice = limitDown; }
@@ -68,6 +70,10 @@ function createLimitSealStream({
   leaseMs = 30_000,
   maxCodes = 300,
   historyMax = 400,
+  // 是否在交易时段：盘外封单不会变，每 offSessionPollMs 取一次就够。
+  inSession = () => true,
+  isTradingDate = null,
+  offSessionPollMs = 30_000,
   log = () => {}
 } = {}) {
   if (typeof readSeals !== "function" && typeof readBatch !== "function") throw new TypeError("readSeals or readBatch is required");
@@ -85,11 +91,35 @@ function createLimitSealStream({
   let lastChangeAt = 0;
   let stopped = false;
 
+  const cnDate = ms => new Date(ms + 8 * 3600_000).toISOString().slice(0, 10);
+  const safeInSession = () => {
+    try { return Boolean(inSession()); }
+    catch (error) { log(`limit-seal inSession ${error?.message || error}`); return false; }
+  };
+  const isTradingToday = ms => {
+    const today = cnDate(ms);
+    if (typeof isTradingDate === "function") {
+      try { return isTradingDate(today) !== false; }
+      catch (error) { log(`limit-seal isTradingDate ${error?.message || error}`); }
+    }
+    return ![0, 6].includes(new Date(ms + 8 * 3600_000).getUTCDay());
+  };
+  // pollOnce() 与 snapshot() 共用同一套日期策略：
+  // 交易日只接受当天记录（拒绝盘前残留的昨日涨停）；休市日（周末/节假日）一致允许最近交易日记录，避免回访个股面板永久空白。
+  const acceptRecordDate = (quoteDate, ms = now()) => {
+    if (!quoteDate) return true;
+    const today = cnDate(ms);
+    if (isTradingToday(ms)) return quoteDate === today;
+    return quoteDate <= today;
+  };
+
   function activeCodes() {
     const at = now();
     for (const [owner, entry] of owners) if (entry.leaseUntil <= at) owners.delete(owner);
     const codes = new Set();
-    for (const entry of owners.values()) for (const code of entry.codes) { if (codes.size < maxCodes) codes.add(code); }
+    // 个股页（detail）的代码排在前面：涨停池满 300 只时也不会把正在看的那只挤掉。
+    const ordered = [...owners.entries()].sort(([a], [b]) => Number(b.startsWith("detail")) - Number(a.startsWith("detail")));
+    for (const [, entry] of ordered) for (const code of entry.codes) { if (codes.size < maxCodes) codes.add(code); }
     return [...codes];
   }
 
@@ -170,24 +200,32 @@ function createLimitSealStream({
   }
 
   // 不含行情时间：涨停池一行没有自己的时间戳（取的是请求时刻），封单和价格都没变就不必重推。
-  const fingerprint = record => record ? `${record.source}|${record.latest}|${record.changePct}|${record.status}|${record.sealLots}|${JSON.stringify(record.bids)}|${JSON.stringify(record.asks)}` : "";
+  const fingerprint = record => record ? `${record.quoteDate}|${record.source}|${record.latest}|${record.changePct}|${record.status}|${record.sealLots}|${JSON.stringify(record.bids)}|${JSON.stringify(record.asks)}` : "";
 
   async function pollOnce(signal) {
+    if (signal.aborted || controller?.signal !== signal) return false;
     const codes = activeCodes();
     if (!codes.length) return false;
     const detailCodes = [...owners.entries()].filter(([owner]) => owner.startsWith("detail")).flatMap(([, entry]) => [...entry.codes]).filter(code => codes.includes(code));
     const result = await read(codes, [...new Set(detailCodes)], signal);
+    if (signal.aborted || controller?.signal !== signal) return false;
     const quotes = result?.quotes instanceof Map ? result.quotes : new Map(Object.entries(result?.quotes || {}));
+    const at = now();
     const changed = [];
     for (const code of codes) {
       const quote = quotes.get(code);
       if (!quote) continue;
       const record = toRecord(code, quote);
+      if (!acceptRecordDate(record.quoteDate, at)) {
+        const stale = records.get(code);
+        if (stale && !acceptRecordDate(stale.quoteDate, at)) records.delete(code);
+        continue;
+      }
       const previous = records.get(code);
       if (fingerprint(record) === fingerprint(previous)) {
         // 封单剧烈变化后如果持续平稳超过 1 分钟，刷新归零过期的「1 分钟变化」，避免旧跌幅告警长驻界面。
         const lastPoint = historyOf(code).at(-1);
-        const sampleTime = Date.parse(record.quoteAt) || now();
+        const sampleTime = Date.parse(record.quoteAt) || at;
         if (
           previous &&
           finite(previous.change1mAmount) &&
@@ -209,42 +247,70 @@ function createLimitSealStream({
       changed.push({ ...enriched, point: historyOf(code).at(-1) || null });
     }
     pruneInactiveCaches(new Set(codes));
-    if (changed.length) {
+    if (changed.length && !signal.aborted && controller?.signal === signal) {
       lastChangeAt = now();
       try { emit({ atMs: lastChangeAt, at: new Date(lastChangeAt).toISOString(), items: changed }); } catch { /* 页面不在不影响 */ }
     }
     return true;
   }
 
-  async function loop(signal) {
-    while (!signal.aborted) {
-      const started = now();
-      let hadCodes = false;
-      try { hadCodes = await pollOnce(signal); }
-      catch (error) { if (signal.aborted) break; log(`limit-seal ${error?.message || error}`); }
-      if (!hadCodes && !owners.size) break; // 全部退订：停下，等下一次订阅
-      const interval = now() - lastChangeAt > IDLE_AFTER_MS ? idlePollMs : pollMs;
-      const wait = Math.max(50, interval - (now() - started));
-      await new Promise(resolve => {
-        let settled = false;
-        const done = () => {
-          if (settled) return;
-          settled = true;
-          clearTimer(timer);
-          signal.removeEventListener("abort", done);
-          if (wakeSleep === done) wakeSleep = null;
-          resolve();
+  function sleep(wait, signal, wakeIf = null) {
+    if (signal.aborted || controller?.signal !== signal) return Promise.resolve();
+    const checkWake = () => {
+      try { return Boolean(wakeIf()); }
+      catch (error) { log(`limit-seal wakeIf ${error?.message || error}`); return false; }
+    };
+    if (typeof wakeIf === "function" && checkWake()) return Promise.resolve();
+    return new Promise(resolve => {
+      let settled = false;
+      let timer = null;
+      let probe = null;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimer(timer);
+        if (probe !== null) clearTimer(probe);
+        signal.removeEventListener("abort", done);
+        if (wakeSleep === done) wakeSleep = null;
+        resolve();
+      };
+      timer = setTimer(done, wait);
+      if (!settled) wakeSleep = done;
+      if (!settled && typeof wakeIf === "function") {
+        const check = () => {
+          probe = null;
+          if (settled || signal.aborted || controller?.signal !== signal) { done(); return; }
+          if (checkWake()) done();
+          else if (!settled) probe = setTimer(check, 1000);
         };
-        const timer = setTimer(done, wait);
-        wakeSleep = done;
-        signal.addEventListener("abort", done, { once: true });
-      });
+        probe = setTimer(check, 1000);
+      }
+      if (!settled) signal.addEventListener("abort", done, { once: true });
+    });
+  }
+
+  async function loop(signal) {
+    try {
+      while (!signal.aborted && controller?.signal === signal) {
+        const started = now();
+        let hadCodes = false;
+        try { hadCodes = await pollOnce(signal); }
+        catch (error) { if (signal.aborted || controller?.signal !== signal) break; log(`limit-seal ${error?.message || error}`); }
+        if (signal.aborted || controller?.signal !== signal) break;
+        if (!hadCodes && !owners.size) break; // 全部退订：停下，等下一次订阅
+        const live = safeInSession();
+        const interval = !live ? Math.max(idlePollMs, offSessionPollMs) : now() - lastChangeAt > IDLE_AFTER_MS ? idlePollMs : pollMs;
+        const wait = Math.max(50, interval - (now() - started));
+        await sleep(wait, signal, live ? null : safeInSession);
+      }
+    } finally {
+      if (controller?.signal === signal) controller = null;
     }
-    if (controller?.signal === signal) controller = null;
   }
 
   function snapshot(codes, withHistory) {
-    return codes.map(code => records.get(code)).filter(Boolean).map(record => withHistory
+    const at = now();
+    return codes.map(code => records.get(code)).filter(record => record && acceptRecordDate(record.quoteDate, at)).map(record => withHistory
       ? { ...record, history: historyOf(record.code).map(({ t, amount, status }) => ({ t, amount, status })) }
       : record);
   }
@@ -257,11 +323,13 @@ function createLimitSealStream({
     const key = String(owner || "default").slice(0, 24);
     if (stopped || !active) {
       owners.delete(key);
+      if (!owners.size) wakeSleep?.();
       return { active: false, items: [] };
     }
     const list = [...new Set((Array.isArray(codes) ? codes : []).map(String).filter(code => /^\d{6}$/.test(code)))].slice(0, maxCodes);
     if (!list.length) {
       owners.delete(key);
+      if (!owners.size) wakeSleep?.();
       return { active: Boolean(controller && owners.size), items: [] };
     }
     const previousEntry = owners.get(key);
@@ -270,7 +338,7 @@ function createLimitSealStream({
     if (!controller) {
       controller = new AbortController();
       lastChangeAt = now();
-      void loop(controller.signal);
+      void loop(controller.signal).catch(error => log(`limit-seal loop ${error?.message || error}`));
     } else if (hasNewCode) {
       // 新切个股或新增订阅代码时立即唤醒空闲休眠，避免等待 5 秒。
       lastChangeAt = now();

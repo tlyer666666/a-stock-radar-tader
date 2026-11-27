@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Lock } from "lucide-react";
 import { fmt } from "../../domain/formatters";
 import { useLimitSeals } from "./useLimitSeals";
@@ -46,6 +47,15 @@ function BookSide({ label, levels, limitPrice, maxVolume, side }: { label: strin
 
 /** 展示用（纯渲染，便于测试）。 */
 export function LimitSealView({ record, lastTickAt }: { record: LimitSealRecord; lastTickAt: number }) {
+  const [, setLiveExpired] = useState(0);
+  useEffect(() => {
+    if (!lastTickAt || typeof window === "undefined") return undefined;
+    const remaining = 60_000 - (Date.now() - lastTickAt);
+    if (remaining <= 0) return undefined;
+    const timer = window.setTimeout(() => setLiveExpired(value => value + 1), Math.max(0, remaining) + 50);
+    return () => window.clearTimeout(timer);
+  }, [lastTickAt]);
+  const liveTick = lastTickAt > 0 && Date.now() - lastTickAt < 60_000;
   const tone = sealTone(record.status);
   const warning = sealWarning(record);
   const spark = sealSparkline(record.history);
@@ -60,7 +70,7 @@ export function LimitSealView({ record, lastTickAt }: { record: LimitSealRecord;
           <span className={`seal-chip tone-${tone}`}>{record.statusLabel}</span>
         </div>
         <small title="封单手数以同花顺涨停池为准（同花顺约每 1~10 秒更新一次）；五档盘口用腾讯实时五档（同花顺免费盘口约延迟 1 分钟）">
-          {lastTickAt > 0 ? <i className="seal-live" aria-hidden="true" /> : null}
+          {liveTick ? <i className="seal-live" aria-hidden="true" /> : null}
           {record.source ? `${record.source} · ` : ""}行情时间 {quoteClock(record.quoteAt) || "--"}
         </small>
       </header>

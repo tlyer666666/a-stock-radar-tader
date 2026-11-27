@@ -39,10 +39,15 @@ function PickRow({ pick, onOpen }: { pick: FactorPick; onOpen?: ((security: Secu
 }
 
 /** 多因子选股面板：点按钮才计算（要读全市场报表和行情，首次约 10–30 秒）。 */
+/** 选股一次要十几秒：结果留在模块里，点开个股再返回、或切走再回来时不用重跑。 */
+const factorCache: { strategyId: string; result: FactorScreenResult | null } = { strategyId: "quality_value", result: null };
+
 export default function FactorScreenPanel({ onOpen }: { onOpen?: ((security: Security) => void) | undefined }) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.screenFactors;
-  const [strategyId, setStrategyId] = useState<string>("quality_value");
-  const [result, setResult] = useState<FactorScreenResult | null>(null);
+  const [strategyId, setStrategyIdState] = useState<string>(factorCache.strategyId);
+  const [result, setResultState] = useState<FactorScreenResult | null>(factorCache.result);
+  const setStrategyId = (value: string) => { factorCache.strategyId = value; setStrategyIdState(value); };
+  const setResult = (value: FactorScreenResult | null) => { factorCache.result = value; setResultState(value); };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const mountedRef = useRef(true);
@@ -70,7 +75,7 @@ export default function FactorScreenPanel({ onOpen }: { onOpen?: ((security: Sec
   return <section className="panel factor-screen" aria-label="多因子选股">
     <header className="etf-rotation-head">
       <b><Filter size={14} /> 多因子选股</b>
-      <small>用最新一期业绩报表、估值和近 60 日量价给全市场打分，和上面按形态选的策略互补。每只都写明为什么选它、为什么是现在。</small>
+      <small>用最新一期业绩报表、估值和近 60 日量价给全市场打分，和「策略选股」里按形态选的策略互补。每只都写明为什么选它、为什么是现在。</small>
       <label>策略<select value={strategyId} disabled={busy} onChange={event => setStrategyId(event.target.value)}>{FACTOR_STRATEGY_OPTIONS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <span className="factor-screen-hint">{option?.summary}</span>
       <button type="button" className="secondary-btn" disabled={busy} onClick={run}><Play size={14} />{busy ? "选股中…（首次约半分钟）" : "开始选股"}</button>

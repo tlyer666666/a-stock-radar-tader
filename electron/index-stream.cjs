@@ -36,11 +36,13 @@ function streamUrl(secid) {
 
 /** 东方财富 stock 字段 → 指数条字段。只返回本次出现过的字段（增量推送只带变化的字段）。 */
 function quoteFromFields(fields, meta) {
+  const rawLatest = num(fields.f43);
+  const latest = rawLatest !== null && rawLatest > 0 ? rawLatest : null;
   const s = num(fields.f86);
   const stamp = s !== null && s > 0 ? new Date(s * 1000 + 8 * 3600_000).toISOString() : "";
   return {
     code: meta.code, secid: meta.secid, name: meta.name,
-    latest: num(fields.f43), change: num(fields.f169), changePct: num(fields.f170),
+    latest, change: num(fields.f169), changePct: num(fields.f170),
     high: num(fields.f44), low: num(fields.f45), open: num(fields.f46), preClose: num(fields.f60),
     amount: num(fields.f48), up: count(fields.f113), down: count(fields.f114), flat: count(fields.f115),
     date: stamp.slice(0, 10), time: stamp.slice(11, 19)
@@ -76,6 +78,10 @@ function createIndexStream({
   instruments = INDEX_BOARD,
   pollQuotes = null,
   pollMs = 1000,
+  // 是否在交易时段：盘外（午休、收盘后、周末、节假日）行情不会变，不保持 10 条长连接，快照也只每 idlePollMs 取一次。
+  inSession = () => true,
+  sessionCheckMs = 1000,
+  idlePollMs = 60_000,
   log = () => {}
 } = {}) {
   if (typeof openSse !== "function") throw new TypeError("openSse is required");
@@ -90,13 +96,19 @@ function createIndexStream({
   let stopped = false;
   let polled = false;
 
+  const safeInSession = () => {
+    try { return Boolean(inSession()); }
+    catch (error) { log(`index-stream inSession ${error?.message || error}`); return false; }
+  };
+
   const quoteOf = meta => fields.has(meta.secid) ? quoteFromFields(fields.get(meta.secid), meta) : null;
 
   function flush() {
     flushTimer = null;
-    if (!pending.size) return;
+    if (!controller || stopped || !pending.size) { pending.clear(); return; }
     const quotes = instruments.filter(meta => pending.has(meta.secid)).map(quoteOf).filter(Boolean);
     pending.clear();
+    if (!quotes.length) return;
     lastTickAt = now();
     try { emit({ at: new Date(lastTickAt).toISOString(), atMs: lastTickAt, quotes }); } catch { /* 页面不在不影响推送 */ }
   }
@@ -108,7 +120,12 @@ function createIndexStream({
     const knownStamp = num(previous.f86);
     // 两路数据合并：接口时间戳更旧的快照不覆盖已有的新数据。
     if (incomingStamp !== null && knownStamp !== null && incomingStamp < knownStamp) return;
-    const merged = event.full === 1 && fromStream ? { ...event.data } : { ...previous, ...event.data };
+    const incoming = { ...event.data };
+    if (Object.hasOwn(incoming, "f43")) {
+      const latestValue = num(incoming.f43);
+      if (latestValue === null || latestValue <= 0) delete incoming.f43;
+    }
+    const merged = event.full === 1 && fromStream ? { ...incoming } : { ...previous, ...incoming };
     fields.set(meta.secid, merged);
     if (fromStream) connected.add(meta.secid);
     const changed = Object.keys(merged).some(key => key !== "f86" && merged[key] !== previous[key]);
@@ -118,21 +135,80 @@ function createIndexStream({
     if (!flushTimer) flushTimer = setTimer(flush, 0);
   }
 
+  /** 可被取消的等待。 */
+  // wakeIf 给了之后每秒检查一次，满足就提前醒（盘外等待开盘用：开盘一秒内就连，不等完整个休止间隔）。
+  const sleep = (ms, signal, wakeIf = null) => {
+    if (signal?.aborted) return Promise.resolve();
+    const checkWake = () => {
+      try { return Boolean(wakeIf()); }
+      catch (error) { log(`index-stream wakeIf ${error?.message || error}`); return false; }
+    };
+    if (typeof wakeIf === "function" && checkWake()) return Promise.resolve();
+    return new Promise(resolve => {
+      let settled = false;
+      let timer = null;
+      let probe = null;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (timer !== null) clearTimer(timer);
+        if (probe !== null) clearTimer(probe);
+        signal?.removeEventListener("abort", finish);
+        resolve();
+      };
+      timer = setTimer(finish, ms);
+      if (!settled && typeof wakeIf === "function") {
+        const check = () => {
+          probe = null;
+          if (settled || signal?.aborted) { finish(); return; }
+          if (checkWake()) finish();
+          else if (!settled) probe = setTimer(check, 1000);
+        };
+        probe = setTimer(check, 1000);
+      }
+      if (!settled) signal?.addEventListener("abort", finish, { once: true });
+    });
+  };
+
   async function runOne(meta, signal) {
     let attempt = 0;
-    while (!signal.aborted) {
+    let fastRotations = 0;
+    while (!signal.aborted && controller?.signal === signal) {
+      // 盘外不连推送：每 30 秒看一次是否开盘了（同时 1 秒探活）。
+      if (!safeInSession()) {
+        if (controller?.signal === signal) connected.delete(meta.secid);
+        await sleep(30_000, signal, safeInSession);
+        continue;
+      }
+      const openedAt = now();
       const connection = new AbortController();
       const onAbort = () => connection.abort(signal.reason);
       signal.addEventListener("abort", onAbort, { once: true });
       let idle = null;
+      let sessionProbe = null;
       const armIdle = () => { if (idle) clearTimer(idle); idle = setTimer(() => connection.abort(new Error("idle")), idleMs); };
+      const armSessionProbe = () => {
+        sessionProbe = setTimer(() => {
+          sessionProbe = null;
+          if (connection.signal.aborted || signal.aborted) return;
+          if (!safeInSession()) { connection.abort(new Error("off-session")); return; }
+          armSessionProbe();
+        }, sessionCheckMs);
+      };
       let received = 0;
+      let rotated = false;
       try {
         armIdle();
+        armSessionProbe();
         const body = await openSse(streamUrl(meta.secid), { signal: connection.signal });
+        if (signal.aborted || controller?.signal !== signal) {
+          try { Promise.resolve(body?.cancel?.()).catch(() => {}); } catch { /* ignore */ }
+          break;
+        }
         const decoder = new TextDecoder("utf-8");
         let buffer = "";
         for await (const chunk of body) {
+          if (signal.aborted || controller?.signal !== signal) break;
           armIdle();
           const bytes = typeof chunk === "string" ? Buffer.byteLength(chunk) : chunk.byteLength;
           received += bytes;
@@ -141,54 +217,74 @@ function createIndexStream({
           buffer = rest;
           if (Buffer.byteLength(buffer) > maxEventBytes) throw new Error("事件过大");
           for (const event of events) accept(meta, event);
-          if (events.length) attempt = 0;
-          if (received > maxConnectionBytes) break; // 主动换一条新连接
+          if (received > maxConnectionBytes) { rotated = true; break; } // 主动换一条新连接
+          if (!safeInSession()) break;                                   // 收盘或午休：断开，等下次开盘再连
         }
       } catch (error) {
-        if (signal.aborted) break;
-        log(`index-stream ${meta.secid} ${error?.message || error}`);
+        if (signal.aborted || controller?.signal !== signal) break;
+        if (error?.code === "RESPONSE_TOO_LARGE" && received > 0) {
+          rotated = true;
+        } else if (safeInSession()) {
+          log(`index-stream ${meta.secid} ${error?.message || error}`);
+        }
       } finally {
         if (idle) clearTimer(idle);
+        if (sessionProbe) clearTimer(sessionProbe);
         signal.removeEventListener("abort", onAbort);
         connection.abort();
-        connected.delete(meta.secid);
+        if (controller?.signal === signal) connected.delete(meta.secid);
       }
-      if (signal.aborted) break;
-      const wait = received > maxConnectionBytes ? 0 : BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
+      if (signal.aborted || controller?.signal !== signal) break;
+      if (!safeInSession()) continue; // 盘外断开不算失败，回到循环顶部等待开盘
+      if (rotated) {
+        const stable = now() - openedAt >= 30_000;
+        if (stable || fastRotations < 2) {
+          fastRotations = stable ? 0 : fastRotations + 1;
+          attempt = 0;
+          await sleep(0, signal);
+          continue;
+        }
+        log(`index-stream ${meta.secid} 连接过快触及字节上限，转入退避重连`);
+      }
+      // 只有连接稳定撑过 30 秒才算恢复正常、退避归零；「推一条就断」的服务端不会被每秒重连。
+      if (now() - openedAt >= 30_000) { attempt = 0; fastRotations = 0; }
+      const wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)];
       attempt += 1;
-      await new Promise(resolve => {
-        const onStop = () => { clearTimer(timer); resolve(); };
-        const timer = setTimer(() => { signal.removeEventListener("abort", onStop); resolve(); }, wait);
-        signal.addEventListener("abort", onStop, { once: true });
-      });
+      await sleep(wait, signal);
     }
   }
 
   async function runPoll(signal) {
-    while (!signal.aborted) {
+    let failures = 0;
+    while (!signal.aborted && controller?.signal === signal) {
       const started = now();
       try {
         const rows = await pollQuotes({ signal });
+        if (signal.aborted || controller?.signal !== signal) break;
         for (const row of Array.isArray(rows) ? rows : []) {
           const meta = instruments.find(item => item.secid === row?.secid);
           if (meta && row.data && typeof row.data === "object") accept(meta, { rc: 0, data: row.data }, { fromStream: false });
         }
         polled = true;
+        failures = 0;
       } catch (error) {
-        if (signal.aborted) break;
+        if (signal.aborted || controller?.signal !== signal) break;
+        failures += 1;
         log(`index-stream poll ${error?.message || error}`);
       }
-      const wait = Math.max(50, pollMs - (now() - started));
-      await new Promise(resolve => {
-        const onStop = () => { clearTimer(timer); resolve(); };
-        const timer = setTimer(() => { signal.removeEventListener("abort", onStop); resolve(); }, wait);
-        signal.addEventListener("abort", onStop, { once: true });
-      });
+      if (signal.aborted || controller?.signal !== signal) break;
+      // 盘中每秒一次；盘外每分钟一次；连续失败按 1/2/5/10/30 秒退避，不对着报错的接口每秒重试。
+      const live = safeInSession();
+      const base = live ? pollMs : idlePollMs;
+      const interval = failures ? Math.max(base, BACKOFF_MS[Math.min(failures - 1, BACKOFF_MS.length - 1)]) : base;
+      await sleep(Math.max(50, interval - (now() - started)), signal, live ? null : safeInSession);
     }
   }
 
   function stop(reason = "stopped") {
     if (leaseTimer) { clearTimer(leaseTimer); leaseTimer = null; }
+    if (flushTimer) { clearTimer(flushTimer); flushTimer = null; }
+    pending.clear();
     if (controller) { controller.abort(new Error(reason)); controller = null; }
     connected.clear();
     polled = false;
@@ -220,8 +316,8 @@ function createIndexStream({
     if (!controller) {
       controller = new AbortController();
       const signal = controller.signal;
-      for (const meta of instruments) void runOne(meta, signal);
-      if (typeof pollQuotes === "function") void runPoll(signal);
+      for (const meta of instruments) void runOne(meta, signal).catch(error => log(`index-stream ${meta.secid} ${error?.message || error}`));
+      if (typeof pollQuotes === "function") void runPoll(signal).catch(error => log(`index-stream poll ${error?.message || error}`));
     }
     if (!leaseTimer) leaseTimer = setTimer(checkLease, Math.min(5000, leaseMs));
     return status();
@@ -237,15 +333,27 @@ function createIndexStream({
 }
 
 /**
- * 真实网络的 openSse：Node/Electron 主进程自带的 fetch，返回响应体（异步可迭代的字节流）。
+ * 真实网络的 openSse：走 native-http 的 fetchNative（项目统一的原生传输，带响应头与分块校验），以流方式返回响应体。
+ * 不用主进程自带的 fetch：长连接是暴露时间最长的请求，更不该绕过项目为 undici 已知问题做的传输隔离。
  * 不经过 http-client 的传输槽位，避免 10 条长连接占满一次性请求的并发。
  */
-function createFetchSse({ fetchImpl = globalThis.fetch } = {}) {
+function createFetchSse({ fetchImpl = null, maxBytes = 17 * 1024 * 1024 } = {}) {
+  const request = typeof fetchImpl === "function" ? fetchImpl
+    : (url, options) => require("./native-http.cjs").fetchNative(url, { ...options, streamResponse: true }, maxBytes);
+  const cancelBody = response => {
+    try { return Promise.resolve(response?.body?.cancel?.()).catch(() => {}); }
+    catch { return Promise.resolve(); }
+  };
   return async (url, { signal } = {}) => {
-    if (typeof fetchImpl !== "function") throw new Error("当前环境没有 fetch");
-    const response = await fetchImpl(url, { signal, headers: { Accept: "text/event-stream", Referer: "https://quote.eastmoney.com/" } });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    if (!/event-stream/i.test(String(response.headers.get("content-type") || ""))) throw new Error("不是推送流响应");
+    const response = await request(url, { signal, headers: { Accept: "text/event-stream", Referer: "https://quote.eastmoney.com/" } });
+    if (!response.ok) {
+      await cancelBody(response);
+      throw new Error(`HTTP ${response.status}`);
+    }
+    if (!/event-stream/i.test(String(response.headers.get("content-type") || ""))) {
+      await cancelBody(response);
+      throw new Error("不是推送流响应");
+    }
     if (!response.body) throw new Error("推送流没有响应体");
     return response.body;
   };

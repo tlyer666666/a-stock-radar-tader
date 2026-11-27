@@ -56,13 +56,15 @@ jobs:
   # 于是文案与布局改动（持仓总览副标题、持仓行高、趋势表窄视口阈值、复盘档案的
   # preview 隔离键、SectorView 原生表格语义与北交所分页）陆续把它们跑红也没人发现 ——
   # 也就是「套件腐化」。这里单独用一个 Linux 作业把它们固定进每次 push/PR：
-  #   pnpm qa:stability:ui   -> qa/stability-ui.test.cjs
-  #   pnpm qa:ui-remediation -> qa/ui-remediation.test.cjs
-  #   pnpm qa:sector:ui      -> qa/sector-panel.test.cjs
-  #   pnpm qa:workflow       -> qa/workspace-v145.test.cjs
-  #   pnpm qa:fullstack:ui   -> 10 个渲染层文件（research-workspace / six-audit /
-  #                             sector-gainers / beijing-workspace 等，见该脚本的 --test 列表）
-  # 五组都用 playwright-core 驱动本机 Chromium/Chrome（headless），
+  #   pnpm qa:stability:ui       -> qa/stability-ui.test.cjs
+  #   pnpm qa:ui-remediation     -> qa/ui-remediation.test.cjs
+  #   pnpm qa:sector:ui          -> qa/sector-panel.test.cjs
+  #   pnpm qa:workflow           -> qa/workspace-v145.test.cjs
+  #   pnpm qa:fullstack:ui       -> 18 个渲染层文件（含 frontend-v150 / decision-center /
+  #                                 research-workspace / six-audit / sector-gainers /
+  #                                 beijing-workspace / ai-agent / notes / leaderboard 等，见该脚本的 --test 列表）
+  #   pnpm qa:modules:independent -> qa/module-polish-independent.test.cjs
+  # 六组都用 playwright-core 驱动本机 Chromium/Chrome（headless），
   # 因此先按 release.yml 的做法探测浏览器并把路径写进 QA_CHROMIUM_PATH。
   browser:
     name: Browser regression suites
@@ -103,7 +105,7 @@ jobs:
         run: pnpm qa:sector:ui
       - name: Workspace workflow browser suite (qa:workflow)
         run: pnpm qa:workflow
-      # 这 10 个渲染层用例长期只在本地跑（qa:fullstack:ui），是 1.5.x 期间腐化最集中的一组。
+      # 这 18 个渲染层用例由 qa:fullstack:ui 串行执行，覆盖全站导航、决策中心、AI、做T、随心记与实测榜等。
       - name: Full-stack renderer suites (qa:fullstack:ui)
         run: pnpm qa:fullstack:ui
       - name: Independent module polish suite (qa:modules:independent)
@@ -132,8 +134,8 @@ jobs:
         run: pnpm verify:dependencies:security
       - name: Build packaged application
         run: pnpm build
-      - name: Build independent review module
-        run: pnpm build:review
+      - name: Verify independent review build
+        run: node qa/verify-review-build.cjs
       - name: Run packaged desktop E2E
         env:
           PACKAGED_E2E_VISIBLE: "1"

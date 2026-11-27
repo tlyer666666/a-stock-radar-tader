@@ -167,7 +167,15 @@ test("preview API exposes stubs for rotation, factor screen, alert rules, indust
   assert.equal(removedFeeds.feeds.length, 0);
 
   const sigs = await api.ai.agent.signals({ evaluate: true });
-  assert.deepEqual(sigs.signals, []);
-  const updatedSigs = await api.ai.agent.updateSignal({ id: "missing", remove: true });
-  assert.deepEqual(updatedSigs.signals, []);
+  assert.equal(sigs.signals.length, 2);
+  assert.deepEqual(sigs.signals.map(item => item.code), ["600519", "300750"]);
+  assert.equal(sigs.stats.total, 2);
+  assert.equal(sigs.stats.active, 1);
+  assert.equal(sigs.stats.byDays["1"].completed, 2);
+  const unchangedSigs = await api.ai.agent.updateSignal({ id: "missing", remove: true });
+  assert.equal(unchangedSigs.signals.length, 2);
+  const closedSigs = await api.ai.agent.updateSignal({ id: sigs.signals[0].id, status: "closed", feedback: null });
+  assert.equal(closedSigs.stats.active, 0);
+  const removedSigs = await api.ai.agent.updateSignal({ id: sigs.signals[0].id, remove: true });
+  assert.equal(removedSigs.signals.length, 1);
 });

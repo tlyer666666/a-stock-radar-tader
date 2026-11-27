@@ -45,6 +45,8 @@ test("eastmoney stock fields map to the index board fields with Beijing time to 
   assert.equal(quote.date, "2026-11-25");
   assert.match(quote.time, /^\d{2}:\d{2}:\d{2}$/);
   assert.equal(quoteFromFields({ f43: "-" }, SH).latest, null);
+  assert.equal(quoteFromFields({ f43: 0 }, SH).latest, null);
+  assert.equal(quoteFromFields({ f43: -12 }, SH).latest, null);
 });
 
 test("pushes are merged per index and delivered in one batch as soon as they arrive", async () => {
@@ -115,11 +117,20 @@ test("idle connections are recycled and unsubscribe / shutdown abort at once", a
   assert.equal(hub.subscribe().active, false, "after shutdown nothing restarts");
 });
 
-test("fetch-based opener rejects non-stream responses", async () => {
-  const open = createFetchSse({ fetchImpl: async () => ({ ok: true, headers: new Map([["content-type", "application/json"]]), body: {} }) });
+test("fetch-based opener rejects non-stream responses and cancels unused bodies", async () => {
+  let cancelledNonStream = 0;
+  const open = createFetchSse({
+    fetchImpl: async () => ({ ok: true, headers: new Map([["content-type", "application/json"]]), body: { cancel: async () => { cancelledNonStream += 1; } } })
+  });
   await assert.rejects(open("https://example.invalid"), /不是推送流/);
-  const bad = createFetchSse({ fetchImpl: async () => ({ ok: false, status: 503, headers: new Map(), body: null }) });
+  assert.equal(cancelledNonStream, 1, "wrong content-type must cancel response.body");
+
+  let cancelledError = 0;
+  const bad = createFetchSse({
+    fetchImpl: async () => ({ ok: false, status: 503, headers: new Map(), body: { cancel: async () => { cancelledError += 1; } } })
+  });
   await assert.rejects(bad("https://example.invalid"), /HTTP 503/);
+  assert.equal(cancelledError, 1, "non-OK response must cancel response.body");
 });
 
 test("the 1-second snapshot poll and the push stream merge by timestamp; unchanged snapshots are not re-sent", async () => {
@@ -149,3 +160,187 @@ test("the 1-second snapshot poll and the push stream merge by timestamp; unchang
     assert.equal(ticks.at(-1).quotes[0].changePct, -1.3, "push deltas keep the polled fields");
   } finally { hub.shutdown(); }
 });
+
+test("off-session the stream never connects and the poll cadence switches between pollMs and idlePollMs", async () => {
+  let live = false;
+  let opened = 0;
+  let poll = 0;
+  const ticks = [];
+  const streams = [];
+  const hub = createIndexStream({
+    instruments: [SH], pollMs: 10, idlePollMs: 120, sessionCheckMs: 50,
+    inSession: () => live,
+    pollQuotes: async () => { poll += 1; return [{ secid: "1.000001", data: { f43: 3500, f86: poll } }]; },
+    openSse: async (_url, { signal }) => { opened += 1; const stream = fakeStream(signal); streams.push({ stream, signal }); return stream; },
+    emit: tick => ticks.push(tick)
+  });
+  try {
+    hub.subscribe();
+    await until(() => poll >= 3);
+    assert.equal(opened, 0, "盘外不连推送流");
+    const at = poll;
+    await new Promise(r => setTimeout(r, 260));
+    assert.ok(poll - at <= 3, `盘外轮询放慢到 idlePollMs（260ms 内新增 ${poll - at} 次）`);
+    live = true;
+    await until(() => opened === 1, 2500);
+    assert.ok(opened === 1, "开盘后推送流连上");
+    // 推送一条真实 SSE 数据，确认 connected 升至 1（避免测试原本就为 0 而恒成立）
+    streams[0].stream.push(sse({ rc: 0, full: 1, data: { f43: 3501.5, f86: 999 } }));
+    await until(() => hub.status().connected === 1, 1500);
+    assert.equal(hub.status().connected, 1);
+    const baseline = poll;
+    await until(() => poll > baseline, 1500); // 等盘内轮询循环醒来
+    const inSessionAt = poll;
+    await new Promise(r => setTimeout(r, 200));
+    assert.ok(poll - inSessionAt >= 2, `盘内恢复高频轮询（200ms 内新增 ${poll - inSessionAt} 次）`);
+    // 收盘：即使服务端静默不发任何字节，连接也应迅速断开并中止 signal，且不再重连
+    live = false;
+    await until(() => hub.status().connected === 0 && streams[0].signal.aborted, 1500);
+    assert.equal(hub.status().connected, 0);
+    assert.equal(streams[0].signal.aborted, true, "收盘后推送流应主动中止");
+    await new Promise(r => setTimeout(r, 150));
+    assert.ok(opened <= 1, `收盘后不再频繁重连（opened=${opened}）`);
+  } finally { hub.shutdown(); }
+});
+
+test("H3, M4 & L3: abort mid-poll leaks zero timers, stop->restart isolates connected state, zero latest is rejected, and 16MB/RESPONSE_TOO_LARGE rotates cleanly", async () => {
+  // 1. Abort mid-poll: no post-shutdown emit and zero leaked timers
+  let releasePoll;
+  const pollGate = new Promise(resolve => { releasePoll = resolve; });
+  const activeTimers = new Set();
+  const postShutdownTicks = [];
+  let pollStarted = false;
+  const pollHub = createIndexStream({
+    instruments: [SH],
+    pollMs: 10,
+    idlePollMs: 60_000,
+    inSession: () => false,
+    setTimer: (fn, ms) => {
+      const handle = setTimeout(() => { activeTimers.delete(handle); fn(); }, ms);
+      activeTimers.add(handle);
+      return handle;
+    },
+    clearTimer: handle => { activeTimers.delete(handle); clearTimeout(handle); },
+    openSse: async (_url, { signal }) => fakeStream(signal),
+    pollQuotes: async () => {
+      pollStarted = true;
+      await pollGate;
+      return [{ secid: "1.000001", data: { f43: 3550, f86: 200 } }];
+    },
+    emit: tick => postShutdownTicks.push(tick)
+  });
+  pollHub.subscribe();
+  await until(() => pollStarted);
+  pollHub.shutdown();
+  releasePoll();
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(postShutdownTicks.length, 0, "shutdown mid-poll must never emit");
+  assert.equal(activeTimers.size, 0, "shutdown mid-poll must leak zero timers");
+
+  // 2. Fast stop -> restart isolates connected count from old runOne finally
+  let releaseOldOpen;
+  const oldOpenGate = new Promise(resolve => { releaseOldOpen = resolve; });
+  let openIndex = 0;
+  const sessionStreams = [];
+  const isoHub = createIndexStream({
+    instruments: [SH],
+    openSse: async (_url, { signal }) => {
+      const idx = ++openIndex;
+      if (idx === 1) {
+        await oldOpenGate;
+        throw new Error("old session cancelled");
+      }
+      const stream = fakeStream(signal);
+      sessionStreams.push(stream);
+      return stream;
+    }
+  });
+  try {
+    isoHub.subscribe();
+    await until(() => openIndex === 1);
+    isoHub.subscribe({ active: false });
+    isoHub.subscribe({ active: true });
+    await until(() => sessionStreams.length === 1);
+    sessionStreams[0].push(sse({ rc: 0, full: 1, data: { f43: 3600, f86: 300 } }));
+    await until(() => isoHub.status().connected === 1);
+    // Now let old session 1 settle and execute its finally block
+    releaseOldOpen();
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(isoHub.status().connected, 1, "old runOne finally must not delete new session connected state");
+    // L3: zero latest delta must not overwrite positive latest or emit 0
+    const beforeZero = isoHub.status().quotes[0].latest;
+    assert.equal(beforeZero, 3600);
+    sessionStreams[0].push(sse({ rc: 0, full: 0, data: { f43: 0, f86: 301 } }));
+    await new Promise(r => setTimeout(r, 30));
+    assert.equal(isoHub.status().quotes[0].latest, 3600, "zero f43 delta must not clobber positive latest");
+  } finally {
+    isoHub.shutdown();
+  }
+
+  // 3. Clean rotation on maxConnectionBytes and RESPONSE_TOO_LARGE (no backoff delay, no error logged)
+  const logs = [];
+  let rotOpens = 0;
+  const rotHub = createIndexStream({
+    instruments: [SH],
+    maxConnectionBytes: 128,
+    log: msg => logs.push(msg),
+    openSse: async (_url, { signal }) => {
+      rotOpens += 1;
+      if (rotOpens === 1) {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield new TextEncoder().encode(sse({ rc: 0, full: 1, data: { f43: 3500, pad: "x".repeat(200) } }));
+          }
+        };
+      }
+      if (rotOpens === 2) {
+        let step = 0;
+        return {
+          [Symbol.asyncIterator]() {
+            return {
+              next: async () => {
+                if (step === 0) {
+                  step += 1;
+                  return { done: false, value: new TextEncoder().encode(sse({ rc: 0, full: 1, data: { f43: 3501 } })) };
+                }
+                throw Object.assign(new Error("响应体超过字节上限"), { code: "RESPONSE_TOO_LARGE" });
+              }
+            };
+          }
+        };
+      }
+      return fakeStream(signal);
+    }
+  });
+  try {
+    const t0 = Date.now();
+    rotHub.subscribe();
+    await until(() => rotOpens >= 3, 500);
+    assert.ok(Date.now() - t0 < 500, "both maxConnectionBytes and post-data RESPONSE_TOO_LARGE must rotate immediately without 1s backoff");
+    assert.deepEqual(logs, [], "post-data RESPONSE_TOO_LARGE rotation must not log as an error");
+  } finally {
+    rotHub.shutdown();
+  }
+
+  // 4. Zero-byte RESPONSE_TOO_LARGE (oversized Content-Length header) must log and back off instead of spin-looping
+  const spinLogs = [];
+  let spinOpens = 0;
+  const spinHub = createIndexStream({
+    instruments: [SH],
+    log: msg => spinLogs.push(msg),
+    openSse: async () => {
+      spinOpens += 1;
+      throw Object.assign(new Error("响应体超过字节上限"), { code: "RESPONSE_TOO_LARGE" });
+    }
+  });
+  try {
+    spinHub.subscribe();
+    await until(() => spinLogs.length >= 1, 500);
+    await new Promise(r => setTimeout(r, 80));
+    assert.equal(spinOpens, 1, "zero-byte RESPONSE_TOO_LARGE must enter backoff instead of tight zero-delay spin");
+    assert.equal(spinLogs.length, 1);
+  } finally {
+    spinHub.shutdown();
+  }
+});
+

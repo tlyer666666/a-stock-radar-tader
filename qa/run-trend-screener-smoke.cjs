@@ -4,15 +4,26 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { chromium } = require("playwright-core");
 
+async function openTrendWorkspace(page) {
+  await page.getByRole("button", { name: "策略选股", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelector(".app-shell")?.getAttribute("data-workspace") === "signals",
+    undefined,
+    { timeout: 20_000 }
+  );
+  await page.locator(".strategy-library-item.trend").first().click({ timeout: 20_000 });
+  await page.locator(".trend-screener").waitFor({ timeout: 20_000 });
+}
+
 async function run() {
-  const browser = await chromium.launch({executablePath: process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true});
+  const browser = await chromium.launch({executablePath: process.env.QA_CHROMIUM_PATH || process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", headless: true});
   const page = await browser.newPage({viewport: {width:1480,height:1050}, acceptDownloads:true});
   const errors=[]; page.on("pageerror", error => errors.push(error.message));
   const output=path.resolve(process.env.TREND_QA_OUTPUT || "artifacts/trend-screener-qa"); fs.mkdirSync(output,{recursive:true});
   try {
     await page.goto(process.env.TREND_QA_URL || "http://127.0.0.1:5173",{waitUntil:"networkidle"});
-    await page.getByRole("heading",{name:"趋势筛选",exact:true}).waitFor();
-    assert.equal(await page.getByRole("button",{name:"涨停趋势",exact:true}).getAttribute("aria-current"),"page");
+    await openTrendWorkspace(page);
+    assert.equal(await page.getByRole("button",{name:"策略选股",exact:true}).getAttribute("aria-current"),"page");
     assert.equal(await page.locator(".strategy-quick-trigger").count(),0);
     await page.getByText("DEMO / 演示工作台 · 全部证券均为虚构",{exact:true}).waitFor();
     assert.equal(await page.locator(".trend-candidate").count(),3);
@@ -29,6 +40,7 @@ async function run() {
     await page.getByRole("checkbox",{name:/当前账户已持有该股/}).check();
     await page.getByRole("checkbox",{name:/已核实板块权限/}).check();
     await page.reload({waitUntil:"networkidle"});
+    await openTrendWorkspace(page);
     await page.getByRole("button",{name:/^我的计划/}).click();
     await page.locator(".trend-calculator > summary").click();
     assert.equal(await page.getByLabel("账户净资产",{exact:true}).inputValue(),"125000");

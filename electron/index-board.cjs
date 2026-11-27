@@ -44,7 +44,8 @@ function shanghaiParts(seconds) {
 }
 
 function normalizeIndexQuote(raw, meta) {
-  const latest = num(raw?.f2);
+  const rawLatest = num(raw?.f2);
+  const latest = rawLatest !== null && rawLatest > 0 ? rawLatest : null;
   const stamp = shanghaiParts(raw?.f124);
   return {
     code: meta.code, secid: meta.secid, name: meta.name, major: meta.major,
@@ -93,6 +94,19 @@ function marketTotals(indices) {
   return { amount, up, down, flat: both("flat"), scope: "沪深两市（不含北交所）" };
 }
 
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason || new DOMException("Aborted", "AbortError"));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve(promise).then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); }
+    );
+  });
+}
+
 function createIndexBoard({ fetchJson, now = () => Date.now() } = {}) {
   if (typeof fetchJson !== "function") throw new TypeError("fetchJson is required");
   let quoteCache = null;
@@ -109,36 +123,52 @@ function createIndexBoard({ fetchJson, now = () => Date.now() } = {}) {
   }
 
   async function quotes(forceRefresh, signal) {
+    signal?.throwIfAborted?.();
     if (!forceRefresh && quoteCache && quoteCache.expiresAt > now()) return quoteCache.value;
-    if (quotePending) return quotePending;
-    quotePending = fetchQuotes(signal).then(value => {
-      if (value.some(item => item.latest !== null)) quoteCache = { value, expiresAt: now() + QUOTE_CACHE_MS };
-      return value;
-    }).finally(() => { quotePending = null; });
-    return quotePending;
+    if (!quotePending) {
+      // 共用的这一次请求不带任何调用方的取消信号：否则第一个调用方取消，会连累后面搭车的调用方。
+      quotePending = fetchQuotes(undefined).then(value => {
+        if (value.some(item => item.latest !== null)) quoteCache = { value, expiresAt: now() + QUOTE_CACHE_MS };
+        return value;
+      }).finally(() => { quotePending = null; });
+    }
+    return waitWithSignal(quotePending, signal);
   }
 
   async function trendOf(meta, forceRefresh, signal) {
+    signal?.throwIfAborted?.();
     const hit = trendCache.get(meta.secid);
     if (!forceRefresh && hit?.value && hit.expiresAt > now()) return hit.value;
-    if (hit?.pending) return hit.pending;
-    const url = `${TRENDS_URL}?secid=${meta.secid}&fields1=f1,f2,f8&fields2=f51,f53&iscr=0&ndays=1`;
-    const pending = fetchJson(url, { signal, headers: { Referer: "https://quote.eastmoney.com/" } }, 8000)
-      .then(parseTrends)
-      .then(value => { trendCache.set(meta.secid, { value, expiresAt: now() + TREND_CACHE_MS }); return value; })
-      .catch(() => { trendCache.delete(meta.secid); return hit?.value || null; });
-    trendCache.set(meta.secid, { ...hit, pending });
-    return pending;
+    let pending = hit?.pending;
+    if (!pending) {
+      const url = `${TRENDS_URL}?secid=${meta.secid}&fields1=f1,f2,f8&fields2=f51,f53&iscr=0&ndays=1`;
+      // 分时请求同样不绑定单个调用方的取消信号，避免首个调用方取消导致并发调用方分时退化为 null。
+      pending = fetchJson(url, { headers: { Referer: "https://quote.eastmoney.com/" } }, 8000)
+        .then(parseTrends)
+        .then(value => { trendCache.set(meta.secid, { value, expiresAt: now() + TREND_CACHE_MS }); return value; })
+        .catch(() => {
+          const current = trendCache.get(meta.secid);
+          if (current?.pending === pending) {
+            if (hit?.value) trendCache.set(meta.secid, { value: hit.value, expiresAt: hit.expiresAt });
+            else trendCache.delete(meta.secid);
+          }
+          return hit?.value || null;
+        });
+      trendCache.set(meta.secid, { ...hit, pending });
+    }
+    return waitWithSignal(pending, signal);
   }
 
   /**
    * @param {{ forceRefresh?: boolean, withTrends?: boolean, signal?: AbortSignal }} [options]
    */
   async function load({ forceRefresh = false, withTrends = true, signal } = {}) {
+    signal?.throwIfAborted?.();
     const [indices, trends] = await Promise.all([
       quotes(forceRefresh, signal),
       withTrends ? Promise.all(INDEX_BOARD.map(meta => trendOf(meta, forceRefresh, signal))) : Promise.resolve([])
     ]);
+    signal?.throwIfAborted?.();
     if (!indices.some(item => item.latest !== null)) throw new Error("指数行情暂时没取到，请稍后重试");
     const merged = indices.map((item, index) => {
       const trend = trends[index];
@@ -180,7 +210,7 @@ function ulistToStockFields(row) {
   const out = {};
   for (const [from, to] of Object.entries(map)) {
     const value = num(row?.[from]);
-    if (value !== null) out[to] = value;
+    if (value !== null && (from !== "f2" || value > 0)) out[to] = value;
   }
   return out;
 }

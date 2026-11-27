@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import AlertRulesPanel from "./AlertRulesPanel";
 import HoldingsRiskBoard from "./HoldingsRiskBoard";
 import {
   ArrowLeftRight,
@@ -124,7 +123,6 @@ export function FavoritesView({
     <div className="personal-workspace">
       <PageHeading eyebrow="PERSONAL MONITOR BOARD" title="自选监控" description="为每只自选股设置独立条件，应用开启且实时刷新时持续监测。" />
       <MonitorSubTabs active="favorites" onNavigate={onNavigate} />
-      <AlertRulesPanel />
       <section className="panel personal-monitor-panel">
         <header className="personal-monitor-heading"><div><Star size={18} /><h3>我的监控</h3><span>{items.length} 只自选</span></div><div><span>{configuredCount} 只已配置</span><b>{live ? `${enabledCount} 只监控中` : "实时监控已暂停"}</b>{monitors.refreshing && <LoaderCircle size={15} className="spin" />}</div></header>
         {monitors.storageError && <p className="monitor-storage-error" role="alert">{monitors.storageError}</p>}

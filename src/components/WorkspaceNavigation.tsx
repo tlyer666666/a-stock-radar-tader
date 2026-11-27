@@ -1,12 +1,20 @@
 import { PanelLeftClose, PanelLeftOpen, Settings as SettingsIcon, Star, type LucideIcon } from 'lucide-react';
 
 type Item = { id: string; label: string; icon: LucideIcon };
+/**
+ * 三组（打包后的布局检查要求恰好三组）：
+ * - 盯盘：开盘到收盘一直开着看的页面。
+ * - 选股决策：找标的、问 AI、定规则、验证。
+ * - 复盘与品种：收盘后的复盘、资讯、记录，以及北交所 / 可转债 / ETF / 沪深港通这些单独品种。
+ * 「观察池」不再单列：它是「自选监控」页顶部的一个页签（十日涨停跟踪），路由还在，高亮归到自选监控。
+ */
 const groups = [
-  { label: '选股研究', ids: ['cockpit', 'signals', 'ai-picks', 'ai-agent', 'sectors'] },
-  { label: '行情跟踪', ids: ['dashboard', 't-assistant', 'beijing', 'bonds', 'etf', 'hsgt', 'previous-limit-up-failed', 'watchlist', 'favorites', 'holdings'] },
-  { label: '复盘与信息', ids: ['notes', 'review', 'compare', 'backtest', 'news'] }
+  { label: '盯盘', ids: ['cockpit', 'dashboard', 'previous-limit-up-failed', 'sectors', 'favorites', 'holdings', 't-assistant'] },
+  { label: '选股决策', ids: ['signals', 'ai-picks', 'ai-agent', 'decision', 'compare', 'backtest'] },
+  { label: '复盘与品种', ids: ['review', 'news', 'notes', 'beijing', 'bonds', 'etf', 'hsgt'] }
 ];
-const CORE_IDS = new Set(['cockpit', 'signals', 'ai-picks', 'ai-agent', 'dashboard', 't-assistant', 'favorites', 'holdings', 'notes', 'review', 'news']);
+const TOTAL_ENTRIES = groups.reduce((sum, group) => sum + group.ids.length, 0);
+const CORE_IDS = new Set(['cockpit', 'signals', 'ai-picks', 'ai-agent', 'decision', 'dashboard', 't-assistant', 'favorites', 'holdings', 'notes', 'review', 'news']);
 
 export default function WorkspaceNavigation({
   items, active, counts, collapsed, coreOnly = false, onToggleCoreOnly, onCollapse, onNavigate
@@ -15,7 +23,7 @@ export default function WorkspaceNavigation({
   coreOnly?: boolean; onToggleCoreOnly?: (() => void) | undefined;
   onCollapse: () => void; onNavigate: (id: string) => void;
 }) {
-  const selected = active === 'announcements' ? 'news' : active === 'trend-screener' ? 'signals' : active;
+  const selected = active === 'announcements' ? 'news' : active === 'trend-screener' ? 'signals' : active === 'watchlist' ? 'favorites' : active;
   return <aside className="sidebar workspace-navigation" aria-label="工作台导航">
     <div className="workspace-nav-top">
       <span>工作台</span>
@@ -26,11 +34,11 @@ export default function WorkspaceNavigation({
             className={`sidebar-collapse sidebar-focus-toggle${coreOnly ? ' active' : ''}`}
             aria-pressed={coreOnly}
             aria-label={coreOnly ? '显示全部模块' : '只看核心模块'}
-            title={coreOnly ? `已精简为核心模块，点击恢复全部 ${items.length} 个工具` : '精简侧边栏：只看高频核心模块'}
+            title={coreOnly ? `已精简为核心模块，点击恢复全部 ${TOTAL_ENTRIES} 个工具` : '精简侧边栏：只看高频核心模块'}
             onClick={onToggleCoreOnly}
           >
             <Star size={13} />
-            <small>{coreOnly ? `全部 (${items.length})` : '精简'}</small>
+            <small>{coreOnly ? `全部 (${TOTAL_ENTRIES})` : '精简'}</small>
           </button>
         )}
         <button className="sidebar-collapse" aria-label={collapsed ? '展开导航栏' : '收起导航栏'} aria-expanded={!collapsed} title={collapsed ? '展开导航栏' : '收起导航栏'} onClick={onCollapse}>{collapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}</button>

@@ -5,6 +5,7 @@ const { after, before, test } = require("node:test");
 const React = require("react");
 const { renderToStaticMarkup } = require("react-dom/server");
 const { registerTypeScript } = require("../../../qa/register-typescript.cjs");
+const { createHookHarness, find, walk } = require("../../../qa/research-hook-harness.cjs");
 
 let restoreTypeScript;
 let panel;
@@ -88,4 +89,56 @@ test("boundary formatting avoids --%, -0.00%, false rise tone and awkward all-de
   assert.doesNotMatch(html, /-0\.0%/);
   assert.doesNotMatch(html, /class="rise">0\.00%/);
   assert.match(html, /class="bond-table-wrap"/);
+});
+
+test("EtfRotationPanel caches lookback, topN, rebalance together with report across remounts", async () => {
+  const prevWindow = global.window;
+  panel.resetEtfRotationCache();
+  const customReport = {
+    config: { ...config, lookback: 40, topN: 3, rebalance: "monthly" },
+    warnings: [],
+    asOf: "2026-11-26",
+    signal: null,
+    performance: null,
+    yearly: [],
+    sweep: [],
+    rebalances: [],
+    curve: []
+  };
+  let requested = null;
+  global.window = {
+    stockApi: {
+      async getEtfRotation(input) {
+        requested = input;
+        return customReport;
+      }
+    }
+  };
+  try {
+    const first = createHookHarness(panel.default, { props: {} });
+    first.render();
+    const inputs = walk(first.tree).filter(node => node.type === "input");
+    const select = find(first.tree, node => node.type === "select");
+    inputs[0].props.onChange({ target: { value: "40" } });
+    inputs[1].props.onChange({ target: { value: "3" } });
+    select.props.onChange({ target: { value: "monthly" } });
+    first.render();
+    find(first.tree, node => node.type === "button").props.onClick();
+    await first.flush();
+    assert.deepEqual(requested, { lookback: 40, topN: 3, rebalance: "monthly" });
+    first.dispose();
+
+    const remounted = createHookHarness(panel.default, { props: {} });
+    remounted.render();
+    const restoredInputs = walk(remounted.tree).filter(node => node.type === "input");
+    const restoredSelect = find(remounted.tree, node => node.type === "select");
+    assert.equal(restoredInputs[0].props.value, "40");
+    assert.equal(restoredInputs[1].props.value, "3");
+    assert.equal(restoredSelect.props.value, "monthly");
+    assert.ok(walk(remounted.tree).some(node => node.type === panel.EtfRotationView && node.props.report === customReport));
+    remounted.dispose();
+  } finally {
+    panel.resetEtfRotationCache();
+    global.window = prevWindow;
+  }
 });

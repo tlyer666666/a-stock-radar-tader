@@ -67,7 +67,7 @@ function expandScript(script, seen = new Set()) {
   assert.ok(!seen.has(script), `Script cycle: ${script}`);
   const next = new Set([...seen, script]);
   return packageJson.scripts[script].split(/\s*&&\s*/).flatMap((command) => {
-    const nested = command.match(/^pnpm ([\w:-]+)$/)?.[1];
+    const nested = command.match(/^pnpm (?:run )?([\w:-]+)$/)?.[1];
     if (nested && packageJson.scripts[nested]) return expandScript(nested, next);
     if (command === "node electron/build-platform.cjs") {
       // Inspect the platform dispatcher's real runPnpm calls too: the Windows
@@ -110,8 +110,9 @@ const [tool,...args]=process.argv.slice(2);
 fs.appendFileSync(process.env.RELEASE_GATE_EVENTS,JSON.stringify({tool,args})+'\\n');
 if(tool==='pnpm') {
   const scripts=require('./package.json').scripts;
-  if(!scripts[args[0]]) throw new Error('Unexpected script '+args[0]);
-  const result=spawnSync(scripts[args[0]],{shell:true,stdio:'inherit',env:process.env,cwd:__dirname});
+  const script=args[0]==='run'?args[1]:args[0];
+  if(!scripts[script]) throw new Error('Unexpected script '+script);
+  const result=spawnSync(scripts[script],{shell:true,stdio:'inherit',env:process.env,cwd:__dirname});
   if(result.error) throw result.error;
   process.exit(result.status??99);
 }

@@ -230,14 +230,19 @@ function registerAiIpc({
     return { signals: hub.list({ status, code, limit: 300 }), stats: hub.stats(), evaluation };
   };
   // 自订资讯源（RSS / Atom）：list / save / remove / test。
-  handleTrustedIpc("agent:feeds", async (_, input) => {
+  handleTrustedIpc("agent:feeds", async (event, input) => {
     const payload = aiPayload(input);
     const hub = rssFeeds?.();
     if (!hub) throw new Error("自订资讯源暂不可用");
     const op = String(payload.op || "list");
     if (op === "save") return hub.save({ id: payload.id, name: payload.name, url: payload.url, enabled: payload.enabled !== false });
     if (op === "remove") return hub.remove(String(payload.id || "").slice(0, 40));
-    if (op === "test") return { ...hub.list(), test: await hub.test(String(payload.url || "")) };
+    if (op === "test") {
+      return withAbortableRuntime(event, payload, async runtime => ({
+        ...hub.list(),
+        test: await hub.test(String(payload.url || ""), { signal: runtime?.signal })
+      }));
+    }
     return hub.list();
   });
   handleTrustedIpc("agent:signals", (event, input) => {

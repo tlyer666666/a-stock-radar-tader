@@ -78,15 +78,39 @@ export function EtfRotationView({ report }: { report: EtfRotationReport }) {
   </div>;
 }
 
-/** ETF 页的轮动面板：点开才计算（要读 7 只 ETF 的多年日线）。 */
+/** 决策中心的 ETF 轮动面板：点开才计算（要读 7 只 ETF 的多年日线）；参数与报告一起留在模块里，切走再回来保持一致且不用重算。 */
+const rotationCache: {
+  lookback: string;
+  topN: string;
+  rebalance: EtfRotationConfig["rebalance"];
+  report: EtfRotationReport | null;
+} = {
+  lookback: "60",
+  topN: "2",
+  rebalance: "weekly",
+  report: null
+};
+
+/** 测试辅助：重置模块级轮动缓存。 */
+export function resetEtfRotationCache() {
+  rotationCache.lookback = "60";
+  rotationCache.topN = "2";
+  rotationCache.rebalance = "weekly";
+  rotationCache.report = null;
+}
+
 export default function EtfRotationPanel() {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.getEtfRotation;
-  const [report, setReport] = useState<EtfRotationReport | null>(null);
+  const [report, setReportState] = useState<EtfRotationReport | null>(() => rotationCache.report);
+  const setReport = (value: EtfRotationReport | null) => { rotationCache.report = value; setReportState(value); };
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [lookback, setLookback] = useState("60");
-  const [topN, setTopN] = useState("2");
-  const [rebalance, setRebalance] = useState<EtfRotationConfig["rebalance"]>("weekly");
+  const [lookback, setLookbackState] = useState(() => rotationCache.lookback);
+  const [topN, setTopNState] = useState(() => rotationCache.topN);
+  const [rebalance, setRebalanceState] = useState<EtfRotationConfig["rebalance"]>(() => rotationCache.rebalance);
+  const setLookback = (value: string) => { rotationCache.lookback = value; setLookbackState(value); };
+  const setTopN = (value: string) => { rotationCache.topN = value; setTopNState(value); };
+  const setRebalance = (value: EtfRotationConfig["rebalance"]) => { rotationCache.rebalance = value; setRebalanceState(value); };
   const mountedRef = useRef(true);
   const seqRef = useRef(0);
   useEffect(() => {

@@ -45,6 +45,7 @@ function quoteFromLimitPoolRow(row, { fetchedAt, date }) {
     floatMarketCap: num(row?.currency_value),
     bids: latest !== null && latest > 0 && orderShares !== null && orderShares > 0 ? [{ price: latest, volumeLots: orderShares / 100 }] : [],
     asks: [],
+    ...(orderShares !== null && orderShares > 0 ? {} : { sealUnknown: true }),
     quoteAt: fetchedAt, quoteDate: date,
     source: "同花顺涨停池"
   };
@@ -171,12 +172,27 @@ function createThsSealSource({ fetchJson, thsQuote, thsFiveRange, tencentBatch =
   async function read({ codes = [], detailCodes = [] } = {}, { signal } = {}) {
     const quotes = new Map();
     const detail = new Set(detailCodes);
-    let table = null;
-    try { table = await pools(signal); } catch (error) { if (signal?.aborted) throw signal.reason ?? error; log(`ths-seal pools ${error?.message || error}`); }
-    const thsMap = table?.map || new Map();
     const poolCodes = codes.filter(code => !detail.has(code));
-    const tencentWanted = [...detail, ...poolCodes.filter(code => !thsMap.has(code))];
-    const tencent = await tencentQuotes([...new Set(tencentWanted)], signal);
+    let table = null;
+    let tencent = null;
+    const loadPools = async () => { try { table = await pools(signal); } catch (error) { if (signal?.aborted) throw signal.reason ?? error; log(`ths-seal pools ${error?.message || error}`); } };
+    if (poolCodes.length) await loadPools();
+    else {
+      // 只有个股页在看：同花顺涨停池/炸板池只包含涨停和炸板股（不含跌停股），
+      // 先用腾讯五档判断这只股票今天有没有摸过涨停价，没摸过（含普通股、跌停股与缺价）就不必拉全市场涨停池。
+      tencent = await tencentQuotes([...detail], signal);
+      const touched = quote => {
+        if (!quote) return false;
+        const up = quote.limitUp;
+        if (!Number.isFinite(up) || up <= 0) return false;
+        const highTouched = Number.isFinite(quote.high) && quote.high > 0 && quote.high >= up - 0.0005;
+        const latestTouched = Number.isFinite(quote.latest) && quote.latest > 0 && quote.latest >= up - 0.0005;
+        return highTouched || latestTouched;
+      };
+      if ([...detail].some(code => !tencent.has(code) || touched(tencent.get(code)))) await loadPools();
+    }
+    const thsMap = table?.map || new Map();
+    if (!tencent) tencent = await tencentQuotes([...new Set([...detail, ...poolCodes.filter(code => !thsMap.has(code))])], signal);
 
     for (const code of poolCodes) {
       const ths = thsMap.get(code);

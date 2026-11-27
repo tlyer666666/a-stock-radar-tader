@@ -114,3 +114,28 @@ test("same-day broken pool detail reports open-pool source label and gateway fal
   assert.equal(quotes.get("002713").source, "同花顺炸板池 + 腾讯实时五档");
   assert.equal(quotes.get("600185").quoteDate, "2026-11-27", "fallback quoteDate uses Beijing date instead of empty string");
 });
+
+test("viewing an ordinary stock, a limit-down stock, or a null-latest quote never downloads the THS limit-up pools; a stock that touched limit-up does", async () => {
+  const urls = [];
+  const quoteOf = {
+    "600519": { code: "600519", latest: 1466, high: 1470, limitUp: 1622, limitDown: 1327, bids: [{ price: 1465.9, volumeLots: 3 }], asks: [{ price: 1466.1, volumeLots: 2 }] },
+    "000001": { code: "000001", latest: 9.0, high: 9.5, limitUp: 11.0, limitDown: 9.0, bids: [], asks: [{ price: 9.0, volumeLots: 4000 }] },
+    "000002": { code: "000002", latest: null, high: null, limitUp: 11.0, limitDown: 9.0, bids: [], asks: [] },
+    "002149": { code: "002149", latest: 27.5, high: 27.86, limitUp: 27.86, limitDown: 22.8, bids: [{ price: 27.49, volumeLots: 30 }], asks: [{ price: 27.5, volumeLots: 20 }] }
+  };
+  const source = createThsSealSource({
+    now: () => NOW, fetchJson: async url => { urls.push(url); return poolJson([]); },
+    thsQuote: async () => ({}), thsFiveRange: async () => ({ bids: [], asks: [] }),
+    tencentBatch: async securities => ({ quotes: new Map(securities.map(item => [item.code, quoteOf[item.code]])) })
+  });
+  const plain = await source.read({ codes: ["600519"], detailCodes: ["600519"] });
+  assert.equal(urls.length, 0, "no pool request for a stock nowhere near its limit");
+  assert.equal(computeSeal(plain.quotes.get("600519")).status, "open");
+  const limitDown = await source.read({ codes: ["000001"], detailCodes: ["000001"] });
+  assert.equal(urls.length, 0, "limit-down stock must not trigger THS limit-up pool download");
+  assert.equal(computeSeal(limitDown.quotes.get("000001")).status, "downSealed");
+  await source.read({ codes: ["000002"], detailCodes: ["000002"] });
+  assert.equal(urls.length, 0, "null latest/high must not coerce to 0 and trigger THS pool download");
+  await source.read({ codes: ["002149"], detailCodes: ["002149"] });
+  assert.ok(urls.some(url => url.includes("limit_up_pool")), "a stock that touched limit-up today gets the THS pool for its seal size");
+});

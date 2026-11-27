@@ -14,21 +14,50 @@ export function useLimitSeals(codes: string[], { owner, enabled = true, withHist
   useEffect(() => {
     setLastTickAt(0);
     const list = key ? key.split(",") : [];
+    const wanted = new Set(list);
+    const prune = (table: Record<string, LimitSealRecord>): Record<string, LimitSealRecord> => {
+      const entries = Object.entries(table).filter(([code]) => wanted.has(code));
+      return entries.length === Object.keys(table).length ? table : Object.fromEntries(entries);
+    };
+    setRecords(previous => (enabled && list.length ? prune(previous) : Object.keys(previous).length ? {} : previous));
     const api = typeof window !== "undefined" ? window.stockApi : undefined;
     if (!enabled || !list.length || typeof api?.subscribeLimitSeals !== "function" || typeof api?.onLimitSealTick !== "function") return undefined;
     let alive = true;
-    const wanted = new Set(list);
+    const liveSeen = new Set<string>();
     const unlisten = api.onLimitSealTick(tick => {
       const items = Array.isArray(tick?.items) ? tick.items.filter(item => wanted.has(item.code)) : [];
       if (!alive || !items.length) return;
-      setRecords(previous => mergeSealTick(previous, items, 400, withHistory));
+      for (const item of items) liveSeen.add(item.code);
+      // 合并后裁掉这批不再盯的代码：换股票、删自选留下的旧记录不留在内存里。
+      setRecords(previous => prune(mergeSealTick(previous, items, 400, withHistory)));
       setLastTickAt(Number(tick.atMs) || Date.now());
     });
     const renew = (first: boolean) => {
       void api.subscribeLimitSeals!({ owner, codes: list, withHistory: first && withHistory }).then(result => {
-        if (!alive || !first || !Array.isArray(result?.items) || !result.items.length) return;
-        setRecords(previous => mergeSealTick(previous, result.items, 400, withHistory));
-        setLastTickAt(Date.now());
+        if (!alive || !first) return;
+        const items = Array.isArray(result?.items) ? result.items.filter(item => wanted.has(item.code)) : [];
+        const snapshotCodes = new Set(items.map(item => item.code));
+        setRecords(previous => {
+          const base: Record<string, LimitSealRecord> = {};
+          for (const [code, record] of Object.entries(previous)) {
+            if (wanted.has(code) && (snapshotCodes.has(code) || liveSeen.has(code))) base[code] = record;
+          }
+          // 等待初始快照期间已收到实时推送的代码：保留实时字段不回退，只按同日补齐更早的走势点。
+          if (withHistory) {
+            for (const item of items) {
+              const liveRec = liveSeen.has(item.code) ? base[item.code] : undefined;
+              if (!liveRec || !item.history?.length) continue;
+              const sameDay = !liveRec.quoteDate || !item.quoteDate || liveRec.quoteDate === item.quoteDate;
+              if (!sameDay) continue;
+              const lastSnapT = item.history.at(-1)!.t;
+              const newerLive = (liveRec.history || []).filter(point => point.t > lastSnapT);
+              base[item.code] = { ...liveRec, history: [...item.history, ...newerLive].slice(-400) };
+            }
+          }
+          const snapshotOnly = items.filter(item => !liveSeen.has(item.code));
+          return snapshotOnly.length ? prune(mergeSealTick(base, snapshotOnly, 400, withHistory)) : base;
+        });
+        if (items.length) setLastTickAt(Date.now());
       }).catch(() => undefined);
     };
     renew(true);

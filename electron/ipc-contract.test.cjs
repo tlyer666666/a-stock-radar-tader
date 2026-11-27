@@ -352,3 +352,67 @@ test("M-4: ai.ipc.cjs wires abortable AbortController runtime into loadAiStockPr
   await assert.rejects(pendingRank, { code: "JOB_CANCELLED" });
   assert.equal(abortedCleanup, 1);
 });
+
+test("L4: agent:feeds op=test wraps withAbortableRuntime and forwards runtime signal to hub.test", async () => {
+  const { registerAiIpc } = require("./ipc/ai.ipc.cjs");
+  const handlers = new Map();
+  let seenSignal = null;
+  let cleanupCalls = 0;
+  let activeController = null;
+  registerAiIpc({
+    handleTrustedIpc: (channel, handler) => handlers.set(channel, handler),
+    aiPayload: input => (input && typeof input === "object" ? input : {}),
+    aiService: () => ({}),
+    aiProfiles: () => ({}),
+    stockAgent: () => ({}),
+    rssFeeds: () => ({
+      list: () => ({ feeds: [], maxFeeds: 12 }),
+      test: async (_url, options) => {
+        seenSignal = options?.signal;
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+        });
+      }
+    }),
+    AI_CUSTOM_MAX: 50,
+    loadAiStockProfiles: async () => ({ profiles: [], failed: [] }),
+    latestDate: () => "2026-01-02",
+    readAiCustomList: () => [],
+    normalizeAiCustomItem: x => x,
+    normalizeAiCustomItems: x => x,
+    isAiCustomList: () => true,
+    readAiFramework: () => ({}),
+    normalizeFrameworkState: x => x,
+    normalizeCustom: x => x,
+    frameworkCatalog: () => ({}),
+    isAiFrameworkState: () => true,
+    writeJson: () => {},
+    settingsForService: () => ({}),
+    resolveTestSecret: () => "",
+    sameOrigin: () => true,
+    getProfessionalReview: async () => ({}),
+    recordExternalFactorSnapshot: () => {},
+    createReviewSkills: () => ({}),
+    getFuyaoReviewData: async () => ({}),
+    getSectorStrengthBoard: async () => ({}),
+    analyzeSector: async () => ({}),
+    situationOf: () => [],
+    emitAiStream: () => {},
+    setWorkspaceAgentSnapshot: () => {},
+    serviceRequestRuntime: (_event, input) => ({ owner: 7, requestId: input?.requestId }),
+    trackAbortableRequest: () => {
+      activeController = new AbortController();
+      return {
+        signal: activeController.signal,
+        abort: reason => activeController.abort(reason),
+        cleanup: () => { cleanupCalls += 1; }
+      };
+    }
+  });
+
+  const pending = handlers.get("agent:feeds")({}, { op: "test", url: "https://example.com/rss", requestId: "feed-test-1" });
+  assert.equal(seenSignal, activeController.signal);
+  activeController.abort(Object.assign(new Error("测试已取消"), { code: "FEED_ABORTED", name: "AbortError" }));
+  await assert.rejects(pending, { code: "FEED_ABORTED" });
+  assert.equal(cleanupCalls, 1);
+});

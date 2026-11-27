@@ -25,7 +25,11 @@ const FLOORS = { lines: 75, branches: 74, functions: 80 };
 // 与 `pnpm test` 同源：单测清单来自 qa/test-manifest.cjs 的磁盘自动发现，
 // 不再正则解析 package.json，清单遗漏即覆盖率盲区的问题随之消除。
 const root = path.resolve(__dirname, "..");
-const files = execFileSync(process.execPath, [path.join(__dirname, "test-manifest.cjs"), "unit"], { cwd: root, encoding: "utf8" })
+const manifestScript = path.join(__dirname, "test-manifest.cjs");
+const manifestCheck = spawnSync(process.execPath, [manifestScript, "--check"], { stdio: "inherit", cwd: root });
+if (manifestCheck.error) throw manifestCheck.error;
+if (manifestCheck.status !== 0) process.exit(manifestCheck.status ?? 1);
+const files = execFileSync(process.execPath, [manifestScript, "unit"], { cwd: root, encoding: "utf8" })
   .trim()
   .split(/\r?\n/)
   .filter(Boolean);

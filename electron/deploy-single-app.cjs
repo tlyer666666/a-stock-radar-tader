@@ -219,6 +219,16 @@ async function main() {
   const gitCommit = gitCommitResult.status === 0 ? String(gitCommitResult.stdout || "").trim() : "";
   const gitBranchResult = spawnSync("git", ["-C", repo, "rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" });
   const gitBranch = gitBranchResult.status === 0 ? String(gitBranchResult.stdout || "").trim() : "";
+  const gitStatusResult = spawnSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" });
+  const gitStatusOk = !gitStatusResult.error && gitStatusResult.status === 0;
+  // 部署过程自身在仓根创建的临时产物锁文件（.a-stock-artifact.lock）在 finally 清理，不算脏工作树。
+  const dirtyLines = gitStatusOk
+    ? String(gitStatusResult.stdout || "")
+      .split(/\r?\n/)
+      .filter(line => line.trim().length > 0 && line.slice(3).trim() !== ".a-stock-artifact.lock")
+    : [];
+  const workingTreeClean = gitStatusOk && dirtyLines.length === 0;
+  const commitRef = gitCommit ? (workingTreeClean ? gitCommit : `${gitCommit}-dirty`) : "";
   const shanghaiDay = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10);
   meta.schemaVersion = meta.schemaVersion || 1;
   meta.generatedAt = new Date().toISOString();
@@ -226,16 +236,22 @@ async function main() {
   meta.version = VERSION;
   meta.build = `已完整构建、${process.platform === "darwin" ? "ad-hoc 签名并" : ""}安装 ${VERSION}（${shanghaiDay}）`;
   meta.delivery = "single-app-only";
-  if (gitCommit) meta.sourceCommit = gitCommit;
+  meta.workingTreeClean = workingTreeClean;
+  if (commitRef) meta.sourceCommit = commitRef;
   else if (!meta.sourceCommit) meta.sourceCommit = "unknown";
   if (gitBranch) meta.sourceBranch = gitBranch;
   meta.current = { app: APP_NAME, appAsarSha256: appSha, archive: null, sha256: null };
-  meta.sourceNote = `源码及实际桌面软件均为 ${VERSION}；${receipt.recordedInputs} 项构建输入与产物一致。`;
+  const dirtySummary = !workingTreeClean
+    ? (gitStatusOk ? `，工作树含 ${dirtyLines.length} 项未提交改动` : "，工作树状态未知")
+    : "";
+  meta.sourceNote = `源码及实际桌面软件均为 ${VERSION}；${receipt.recordedInputs} 项构建输入与产物一致${dirtySummary}。`;
   meta.source = {
     version: VERSION,
     path: "源码/a-stock-radar-tader",
-    ...(gitCommit ? { commit: gitCommit } : {}),
-    note: `源码含当前已安装版本 ${VERSION} 改动${gitCommit ? `（commit ${gitCommit}）` : ""}，${receipt.recordedInputs} 项输入与实际产物一致。`
+    ...(commitRef ? { commit: commitRef } : {}),
+    workingTreeClean,
+    ...(!workingTreeClean && gitStatusOk ? { dirtyFiles: dirtyLines.length } : {}),
+    note: `源码含当前已安装版本 ${VERSION} 改动${commitRef ? `（commit ${commitRef}${!workingTreeClean && gitStatusOk ? `，${dirtyLines.length} 项未提交` : ""}）` : ""}，${receipt.recordedInputs} 项输入与实际产物一致。`
   };
   meta.verification = {
     previousVerification,
@@ -262,7 +278,7 @@ async function main() {
     meta.knownDataLimitations["涨停趋势"] = meta.knownDataLimitations["涨停趋势"].replace("交易日历覆盖2025–2026", "交易日历覆盖2025–2027");
   }
   if (!meta.notes || typeof meta.notes !== "object") meta.notes = {};
-  meta.notes[VERSION] = `${shanghaiDay} 完整构建、${process.platform === "darwin" ? "ad-hoc 签名并" : ""}安装${gitCommit ? `（commit ${gitCommit}）` : ""}；${receipt.recordedInputs} 项构建输入与产物一致。`;
+  meta.notes[VERSION] = `${shanghaiDay} 完整构建、${process.platform === "darwin" ? "ad-hoc 签名并" : ""}安装${commitRef ? `（commit ${commitRef}${!workingTreeClean && gitStatusOk ? `，${dirtyLines.length} 项未提交` : ""}）` : !workingTreeClean && gitStatusOk ? `（工作树未提交 ${dirtyLines.length} 项）` : ""}；${receipt.recordedInputs} 项构建输入与产物一致。`;
   let readme = oldReadme;
   if (readme !== null) {
     readme = readme

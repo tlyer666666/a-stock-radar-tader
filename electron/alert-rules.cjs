@@ -367,4 +367,4 @@ function createAlertRules({ store, loadBars, loadTargets, loadBoard, notify = ()
   return { list, saveRule, removeRule, clearHistory, run };
 }
 
-module.exports = { createAlertRules, evaluateIndicator, marketLight, normalizeRule, describeRule, requiredBars, rsi, macdDiff, kdjDiff, cci, isAlertStore, ALERT_TYPES: TYPES };
+module.exports = { createAlertRules, evaluateIndicator, marketLight, normalizeRule, describeRule, requiredBars, rsi, macdDiff, kdjDiff, cci, isAlertStore };

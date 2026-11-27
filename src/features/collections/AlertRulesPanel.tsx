@@ -118,8 +118,8 @@ function RuleRow({ rule, busy, onRequest }: { rule: AlertRule; busy: boolean; on
   </li>;
 }
 
-/** 指标预警面板：放在「自选监控」页，和每只股票的价格条件并行。 */
-export default function AlertRulesPanel() {
+/** 指标预警面板：放在「决策中心」页，按已收盘日线自动或手动评估技术指标条件。 */
+export default function AlertRulesPanel({ active = true }: { active?: boolean } = {}) {
   const api = typeof window === "undefined" ? undefined : window.stockApi?.alertRules;
   const [state, setState] = useState<AlertRulesState>(EMPTY);
   const [busy, setBusy] = useState(false);
@@ -127,13 +127,21 @@ export default function AlertRulesPanel() {
   const [error, setError] = useState("");
   const mountedRef = useRef(true);
   const seqRef = useRef(0);
+  const inFlightRef = useRef(false);
+  const silentInFlightRef = useRef(false);
+  const lastSilentRefreshRef = useRef(0);
   useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
+    return () => {
+      mountedRef.current = false;
+      inFlightRef.current = false;
+      silentInFlightRef.current = false;
+    };
   }, []);
   const request = useCallback((input: AlertRulesRequest) => {
     if (typeof api !== "function") return;
     const seq = ++seqRef.current;
+    inFlightRef.current = true;
     setBusy(true); setMessage(""); setError("");
     void api(input).then(next => {
       if (!mountedRef.current || seq !== seqRef.current) return;
@@ -143,10 +151,47 @@ export default function AlertRulesPanel() {
       if (!mountedRef.current || seq !== seqRef.current) return;
       setError(userErrorText(reason, "操作失败"));
     }).finally(() => {
-      if (mountedRef.current && seq === seqRef.current) setBusy(false);
+      if (seq === seqRef.current) {
+        inFlightRef.current = false;
+        if (mountedRef.current) setBusy(false);
+      }
     });
   }, [api]);
   useEffect(() => { request({ op: "list" }); }, [request]);
+  useEffect(() => {
+    if (active === false || typeof window === "undefined" || typeof window.addEventListener !== "function") return undefined;
+    const refresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      if (inFlightRef.current || silentInFlightRef.current || typeof api !== "function") return;
+      const now = Date.now();
+      if (now - lastSilentRefreshRef.current <= 1500) return;
+      lastSilentRefreshRef.current = now;
+      silentInFlightRef.current = true;
+      const seqBefore = seqRef.current;
+      void api({ op: "list" }).then(next => {
+        if (!mountedRef.current || seqRef.current !== seqBefore) return;
+        setState(current => ({
+          ...current,
+          rules: next.rules,
+          history: next.history,
+          lastRunAt: next.lastRunAt,
+          types: next.types
+        }));
+      }).catch(() => undefined).finally(() => {
+        silentInFlightRef.current = false;
+      });
+    };
+    window.addEventListener("focus", refresh);
+    if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", refresh);
+    }
+    return () => {
+      window.removeEventListener("focus", refresh);
+      if (typeof document !== "undefined" && typeof document.removeEventListener === "function") {
+        document.removeEventListener("visibilitychange", refresh);
+      }
+    };
+  }, [active, api]);
   if (typeof api !== "function") return null;
   return <AlertRulesView state={state} busy={busy} message={message} error={error} onRequest={request} />;
 }

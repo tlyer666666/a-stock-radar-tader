@@ -27,7 +27,7 @@ import type { WorkspaceView } from "../../workspaceView";
 import type { CopilotAlertItem, MarketSessionPhase } from "../../copilotBriefing";
 import { inferAssetType, inferSecid } from "../../domain/securityIdentifiers";
 import { startVisibleInterval } from "../../visiblePolling";
-import { newsTimeText } from "../../dateUtils";
+import { newsTimeText, shanghaiDateTag } from "../../dateUtils";
 import type { NotesApi } from "../notes/useNotes";
 import type { TAssistantApi } from "../t-assistant/useTAssistant";
 import type { StockMonitorAlert } from "../../useStockMonitors";
@@ -48,7 +48,7 @@ import {
 } from "./cockpitModel";
 import MarketPulseCard from "./MarketPulseCard";
 import IndexBoard from "./IndexBoard";
-import { applyIndexTick, type IndexBoardSnapshot } from "./indexBoardModel";
+import { applyIndexTick, inMarketStreamWindow, mergeIndexSnapshot, type IndexBoardSnapshot } from "./indexBoardModel";
 import { canOpenAgent, openAgentForMarket } from "../ai-agent/agentModel";
 
 const MODE_META: Record<CockpitSessionMode, { label: string; badge: string; focus: string }> = {
@@ -225,6 +225,9 @@ export default function TodayCockpitView({
   const [indexTickAt, setIndexTickAt] = useState(0);
   const indexTickRef = useRef(0);
   const indexFullRef = useRef(0);
+  const indexTryRef = useRef(0);
+  const indexLoadingRef = useRef(false);
+  const indexLastFailedRef = useRef(false);
 
   const activePlans = useMemo(() => plans.filter(item => !item.archivedAt), [plans]);
   const planByCode = useMemo(() => new Map(activePlans.map(plan => [plan.candidate.security.code, plan])), [activePlans]);
@@ -258,7 +261,7 @@ export default function TodayCockpitView({
   };
   const planChip = (code: string) => {
     const plan = planByCode.get(code);
-    return <span key="计划" className="cockpit-chip muted" title={plan ? `加入于 ${plan.savedAt.slice(0, 10)}，${PLAN_COCKPIT_TRADING_DAYS} 个交易日后自动移出` : undefined}>观察{plan?.source ? ` · ${plan.source}` : ""}</span>;
+    return <span key="计划" className="cockpit-chip muted" title={plan ? `加入于 ${shanghaiDateTag(plan.savedAt)}，${PLAN_COCKPIT_TRADING_DAYS} 个交易日后自动移出` : undefined}>观察{plan?.source ? ` · ${plan.source}` : ""}</span>;
   };
   const openPaperPositions = useMemo(
     () => (Array.isArray(paperSummary?.normalized?.openPositions) ? paperSummary.normalized.openPositions : []),
@@ -423,24 +426,42 @@ export default function TodayCockpitView({
   }, []);
 
   // 指数条：先读一次完整快照（含分时）；盘中再订阅主进程的实时推送，行情一变立刻合并进来。
-  // 推送 8 秒没动静就退回每 2 秒读一次快照；分时每 60 秒整体刷新一次。休市时只在打开和手动同步时读。
+  // 推送 8 秒没动静就退回每 2 秒读一次快照；分时每 60 秒整体刷新一次；接口失败时按 60 秒（盘内）/ 5 分钟（盘外）节流。
   const loadIndexBoard = useCallback(async (refresh = false) => {
     const api = typeof window !== "undefined" ? window.stockApi : undefined;
     if (typeof api?.getIndexBoard !== "function") { setIndexBoardState("error"); return; }
+    if (!refresh && indexLoadingRef.current) return;
     const seq = ++indexSeqRef.current;
+    indexTryRef.current = Date.now();
+    indexLoadingRef.current = true;
     try {
       const next = await api.getIndexBoard({ forceRefresh: refresh });
       if (indexSeqRef.current !== seq) return;
-      if (next && Array.isArray(next.indices)) { indexFullRef.current = Date.now(); setIndexBoard(next); setIndexBoardState("ready"); }
-      else setIndexBoardState("error");
+      if (next && Array.isArray(next.indices)) {
+        indexFullRef.current = Date.now();
+        indexLastFailedRef.current = false;
+        setIndexBoard(prev => mergeIndexSnapshot(prev, next));
+        setIndexBoardState("ready");
+      } else {
+        indexLastFailedRef.current = true;
+        setIndexBoardState("error");
+      }
     } catch {
-      if (indexSeqRef.current === seq) setIndexBoardState("error");
+      if (indexSeqRef.current === seq) {
+        indexLastFailedRef.current = true;
+        setIndexBoardState("error");
+      }
+    } finally {
+      if (indexSeqRef.current === seq) indexLoadingRef.current = false;
     }
   }, []);
 
   useEffect(() => {
     void loadIndexBoard(false);
-    return () => { indexSeqRef.current += 1; };
+    return () => {
+      indexSeqRef.current += 1;
+      indexLoadingRef.current = false;
+    };
   }, [loadIndexBoard]);
 
   useEffect(() => {
@@ -457,7 +478,18 @@ export default function TodayCockpitView({
     renew();
     const stopRenew = startVisibleInterval(renew, 10_000, { resumeOnVisible: true });
     const stopFallback = startVisibleInterval(() => {
+      if (indexLoadingRef.current) return;
       const at = Date.now();
+      // 非交易窗口（与主进程 marketStreamLive 同口径）指数不会动：成功或失败都最多 5 分钟对一次表。
+      if (!inMarketStreamWindow(at)) {
+        if (at - indexFullRef.current > 5 * 60_000 && at - indexTryRef.current > 5 * 60_000) void loadIndexBoard(false);
+        return;
+      }
+      // 盘内上次快照请求失败时按 60 秒节流，避免网络故障时每 2 秒狂刷。
+      if (indexLastFailedRef.current) {
+        if (at - indexTryRef.current > 60_000) void loadIndexBoard(false);
+        return;
+      }
       const pushQuiet = at - indexTickRef.current > 8_000;
       if (pushQuiet || at - indexFullRef.current > 60_000) void loadIndexBoard(false);
     }, 2_000, { resumeOnVisible: true });

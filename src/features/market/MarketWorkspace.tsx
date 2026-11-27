@@ -24,7 +24,8 @@ import type {
   AnalysisFederationSource,
   AnalysisFirstBoardQuality,
   AnalysisHistoricalStats,
-  AnalysisPayload
+  AnalysisPayload,
+  AnalysisQuote
 } from "./analysisTypes";
 import type { LimitPoolMeta, LimitPoolRowRecord } from "./useMarketWorkspaceFeed";
 import {
@@ -37,6 +38,7 @@ import {
   EmptyInline, ErrorState, Fact, LoadingState, Metric, PageHeading, PanelTitle, ReturnBar
 } from "../../components/terminal/TerminalPrimitives";
 import { fmt, fmtMoney, nullableNumber, subtractNullable } from "../../domain/formatters";
+import { paperPriceLimitRate } from "../paper-simulation/paperTradingRules";
 import { clampNumber, normalizeRiskProfile, riskProfileLabel } from "../../domain/settings";
 import { paperCloseReasonLabel, type PaperClosedPosition, type PaperPosition } from "../../domain/paperSimulationTypes";
 import { tradeSignalLabel } from "../../domain/executionLabels";
@@ -77,6 +79,39 @@ export const resolvePaperCloseAllHandler = (
   closeAll: ((reason?: PaperClosedPosition["closeReason"]) => void) | undefined,
   closeCurrent: ((reason?: PaperClosedPosition["closeReason"]) => void) | undefined
 ) => (typeof closeAll === "function" ? closeAll : closeCurrent);
+
+/**
+ * 判断个股今天是否摸到过涨/跌停价（是否需要订阅实时封单）：
+ * 优先采用上游返回的正值涨跌停价，否则按整数分做四舍五入（避免二进制浮点 .xx5 边界差 1 分）；
+ * 盘前/停牌 0 价不触发订阅；IPO 无涨跌幅时不订阅；算不出昨收时放行交给数据源判定。
+ */
+export function isSealWatchRelevant(
+  quote: Pick<AnalysisQuote, "code" | "name" | "preClose" | "high" | "low" | "latest" | "limitUp" | "limitDown">,
+  security: Pick<Security, "code" | "name">,
+  assetLabel = ""
+): boolean {
+  if (assetLabel) return false;
+  const preClose = nullableNumber(quote.preClose);
+  if (preClose === null || preClose <= 0) return true;
+  const rate = paperPriceLimitRate(String(quote.code || security.code || ""), String(quote.name || security.name || ""));
+  if (rate === null) return false;
+  const high = nullableNumber(quote.high);
+  const low = nullableNumber(quote.low);
+  const latest = nullableNumber(quote.latest);
+  const explicitUp = nullableNumber(quote.limitUp);
+  const explicitDown = nullableNumber(quote.limitDown);
+  const preCents = Math.round(preClose * 100);
+  const ratePct = Math.round(rate * 100);
+  const upLimit = explicitUp !== null && explicitUp > 0
+    ? explicitUp
+    : Math.floor((preCents * (100 + ratePct)) / 100 + 0.5) / 100;
+  const downLimit = explicitDown !== null && explicitDown > 0
+    ? explicitDown
+    : Math.floor((preCents * (100 - ratePct)) / 100 + 0.5) / 100;
+  const nearUp = (value: number | null) => value !== null && value > 0 && value >= upLimit - 0.005;
+  const nearDown = (value: number | null) => value !== null && value > 0 && value <= downLimit + 0.005;
+  return nearUp(high) || nearUp(latest) || nearDown(low) || nearDown(latest);
+}
 
 const EmbeddedAiAgentView = lazy(() => import("../ai-agent/AiAgentView"));
 
@@ -343,6 +378,7 @@ export function Dashboard({
             <LimitUpPool
               items={normalizedLimitUps}
               meta={limitPoolMeta}
+              live={live}
               onOpen={onOpen}
               onAdd={onAdd}
               onOpenMonitor={onOpenMonitor}
@@ -361,6 +397,9 @@ export function Dashboard({
     ? String(a.assetLabel || quote.assetLabel || (security.assetType === "etf" ? "ETF" : "可转债"))
     : "";
   const isGeneralStock = !assetLabel && !a.limitEvent;
+  // 今天有没有摸到过涨/跌停价：按昨收和板块限幅推算（IPO 无涨跌幅时不订阅）。算不出昨收时不拦（订阅后由数据源按行情判定）。
+  // 这里不能用 hook：上面 mode/payload 的早退之后不能再挂 hook。只是几个数字比较，直接算。
+  const sealWatchRelevant = isSealWatchRelevant(quote, security, assetLabel);
   // E-01：0 / 缺失 / 非数的最新价不是“真的 0 元”，不得格式化成 0.00 并染成涨红。
   const latestPrice = nullableNumber(quote.latest);
   const changePercent = nullableNumber(quote.changePct);
@@ -1041,7 +1080,8 @@ export function Dashboard({
       </section>
 
       {/* 涨停（或炸板、跌停）时显示实时封单与五档盘口；未涨停的股票不占位置。 */}
-      {!assetLabel ? <LimitSealPanel code={String(quote.code || security.code || "")} /> : null}
+      {/* 只有今天摸到涨/跌停价的股票才订阅实时封单；看普通股票不为它下载整张涨停池。实时总开关关掉也不订阅。 */}
+      {!assetLabel ? <LimitSealPanel code={String(quote.code || security.code || "")} enabled={live && sealWatchRelevant} /> : null}
 
       <section className="signal-grid">
         {assetLabel ? (
