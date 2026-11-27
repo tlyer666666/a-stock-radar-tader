@@ -237,3 +237,17 @@ test("new market skills use real tools and pre-read global data", () => {
   const premarket = skillLib.skillPrefetchCalls(skillLib.resolveSkills(["global_premarket"]), null);
   assert.deepEqual(premarket.map(call => call.tool), ["global_markets", "global_news", "index_overview", "market_news", "market"]);
 });
+
+test("fundamentals-based and structure skills use real tools; the prompt asks for a risk review that can veto", () => {
+  const toolIds = new Set(STOCK_AGENT_TOOLS.map(tool => tool.id));
+  assert.ok(toolIds.has("fundamentals"));
+  for (const id of ["growth_quality", "expectation_repricing", "chan_theory", "wave_theory"]) {
+    const skill = skillLib.BUILTIN_SKILLS.find(item => item.id === id);
+    assert.ok(skill, id);
+    assert.ok(skillLib.SKILL_GROUPS.includes(skill.group), id);
+    for (const spec of skill.tools) assert.ok(toolIds.has(skillLib.parseToolSpec(spec).tool), `${id}: ${spec}`);
+  }
+  const prompt = systemPrompt({ clock: { text: "2026-11-27 10:00 星期五", session: "盘中（上午）" }, memory: "" });
+  assert.match(prompt, /"riskReview":\{"verdict":"pass\|downgrade\|veto"/);
+  assert.match(prompt, /veto 时软件会把买入\/加仓记成观望/);
+});

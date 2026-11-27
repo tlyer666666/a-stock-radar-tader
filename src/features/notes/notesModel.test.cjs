@@ -305,3 +305,37 @@ test("useNotes askAi guards cleared ai state and syncIntervals avoids empty-list
     else globalThis.document = origDocument;
   }
 });
+
+test("盘中做T、盯盘这类随心记默认只在盘中提醒；盘前、复盘类不算", () => {
+  for (const text of ["盘中做T注意关键词", "600519 做t 高抛低吸", "明天盯盘看分时", "T+0 冲高减仓"]) assert.equal(model.isIntradayText(text), true, text);
+  for (const text of ["明天开盘前看一下茅台", "收盘后复盘", "周末看研报", "Tesla 财报", "收盘后复盘今天冲高回落的票", "盘后看龙虎榜和炸板股", "晚上8点复盘：打板失败原因", "周末整理分时图笔记", "明早9:15挂单 600519", "冲高回落就减仓"]) assert.equal(model.isIntradayText(text), false, text);
+  const legacy = model.normalizeNote({ id: "a", text: "提醒盘中做T注意关键词", createdAt: iso("2026-11-12T09:00:00"), remindAt: iso("2026-11-12T20:00:00"), repeat: "interval", intervalMinutes: 30 });
+  assert.equal(legacy.sessionOnly, true, "old notes about 盘中做T switch to session-only automatically");
+  assert.equal(model.normalizeNote({ id: "b", text: "提醒盘中做T", sessionOnly: false, createdAt: iso("2026-11-12T09:00:00") }).sessionOnly, false, "an explicit choice is kept");
+});
+
+test("下一个盘中时点：盘中原样、午休到 13:00、收盘后和周末到下一个交易日 9:30", () => {
+  const next = text => new Date(model.nextSessionMoment(cn(text))).toISOString();
+  assert.equal(next("2026-11-12T10:00:00"), iso("2026-11-12T10:00:00"));
+  assert.equal(next("2026-11-12T08:10:00"), iso("2026-11-12T09:30:00"));
+  assert.equal(next("2026-11-12T12:05:00"), iso("2026-11-12T13:00:00"));
+  assert.equal(next("2026-11-12T20:00:00"), iso("2026-11-13T09:30:00"));
+  assert.equal(next("2026-11-13T15:30:00"), iso("2026-11-16T09:30:00"), "Friday evening → Monday open");
+});
+
+test("只在盘中提醒的随心记：盘外到点不提醒而是顺延；按分钟重复跳过午休和收盘", () => {
+  const base = { id: "t", text: "盘中做T注意关键词", createdAt: iso("2026-11-12T09:00:00"), updatedAt: iso("2026-11-12T09:00:00"), stock: null, done: false, firedFor: null, lastFiredAt: null, condition: null, conditionHit: null, ai: null };
+  const night = { ...base, remindAt: iso("2026-11-12T20:00:00"), repeat: "interval", intervalMinutes: 30, sessionOnly: true };
+  assert.deepEqual(model.dueToFire([night], cn("2026-11-12T20:00:30")), [], "no reminder at 20:00");
+  assert.deepEqual(model.deferOutOfSession([night], cn("2026-11-12T20:00:30")), [{ id: "t", remindAt: iso("2026-11-13T09:30:00") }]);
+  const anyTime = { ...night, sessionOnly: false };
+  assert.equal(model.dueToFire([anyTime], cn("2026-11-12T20:00:30")).length, 1, "normal notes still remind at night");
+  assert.deepEqual(model.deferOutOfSession([anyTime], cn("2026-11-12T20:00:30")), []);
+  const morning = { ...night, remindAt: iso("2026-11-13T11:15:00") };
+  assert.equal(model.dueToFire([morning], cn("2026-11-13T11:15:10")).length, 1, "in session it fires");
+  assert.equal(model.markFired(morning, cn("2026-11-13T11:15:10")).remindAt, iso("2026-11-13T13:00:00"), "11:45 falls in the lunch break → 13:00");
+  const close = { ...night, remindAt: iso("2026-11-13T14:50:00") };
+  assert.equal(model.markFired(close, cn("2026-11-13T14:50:05")).remindAt, iso("2026-11-16T09:30:00"), "after the close → next trading day open");
+  const daily = { ...base, remindAt: iso("2026-11-13T21:00:00"), repeat: "daily", intervalMinutes: null, sessionOnly: true };
+  assert.equal(model.markFired(daily, cn("2026-11-13T21:00:05")).remindAt, iso("2026-11-16T09:30:00"));
+});

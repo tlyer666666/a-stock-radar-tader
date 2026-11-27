@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { AlarmClock, ArrowDownUp, BellRing, Bot, Check, CircleAlert, Clock3, Crosshair, Loader2, NotebookPen, Pencil, Repeat2, RotateCcw, Search, Sparkles, Star, Trash2, Volume2, VolumeX, X } from "lucide-react";
+import { AlarmClock, ArrowDownUp, BellRing, Bot, CandlestickChart, Check, CircleAlert, Clock3, Crosshair, Loader2, NotebookPen, Pencil, Repeat2, RotateCcw, Search, Sparkles, Star, Trash2, Volume2, VolumeX, X } from "lucide-react";
 import {
-  MAX_INTERVAL_MINUTES, REPEAT_LABELS, cnParts, cnTime, describeCondition, formatRemind, inspectReminder, isAwaiting, mentionedStockCodes, nextTradingDay, normalizeCondition, normalizeIntervalMinutes, parseConditions, parseNoteClock, presetTimes, repeatLabel, sortNotes,
+  MAX_INTERVAL_MINUTES, REPEAT_LABELS, cnParts, isIntradayText, cnTime, describeCondition, formatRemind, inspectReminder, isAwaiting, mentionedStockCodes, nextTradingDay, normalizeCondition, normalizeIntervalMinutes, parseConditions, parseNoteClock, presetTimes, repeatLabel, sortNotes,
   tradingDayOnOrAfter, type Note, type NoteCondition, type NoteRepeat, type NoteStock
 } from "./notesModel";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
@@ -163,6 +163,14 @@ function RepeatFields({ repeat, interval, onRepeat, onInterval }: {
   </>;
 }
 
+/** 「只在盘中提醒」开关：交易日 9:30–11:30、13:00–15:00 以外到点的提醒顺延到下一个盘中时点。 */
+function SessionOnlyToggle({ checked, auto, onChange }: { checked: boolean; auto?: boolean; onChange: (value: boolean) => void }) {
+  return <label className="notes-repeat notes-session-toggle" title="交易日 9:30–11:30、13:00–15:00 以外到点的提醒不弹窗、不出声，顺延到下一个盘中时点；按分钟重复的在休市和午休时自动暂停">
+    <input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} />
+    <CandlestickChart size={13} />只在盘中提醒{auto && checked ? <small>（识别到盘中相关的词）</small> : null}
+  </label>;
+}
+
 /** 确认当前草稿推导出的提醒，手选时间和重复规则优先。 */
 function Composer({ api, now, knownStocks }: {
   api: NotesApi;
@@ -177,6 +185,7 @@ function Composer({ api, now, knownStocks }: {
   const [intervalOverride, setIntervalOverride] = useState<string | null>(null);
   const [stockChoice, setStockChoice] = useState<string | null>(null);
   const [conditionChoice, setConditionChoice] = useState<number | null>(null);
+  const [sessionOverride, setSessionOverride] = useState<{ value: boolean; source: "user" | "ai" } | null>(null);
   const [message, setMessage] = useState("");
   const [ai, setAi] = useState<{
     code: string | null; condition: NoteCondition | null; note: string; undo: () => void;
@@ -209,8 +218,10 @@ function Composer({ api, now, knownStocks }: {
   const autoAt = detectedInterval ? now + (intervalMinutes ?? detectedInterval) * 60_000 : parsed?.at ?? null;
   const remindAt = mode === "auto" ? autoAt : mode === "custom" ? fromLocalInput(custom) : preset?.at ?? null;
   const past = remindAt !== null && remindAt <= Date.now();
+  const autoSession = isIntradayText(text);
+  const sessionOnly = sessionOverride?.value ?? autoSession;
   const plan = [
-    remindAt === null ? "" : `${formatRemind(new Date(remindAt).toISOString(), now)}${repeat !== "none" ? `（${repeatLabel(repeat, intervalMinutes)}）` : ""} 提醒`,
+    remindAt === null ? "" : `${formatRemind(new Date(remindAt).toISOString(), now)}${repeat !== "none" ? `（${repeatLabel(repeat, intervalMinutes)}）` : ""} 提醒${sessionOnly ? "（只在盘中）" : ""}`,
     condition ? `盘中${describeCondition(condition)}时提醒` : ""
   ].filter(Boolean);
   const changeDraft = () => { draftRevision.current += 1; setMessage(""); };
@@ -227,13 +238,13 @@ function Composer({ api, now, knownStocks }: {
     const firstAt = mode === "auto" && detectedInterval
       ? Date.now() + (intervalMinutes ?? detectedInterval) * 60_000
       : remindAt;
-    const error = api.add({ text, remindAt: firstAt, repeat: firstAt ? repeat : "none", intervalMinutes, stock: linkedStock, condition });
+    const error = api.add({ text, remindAt: firstAt, repeat: firstAt ? repeat : "none", intervalMinutes, stock: linkedStock, condition, sessionOnly });
     if (error) { setMessage(error); return; }
     changeDraft();
     setText(""); setMode("auto"); setCustom(""); setPreset(null); setRepeatOverride(null); setIntervalOverride(null);
-    setStockChoice(null); setConditionChoice(null); setAi(null);
+    setStockChoice(null); setConditionChoice(null); setAi(null); setSessionOverride(null);
     const savedPlan = firstAt === null ? plan : [
-      `${formatRemind(new Date(firstAt).toISOString(), now)}${repeat !== "none" ? `（${repeatLabel(repeat, intervalMinutes)}）` : ""} 提醒`,
+      `${formatRemind(new Date(firstAt).toISOString(), now)}${repeat !== "none" ? `（${repeatLabel(repeat, intervalMinutes)}）` : ""} 提醒${sessionOnly ? "（只在盘中）" : ""}`,
       ...plan.slice(1)
     ];
     setMessage(savedPlan.length ? `已记下，将${savedPlan.join("；")}` : "已记下");
@@ -249,7 +260,7 @@ function Composer({ api, now, knownStocks }: {
     const revision = draftRevision.current;
     const undo = ai?.undo ?? (() => {
       setText(text); setMode(mode); setCustom(custom); setPreset(preset); setRepeatOverride(repeatOverride); setIntervalOverride(intervalOverride);
-      setStockChoice(stockChoice); setConditionChoice(conditionChoice);
+      setStockChoice(stockChoice); setConditionChoice(conditionChoice); setSessionOverride(sessionOverride);
     });
     setAiBusy(true); setMessage("");
     try {
@@ -265,6 +276,7 @@ function Composer({ api, now, knownStocks }: {
         setRepeatOverride(result.repeat);
       }
       setStockChoice(null); setConditionChoice(null);
+      if (typeof result.sessionOnly === "boolean") setSessionOverride({ value: result.sessionOnly, source: "ai" });
       setAi({ code: result.code, condition: normalizeCondition(result.condition), note: result.note, undo, intervalMinutes: detectedInterval });
       setMessage(!keepSchedule && result.when && (at === null || at <= Date.now())
         ? "AI 建议的时间无效或已过，请核对提醒时间"
@@ -289,6 +301,7 @@ function Composer({ api, now, knownStocks }: {
         changeDraft();
         if (ai) setAi(null);
         setText(nextText);
+        setSessionOverride(current => current?.source === "ai" ? null : current);
         setStockChoice(current => current && mentionedStockCodes(nextText, knownStocks).includes(current) ? current : null);
         setConditionChoice(null);
       }} onKeyDown={onKeyDown} />
@@ -309,6 +322,7 @@ function Composer({ api, now, knownStocks }: {
         onRepeat={value => { changeDraft(); setRepeatOverride(value); }}
         onInterval={value => { changeDraft(); setIntervalOverride(value); }} />}
       {remindAt !== null && badInterval && <span className="notes-warn">重复间隔须为 1 至 {MAX_INTERVAL_MINUTES} 分钟</span>}
+      {remindAt !== null && <SessionOnlyToggle checked={sessionOnly} auto={sessionOverride === null && autoSession} onChange={value => { changeDraft(); setSessionOverride({ value, source: "user" }); }} />}
       {codes.length > 1 ? <label className="notes-repeat">关联股票
         <select aria-label="关联股票" value={stockChoice ?? "choose"} onChange={event => { changeDraft(); setStockChoice(event.target.value === "choose" ? null : event.target.value); setConditionChoice(null); }}>
           <option value="choose">请选择股票</option>
@@ -390,7 +404,8 @@ function NoteCard({
     <div className="notes-meta">
       {note.remindAt && <span className={`notes-badge ${timeFired ? "awaiting" : state === "done" ? "done" : "scheduled"}`}>{timeFired ? <BellRing size={12} /> : <Clock3 size={12} />}
         {timeFired ? `${formatRemind(note.remindAt, now)} 已提醒` : `${formatRemind(note.remindAt, now)} 提醒`}
-        {note.repeat !== "none" && ` · ${repeatLabel(note.repeat, note.intervalMinutes)}`}</span>}
+        {note.repeat !== "none" && ` · ${repeatLabel(note.repeat, note.intervalMinutes)}`}
+        {note.sessionOnly && " · 只在盘中"}</span>}
       {note.repeat === "interval" && note.lastFiredAt && <small>上次提醒 {formatRemind(note.lastFiredAt, now)}</small>}
       {note.condition && note.stock && <span className={`notes-badge ${note.conditionHit ? "awaiting" : state === "done" ? "done" : "scheduled"}`}><Crosshair size={12} />
         {note.conditionHit ? `条件已触发：${note.conditionHit.detail}` : `盯盘：${describeCondition(note.condition)}`}</span>}
@@ -425,6 +440,8 @@ function NoteCard({
           <button type="button" className="link-btn" aria-expanded={later} onClick={() => setLater(value => !value)}><AlarmClock size={13} />稍后提醒</button>
           {later && <span className="notes-later-menu">{laterOptions().map(option => <button key={option.label} type="button" onClick={() => { api.later(note.id, option.at); setLater(false); }}>{option.label}</button>)}</span>}
         </span>}
+        {!note.done && note.remindAt && !(note.repeat === "none" && timeFired) && <button type="button" className="link-btn" title={note.sessionOnly ? "改为任何时间到点都提醒" : "非交易时段（含午休、收盘后、周末）不提醒，顺延到下一个盘中时点"}
+          onClick={() => api.update(note.id, { sessionOnly: !note.sessionOnly })}><CandlestickChart size={13} />{note.sessionOnly ? "改为随时提醒" : "只在盘中提醒"}</button>}
         {note.done
           ? <button type="button" className="link-btn" onClick={() => api.update(note.id, { done: false })}><RotateCcw size={13} />恢复</button>
           : <button type="button" className="link-btn" onClick={() => api.update(note.id, { done: true })}><Check size={13} />完成</button>}
@@ -453,6 +470,7 @@ function NoteEditor({
   const [time, setTime] = useState(note.remindAt ? toLocalInput(Date.parse(note.remindAt)) : "");
   const [repeat, setRepeat] = useState<NoteRepeat>(note.repeat);
   const [interval, setInterval] = useState(String(note.intervalMinutes ?? 15));
+  const [sessionOnly, setSessionOnly] = useState(note.sessionOnly);
   const [field, setField] = useState<NoteCondition["field"]>(note.condition?.field || "latest");
   const [op, setOp] = useState<NoteCondition["op"]>(note.condition?.op || "lte");
   const [value, setValue] = useState(note.condition ? String(note.condition.field === "changePct" ? Math.abs(note.condition.value) : note.condition.value) : "");
@@ -485,6 +503,7 @@ function NoteEditor({
       ...(changedTime ? { remindAt: at ? new Date(at).toISOString() : null } : {}),
       repeat: at ? repeat : "none",
       intervalMinutes,
+      sessionOnly,
       ...(sameCondition ? {} : { condition })
     });
   }}>
@@ -493,6 +512,7 @@ function NoteEditor({
       <label className="notes-repeat"><AlarmClock size={14} /><input type="datetime-local" value={time} aria-label="提醒时间（北京时间）" onChange={event => setTime(event.target.value)} /></label>
       {time && <button type="button" className="link-btn" onClick={() => setTime("")}>不按时间提醒</button>}
       {at !== null && <RepeatFields repeat={repeat} interval={interval} onRepeat={setRepeat} onInterval={setInterval} />}
+      {at !== null && <SessionOnlyToggle checked={sessionOnly} onChange={setSessionOnly} />}
       {badInterval && <span className="notes-warn">重复间隔须为 1 至 {MAX_INTERVAL_MINUTES} 分钟</span>}
       {past && <span className="notes-warn"><CircleAlert size={13} />这个时间已经过了</span>}
       {at !== null && !past && <small>{formatRemind(new Date(at).toISOString(), now)} 提醒</small>}

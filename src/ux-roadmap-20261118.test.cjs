@@ -1512,8 +1512,8 @@ test("Track 4 regression: QuickPlanModal infers assetType & uses valid tokens; n
   const css = fs.readFileSync(path.join(__dirname, "styles/theme/components.css"), "utf8");
   assert.match(css, /\.quick-palette-native-dialog\[open\]\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*flex-start;[^}]*justify-content:\s*center;/s);
   assert.match(css, /\.quick-palette-dialog,\s*\.palette-dialog\s*\{[^}]*border:\s*1px solid var\(--line-2\);[^}]*background:\s*var\(--surface-1\);[^}]*color:\s*var\(--ink-1\);[^}]*box-shadow:\s*var\(--shadow-3\);/s);
-  assert.match(css, /\.bond-table:not\(\.etf-table\)\s+td:nth-child\(6\)/);
-  assert.match(css, /\.bond-table:not\(\.etf-table\)\s+thead th:nth-child\(6\)/);
+  assert.match(css, /\.bond-table:not\(\.etf-table\)(?::not\([^)]+\))*\s+td:nth-child\(6\)/);
+  assert.match(css, /\.bond-table:not\(\.etf-table\)(?::not\([^)]+\))*\s+thead th:nth-child\(6\)/);
   assert.match(css, /\.etf-table\s+td:nth-child\(2\)/);
   assert.match(css, /\.bond-toolbar select\s*\{[^}]*background:\s*var\(--surface-2\);/s);
   assert.doesNotMatch(css, /\.bond-toolbar select\s*\{[^}]*var\(--surface,\s*transparent\)/s);

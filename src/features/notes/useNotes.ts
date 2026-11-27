@@ -3,7 +3,7 @@ import { hydrateFromNativeKv, loadSafeLocalJson, mirrorToNativeKv, saveSafeLocal
 import { startVisibleInterval } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
 import {
-  EMPTY_NOTES, MAX_NOTES, MAX_NOTE_LENGTH, NOTES_KEY, aiQuestion, awaiting, dueToFire, markFired, normalizeIntervalMinutes, normalizeNotes, snooze, watchingConditions,
+  EMPTY_NOTES, MAX_NOTES, MAX_NOTE_LENGTH, NOTES_KEY, aiQuestion, awaiting, deferOutOfSession, dueToFire, isIntradayText, markFired, normalizeIntervalMinutes, normalizeNotes, snooze, watchingConditions,
   type Note, type NoteCondition, type NoteRepeat, type NoteStock, type NotesStore
 } from "./notesModel";
 
@@ -176,6 +176,12 @@ export function useNotes() {
   const check = useCallback(() => {
     const now = Date.now();
     const background = Boolean(window.stockApi?.syncNoteIntervals);
+    // 只在盘中提醒的：盘外到点的这一次顺延到下一个盘中时点，不弹窗、不出声、不发系统通知。
+    const deferred = deferOutOfSession(storeRef.current.notes, now).filter(item => !background || storeRef.current.notes.find(note => note.id === item.id)?.repeat !== "interval");
+    if (deferred.length) {
+      const moves = new Map(deferred.map(item => [item.id, item.remindAt]));
+      commit(current => ({ ...current, notes: current.notes.map(note => moves.has(note.id) ? { ...note, remindAt: moves.get(note.id)!, firedFor: null } : note) }));
+    }
     const due = dueToFire(storeRef.current.notes, now).filter(note => !background || note.repeat !== "interval");
     if (!due.length) return;
     const ids = new Set(due.map(note => note.id));
@@ -203,7 +209,7 @@ export function useNotes() {
         const { notes, systemNotify } = storeRef.current;
         const items = notes.flatMap(note => {
           if (note.done || note.repeat !== "interval" || !note.remindAt || !note.intervalMinutes) return [];
-          return [{ id: note.id, text: brief(note.text, 80), at: Date.parse(note.remindAt), intervalMinutes: note.intervalMinutes }];
+          return [{ id: note.id, text: brief(note.text, 80), at: Date.parse(note.remindAt), intervalMinutes: note.intervalMinutes, sessionOnly: note.sessionOnly }];
         });
         const payloadKey = JSON.stringify({ items, systemNotify });
         if (items.length === 0 && lastSyncedIntervalsKey.current === payloadKey) continue;
@@ -211,7 +217,21 @@ export function useNotes() {
         lastSyncedIntervalsKey.current = payloadKey;
         if (!mountedRef.current || !hits.length) continue;
         const expected = new Map(items.map(item => [item.id, item.intervalMinutes]));
-        const matches = new Map(hits.map(hit => [hit.id, hit]));
+        // 盘外顺延（只在盘中提醒）：只改下次提醒时间，不弹窗、不出声。
+        const skipped = new Map(hits.filter(hit => hit.skipped).map(hit => [hit.id, hit]));
+        if (skipped.size) {
+          commit(current => ({
+            ...current,
+            notes: current.notes.map(note => {
+              const hit = skipped.get(note.id);
+              return hit && !note.done && note.sessionOnly && note.repeat === "interval" && note.intervalMinutes === expected.get(note.id)
+                && note.remindAt !== null && Date.parse(note.remindAt) === hit.at
+                ? { ...note, remindAt: new Date(hit.nextAt).toISOString(), firedFor: null }
+                : note;
+            })
+          }));
+        }
+        const matches = new Map(hits.filter(hit => !hit.skipped && hit.lastFiredAt !== null).map(hit => [hit.id, hit]));
         const due = storeRef.current.notes.filter(note => {
           const hit = matches.get(note.id);
           return hit && !note.done && note.repeat === "interval" && note.intervalMinutes === expected.get(note.id)
@@ -224,7 +244,7 @@ export function useNotes() {
           notes: current.notes.map(note => {
             if (!ids.has(note.id)) return note;
             const hit = matches.get(note.id)!;
-            return { ...note, remindAt: new Date(hit.nextAt).toISOString(), lastFiredAt: new Date(hit.lastFiredAt).toISOString(), firedFor: null };
+            return { ...note, remindAt: new Date(hit.nextAt).toISOString(), lastFiredAt: new Date(hit.lastFiredAt!).toISOString(), firedFor: null };
           })
         }));
         showPopups(due, "time");
@@ -297,7 +317,7 @@ export function useNotes() {
   }, [check, syncWatch, syncIntervals]);
 
   // ---------- 增删改 ----------
-  const add = useCallback((input: { text: string; remindAt: number | null; repeat: NoteRepeat; intervalMinutes?: number | null | undefined; stock: NoteStock | null; condition?: NoteCondition | null }) => {
+  const add = useCallback((input: { text: string; remindAt: number | null; repeat: NoteRepeat; intervalMinutes?: number | null | undefined; stock: NoteStock | null; condition?: NoteCondition | null; sessionOnly?: boolean | undefined }) => {
     const text = input.text.trim().slice(0, MAX_NOTE_LENGTH);
     if (!text) return "先写点内容";
     if (input.repeat === "interval" && !normalizeIntervalMinutes(input.intervalMinutes)) return "请填写有效的重复间隔";
@@ -307,14 +327,16 @@ export function useNotes() {
       id: newId(), text, createdAt: now, updatedAt: now,
       remindAt: input.remindAt ? new Date(input.remindAt).toISOString() : null,
       repeat: input.remindAt ? input.repeat : "none", intervalMinutes: input.intervalMinutes ?? null, stock: input.stock, done: false, firedFor: null, lastFiredAt: null,
-      condition: input.stock ? input.condition || null : null, conditionHit: null, ai: null
+      condition: input.stock ? input.condition || null : null, conditionHit: null, ai: null,
+      // 没明确选时按文字判断：写了「盘中」「做T」「盯盘」之类的默认只在盘中提醒。
+      sessionOnly: typeof input.sessionOnly === "boolean" ? input.sessionOnly : isIntradayText(text)
     };
     commit(current => ({ ...current, notes: [note, ...current.notes] }));
     soon();
     return "";
   }, [commit, soon]);
 
-  const update = useCallback((id: string, patch: Partial<Pick<Note, "text" | "remindAt" | "repeat" | "intervalMinutes" | "stock" | "done" | "condition">>) => {
+  const update = useCallback((id: string, patch: Partial<Pick<Note, "text" | "remindAt" | "repeat" | "intervalMinutes" | "stock" | "done" | "condition" | "sessionOnly">>) => {
     commit(current => ({
       ...current,
       notes: current.notes.map(note => {

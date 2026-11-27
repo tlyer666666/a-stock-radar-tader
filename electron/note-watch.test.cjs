@@ -188,3 +188,36 @@ test("报价请求在途时修改条件，旧报价不会触发新条件", async
   await second;
   assert.equal(notices.length, 1);
 });
+
+test("session-only minute loops stay silent outside trading hours and resume at the next open", () => {
+  const { createIntervalReminderScheduler, nextSessionStart } = require("./note-watch.cjs");
+  const weekday = date => { const d = new Date(`${date}T00:00:00Z`).getUTCDay(); return d !== 0 && d !== 6; };
+  assert.equal(nextSessionStart(cn("2026-11-13T15:30:00"), weekday), cn("2026-11-16T09:30:00"));
+  assert.equal(nextSessionStart(cn("2026-11-13T12:10:00"), weekday), cn("2026-11-13T13:00:00"));
+  let now = cn("2026-11-13T20:00:00");
+  const notices = [];
+  let timer = null;
+  const scheduler = createIntervalReminderScheduler({
+    now: () => now, notify: value => notices.push(value), isTradingDate: weekday,
+    setTimer(fn, delay) { timer = { fn, delay }; return timer; }, clearTimer() { timer = null; }
+  });
+  const item = { id: "t", text: "盘中做T注意关键词", at: cn("2026-11-13T20:00:00"), intervalMinutes: 30, sessionOnly: true };
+  const first = scheduler.sync({ items: [item], systemNotify: true });
+  assert.equal(notices.length, 0, "no notification on Friday night");
+  assert.deepEqual(first, [{ id: "t", at: item.at, lastFiredAt: null, nextAt: cn("2026-11-16T09:30:00"), skipped: true }]);
+  // 页面把顺延后的时刻回传：仍是同一排程，不重复回报。
+  assert.deepEqual(scheduler.sync({ items: [{ ...item, at: cn("2026-11-16T09:30:00") }], systemNotify: true }), []);
+  now = cn("2026-11-16T09:30:00");
+  timer.fn();
+  assert.equal(notices.length, 1, "Monday open fires");
+  now = cn("2026-11-16T11:00:00");
+  timer.fn();
+  now = cn("2026-11-16T11:30:00");
+  timer.fn();
+  assert.equal(notices.length, 3);
+  const hits = scheduler.sync({ items: [{ ...item, at: cn("2026-11-16T09:30:00") }], systemNotify: true });
+  assert.equal(hits[0].nextAt, cn("2026-11-16T13:00:00"), "12:00 is lunch → 13:00");
+  const plain = createIntervalReminderScheduler({ now: () => cn("2026-11-13T20:00:00"), notify: value => notices.push(value), setTimer: () => null, clearTimer() {} });
+  plain.sync({ items: [{ ...item, id: "p", sessionOnly: false }], systemNotify: true });
+  assert.equal(notices.length, 4, "a normal minute loop still fires at night");
+});

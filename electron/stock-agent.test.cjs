@@ -1095,3 +1095,86 @@ test("M-9: runAgentTurn trims cumulative history and prior tool rounds to stay w
   }
   assert.match(seenMessageLengths[3].last, /sector/, "latest tool round must be preserved");
 });
+
+test("a structured plan for a stock is handed to the advice pool with the price seen this turn, and past advice is fed back", async () => {
+  let sequence = 0;
+  const recorded = [];
+  const seen = [];
+  const tools = createStockAgentTools({ quote: async security => ({ quote: { code: security.code, name: "贵州茅台", latest: 1466.5, changePct: -0.5, quoteAt: "2026-11-06T02:49:00.000Z" } }) });
+  const replies = [
+    { thought: "看行情", calls: [{ tool: "quote", args: { code: "600519" } }] },
+    { thought: "够了", final: { answer: "**偏多**", stance: "偏多", confidence: "中", focus: { code: "600519", name: "贵州茅台" },
+      plan: { action: "buy", horizon: "5d", entryLow: 1450, entryHigh: 1470, stopLoss: 1400, targetPrice: 1560, invalidation: "跌破 1400", watch: ["放量过 1480"], reason: "回踩企稳" } } }
+  ];
+  const service = createStockAgentService({
+    clientFor: () => ({ chat: async request => { seen.push(request); return replies.shift(); }, model: () => "synthetic" }),
+    resolveProfile: () => ({ baseUrl: "https://example.test/v1", model: "synthetic", apiKey: "synthetic" }),
+    tools, store: memoryStore(), clock: () => clock, id: () => `plan${++sequence}`, now: () => Date.UTC(2026, 10, 6) + sequence * 1000,
+    recordDecision: input => { recorded.push(input); return { id: "sig_1", action: "buy", actionLabel: "买入", created: true }; },
+    adviceReview: code => ({ code, sampleSize: 3, completed: 2, hitRatePct: null, adjustment: "observe", recent: [], note: "样本不足" })
+  });
+  try {
+    const started = service.start({ message: "还能买吗", focus: { code: "600519", name: "贵州茅台" } });
+    const done = await until(() => { const run = service.poll(started.runId); return run.status === "done" ? run : null; }, 2000);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0].code, "600519");
+    assert.equal(recorded[0].rawPlan.action, "buy");
+    assert.equal(recorded[0].referencePrice, 1466.5);
+    assert.equal(recorded[0].stance, "偏多");
+    assert.equal(recorded[0].source.messageId, done.message.id, "decision source.messageId matches the saved assistant message id");
+    assert.equal(done.message.decision.id, "sig_1");
+    assert.match(seen[0].messages.at(-1).content, /adviceHistory/);
+    assert.match(seen[0].system, /"plan":\{"action"/);
+  } finally { await service.shutdown(); }
+});
+
+test("market answers and answers without a plan never create advice, and a failing pool does not break the answer", async () => {
+  let sequence = 0;
+  let calls = 0;
+  const replies = [
+    { final: { answer: "大盘均衡", stance: "中性", confidence: "中", focus: { kind: "market", name: "大盘" }, plan: { action: "buy", horizon: "5d" } } },
+    { final: { answer: "只是查资料", stance: "不适用", confidence: "中", focus: { code: "600519", name: "贵州茅台" } } },
+    { final: { answer: "偏空", stance: "偏空", confidence: "中", focus: { code: "600519", name: "贵州茅台" }, plan: { action: "sell", horizon: "3d" } } }
+  ];
+  const service = createStockAgentService({
+    clientFor: () => ({ chat: async () => replies.shift(), model: () => "synthetic" }),
+    resolveProfile: () => ({ baseUrl: "https://example.test/v1", model: "synthetic", apiKey: "synthetic" }),
+    tools: { catalog: [], runTool: async () => ({ ok: false, summary: "", data: null }) }, store: memoryStore(), clock: () => clock, id: () => `np${++sequence}`, now: () => Date.UTC(2026, 10, 6) + sequence * 1000,
+    recordDecision: () => { calls += 1; throw new Error("disk full"); }
+  });
+  try {
+    for (const message of ["大盘怎么样", "茅台主营是什么", "茅台该卖吗"]) {
+      const started = service.start({ message });
+      const done = await until(() => { const run = service.poll(started.runId); return run.status === "done" ? run : null; }, 2000);
+      assert.equal(done.message.decision, undefined);
+      assert.equal(done.message.error, undefined);
+    }
+    assert.equal(calls, 1, "only the stock answer with a plan reaches the pool");
+  } finally { await service.shutdown(); }
+});
+
+test("a buy plan triggers a separate risk-review call whose verdict replaces the self-check; other answers do not pay for it", async () => {
+  const buy = { thought: "够了", final: { answer: "**偏多**", stance: "偏多", confidence: "中", focus: { code: "600519", name: "贵州茅台" }, riskReview: { verdict: "pass", reasons: [] },
+    plan: { action: "buy", horizon: "5d", entryLow: 1450, entryHigh: 1470, stopLoss: 1400, invalidation: "跌破 1400" } } };
+  const seen = [];
+  const ai = replies => ({ model: () => "fake", chat: async request => { seen.push(request); const next = replies.shift(); if (next instanceof Error) throw next; return next; } });
+  const tools = { runTool: async () => ({ ok: false, summary: "", data: null }) };
+  const vetoed = await runAgentTurn({ ai: ai([structuredClone(buy), { verdict: "veto", reasons: ["大盘退潮期", "近 5 日已涨 28%"] }]), tools, question: "能买吗", focus: { code: "600519", name: "贵州茅台" }, clock, independentRiskReview: true });
+  assert.deepEqual(vetoed.riskReview, { verdict: "veto", reasons: ["大盘退潮期", "近 5 日已涨 28%"], independent: true });
+  assert.equal(seen.length, 2);
+  assert.match(seen[1].system, /风控复核员/);
+  assert.match(seen[1].messages[0].content, /"plan"/);
+  assert.equal(vetoed.steps.at(-1).kind, "risk");
+  assert.equal(vetoed.steps.at(-1).thought, "风控复核：否决");
+  seen.length = 0;
+  const failed = await runAgentTurn({ ai: ai([structuredClone(buy), new Error("timeout")]), tools, question: "能买吗", focus: { code: "600519", name: "贵州茅台" }, clock, independentRiskReview: true });
+  assert.deepEqual(failed.riskReview, { verdict: "pass", reasons: [] }, "a failed review keeps the answer's own self-check");
+  assert.match(failed.steps.at(-1).thought, /没调通/);
+  seen.length = 0;
+  const sell = structuredClone(buy); sell.final.plan = { action: "sell", horizon: "3d" };
+  await runAgentTurn({ ai: ai([sell]), tools, question: "该卖吗", focus: { code: "600519", name: "贵州茅台" }, clock, independentRiskReview: true });
+  assert.equal(seen.length, 1, "sell / hold / watch answers do not trigger the extra call");
+  seen.length = 0;
+  await runAgentTurn({ ai: ai([structuredClone(buy)]), tools, question: "能买吗", focus: { code: "600519", name: "贵州茅台" }, clock });
+  assert.equal(seen.length, 1, "off by default for direct callers");
+});

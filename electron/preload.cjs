@@ -31,7 +31,11 @@ contextBridge.exposeInMainWorld("stockApi", {
   resetMarketSourceHealth: () => invoke("market:source-reset"),
   getConvertibleBonds: (options = {}) => invoke("bond:list", options),
   getEtfMarket: (options = {}) => invoke("etf:list", options),
+  getEtfRotation: (config = {}) => invoke("etf:rotation", config),
+  screenFactors: (input = {}) => invoke("screen:factors", input),
   getIndexBoard: (options = {}) => invoke("market:index-board", options),
+  alertRules: (input = {}) => invoke("alerts:rules", input),
+  getStockIndustries: (codes = []) => invoke("market:industries", codes),
   subscribeIndexStream: (options = {}) => invoke("market:index-stream", options),
   subscribeLimitSeals: (input = {}) => invoke("market:seal-stream", input),
   onLimitSealTick: (listener) => {
@@ -92,6 +96,9 @@ contextBridge.exposeInMainWorld("stockApi", {
       cancel: (runId) => invoke("agent:cancel", runId),
       remove: (id) => invoke("agent:delete", id),
       settings: (input = {}) => invoke("agent:settings", input),
+      feeds: (input = {}) => invoke("agent:feeds", input),
+      signals: (input = {}) => invoke("agent:signals", input),
+      updateSignal: (input = {}) => invoke("agent:signal-update", input),
       saveSkill: (input = {}) => invoke("agent:skill-save", input),
       removeSkill: (id) => invoke("agent:skill-delete", id),
       syncWorkspace: (input = {}) => invoke("agent:sync-workspace", input)

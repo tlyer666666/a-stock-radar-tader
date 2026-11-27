@@ -123,6 +123,33 @@ test("validateIpcPayload enforces structural runtime validation and preserves ty
   assert.doesNotThrow(() => validateIpcPayload("agent:poll", ["run-123"]));
   assert.doesNotThrow(() => validateIpcPayload("market:batch-quotes", [[{ code: "600519" }, { code: "920006", thscode: "920006.BJ" }]]));
 
+  // M1: dedicated field-level validators for the 6 new channels
+  assert.doesNotThrow(() => validateIpcPayload("alerts:rules", []));
+  assert.doesNotThrow(() => validateIpcPayload("alerts:rules", [{ op: "save", rule: { type: "ma_cross" } }]));
+  assert.throws(() => validateIpcPayload("alerts:rules", [{ op: "drop_all" }]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("alerts:rules", [{ op: "save" }]), { code: "INVALID_IPC_PAYLOAD" });
+
+  assert.doesNotThrow(() => validateIpcPayload("etf:rotation", [{ pool: ["510300", "510500"], topN: 2, lookback: 60, rebalance: "weekly" }]));
+  assert.throws(() => validateIpcPayload("etf:rotation", [{ pool: Array(21).fill("510300") }]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("etf:rotation", [{ topN: 99 }]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("etf:rotation", [{ rebalance: "daily" }]), { code: "INVALID_IPC_PAYLOAD" });
+
+  assert.doesNotThrow(() => validateIpcPayload("screen:factors", [{ strategyId: "quality_value", top: 20 }]));
+  assert.throws(() => validateIpcPayload("screen:factors", [{ top: 5000 }]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("screen:factors", [{ strategyId: "x".repeat(41) }]), { code: "INVALID_IPC_PAYLOAD" });
+
+  assert.doesNotThrow(() => validateIpcPayload("agent:feeds", [{ op: "save", name: "财联社", url: "https://example.com/rss", enabled: true }]));
+  assert.throws(() => validateIpcPayload("agent:feeds", [{ op: "exec" }]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("agent:feeds", [{ op: "test", url: "https://example.com/" + "a".repeat(500) }]), { code: "INVALID_IPC_PAYLOAD" });
+
+  assert.doesNotThrow(() => validateIpcPayload("agent:signals", [{ status: "active", code: "600519", evaluate: true }]));
+  assert.throws(() => validateIpcPayload("agent:signals", [{ status: "unknown" }]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("agent:signals", [{ code: "bad" }]), { code: "INVALID_IPC_PAYLOAD" });
+
+  assert.doesNotThrow(() => validateIpcPayload("agent:signal-update", [{ id: "sig_1", status: "closed", feedback: "useful" }]));
+  assert.throws(() => validateIpcPayload("agent:signal-update", [{}]), { code: "INVALID_IPC_PAYLOAD" });
+  assert.throws(() => validateIpcPayload("agent:signal-update", [{ id: "sig_1", status: "active" }]), { code: "INVALID_IPC_PAYLOAD" });
+
   const tsContract = loadTsContractModule();
   assert.equal(tsContract.decodePlainRecord({ ok: true }).ok, true);
   assert.throws(() => tsContract.decodePlainRecord([]), { name: "TypeError" });

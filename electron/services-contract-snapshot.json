@@ -50,6 +50,7 @@
   "getConvertibleBonds:function",
   "getDataFederation:function",
   "getEtfMarket:function",
+  "getFundamentals:function",
   "getFuyaoReviewData:function",
   "getGlobalMarkets:function",
   "getGlobalNews:function",

@@ -92,6 +92,12 @@ async function getGlobalNews(options = {}) {
   return globalMarket.loadNews({ forceRefresh: options?.forceRefresh === true, signal: options?.signal || serviceSignal(),
     hours: Number(options?.hours) || 18, limit: Number(options?.limit) || 30 });
 }
+// 基本面（业绩报表），AI 问股的 fundamentals 工具用。
+const { createFundamentals } = require("./fundamentals.cjs");
+const fundamentals = createFundamentals({ fetchJson: (url, options, timeoutMs) => _runtime.fetchJson(url, options, timeoutMs) });
+async function getFundamentals(code, options = {}) {
+  return fundamentals.load(code, { signal: options?.signal || serviceSignal() });
+}
 // 驾驶舱指数条（同花顺手机版首页的指数区：上证、深证、创业板、科创50、北证50、沪深300 等）。
 const { createIndexBoard } = require("./index-board.cjs");
 const indexBoard = createIndexBoard({ fetchJson: (url, options, timeoutMs) => _runtime.fetchJson(url, options, timeoutMs) });
@@ -278,6 +284,7 @@ module.exports = {
   getGlobalMarkets,
   getGlobalNews,
   getIndexBoard,
+  getFundamentals,
   pollIndexQuotes,
   getBatchQuotes,
   readLimitSeals,

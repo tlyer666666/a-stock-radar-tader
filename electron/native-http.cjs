@@ -1,10 +1,92 @@
 'use strict';
+const dns = require('node:dns');
 const http = require('node:http');
 const https = require('node:https');
+const { isIP } = require('node:net');
 const zlib = require('node:zlib');
 const unzip = { gzip: zlib.createGunzip, 'x-gzip': zlib.createGunzip, deflate: zlib.createInflate, br: zlib.createBrotliDecompress };
 const sizeError = () => Object.assign(new Error('响应体超过字节上限'), { code: 'RESPONSE_TOO_LARGE' });
+const publicIpError = (message = '拒绝访问非公网地址') => Object.assign(new Error(message), { code: 'PUBLIC_IP_REQUIRED' });
 const aborted = signal => signal.reason || new DOMException('请求已取消', 'AbortError');
+
+function expandIPv6(address) {
+  let text = address;
+  const lastColon = text.lastIndexOf(':');
+  if (lastColon >= 0 && text.includes('.')) {
+    const tail = text.slice(lastColon + 1);
+    if (isIP(tail) !== 4) return null;
+    const octets = tail.split('.').map(Number);
+    text = `${text.slice(0, lastColon + 1)}${((octets[0] << 8) | octets[1]).toString(16)}:${((octets[2] << 8) | octets[3]).toString(16)}`;
+  }
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  const missing = 8 - (left.length + right.length);
+  if (halves.length === 1 ? missing !== 0 : missing < 0) return null;
+  const parts = halves.length === 2 ? [...left, ...Array(missing).fill('0'), ...right] : left;
+  if (parts.length !== 8) return null;
+  const groups = parts.map(part => parseInt(part, 16));
+  return groups.every(n => Number.isInteger(n) && n >= 0 && n <= 0xffff) ? groups : null;
+}
+
+/** 仅允许公网单播 IP（拒绝回环、私网、CGNAT、链路本地、保留/基准测试、组播及 IPv4 映射地址）。 */
+function isPublicUnicastIp(ip) {
+  if (typeof ip !== 'string') return false;
+  const addr = ip.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!addr || addr.includes('%')) return false;
+  const family = isIP(addr);
+  if (family === 4) {
+    const [a, b, c] = addr.split('.').map(Number);
+    if (a === 0 || a === 10 || a === 127 || a >= 224) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false;
+    if (a === 169 && b === 254) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 0 && c === 0) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 198 && (b === 18 || b === 19)) return false;
+    return true;
+  }
+  if (family === 6) {
+    const g = expandIPv6(addr);
+    if (!g) return false;
+    // ::/96（含 ::、::1 及旧 IPv4 兼容）与 ::ffff:0:0/96（IPv4 映射）一律拒绝。
+    if (g[0] === 0 && g[1] === 0 && g[2] === 0 && g[3] === 0 && g[4] === 0 && (g[5] === 0 || g[5] === 0xffff)) return false;
+    // fc00::/7（ULA）、fe80::/10（链路本地）、ff00::/8（组播）。
+    if ((g[0] & 0xfe00) === 0xfc00) return false;
+    if ((g[0] & 0xffc0) === 0xfe80) return false;
+    if ((g[0] & 0xff00) === 0xff00) return false;
+    return true;
+  }
+  return false;
+}
+
+/** 自定义 DNS lookup：校验全部解析结果均为公网单播地址，并将已校验 IP 直接交给 Socket 防止 DNS 重绑定。 */
+function createPublicLookup(lookupFn = dns.lookup) {
+  return function publicLookup(hostname, opts, callback) {
+    if (typeof opts === 'function') { callback = opts; opts = {}; }
+    const wantAll = Boolean(opts && opts.all);
+    const requestedFamily = opts && (opts.family === 4 || opts.family === 6) ? opts.family : 0;
+    lookupFn(hostname, { all: true }, (err, addresses) => {
+      if (err) { callback(err); return; }
+      const list = Array.isArray(addresses)
+        ? addresses
+        : (addresses ? [{ address: addresses, family: isIP(String(addresses)) }] : []);
+      if (!list.length) { callback(publicIpError('域名未解析到有效公网地址')); return; }
+      for (const item of list) {
+        if (!item || !isPublicUnicastIp(item.address)) {
+          callback(publicIpError());
+          return;
+        }
+      }
+      const normalized = list.map(item => ({ address: item.address, family: item.family || isIP(item.address) }));
+      const filtered = requestedFamily ? normalized.filter(item => item.family === requestedFamily) : normalized;
+      const chosen = filtered.length ? filtered : normalized;
+      if (wantAll) callback(null, chosen);
+      else callback(null, chosen[0].address, chosen[0].family);
+    });
+  };
+}
 
 // Electron 44's embedded fetch can emit an unhandled error before returning a
 // Response for excessive content-encodings (GHSA-xjj6-f33q-929c). Use only Node's
@@ -24,6 +106,8 @@ function requiresNativeTransport(version = process.versions.undici) {
 async function fetchNative(input, options = {}, limit = 32 * 1024 * 1024, depth = 0) {
   const url = new URL(String(input));
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new TypeError('不支持的行情请求地址');
+  const rawHost = url.hostname.replace(/^\[|\]$/g, '');
+  if (options.publicOnly && isIP(rawHost) && !isPublicUnicastIp(rawHost)) throw publicIpError();
   const signal = options.signal;
   if (signal?.aborted) throw aborted(signal);
   const headers = new Headers(options.headers);
@@ -63,7 +147,11 @@ async function fetchNative(input, options = {}, limit = 32 * 1024 * 1024, depth 
       stream.end(bytes);
     });
     const abort = () => fail(aborted(signal));
-    const request = (url.protocol === 'https:' ? https : http).request(url, { method, headers: Object.fromEntries(headers), signal }, incoming => {
+    const lookup = options.publicOnly
+      ? (typeof options.lookup === 'function' ? options.lookup : createPublicLookup())
+      : (typeof options.lookup === 'function' ? options.lookup : undefined);
+    const reqOptions = { method, headers: Object.fromEntries(headers), signal, ...(lookup ? { lookup } : {}) };
+    const request = (url.protocol === 'https:' ? https : http).request(url, reqOptions, incoming => {
       response = incoming;
       const onIncomingError = error => fail(error);
       const onIncomingAborted = () => fail(Object.assign(new Error('行情响应提前断开'), { code: 'ECONNRESET' }));
@@ -210,4 +298,4 @@ async function fetchNative(input, options = {}, limit = 32 * 1024 * 1024, depth 
     try { request.end(body); } catch (error) { fail(error); }
   });
 }
-module.exports = { fetchNative, requiresNativeTransport };
+module.exports = { fetchNative, requiresNativeTransport, isPublicUnicastIp, createPublicLookup };

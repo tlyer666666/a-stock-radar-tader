@@ -106,8 +106,10 @@ const TOOLS = [
   { id: "etf_quote", name: "ETF 行情", description: "按代码或关键词查 ETF：现价、涨跌幅、成交额、规模、换手、实时净值估算和溢价率（溢价过高会提示风险）", args: '{"code":"510300"} 或 {"query":"半导体"}' },
   { id: "etf_rank", name: "ETF 排行", description: "按类别（宽基/行业主题/跨境/商品/债券/货币，或 T+0 = 可当日回转的跨境/商品/债券/货币 ETF）把 ETF 按涨幅、成交额、溢价率、换手、规模或振幅排序", args: '{"category":"行业主题|T+0","sortBy":"change|amount|premium|turnover|scale|amplitude","top":10}' },
   { id: "sector_rank", name: "板块排行", description: "行业或概念板块按涨幅、涨停家数或主力净流入排行", args: '{"kind":"industry|concept","sortBy":"change|limitUps|netInflow","top":10}' },
+  { id: "fundamentals", name: "基本面", description: "最近 8 期业绩报表（累计值）：营收、归母净利润及同比增速、每股收益、ROE、毛利率、每股净资产、每股经营现金流，以及按现价算的滚动市盈率 PE(TTM) 和市净率 PB；只有个股有，ETF 没有", args: '{"code":"600519"}' },
   { id: "global_markets", name: "全球市场", description: "隔夜美股（道指/标普/纳指/中概 KWEB）、美股期货、日经225、韩国KOSPI、恒生/恒生科技、台股、欧洲三大指数、富时A50期指、离岸人民币、美元指数、美债10年收益率、黄金白银原油；每条带最近成交时间（北京时间），分清隔夜收盘还是今天盘中", args: "{}" },
   { id: "global_news", name: "外围与外媒研判", description: "最近 N 小时（默认 18，覆盖隔夜到早盘）快讯里的外围市场、海外央行与宏观、外媒与国际投行观点（彭博/路透/高盛/大摩等）、机构对 A 股的研判和大宗商品消息；外媒原文多付费，只能拿到国内快讯的转述", args: '{"hours":18,"category":"可选 aShareView|foreignView|overseasMarket|macroPolicy|commodity"}' },
+  { id: "rss_news", name: "自订资讯源", description: "用户自己添加的 RSS / Atom 资讯源里的最新文章（标题、摘要、时间、来源），可按关键词筛选；用户没添加资讯源时不可用", args: '{"query":"可选关键词，空格分隔","hours":72}' },
   { id: "market_news", name: "国内要闻", description: "东方财富 7×24 与财联社电报里最新的政策、监管、产业与市场要闻（按重要度挑选，含利好利空方向）", args: '{"type":"可选 政策|市场|产业","top":12}' },
   { id: "limit_reasons", name: "涨停原因", description: "当日涨停股按同花顺涨停原因归类：题材、家数和代表股，看主线集中在哪", args: '{"top":12}' },
   { id: "ladder", name: "连板梯队", description: "近 5 个交易日连板天梯（每档股票、次日是否晋级）和今日高度板，判断接力情绪", args: "{}" },
@@ -501,6 +503,28 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
       return { summary: result.summary, data: result.data };
     },
 
+    async fundamentals(args) {
+      if (typeof sources.fundamentals !== "function") throw toolError("基本面数据暂不可用");
+      const security = securityArg(args);
+      if (security.assetType === "etf") throw toolError("ETF 没有业绩报表，请用 etf_quote 看规模和溢价");
+      const value = await cached(`fundamentals:${security.code}`, () => source("fundamentals", security.code));
+      const reports = take(value?.reports, 8);
+      if (!reports.length) throw toolError("没有取到这只股票的业绩报表");
+      // 估值要现价：行情取不到就不算，不拿旧价凑。
+      let latestPrice = null;
+      try { latestPrice = finite((await quoteOf(security)).quote.latest); } catch { latestPrice = null; }
+      const latest = reports[0];
+      const ttm = finite(value?.ttmEps);
+      const peTtm = latestPrice > 0 && ttm > 0 ? round(latestPrice / ttm) : null;
+      const pb = latestPrice > 0 && finite(latest.bps) > 0 ? round(latestPrice / latest.bps) : null;
+      remember(security.code, value?.name);
+      return {
+        summary: `${latest.label}：营收 ${latest.revenueYi ?? "--"} 亿（同比 ${latest.revenueYoyPct ?? "--"}%），净利润 ${latest.netProfitYi ?? "--"} 亿（同比 ${latest.netProfitYoyPct ?? "--"}%），ROE ${latest.roePct ?? "--"}%`,
+        data: { code: security.code, name: clip(value?.name, 12), latestPrice, peTtm, pb, ttmEps: ttm, peNote: ttm !== null && ttm <= 0 ? "滚动每股收益为负，市盈率没有意义" : ttm === null ? "报表期数不够，算不出滚动市盈率" : "",
+          reports: reports.map(item => ({ ...item, label: clip(item.label, 12) })), note: "报表是累计值：一季报 1–3 月，半年报 1–6 月，三季报 1–9 月，年报全年；同比是和上年同期比", source: clip(value?.source, 12) }
+      };
+    },
+
     async global_markets() {
       if (typeof sources.globalMarkets !== "function") throw toolError("全球市场数据暂不可用");
       const value = await cached("global-markets", () => source("globalMarkets"));
@@ -532,6 +556,17 @@ function createStockAgentTools(sources, { now = () => Date.now(), toolTimeoutMs 
         ? `近 ${hours} 小时外围资讯 ${filtered.length} 条（A股研判 ${counts.aShareView || 0}、外媒机构 ${counts.foreignView || 0}、外围市场 ${counts.overseasMarket || 0}、海外宏观 ${counts.macroPolicy || 0}）`
         : `近 ${hours} 小时快讯里没有挑到${category ? "这一类" : ""}外围相关消息`;
       return { summary, data: { windowHours: hours, items: picked, failedSources: take(value?.failedSources, 3), note: clip(value?.note, 90) } };
+    },
+
+    async rss_news(args) {
+      if (typeof sources.rssNews !== "function") throw toolError("自订资讯源暂不可用");
+      const query = clip(args?.query, 30);
+      const hours = intArg(args?.hours, 1, 720, 72);
+      const value = await cached(`rss:${query}:${hours}`, () => source("rssNews", { query, hours, limit: 16 }));
+      if (!value?.configured) throw toolError("用户还没有添加自订资讯源（在 AI 问股页的「资讯源」里添加）");
+      const items = take(value.items, 16).map(item => ({ time: beijingTime(item.publishedAt) || "时间未知", title: clip(item.title, 70), summary: clip(item.summary, 120), source: clip(item.source, 12) }));
+      return { summary: items.length ? `自订资讯源 ${items.length} 条${query ? `（含「${query}」）` : ""}，最新：${clip(items[0].title, 28)}` : `自订资讯源近 ${hours} 小时没有${query ? `含「${query}」的` : ""}文章`,
+        data: { items, failedSources: take(value.failedSources, 5).map(name => clip(name, 12)), sources: take(value.sources, 12).map(name => clip(name, 12)) } };
     },
 
     async market_news(args) {

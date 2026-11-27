@@ -6,8 +6,12 @@
 import type { SectorExplorerApi } from "../sectorExplorerTypes";
 import type { ConvertibleBondSnapshot } from "../features/bonds/bondTypes";
 import type { EtfMarketSnapshot } from "../features/etf/etfTypes";
+import type { EtfRotationConfig, EtfRotationReport } from "../features/etf/etfRotationModel";
+import type { FactorScreenResult } from "../features/strategy-selection/factorScreenModel";
 import type { IndexBoardSnapshot, IndexStreamStatus, IndexTick } from "../features/cockpit/indexBoardModel";
 import type { LimitSealRecord, LimitSealTick } from "../features/dashboard/limitSealModel";
+import type { DecisionSignalList } from "../features/ai-agent/decisionSignalModel";
+import type { AlertRulesRequest, AlertRulesState } from "../features/collections/alertRulesModel";
 import type { BatchQuoteRequest, BatchQuoteResult } from "../domain/batchQuoteTypes";
 import type { AnalysisPayload } from "../features/market/analysisTypes";
 import type { CustomStrategy } from "../features/strategy-selection/customStrategyModel";
@@ -24,8 +28,11 @@ export const MAIN_IPC_CHANNELS = [
   "agent:cancel",
   "agent:conversation",
   "agent:delete",
+  "agent:feeds",
   "agent:poll",
   "agent:settings",
+  "agent:signal-update",
+  "agent:signals",
   "agent:skill-delete",
   "agent:skill-save",
   "agent:start",
@@ -60,6 +67,7 @@ export const MAIN_IPC_CHANNELS = [
   "ai:strategy-draft",
   "ai:summary",
   "ai:test",
+  "alerts:rules",
   "app:notify",
   "app:set-theme",
   "app:set-zoom",
@@ -78,6 +86,7 @@ export const MAIN_IPC_CHANNELS = [
   "bond:list",
   "diagnostics:corrupted-on-load",
   "etf:list",
+  "etf:rotation",
   "holdings:get",
   "holdings:save",
   "market:analyze",
@@ -85,6 +94,7 @@ export const MAIN_IPC_CHANNELS = [
   "market:batch-quotes",
   "market:index-board",
   "market:index-stream",
+  "market:industries",
   "market:seal-stream",
   "market:chart",
   "market:concept-chain",
@@ -108,6 +118,7 @@ export const MAIN_IPC_CHANNELS = [
   "notes:watch-sync",
   "review:get-market",
   "review:open-window",
+  "screen:factors",
   "sector:cancel",
   "sector:catalog",
   "sector:classifications",
@@ -313,7 +324,12 @@ export type StockApi = SectorExplorerApi & {
   resetMarketSourceHealth?(): Promise<{ ok: boolean }>;
   getConvertibleBonds?(options?: { forceRefresh?: boolean; waitForQuotes?: boolean }): Promise<ConvertibleBondSnapshot>;
   getEtfMarket?(options?: { forceRefresh?: boolean }): Promise<EtfMarketSnapshot>;
+  getEtfRotation?(config?: Partial<EtfRotationConfig>): Promise<EtfRotationReport>;
+  screenFactors?(input?: { strategyId?: string; top?: number }): Promise<FactorScreenResult>;
   getIndexBoard?(options?: { forceRefresh?: boolean; withTrends?: boolean }): Promise<IndexBoardSnapshot>;
+  alertRules?(input?: AlertRulesRequest): Promise<AlertRulesState>;
+  /** 代码 → 同花顺行业；查不到的代码不出现在结果里。 */
+  getStockIndustries?(codes: string[]): Promise<Record<string, string>>;
   subscribeIndexStream?(options?: { active?: boolean }): Promise<IndexStreamStatus>;
   subscribeLimitSeals?(input: { owner: string; codes?: string[]; active?: boolean; withHistory?: boolean }): Promise<{ active: boolean; items: LimitSealRecord[] }>;
   onLimitSealTick?(listener: (tick: LimitSealTick) => void): () => void;
@@ -343,6 +359,8 @@ export type StockApi = SectorExplorerApi & {
       code: string | null;
       condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } | null;
       note: string;
+      /** 这件事是否只在盘中才有意义（做T、盯盘等）；模型没给时为 undefined，界面按关键词判断。 */
+      sessionOnly?: boolean;
       model: string;
     }>;
     test(input: { id?: string | null; baseUrl: string; model: string; apiKey?: string }): Promise<{ ok: boolean; latency: number; model: string }>;
@@ -370,6 +388,9 @@ export type StockApi = SectorExplorerApi & {
     outcomesLeaderboard?(input?: { days?: number }): Promise<AiOutcomesLeaderboard>;
     onStream?(listener: (event: AiStreamEvent) => void): () => void;
     agent?: {
+      feeds?(input?: { op?: "list" | "save" | "remove" | "test"; id?: string; name?: string; url?: string; enabled?: boolean }): Promise<{ feeds: Array<{ id: string; name: string; url: string; enabled: boolean }>; maxFeeds: number; test?: { count: number; sample: string[] } }>;
+      signals?(input?: { status?: string; code?: string; evaluate?: boolean }): Promise<DecisionSignalList>;
+      updateSignal?(input: { id: string; status?: "closed" | "invalidated"; feedback?: "useful" | "not_useful" | null; remove?: boolean }): Promise<DecisionSignalList>;
       state(): Promise<AgentState>;
       conversation(id: string): Promise<AgentConversation | null>;
       start(input: {
@@ -569,9 +590,9 @@ export type StockApi = SectorExplorerApi & {
   unlockMasterPassword?(input: { password: string } | string): Promise<{ enabled: boolean; locked: boolean }>;
   clearMasterPassword?(input: { currentPassword: string } | string): Promise<{ enabled: boolean; locked: boolean }>;
   syncNoteIntervals?(input: {
-    items: Array<{ id: string; text: string; at: number; intervalMinutes: number }>;
+    items: Array<{ id: string; text: string; at: number; intervalMinutes: number; sessionOnly?: boolean }>;
     systemNotify: boolean;
-  }): Promise<Array<{ id: string; at: number; lastFiredAt: number; nextAt: number }>>;
+  }): Promise<Array<{ id: string; at: number; lastFiredAt: number | null; nextAt: number; skipped?: boolean }>>;
   notesWatch?(input: {
     items: Array<{ id: string; code: string; name: string; secid: string; text: string; condition: { field: "latest" | "changePct"; op: "lte" | "gte"; value: number } }>;
     systemNotify: boolean;

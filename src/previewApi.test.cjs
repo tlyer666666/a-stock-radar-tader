@@ -140,3 +140,34 @@ test('browser strategy metadata stays identical to the current Electron rule def
   assert.equal(actual.length,expected.length);
   for(const definition of expected){const item=actual.find(x=>x.id===definition.id);assert.equal(item.name,definition.name);assert.equal(item.version,definition.version);assert.equal(item.family,definition.family);}
 });
+
+test("preview API exposes stubs for rotation, factor screen, alert rules, industries, feeds and signals", async () => {
+  const api = createPreviewApi();
+  const industries = await api.getStockIndustries(["600519", "999999"]);
+  assert.deepEqual(industries, { "600519": "白酒" });
+
+  const rot = await api.getEtfRotation({ lookback: 40, topN: 99, rebalance: "monthly" });
+  assert.equal(rot.config.lookback, 40);
+  assert.equal(rot.config.topN, rot.config.pool.length);
+  assert.equal(rot.config.rebalance, "monthly");
+
+  const screen = await api.screenFactors({ strategyId: "blue_chip_value" });
+  assert.equal(screen.strategy.id, "blue_chip_value");
+  assert.equal(screen.picks.length, 0);
+
+  const savedRules = await api.alertRules({ op: "save", rule: { type: "cci", scope: "watchlist", code: "", params: { direction: "below", period: 14, threshold: -100 }, cooldownHours: 0, enabled: true } });
+  assert.equal(savedRules.rules.length, 1);
+  assert.equal(savedRules.rules[0].cooldownHours, 0);
+  const removedRules = await api.alertRules({ op: "remove", id: savedRules.rules[0].id });
+  assert.equal(removedRules.rules.length, 0);
+
+  const savedFeeds = await api.ai.agent.feeds({ op: "save", name: "测试源", url: "https://example.com/rss.xml" });
+  assert.equal(savedFeeds.feeds.length, 1);
+  const removedFeeds = await api.ai.agent.feeds({ op: "remove", id: savedFeeds.feeds[0].id });
+  assert.equal(removedFeeds.feeds.length, 0);
+
+  const sigs = await api.ai.agent.signals({ evaluate: true });
+  assert.deepEqual(sigs.signals, []);
+  const updatedSigs = await api.ai.agent.updateSignal({ id: "missing", remove: true });
+  assert.deepEqual(updatedSigs.signals, []);
+});

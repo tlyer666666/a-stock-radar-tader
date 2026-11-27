@@ -16,7 +16,9 @@ const SYSTEM = `你是 A 股交易者的记事助手。用户随手写了一段�
    「跌破 5 日线」「跌破均价线」「放量」这类没有具体数字的，condition 填 null，写进 note。
 5. text：把这件事整理成一句清楚的待办（保留原意、价格和操作，不加你自己的建议，不超过 80 字）。
 6. note：你没法变成时间或条件的部分（例如「跌破均价线」要人看），一句话说明；没有就空字符串。
-只输出 JSON：{"text":"...","when":"YYYY-MM-DD HH:mm"|null,"repeat":"none","code":"600519"|null,"stockName":null,"condition":{...}|null,"note":""}`;
+7. sessionOnly：这件事只有在交易时段（9:30–11:30、13:00–15:00）才有意义时填 true，例如盘中做T、高抛低吸、盯盘口/分时、打板、冲高减仓；
+   盘前准备、收盘后复盘、看公告研报、周末计划填 false。拿不准填 false。
+只输出 JSON：{"text":"...","when":"YYYY-MM-DD HH:mm"|null,"repeat":"none","code":"600519"|null,"stockName":null,"condition":{...}|null,"note":"","sessionOnly":false}`;
 
 const _priceLimitRules = require("./price-limit-rules.cjs");
 const isAStockCode = typeof _priceLimitRules.isAStockCode === "function"
@@ -83,6 +85,7 @@ function sanitize(result, { tradingDays = [] } = {}) {
     if (Number.isFinite(midnight) && new Date(midnight).toISOString().slice(0, 10) === date) out.when = when;
   }
   if (["tradingDays", "daily", "weekly"].includes(result?.repeat)) out.repeat = result.repeat;
+  if (typeof result?.sessionOnly === "boolean") out.sessionOnly = result.sessionOnly;
   const code = String(result?.code || "").trim();
   if (isSupportedNoteCode(code)) out.code = code;
   const c = result?.condition;

@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useRef, type MutableRefObject } from "react";
+import FactorScreenPanel from "../features/strategy-selection/FactorScreenPanel";
 import { LoadingState } from "./terminal/TerminalPrimitives";
 import { WorkspaceErrorBoundary } from "./AppErrorBoundary";
 import type { FailedBoardCache, FailedBoardViewState } from "../features/dashboard/PreviousLimitUpFailedBoards";
@@ -640,6 +641,7 @@ export function renderAppWorkspaceRoutes(props: AppWorkspaceRoutesProps) {
       {researchView && (
         <WorkspaceErrorBoundary key={view} label="策略选股" onReturnHome={returnToSignals}>
           <Suspense fallback={<LoadingState />}>
+            {view === "signals" && <FactorScreenPanel onOpen={(stock: Security) => openAnalysis(stock, { view: "signals", label: "返回策略选股" })} />}
             <StrategySignalsView
               live={live}
               quoteRefreshSeconds={settings.quoteRefreshSeconds}

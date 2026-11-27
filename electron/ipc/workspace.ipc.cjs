@@ -152,7 +152,8 @@ function registerWorkspaceIpc({
 
   const backupValidators = {
     settings: isSettingsRecord, watchlist: usableWatchlist, holdings: usableHoldings, "custom-strategies": isCustomStrategyStore,
-    "ai-profiles": isAiProfileStore, "ai-framework": isAiFrameworkState, "ai-custom-stocks": isAiCustomList, "ai-selection": isAiStore, "stock-agent": isAgentStore
+    "ai-profiles": isAiProfileStore, "ai-framework": isAiFrameworkState, "ai-custom-stocks": isAiCustomList, "ai-selection": isAiStore, "stock-agent": isAgentStore,
+    "decision-signals": require("../decision-signals.cjs").isSignalStore, "alert-rules": require("../alert-rules.cjs").isAlertStore, "rss-feeds": require("../rss-feeds.cjs").isFeedStore
   };
   const backup = createBackupService({
     readStore: name => readJson(name, null, backupValidators[name]),

@@ -94,6 +94,7 @@ const {
   getGlobalMarkets,
   getGlobalNews,
   getIndexBoard,
+  getFundamentals,
   pollIndexQuotes,
   getBatchQuotes,
   readLimitSeals,
@@ -108,6 +109,7 @@ const {
   trendThsLane,
   getDataFederation,
   getChart,
+  isConvertibleBondCode,
   resolveStockIndustries,
   stockAnnouncements,
   discoverLimitUps,
@@ -787,7 +789,10 @@ function showSystemNotification(input) {
 }
 
 const { createIntervalReminderScheduler } = require("./note-watch.cjs");
-const intervalReminders = createIntervalReminderScheduler({ notify: showSystemNotification });
+const intervalReminders = createIntervalReminderScheduler({
+  notify: showSystemNotification,
+  isTradingDate: date => require("./market-time-rules.cjs").tradingDateStatus(date) !== false
+});
 
 let noteWatcherInstance = null;
 function noteWatcher() {
@@ -1564,6 +1569,183 @@ const latestDate = profiles => profiles.map(item => item.asOfDate).filter(Boolea
 
 // AI 问股（1.6.53）：对话式个股分析。工具只读软件已有的公开行情数据；对话和偏好存在 userData/stock-agent.json。
 let workspaceAgentSnapshot = { tItems: [], plans: [], paperPositions: [], notes: [], updatedAt: "" };
+// 自订资讯源（RSS / Atom），AI 问股的 rss_news 工具用。
+let rssFeedsInstance = null;
+function rssFeeds() {
+  if (!rssFeedsInstance) {
+    const { createRssFeeds, isFeedStore } = require("./rss-feeds.cjs");
+    const { fetchArrayBufferWithPolicy } = require("./http-client.cjs");
+    rssFeedsInstance = createRssFeeds({
+      store: { read: () => readJson("rss-feeds", null, isFeedStore), write: value => writeJson("rss-feeds", value, isFeedStore) },
+      fetchBytes: (url, options, policy) => fetchArrayBufferWithPolicy(url, options, policy)
+    });
+  }
+  return rssFeedsInstance;
+}
+
+function buildChartSecurity(code, name = "", preferredAssetType = "") {
+  const normalized = String(code || "");
+  const bond = isConvertibleBondCode(normalized);
+  const etf = !bond && (preferredAssetType === "etf" || /^(?:5\d{5}|159\d{3})$/.test(normalized));
+  const assetType = bond ? "convertibleBond" : etf ? "etf" : "stock";
+  const sh = bond ? /^(?:110|111|113|118)/.test(normalized) : etf ? /^5\d{5}$/.test(normalized) : /^(?:6\d{5}|900\d{3})$/.test(normalized);
+  return { code: normalized, name: name || normalized, secid: `${sh ? 1 : 0}.${normalized}`, assetType };
+}
+
+function raceWithSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(signal.reason ?? createCancelError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? createCancelError());
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      value => { signal.removeEventListener("abort", onAbort); resolve(value); },
+      error => { signal.removeEventListener("abort", onAbort); reject(error); }
+    );
+  });
+}
+
+// 多因子选股：全市场业绩报表 + 腾讯批量行情打分，候选再读日线补量价因子。
+let factorScreenInstance = null;
+function screenFactors(input = {}) {
+  if (!factorScreenInstance) {
+    const { createFactorScreen } = require("./factor-screen.cjs");
+    const { readTencentBatchQuotes } = require("./tencent-batch-quote.cjs");
+    const { fetchJsonWithPolicy } = require("./http-client.cjs");
+    const { tradingDateStatus } = require("./market-time-rules.cjs");
+    factorScreenInstance = createFactorScreen({
+      fetchJson: (url, options, timeoutMs) => fetchJsonWithPolicy(url, options, { timeoutMs, maxResponseBytes: 4 * 1024 * 1024 }),
+      readQuotes: (securities, options) => readTencentBatchQuotes(securities, options),
+      isTradingDate: date => tradingDateStatus(date) !== false,
+      // 只用已收盘的日线：盘中（15:05 前）丢掉当天那根。
+      loadBars: async (item, options = {}) => {
+        const cn = new Date(Date.now() + 8 * 3600_000);
+        const today = cn.toISOString().slice(0, 10);
+        const closed = cn.getUTCHours() * 60 + cn.getUTCMinutes() >= 15 * 60 + 5;
+        const rows = (await getChart(buildChartSecurity(item.code, item.name, "stock"), "101", { limit: 80 }, { signal: options.signal }))?.rows || [];
+        return rows.filter(row => { const date = String(row?.date || "").slice(0, 10); return date < today || (date === today && closed); });
+      },
+      log: message => debugLog(message)
+    });
+  }
+  return factorScreenInstance.screen(input);
+}
+
+// ETF 轮动：读前复权日线（只用已收盘的），纯规则计算；同一配置 10 分钟内复用，并发同参单飞复用。
+const etfRotationCache = new Map();
+const etfRotationPending = new Map();
+async function getEtfRotation(rawConfig = {}, options = {}) {
+  const { buildReport, normalizeConfig } = require("./etf-rotation.cjs");
+  const config = normalizeConfig(rawConfig);
+  const key = JSON.stringify(config);
+  const hit = etfRotationCache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.value;
+  if (!etfRotationPending.has(key)) {
+    const task = (async () => {
+      const cn = new Date(Date.now() + 8 * 3600_000);
+      const today = cn.toISOString().slice(0, 10);
+      const closedToday = cn.getUTCHours() * 60 + cn.getUTCMinutes() >= 15 * 60 + 5;
+      const codes = [...config.pool, ...(config.safeAsset ? [config.safeAsset] : [])];
+      const series = {};
+      const failed = [];
+      const unadjusted = [];
+      const names = {};
+      try { for (const item of (await getEtfMarket())?.items || []) if (codes.includes(item.code)) names[item.code] = item.name; } catch { /* 名称取不到用内置名 */ }
+      const queue = [...codes];
+      await Promise.all(Array.from({ length: 3 }, async () => {
+        while (queue.length) {
+          const code = queue.shift();
+          try {
+            const chart = await getChart({ code, name: names[code] || code, secid: `${/^5/.test(code) ? 1 : 0}.${code}`, assetType: "etf" }, "101", { limit: Math.min(3000, config.years * 250 + config.lookback + 20) });
+            if (String(chart?.adjustment || "").includes("不复权")) unadjusted.push(code);
+            series[code] = (chart?.rows || []).map(row => ({ date: String(row.date || "").slice(0, 10), close: Number(row.close) })).filter(row => row.date < today || (row.date === today && closedToday));
+          } catch { failed.push(code); series[code] = []; }
+        }
+      }));
+      const isTradingDate = date => require("./market-time-rules.cjs").tradingDateStatus(date) !== false;
+      const value = { ...buildReport(series, config, { names, failed, unadjusted, isTradingDate }), generatedAt: new Date().toISOString() };
+      if (value.signal) etfRotationCache.set(key, { value, expiresAt: Date.now() + 10 * 60_000 });
+      while (etfRotationCache.size > 12) etfRotationCache.delete(etfRotationCache.keys().next().value);
+      return value;
+    })();
+    const clearPending = () => { if (etfRotationPending.get(key) === task) etfRotationPending.delete(key); };
+    task.then(clearPending, clearPending);
+    etfRotationPending.set(key, task);
+  }
+  return raceWithSignal(etfRotationPending.get(key), options?.signal);
+}
+
+// 指标预警：按已收盘日线评估均线/RSI/MACD/KDJ/CCI 和大盘红绿灯；收盘后自动跑一次，盘中每 10 分钟只看大盘规则。
+let alertRulesInstance = null;
+let alertRulesTimer = null;
+let alertRulesStartTimer = null;
+const alertRulesAbortController = new AbortController();
+function alertRules() {
+  if (!alertRulesInstance) {
+    const { createAlertRules, isAlertStore } = require("./alert-rules.cjs");
+    alertRulesInstance = createAlertRules({
+      store: { read: () => readJson("alert-rules", null, isAlertStore), write: value => writeJson("alert-rules", value, isAlertStore) },
+      loadBars: async (target, options = {}) => {
+        const chart = await getChart(buildChartSecurity(target.code, target.name), "101", { limit: 400 }, { signal: options.signal }); // 年线（250 日）规则需要 251 根
+        return chart?.rows || [];
+      },
+      loadTargets: async () => ({
+        watchlist: normalizeWatchlist(readJson("watchlist", [], usableWatchlist)).filter(item => item.favorite || !item.autoAdded).map(item => ({ code: item.code, name: item.name })),
+        holdings: normalizeHoldings(readJson("holdings", [], usableHoldings)).map(item => ({ code: item.code, name: item.name }))
+      }),
+      loadBoard: ({ signal } = {}) => getIndexBoard({ withTrends: false, signal }),
+      notify: showSystemNotification
+    });
+  }
+  return alertRulesInstance;
+}
+function startAlertRulesSchedule() {
+  if (alertRulesTimer) return;
+  const { inTradingSession } = require("./note-watch.cjs");
+  const { tradingDateStatus } = require("./market-time-rules.cjs");
+  const isTradingDate = date => tradingDateStatus(date) !== false;
+  const tick = () => {
+    if (isQuitting || alertRulesAbortController.signal.aborted) return;
+    try {
+      const hub = alertRules();
+      const state = hub.list();
+      if (!state.rules.some(rule => rule.enabled)) return;
+      const now = Date.now();
+      if (inTradingSession(now, isTradingDate)) { void hub.run({ onlyMarket: true, signal: alertRulesAbortController.signal }).catch(() => undefined); return; }
+      // 找到最近一个已经收盘的交易日的 15:10：上次完整评估早于它就补跑一次（包括昨晚没开软件、今天开盘前才打开的情况）。
+      let lastClose = 0;
+      for (let back = 0; back < 15 && !lastClose; back += 1) {
+        const day = new Date(now + 8 * 3600_000 - back * 86_400_000).toISOString().slice(0, 10);
+        const closeAt = Date.parse(`${day}T15:10:00+08:00`);
+        if (isTradingDate(day) && closeAt <= now) lastClose = closeAt;
+      }
+      const lastRun = state.lastRunAt ? Date.parse(state.lastRunAt) : 0;
+      if (lastClose && !(lastRun >= lastClose)) void hub.run({ signal: alertRulesAbortController.signal }).catch(() => undefined);
+    } catch (error) { debugLog(`alert-rules ${error?.message || error}`); }
+  };
+  alertRulesTimer = setInterval(tick, 10 * 60_000);
+  alertRulesTimer.unref?.();
+  alertRulesStartTimer = setTimeout(() => { alertRulesStartTimer = null; tick(); }, 60_000);
+  alertRulesStartTimer.unref?.();
+}
+
+// AI 建议池：问股对个股 / ETF 的结构化建议，本机保存，按日线做事后验证。
+let decisionSignalsInstance = null;
+function decisionSignals() {
+  if (!decisionSignalsInstance) {
+    const { createDecisionSignals, isSignalStore } = require("./decision-signals.cjs");
+    decisionSignalsInstance = createDecisionSignals({
+      store: { read: () => readJson("decision-signals", null, isSignalStore), write: value => writeJson("decision-signals", value, isSignalStore) },
+      loadBars: async (security, options = {}) => {
+        // 不复权：建议里的参考价、止损、目标都是当时的实际价格，和前复权 K 线比会在除权后出错。
+        const chart = await getChart(buildChartSecurity(security.code, security.code, security.assetType), "101", { limit: 80, adjustment: 0 }, { signal: options.signal });
+        return (chart?.rows || []).map(row => ({ date: String(row.date || "").slice(0, 10), close: Number(row.close), high: Number(row.high), low: Number(row.low) }));
+      }
+    });
+  }
+  return decisionSignalsInstance;
+}
+
 let stockAgentInstance = null;
 function stockAgent() {
   if (stockAgentInstance) return stockAgentInstance;
@@ -1612,6 +1794,8 @@ function stockAgent() {
     indexCharts: () => Promise.all([["1.000001", "上证指数"], ["0.399001", "深证成指"], ["0.399006", "创业板指"], ["1.000300", "沪深300"], ["1.000985", "中证全指"]]
       .map(([secid, name]) => getReviewIndexChart(secid, { range: "3m", limit: 90 }).then(chart => ({ code: secid.slice(2), name, rows: chart?.rows || [] }), () => ({ code: secid.slice(2), name, rows: [] })))),
     etfMarket: () => getEtfMarket(),
+    rssNews: (args, lifecycle) => rssFeeds().news({ ...args, signal: lifecycle?.signal }),
+    fundamentals: (code, lifecycle) => getFundamentals(code, { signal: lifecycle?.signal }),
     globalMarkets: lifecycle => getGlobalMarkets({ signal: lifecycle?.signal }),
     globalNews: (args, lifecycle) => getGlobalNews({ hours: args?.hours, limit: args?.limit, signal: lifecycle?.signal }),
     marketNews: lifecycle => getNewsFeed({ scope: "all", limit: 80 }, settingsForService(), { signal: lifecycle?.signal }),
@@ -1660,6 +1844,18 @@ function stockAgent() {
     listProfiles: () => aiProfiles().list(),
     tools,
     onEvent: emitAiStream,
+    recordDecision: input => {
+      const { normalizePlan, applyRiskReview, ACTION_LABEL, HORIZON_LABEL } = require("./decision-signals.cjs");
+      const normalized = applyRiskReview(normalizePlan(input.rawPlan, { referencePrice: input.referencePrice }), input.riskReview);
+      if (!normalized) return null;
+      const saved = decisionSignals().record({ ...input, plan: normalized.plan, guardrail: normalized.guardrail, rawAction: normalized.rawAction });
+      if (!saved) return null;
+      const { signal } = saved;
+      return { id: signal.id, action: signal.action, actionLabel: ACTION_LABEL[signal.action], horizon: signal.horizon, horizonLabel: HORIZON_LABEL[signal.horizon],
+        entryLow: signal.entryLow, entryHigh: signal.entryHigh, stopLoss: signal.stopLoss, targetPrice: signal.targetPrice, invalidation: signal.invalidation,
+        watch: signal.watch, guardrail: signal.guardrail, expiresAt: signal.expiresAt, created: saved.created };
+    },
+    adviceReview: code => decisionSignals().review(code),
     store: { read: () => readJson("stock-agent", null, isAgentStore), write: value => writeJson("stock-agent", value, isAgentStore, true) }
   });
   return stockAgentInstance;
@@ -1740,6 +1936,7 @@ if (!hasSingleInstanceLock) {
     catch (error) { runtimeErrorLog("keychain-migration", error); }
   }
   configureFuyao({ getApiKey: () => settingsForService().fuyaoApiKey });
+  startAlertRulesSchedule();
   nativeTheme.on("updated", updateWindowChrome);
   if (process.platform === "win32") createTray();
   registerAllIpc({
@@ -1855,6 +2052,10 @@ if (!hasSingleInstanceLock) {
     getIndexBoard,
     subscribeIndexStream: options => indexStream().subscribe({ active: options?.active !== false }),
     subscribeLimitSeals: input => limitSealStream().subscribe(input),
+    alertRules,
+    getEtfRotation,
+    screenFactors,
+    resolveStockIndustries,
     getBatchQuotes,
     getFuyaoReviewData,
     getDataFederation,
@@ -1893,6 +2094,8 @@ if (!hasSingleInstanceLock) {
     aiService,
     aiProfiles,
     stockAgent,
+    decisionSignals,
+    rssFeeds,
     AI_CUSTOM_MAX,
     loadAiStockProfiles,
     latestDate,
@@ -1957,6 +2160,9 @@ app.on("before-quit", (event) => {
   trendScreener.cancel();
   indexStreamInstance?.shutdown();
   limitSealInstance?.shutdown();
+  if (alertRulesTimer) { clearInterval(alertRulesTimer); alertRulesTimer = null; }
+  if (alertRulesStartTimer) { clearTimeout(alertRulesStartTimer); alertRulesStartTimer = null; }
+  alertRulesAbortController.abort(createCancelError());
   dailyBarStore?.shutdown?.();
   noteWatcherInstance?.stop();
   intervalReminders.stop();

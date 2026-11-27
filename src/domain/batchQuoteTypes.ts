@@ -20,6 +20,9 @@ export type BatchQuote = {
   totalMarketCap: number | null;
   limitUp: number | null;
   limitDown: number | null;
+  /** 滚动市盈率（亏损为负或 null）与市净率。 */
+  pe?: number | null;
+  pb?: number | null;
   /** 五档买盘（价、手），买一在前；缺失档位不列出。 */
   bids?: Array<{ price: number; volumeLots: number }>;
   /** 五档卖盘（价、手），卖一在前；涨停封死时为空。 */

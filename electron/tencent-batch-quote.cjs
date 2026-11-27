@@ -86,6 +86,9 @@ function parseTencentBatch(text) {
       totalMarketCap: scaledNumber(fields[45], 1e8),
       limitUp: positiveOrNull(fields[47]),
       limitDown: positiveOrNull(fields[48]),
+      // [39] 滚动市盈率、[46] 市净率；亏损股市盈率为负或空，保持原值由调用方判断。
+      pe: optionalNumber(fields[39]),
+      pb: optionalNumber(fields[46]),
       bids: bookLevels(fields, 9),
       asks: bookLevels(fields, 19),
       quoteAt: parsedDate.toISOString(),

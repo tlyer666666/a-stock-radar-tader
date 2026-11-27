@@ -17,7 +17,9 @@ const FILE_PATTERN = /^A股雷达备份-(\d{8})-(\d{6})\.json$/;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_KEEP = 30;
 /** 备份的本机数据（userData 下的 JSON）；行情缓存类（可转债名单、行业索引）不备份。 */
-const BACKUP_STORES = Object.freeze(["settings", "watchlist", "holdings", "custom-strategies", "ai-profiles", "ai-framework", "ai-custom-stocks", "ai-selection", "stock-agent"]);
+const BACKUP_STORES = Object.freeze(["settings", "watchlist", "holdings", "custom-strategies", "ai-profiles", "ai-framework", "ai-custom-stocks", "ai-selection", "stock-agent",
+  // AI 建议池、指标预警规则与历史、自订资讯源（2026-11-27 起）。
+  "decision-signals", "alert-rules", "rss-feeds"]);
 const SECRET_SETTING_KEYS = Object.freeze(["refreshToken", "tushareToken", "fuyaoApiKey", "aiApiKey"]);
 /** 浏览器本地存储里属于本软件的键。 */
 const isAppLocalKey = key => typeof key === "string" && (key.startsWith("a-stock-radar") || key === "ai-picks-excluded" || key === "astock:display-density:v1");
@@ -54,8 +56,29 @@ function deriveKeyAsync(password, salt) {
   });
 }
 
-/** 去掉密钥：设置里的令牌/Key，模型配置里的 apiKey。 */
-function sanitizeStore(name, value) {
+const SENSITIVE_FEED_QUERY = /(?:^|[_-])(?:token|key|secret|auth|pass|password|sig|signature|apikey|access[_-]?token)$/i;
+
+function sanitizeFeedUrlForBackup(rawUrl) {
+  if (typeof rawUrl !== "string") return rawUrl;
+  let parsed;
+  try { parsed = new URL(rawUrl); } catch { return rawUrl; }
+  let changed = false;
+  if (parsed.username || parsed.password) {
+    parsed.username = "";
+    parsed.password = "";
+    changed = true;
+  }
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (SENSITIVE_FEED_QUERY.test(key)) {
+      parsed.searchParams.delete(key);
+      changed = true;
+    }
+  }
+  return changed ? parsed.href : rawUrl;
+}
+
+/** 去掉密钥：设置里的令牌/Key，模型配置里的 apiKey；未加密备份同时脱敏 RSS 地址中的敏感查询参数。 */
+function sanitizeStore(name, value, { stripFeedSecrets = true } = {}) {
   if (name === "settings" && isRecord(value)) {
     const copy = { ...value };
     for (const key of SECRET_SETTING_KEYS) delete copy[key];
@@ -67,6 +90,14 @@ function sanitizeStore(name, value) {
       const { apiKey: _apiKey, ...rest } = profile;
       return rest;
     }) };
+  }
+  if (name === "rss-feeds" && stripFeedSecrets && isRecord(value) && Array.isArray(value.feeds)) {
+    return {
+      ...value,
+      feeds: value.feeds.map(feed => (isRecord(feed) && typeof feed.url === "string"
+        ? { ...feed, url: sanitizeFeedUrlForBackup(feed.url) }
+        : feed))
+    };
   }
   return value;
 }
@@ -106,9 +137,9 @@ function mergeForRestore(name, restored, current) {
   return restored;
 }
 
-function buildBackup({ stores, local, appVersion, now = Date.now() }) {
+function buildBackup({ stores, local, appVersion, now = Date.now(), encrypted = false }) {
   const cleanStores = {};
-  for (const name of BACKUP_STORES) if (stores[name] !== undefined && stores[name] !== null) cleanStores[name] = sanitizeStore(name, stores[name]);
+  for (const name of BACKUP_STORES) if (stores[name] !== undefined && stores[name] !== null) cleanStores[name] = sanitizeStore(name, stores[name], { stripFeedSecrets: !encrypted });
   const cleanLocal = {};
   for (const [key, value] of Object.entries(isRecord(local) ? local : {})) if (isAppLocalKey(key) && typeof value === "string") cleanLocal[key] = value;
   return { format: FORMAT, version: VERSION, createdAt: new Date(now).toISOString(), appVersion: String(appVersion || ""), stores: cleanStores, local: cleanLocal };
@@ -438,13 +469,13 @@ function createBackupService({ readStore, writeStore, validateStore, removeStore
             if (typeof value === "string") mergedLocal[key] = value;
           }
         }
-        const backup = buildBackup({ stores, local: mergedLocal, appVersion, now: now() });
         let password = "";
         if (current.password) {
           if (secretLocked()) throw lockedError();
           password = decryptSecret(current.password);
           if (!password) throw fail("BACKUP_PASSWORD_UNREADABLE", "无法读取已保存的备份密码，请重新设置备份密码后再试");
         }
+        const backup = buildBackup({ stores, local: mergedLocal, appVersion, now: now(), encrypted: Boolean(password) });
         const content = await encodeBackup(backup, password);
         if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw fail("BACKUP_TOO_LARGE", "备份超过 64MB，请先清理 AI 对话或回测历史");
         const name = backupFileName(now());

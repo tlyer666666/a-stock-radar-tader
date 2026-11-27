@@ -111,7 +111,7 @@ ${toolCatalogText({ allowPersonalContext })}
 
 工作方式（每一轮只输出一个 JSON 对象，不要输出别的文字）：
 - 需要数据时输出 {"thought":"这一轮想弄清什么（≤60字）","calls":[{"tool":"工具id","args":{…}}]}，一轮最多 ${MAX_CALLS_PER_ROUND} 个工具，可以同时查不同股票；软件执行后把结果（toolResults）发给你。
-- 信息足够时输出 {"thought":"…","final":{"answer":"Markdown 正文","stance":"偏多|中性|偏空|回避|不适用","confidence":"高|中|低","focus":{"code":"600519","name":"贵州茅台"},"followUps":["追问1","追问2","追问3"],"memoryCandidates":["若从对话中提炼出用户明确表达的长期交易偏好/纪律(≤2条,每条≤45字),放此处；否则省略"]${skills.length ? `,"skillVerdicts":[{"skill":"打法名称","verdict":"符合|接近|不符合|不适用","reason":"依据"}]` : ""}}}。
+- 信息足够时输出 {"thought":"…","final":{"answer":"Markdown 正文","stance":"偏多|中性|偏空|回避|不适用","confidence":"高|中|低","focus":{"code":"600519","name":"贵州茅台"},"followUps":["追问1","追问2","追问3"],"memoryCandidates":["若从对话中提炼出用户明确表达的长期交易偏好/纪律(≤2条,每条≤45字),放此处；否则省略"],"plan":{"action":"buy|add|hold|reduce|sell|watch|avoid","horizon":"1d|3d|5d|10d|swing","entryLow":0,"entryHigh":0,"stopLoss":0,"targetPrice":0,"invalidation":"什么情况说明这个判断错了","watch":["接下来要盯的条件"],"reason":"一句话依据"},"riskReview":{"verdict":"pass|downgrade|veto","reasons":["风险复核发现的问题"]}${skills.length ? `,"skillVerdicts":[{"skill":"打法名称","verdict":"符合|接近|不符合|不适用","reason":"依据"}]` : ""}}}。
 - 最多 ${MAX_TOOL_ROUNDS} 轮工具调用，之后必须给 final。
 - 用户只说了股票或 ETF 名称时先用 search_stock 查代码；问大盘先查 index_overview、market、sector_rank、global_markets、global_news；问某个板块用 sector_detail；问 ETF 用 etf_quote（溢价率超过 3% 必须提醒追高风险，规模太小要提醒流动性），比较或挑选 ETF 用 etf_rank。
 - 第一次问到一个对象时（个股会先读 ${PREFETCH_TOOLS.join("、")}），软件已经把常用数据放在 initialData 里，不要重复查。做「全面分析」时通常还需要 kline、market，必要时 intraday、news、diagnosis。只问某一方面时只查相关的；追问时先看对话里已有的信息，不够再查。
@@ -129,6 +129,8 @@ final.answer 的要求：
 - 只问某一点或追问时直接回答，不必套用全部小节，100–400 字。
 - stance 是你对分析对象接下来几个交易日的看法：偏多/中性/偏空/回避（大盘和板块也给）；只是闲聊或查资料时用“不适用”。confidence 是把握程度。
 - focus 填这次主要分析的对象：个股 {"code":"600519","name":"贵州茅台"}；ETF {"kind":"etf","code":"510300","name":"沪深300ETF"}；板块 {"kind":"sector","name":"PCB"}；大盘 {"kind":"market","name":"大盘"}（没有就省略）；followUps 给 3 个用户可能想接着问的问题（每个 ≤20 字）。
+- plan：只在分析对象是个股或 ETF、并且你给出了明确态度时填写（大盘、板块、闲聊、只查资料时省略整个 plan）。action 是给还没持有的人看的动作：buy 买入、add 已有可加、hold 持有不动、reduce 减仓、sell 卖出、watch 观望等条件、avoid 回避；horizon 是这个判断管几天。价格只能用工具结果里出现过的价位，没有就填 null，不要凑数；buy/add 必须给 stopLoss 或 invalidation，否则软件会把它记成观望。软件会把 plan 存进「AI 建议」并在 1/3/5/10 个交易日后自动核对对错。输入里带 adviceHistory 时，那是你以前对这只股票的建议和事后结果，可以用来提醒自己哪类判断常错，但不能当作加大仓位的理由。
+- riskReview：给个股或 ETF 的 plan 之前，先换成风控的角度复核一遍，专门找反对理由——大盘是否偏弱（防守、退潮）、是否高位放量滞涨或连续大涨后追高、是否有减持/立案/业绩大降等硬伤、止损离现价是否太远、数据是否缺失或过期。没有问题填 pass；有问题但不致命填 downgrade；有硬伤或风险明显大于收益填 veto。veto 时软件会把买入/加仓记成观望，所以正文的结论也要相应保守，不能正文喊买、复核否决。
 - 用简体中文；不承诺收益，不说“保证”“必涨”；不给具体仓位比例；不需要写免责声明（界面会显示）。${skills.length ? `
 
 ${skillLib.skillPromptText(skills, toolName)}` : ""}${memory ? `
@@ -136,6 +138,13 @@ ${skillLib.skillPromptText(skills, toolName)}` : ""}${memory ? `
 用户写给你的个人偏好与背景（作为分析参考，与上面的规则冲突时以上面为准）：
 ${memory}` : ""}`;
 }
+
+/** 独立风控复核：只在 AI 建议买入或加仓时再单独问一次，角色是专门挑毛病的风控，不看原回答的措辞是否漂亮，只看数据。 */
+const RISK_REVIEW_SYSTEM = `你是 A 股交易的风控复核员。另一位分析师刚给出了买入或加仓建议，你的任务是只找反对理由，不负责找支持理由。
+根据给你的数据摘要（toolResults）和他的计划（plan），逐项检查：大盘是否处于防守或退潮；股价是否短期涨幅过大、高位放量滞涨或远离均线；是否有减持、立案、问询、业绩大幅下滑等硬伤；
+止损是否离现价太远或没有依据；关键数据是否缺失、过期或互相矛盾；入场价是否明显高于现价（追高）。
+只用给你的数据，不要编造。只输出 JSON：{"verdict":"pass|downgrade|veto","reasons":["每条 ≤40 字，写具体数字"]}。
+pass = 没发现值得否决的问题；downgrade = 有问题但不致命，应降低把握或缩小仓位预期；veto = 有硬伤或风险明显大于收益，不应买入。拿不准时宁可 downgrade。`;
 
 const FINAL_ONLY_SYSTEM = `你是A股个股分析助手。根据给你的问题和已经查到的数据（toolResults），直接用 Markdown 写回答。
 要求：只引用数据里出现的数字和价位，取不到的写“未取到”；不编造新闻、资金和机构观点；第一行用一句加粗的话给结论；用简体中文；不承诺收益，不给仓位比例。只输出回答正文。`;
@@ -261,6 +270,9 @@ function validateFinal(raw, skills = []) {
     focus: normalizeFocus(source.focus),
     followUps: (Array.isArray(source.followUps) ? source.followUps : []).map(item => oneLine(item, 24)).filter(Boolean).slice(0, 3),
     ...(memoryCandidates.length ? { memoryCandidates } : {}),
+    ...(isRecord(source.plan) ? { rawPlan: source.plan } : {}),
+    ...(isRecord(source.riskReview) && ["pass", "downgrade", "veto"].includes(source.riskReview.verdict)
+      ? { riskReview: { verdict: source.riskReview.verdict, reasons: (Array.isArray(source.riskReview.reasons) ? source.riskReview.reasons : []).map(item => oneLine(item, 50)).filter(Boolean).slice(0, 4) } } : {}),
     ...(skills.length ? { skillVerdicts: skillLib.normalizeVerdicts(source.skillVerdicts, skills) } : {})
   };
 }
@@ -360,7 +372,7 @@ function trimMessagesToBudget(messages, maxChars = MAX_CONTEXT_CHARS, historyCou
  *   question: string, focus: {code: string, name: string} | null, prefetch: boolean, memory?: string, clock: {text: string, session: string},
  *   signal?: AbortSignal, onSteps?: (steps: any[]) => void }} input
  */
-async function runAgentTurn({ ai, tools, history = [], question, focus = null, prefetch = false, marketIntent = false, memory = "", skills = [], userContext = null, allowPersonalContext = true, clock, signal, onSteps = () => {}, onStream = null, now = () => Date.now(), maxContextChars = MAX_CONTEXT_CHARS }) {
+async function runAgentTurn({ ai, tools, history = [], question, focus = null, prefetch = false, marketIntent = false, adviceHistory = null, independentRiskReview = false, memory = "", skills = [], userContext = null, allowPersonalContext = true, clock, signal, onSteps = () => {}, onStream = null, now = () => Date.now(), maxContextChars = MAX_CONTEXT_CHARS }) {
   const turnStartedAt = now();
   let wrapUpAsked = false;
   const cleanContext = allowPersonalContext ? sanitizeUserContext(userContext) : null;
@@ -402,12 +414,24 @@ async function runAgentTurn({ ai, tools, history = [], question, focus = null, p
     .map(item => ({ role: item.role, content: clip(item.content, item.role === "assistant" ? 1800 : 600) }));
   const messages = [...turns, { role: "user", content: fitJson({ question: clip(question, MAX_QUESTION), ...(focus ? { focus } : {}),
     ...(cleanContext ? { userContext: cleanContext } : {}),
+    ...(adviceHistory ? { adviceHistory } : {}),
     ...(initialData ? { initialData } : {}), remainingRounds: MAX_TOOL_ROUNDS }, 18000) }];
   const effectiveContextChars = Number.isFinite(Number(maxContextChars)) && Number(maxContextChars) > 0
     ? Number(maxContextChars)
     : MAX_CONTEXT_CHARS;
 
-  const finish = (final, extra = {}) => ({ ...final, steps, model: ai.model(), toolCalls: callCount, ...extra });
+  /** 建议入库时的参考价：这一轮里查到的、分析对象的最新价（没查到就没有）。 */
+  const referencePriceOf = target => {
+    const code = target?.code;
+    if (!code) return null;
+    for (const item of [...results].reverse()) {
+      if (!item?.ok || !item.data) continue;
+      if (item.tool === "quote" && item.data.code === code && Number(item.data.latest) > 0) return Number(item.data.latest);
+      if (item.tool === "etf_quote") { const hit = (item.data.etfs || []).find(etf => etf.code === code); if (hit && Number(hit.latest) > 0) return Number(hit.latest); }
+    }
+    return null;
+  };
+  const finish = (final, extra = {}) => ({ ...final, steps, model: ai.model(), toolCalls: callCount, referencePrice: referencePriceOf(final?.focus || focus), ...extra });
   for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
     signal?.throwIfAborted();
     let reply;
@@ -428,6 +452,24 @@ async function runAgentTurn({ ai, tools, history = [], question, focus = null, p
     const thought = oneLine(reply?.thought, 90);
     if (final) {
       if (thought) { steps.push({ kind: "answer", thought, calls: [] }); emit(); }
+      // 买入 / 加仓建议：再单独调一次模型做风控复核（独立的系统提示词，只看数据和计划）。失败时保留回答里的自查结果。
+      const target = final.focus || focus;
+      if (independentRiskReview && target?.code && ["buy", "add"].includes(final.rawPlan?.action)) {
+        const step = { kind: "risk", thought: "风控复核：单独再检查一遍这条买入建议", calls: [] };
+        steps.push(step); emit();
+        try {
+          const review = await ai.chat({ system: RISK_REVIEW_SYSTEM, json: true, temperature: 0.1, maxTokens: 800, signal,
+            messages: [{ role: "user", content: fitJson({ stock: target, plan: final.rawPlan, analystStance: final.stance, toolResults: results.map(item => ({ tool: item.tool, ok: item.ok, summary: item.summary, ...(item.ok ? { data: item.data } : {}) })) }, 12000) }] });
+          if (isRecord(review) && ["pass", "downgrade", "veto"].includes(review.verdict)) {
+            final.riskReview = { verdict: review.verdict, reasons: (Array.isArray(review.reasons) ? review.reasons : []).map(item => oneLine(item, 50)).filter(Boolean).slice(0, 4), independent: true };
+            step.thought = `风控复核：${{ pass: "通过", downgrade: "降级", veto: "否决" }[review.verdict]}`;
+          } else step.thought = "风控复核：没有得到有效结论，沿用回答里的自查";
+        } catch (error) {
+          if (signal?.aborted) throw error;
+          step.thought = "风控复核：这次没调通，沿用回答里的自查";
+        }
+        emit();
+      }
       return finish(final);
     }
     const asked = (Array.isArray(reply?.calls) ? reply.calls : []).slice(0, 12)
@@ -487,6 +529,8 @@ function isAgentStore(value) {
  *   store?: { read: () => any, write: (value: any) => any } | null, clock?: () => any, now?: () => number, id?: () => string }} options
  */
 function createStockAgentService({ clientFor, resolveProfile, listProfiles = () => ({ profiles: [], activeId: "" }), tools, store = null,
+  // AI 建议池：recordDecision 把个股/ETF 的结构化计划入库并返回建议摘要；adviceReview 读取这只股票以前的建议与事后结果。
+  recordDecision = null, adviceReview = null,
   clock = () => defaultClock(), now = () => Date.now(), id = () => randomUUID(), onEvent = () => {} }) {
   const shutdownController = new AbortController();
   const runs = new Map();
@@ -635,7 +679,11 @@ function createStockAgentService({ clientFor, resolveProfile, listProfiles = () 
           ? Promise.resolve({ tool: toolId, name: toolName(toolId), ok: false, summary: "用户已关闭个人持仓/计划/随心记上下文授权", data: null, args: args || {} })
           : runtime.track(() => tools.runTool(toolId, args, opts)))
       };
-      return runAgentTurn({ ai, tools: scopedTools, history, question, focus, prefetch, marketIntent, memory, skills, userContext, allowPersonalContext, clock: clock(), signal: runtime.signal(), now,
+      let adviceHistory = null;
+      if (typeof adviceReview === "function" && focus?.code && prefetch) {
+        try { const review = adviceReview(focus.code); if (review?.sampleSize > 0) adviceHistory = review; } catch { /* 历史建议读不到不影响分析 */ }
+      }
+      return runAgentTurn({ ai, tools: scopedTools, history, question, focus, prefetch, marketIntent, adviceHistory, independentRiskReview: true, memory, skills, userContext, allowPersonalContext, clock: clock(), signal: runtime.signal(), now,
         onSteps: steps => {
           run.steps = steps;
           emitEvent({ channel: "agent", runId: run.id, conversationId: thread.id, phase: "step", steps });
@@ -659,9 +707,21 @@ function createStockAgentService({ clientFor, resolveProfile, listProfiles = () 
     };
     const turn = task.then(result => {
       const answerFocus = result.focus || focus;
-      const message = { id: id(), role: "assistant", content: result.answer, stance: result.stance, confidence: result.confidence, followUps: result.followUps,
+      const messageId = id();
+      // 个股 / ETF 且给了结构化计划：存进 AI 建议池（失败不影响回答）。
+      let decision = null;
+      if (typeof recordDecision === "function" && result.rawPlan && answerFocus?.code && !result.fallback) {
+        try {
+          decision = recordDecision({ code: answerFocus.code, name: answerFocus.name, assetType: answerFocus.kind === "etf" ? "etf" : "stock", rawPlan: result.rawPlan, riskReview: result.riskReview || null,
+            stance: result.stance, confidence: result.confidence, referencePrice: result.referencePrice,
+            source: { conversationId: thread.id, messageId, model: result.model || run.model, skills: skillTags.map(tag => tag.name) } });
+        } catch { decision = null; }
+      }
+      const message = { id: messageId, role: "assistant", content: result.answer, stance: result.stance, confidence: result.confidence, followUps: result.followUps,
         steps: compactSteps(result.steps), model: result.model || run.model, at: stamp(), durationMs: now() - run.startedAtMs, ...(answerFocus ? { focus: answerFocus } : {}),
         ...(result.memoryCandidates?.length ? { memoryCandidates: result.memoryCandidates } : {}),
+        ...(decision ? { decision } : {}),
+        ...(result.riskReview ? { riskReview: result.riskReview } : {}),
         ...(result.fallback ? { fallback: true } : {}), ...(skillTags.length ? { skills: skillTags, skillVerdicts: result.skillVerdicts || [] } : {}) };
       append(message);
       Object.assign(run, { status: "done", message, steps: result.steps, endedAt: now() });

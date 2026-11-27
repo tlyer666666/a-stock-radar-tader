@@ -6,6 +6,8 @@ function registerAiIpc({
   aiService,
   aiProfiles,
   stockAgent,
+  decisionSignals = null,
+  rssFeeds = null,
   AI_CUSTOM_MAX,
   loadAiStockProfiles,
   latestDate,
@@ -210,6 +212,50 @@ function registerAiIpc({
     });
   });
 
+  // AI 建议池：列表 + 统计；evaluate=true 时先补做事后验证（读日线，最多 60 只）。
+  const signalList = async (input = {}, runtime = {}) => {
+    const hub = decisionSignals?.();
+    if (!hub) return { signals: [], stats: null, evaluation: null };
+    let evaluation = null;
+    if (input.evaluate === true) {
+      try {
+        evaluation = await hub.evaluatePending({ signal: runtime?.signal });
+      } catch (error) {
+        if (error?.name === "AbortError" || runtime?.signal?.aborted) throw error;
+        evaluation = { evaluated: 0, failed: -1 };
+      }
+    }
+    const status = ["active", "expired", "invalidated", "closed"].includes(input.status) ? input.status : "";
+    const code = /^\d{6}$/.test(String(input.code || "")) ? String(input.code) : "";
+    return { signals: hub.list({ status, code, limit: 300 }), stats: hub.stats(), evaluation };
+  };
+  // 自订资讯源（RSS / Atom）：list / save / remove / test。
+  handleTrustedIpc("agent:feeds", async (_, input) => {
+    const payload = aiPayload(input);
+    const hub = rssFeeds?.();
+    if (!hub) throw new Error("自订资讯源暂不可用");
+    const op = String(payload.op || "list");
+    if (op === "save") return hub.save({ id: payload.id, name: payload.name, url: payload.url, enabled: payload.enabled !== false });
+    if (op === "remove") return hub.remove(String(payload.id || "").slice(0, 40));
+    if (op === "test") return { ...hub.list(), test: await hub.test(String(payload.url || "")) };
+    return hub.list();
+  });
+  handleTrustedIpc("agent:signals", (event, input) => {
+    const payload = aiPayload(input);
+    if (payload.evaluate === true) {
+      return withAbortableRuntime(event, payload, runtime => signalList(payload, runtime));
+    }
+    return signalList(payload);
+  });
+  handleTrustedIpc("agent:signal-update", (_, input) => {
+    const payload = aiPayload(input);
+    const hub = decisionSignals?.();
+    if (!hub) throw new Error("AI 建议池暂不可用");
+    const id = String(payload.id || "").slice(0, 60);
+    if (payload.remove === true) hub.remove(id);
+    else hub.update(id, { ...(payload.status !== undefined ? { status: payload.status } : {}), ...(Object.hasOwn(payload, "feedback") ? { feedback: payload.feedback } : {}) });
+    return signalList({});
+  });
   handleTrustedIpc("agent:state", () => stockAgent().state());
   handleTrustedIpc("agent:conversation", (_, id) => stockAgent().conversation(String(id || "").slice(0, 80)));
   handleTrustedIpc("agent:start", (_, input) => {

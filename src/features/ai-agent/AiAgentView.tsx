@@ -3,6 +3,8 @@ import {
   Bot, Check, ChevronDown, CircleAlert, CircleStop, Copy, ExternalLink, LoaderCircle, MessagesSquare, PenLine, Plus, RotateCcw, Search, SendHorizontal, Settings, Trash2, Wrench, X
 } from "lucide-react";
 import { SkillBar, SkillTags, SkillVerdicts } from "./AgentSkills";
+import DecisionSignalsPanel, { DecisionCard } from "./DecisionSignalsPanel";
+import FeedsPanel from "./FeedsPanel";
 import { PageHeading } from "../../components/terminal/TerminalPrimitives";
 import { startVisibleInterval } from "../../visiblePolling";
 import { aiErrorMessage } from "../strategy-selection/aiSelectionModel";
@@ -53,6 +55,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
   };
   const { state, setState, loadError, refreshState, activeId, thread, focus, setFocus, draft, setDraft, hasDraft, run, error, setError, sending, saving,
     persistenceError, retryPersistence, confirmDelete, skillIds, setSkillIds, openConversation, send, stop, remove, running } = useAgentConversation(api, embeddedFocus, userContext, allowPersonalContext, embeddedMode);
+  const [pane, setPane] = useState<"chat" | "signals" | "feeds">("chat");
   const buildContextForFocus = useCallback((targetFocus: { code: string; name: string } | null | undefined) => {
     const holding = targetFocus && holdings?.length ? holdings.find(item => item.code === targetFocus.code) : undefined;
     const merged: Record<string, unknown> = {
@@ -155,6 +158,11 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
     });
   };
 
+  const paneSwitch = <div className="agent-pane-switch" role="tablist" aria-label="AI 问股视图">
+    <button type="button" id="agent-pane-tab-chat" role="tab" aria-selected={pane === "chat"} aria-controls="agent-pane-panel-chat" className={pane === "chat" ? "active" : ""} onClick={() => setPane("chat")}>对话</button>
+    <button type="button" id="agent-pane-tab-signals" role="tab" aria-selected={pane === "signals"} aria-controls="agent-pane-panel-signals" className={pane === "signals" ? "active" : ""} onClick={() => setPane("signals")}>AI 建议</button>
+    <button type="button" id="agent-pane-tab-feeds" role="tab" aria-selected={pane === "feeds"} aria-controls="agent-pane-panel-feeds" className={pane === "feeds" ? "active" : ""} onClick={() => setPane("feeds")}>资讯源</button>
+  </div>;
   if (!api) return <div className="ai-agent-view"><PageHeading title="AI 问股" />
     <div className="panel strategy-stock-empty"><Bot size={28} /><b>浏览器预览不调用 AI</b><p>请在桌面版「数据源设置 → AI 助手」添加模型配置后使用。</p></div></div>;
 
@@ -164,14 +172,16 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
 
   return <div className={`ai-agent-view${embeddedFocus ? " ai-agent-embedded" : ""}`}>
     {embeddedFocus ? <div className="ai-agent-chat-head"><b>{embeddedFocus.name} · {embeddedMode === "stock-drawer" ? "AI问股" : "AI做T分析"}</b>{allowPersonalContext && contextLabel && <span className="ai-agent-ctx-badge">{contextLabel}</span>}<label className="ai-agent-ctx-toggle" title="关闭后仅传公开行情与你的提问，不读取持仓、做T、计划与随心记工具"><input type="checkbox" checked={allowPersonalContext} disabled={running || sending} onChange={event => togglePersonalContext(event.target.checked)} />读取持仓/计划/随心记</label>{state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />}</div> : <PageHeading title="AI 问股" description="单独和 AI 聊个股：它会先自己查公开行情、日线体检、K线、分时、策略、公告、板块等数据，支持开启个人工作区上下文（持仓成本/做T/计划/随心记，随时可一键关闭）；对话只保存在本机。"
-      actions={state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />} />}
+      actions={<>{paneSwitch}{state && <ModelPicker state={state} onChoose={chooseProfile} onOpenSettings={openAiSettings} />}</>} />}
     {loadError && <div className="warning-banner" role="alert"><CircleAlert size={17} />{loadError}<button type="button" className="secondary-btn" onClick={() => void refreshState()}>重试</button></div>}
     {persistenceError && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>{persistenceError}。回答仍在本次运行中，关闭软件前请重试保存。</span>
       <button type="button" className="secondary-btn" disabled={saving} onClick={() => void retryPersistence()}>{saving ? "保存中…" : "重试保存"}</button></div>}
     {state && !state.configured && <div className="warning-banner" role="alert"><CircleAlert size={17} /><span>还没有可用的 AI 模型配置：请先在「数据源设置 → AI 助手」填写接口地址、模型名和 API Key。</span>
       {openAiSettings && <button type="button" className="secondary-btn" onClick={openAiSettings}><Settings size={15} />去设置</button>}</div>}
 
-    <div className="ai-agent-layout">
+    {!embeddedFocus && pane === "signals" ? <div id="agent-pane-panel-signals" role="tabpanel" aria-labelledby="agent-pane-tab-signals"><DecisionSignalsPanel onOpenStock={onOpenStock} /></div> : null}
+    {!embeddedFocus && pane === "feeds" ? <div id="agent-pane-panel-feeds" role="tabpanel" aria-labelledby="agent-pane-tab-feeds"><FeedsPanel /></div> : null}
+    <div id="agent-pane-panel-chat" role={!embeddedFocus ? "tabpanel" : undefined} aria-labelledby={!embeddedFocus ? "agent-pane-tab-chat" : undefined} className="ai-agent-layout" hidden={!embeddedFocus && pane !== "chat"}>
       {!embeddedFocus && <aside className="panel ai-agent-sidebar" aria-label="对话列表">
         <button type="button" className="primary-btn ai-agent-new" onClick={() => void openConversation(null)}><Plus size={16} />新对话</button>
         {((state?.conversations.length || 0) > 0 || localNotes.length > 0) && (
@@ -246,6 +256,7 @@ export default function AiAgentView({ onOpenStock, onOpenSettings, embeddedFocus
               <small>{[message.focus ? focusLabel(message.focus) : "", message.skills?.length ? `打法：${message.skills.map(skill => skill.name).join("、")}` : ""].filter(Boolean).join(" · ")}</small></div>
             : <AnswerCard key={message.id} message={message} latest={message.id === lastAnswer?.id && !running} disabled={running || sending || !state?.configured}
               savedMemory={state?.memory || ""} onSaveMemory={saveMemoryCandidate}
+              onOpenSignals={!embeddedFocus ? () => setPane("signals") : undefined}
               onFollowUp={text => void send(text, effectiveContext ? { userContext: effectiveContext } : undefined)}
               onRetry={() => {
                 const question = questionBefore(messages, message.id);
@@ -293,7 +304,7 @@ function Welcome({ focus, tools, disabled, onTask, skills }: { focus: AgentFocus
 
 function StepList({ steps, live }: { steps: AgentStep[]; live: boolean }) {
   return <ol className="ai-agent-steps">{steps.map((step, index) => <li key={index}>
-    {step.thought && <p className="ai-agent-thought">{step.kind === "prefetch" ? "软件先读：" : step.kind === "answer" ? "结论：" : "思路："}{step.thought}</p>}
+    {step.thought && <p className="ai-agent-thought">{step.kind === "prefetch" ? "软件先读：" : step.kind === "answer" ? "结论：" : step.kind === "risk" ? "" : "思路："}{step.thought}</p>}
     {step.calls.length > 0 && <ul>{step.calls.map((call, row) => <li key={row} className={`ai-agent-call ${call.status}`}>
       {call.status === "running" ? <LoaderCircle size={13} className={live ? "spin" : ""} aria-label="查询中" /> : call.status === "ok" ? <Check size={13} aria-label="已取到" /> : <X size={13} aria-label="没取到" />}
       <b>{call.name || call.tool}</b>{call.args && <code>{call.args}</code>}{call.summary && <span>{call.summary}</span>}
@@ -318,12 +329,13 @@ function RunCard({ run, onStop }: { run: AgentRun; onStop: () => void }) {
   </article>;
 }
 
-function AnswerCard({ message, latest, disabled, savedMemory, onSaveMemory, onFollowUp, onRetry }: {
+function AnswerCard({ message, latest, disabled, savedMemory, onSaveMemory, onOpenSignals, onFollowUp, onRetry }: {
   message: AgentMessage;
   latest: boolean;
   disabled: boolean;
   savedMemory: string;
   onSaveMemory: (candidate: string) => Promise<boolean>;
+  onOpenSignals?: (() => void) | undefined;
   onFollowUp: (text: string) => void;
   onRetry: () => void;
 }) {
@@ -352,6 +364,9 @@ function AnswerCard({ message, latest, disabled, savedMemory, onSaveMemory, onFo
     {summary && <details className="ai-agent-steps-box"><summary><Wrench size={13} />{summary}<ChevronDown size={13} /></summary><StepList steps={steps} live={false} /></details>}
     {message.skillVerdicts?.length ? <SkillVerdicts verdicts={message.skillVerdicts} /> : message.skills?.length ? <SkillTags skills={message.skills} /> : null}
     <AgentMarkdown text={message.content} />
+    {message.riskReview && message.riskReview.verdict !== "pass" && <p className={`agent-risk-review ${message.riskReview.verdict}`} role="note">
+      <b>{message.riskReview.independent ? "独立风控复核" : "风险复核"}：{message.riskReview.verdict === "veto" ? "否决" : "降级"}</b>{message.riskReview.reasons.join("；") || "风险大于收益"}</p>}
+    {message.decision && <DecisionCard decision={message.decision} onOpen={onOpenSignals} />}
     {message.fallback && <p className="ai-agent-muted">模型没有按约定格式回答，这段是用已查到的数据直接写的。</p>}
     {(message.memoryCandidates?.length || 0) > 0 && (
       <div className="ai-agent-memory-candidates" aria-label="可沉淀的长期偏好">

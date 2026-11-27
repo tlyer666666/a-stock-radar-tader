@@ -365,7 +365,7 @@ type AiLookback = AiStamp & { previousDate: string; previousHeadline: string; su
 type AiInterpretKind = "ecology" | "failed-boards" | "sectors";
 type AgentFocus = { code: string; name: string; kind?: "etf" | "sector" | "market" };
 type AgentStepCall = { tool: string; name: string; args: string; status: "running" | "ok" | "failed"; summary: string };
-type AgentStep = { kind: "prefetch" | "tools" | "answer"; thought: string; calls: AgentStepCall[] };
+type AgentStep = { kind: "prefetch" | "tools" | "answer" | "risk"; thought: string; calls: AgentStepCall[] };
 type AgentStance = "偏多" | "中性" | "偏空" | "回避" | "不适用";
 type AgentSkillTag = { id: string; name: string };
 type AgentSkillVerdict = { skill: string; id: string; verdict: "符合" | "接近" | "不符合" | "不适用"; reason: string };
@@ -376,6 +376,8 @@ type AgentMessage = {
   stance?: AgentStance | undefined; confidence?: "高" | "中" | "低" | undefined; followUps?: string[] | undefined; steps?: AgentStep[] | undefined;
   model?: string | undefined; durationMs?: number | undefined; error?: boolean | undefined; cancelled?: boolean | undefined; fallback?: boolean | undefined;
   memoryCandidates?: string[] | undefined;
+  decision?: import("./features/ai-agent/decisionSignalModel").MessageDecision | undefined;
+  riskReview?: { verdict: "pass" | "downgrade" | "veto"; reasons: string[]; independent?: boolean } | undefined;
   skills?: AgentSkillTag[] | undefined; skillVerdicts?: AgentSkillVerdict[] | undefined; persistenceError?: string | undefined;
 };
 type AgentConversationSummary = { id: string; title: string; focus: AgentFocus | null; createdAt: string; updatedAt: string; turns: number; stance?: AgentStance | undefined; preview?: string | undefined; running?: boolean | undefined };

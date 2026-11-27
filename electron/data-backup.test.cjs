@@ -565,3 +565,33 @@ test("H-2 & L-4: syncLocalMirror uses transactional replaceKeys when available a
     kvStore.close();
   }
 });
+
+test("L1: 未加密备份脱敏 RSS URL 中的敏感查询参数，加密备份保留原地址", async () => {
+  const dir = tempDir();
+  const storesWithFeeds = {
+    ...STORES,
+    "rss-feeds": {
+      version: 1,
+      feeds: [
+        { id: "f1", name: "私密源", url: "https://feeds.example.com/rss?category=finance&token=sec123&api_key=k999&access_token=at1&sig=s1", enabled: true },
+        { id: "f2", name: "普通源", url: "https://feeds.example.com/public.xml?lang=zh", enabled: true }
+      ]
+    }
+  };
+  const plainSvc = service(storesWithFeeds, { folder: dir });
+  const plainRes = await plainSvc.api.run({});
+  const plainText = fs.readFileSync(path.join(dir, plainRes.name), "utf8");
+  assert.doesNotMatch(plainText, /sec123|k999|at1|s1/, "sensitive query params must not appear in unencrypted backup");
+  const plainDecoded = await backup.decodeBackup(plainText);
+  assert.equal(plainDecoded.stores["rss-feeds"].feeds[0].url, "https://feeds.example.com/rss?category=finance");
+  assert.equal(plainDecoded.stores["rss-feeds"].feeds[1].url, "https://feeds.example.com/public.xml?lang=zh");
+
+  const encDir = tempDir();
+  const encSvc = service(storesWithFeeds, { folder: encDir });
+  encSvc.api.configure({ password: "StrongPass#2026" });
+  const encRes = await encSvc.api.run({});
+  const encText = fs.readFileSync(path.join(encDir, encRes.name), "utf8");
+  assert.doesNotMatch(encText, /sec123|feeds\.example\.com/);
+  const encDecoded = await backup.decodeBackup(encText, "StrongPass#2026");
+  assert.equal(encDecoded.stores["rss-feeds"].feeds[0].url, "https://feeds.example.com/rss?category=finance&token=sec123&api_key=k999&access_token=at1&sig=s1");
+});

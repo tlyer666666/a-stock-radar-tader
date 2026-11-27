@@ -10,8 +10,11 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "agent:cancel",
   "agent:conversation",
   "agent:delete",
+  "agent:feeds",
   "agent:poll",
   "agent:settings",
+  "agent:signal-update",
+  "agent:signals",
   "agent:skill-delete",
   "agent:skill-save",
   "agent:start",
@@ -46,6 +49,7 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "ai:strategy-draft",
   "ai:summary",
   "ai:test",
+  "alerts:rules",
   "app:notify",
   "app:set-theme",
   "app:set-zoom",
@@ -64,6 +68,7 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "bond:list",
   "diagnostics:corrupted-on-load",
   "etf:list",
+  "etf:rotation",
   "holdings:get",
   "holdings:save",
   "market:analyze",
@@ -74,6 +79,7 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "market:federation",
   "market:index-board",
   "market:index-stream",
+  "market:industries",
   "market:limit-ecology",
   "market:limit-up-sectors",
   "market:limit-ups",
@@ -94,6 +100,7 @@ const MAIN_IPC_CHANNELS = Object.freeze([
   "notes:watch-sync",
   "review:get-market",
   "review:open-window",
+  "screen:factors",
   "sector:cancel",
   "sector:catalog",
   "sector:classifications",
@@ -204,6 +211,7 @@ const VALIDATORS = new Map([
     if (input.codes !== undefined && !(Array.isArray(input.codes) && input.codes.length <= 300 && input.codes.every(code => typeof code === "string" && /^\d{6}$/.test(code)))) return "封单订阅代码无效";
     return null;
   }],
+  ["market:industries", args => (Array.isArray(args[0]) && args[0].length <= 300 && args[0].every(code => typeof code === "string" && /^\d{6}$/.test(code))) ? null : "行业查询参数无效"],
   ["market:batch-quotes", args => (Array.isArray(args[0]) && args[0].length <= 1200 && args[0].every(item => isPlainObject(item) && typeof item.code === "string" && /^\d{6}$/.test(item.code))) ? null : "批量行情参数无效"],
   ["sector:cancel", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 256) ? null : "板块取消请求编号无效"],
   ["review-window:search", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 120) ? null : "复盘搜索关键词无效"],
@@ -218,7 +226,75 @@ const VALIDATORS = new Map([
   ["agent:cancel", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "运行编号无效"],
   ["agent:delete", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "对话编号无效"],
   ["agent:skill-delete", args => (isOptionalText(args[0]) && String(args[0] ?? "").length <= 128) ? null : "技能编号无效"],
-  ["trend-screener:status", args => (args[0] === undefined || args[0] === null || isPlainObject(args[0]) || typeof args[0] === "string" || typeof args[0] === "number") ? null : "趋势扫描状态游标无效"]
+  ["trend-screener:status", args => (args[0] === undefined || args[0] === null || isPlainObject(args[0]) || typeof args[0] === "string" || typeof args[0] === "number") ? null : "趋势扫描状态游标无效"],
+  ["alerts:rules", args => {
+    const input = args[0];
+    if (input === undefined || input === null) return null;
+    if (!isPlainObject(input)) return "指标预警参数必须为对象";
+    if (input.op !== undefined && !["list", "save", "remove", "run", "dry", "clear"].includes(input.op)) return "指标预警操作类型无效";
+    if (input.id !== undefined && (typeof input.id !== "string" || input.id.length > 64)) return "指标预警规则编号无效";
+    if (input.rule !== undefined && !isPlainObject(input.rule)) return "指标预警规则对象无效";
+    if (input.op === "save" && !isPlainObject(input.rule)) return "指标预警保存缺少规则对象";
+    if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length > 128)) return "请求编号无效";
+    return null;
+  }],
+  ["etf:rotation", args => {
+    const input = args[0];
+    if (input === undefined || input === null) return null;
+    if (!isPlainObject(input)) return "ETF 轮动参数必须为对象";
+    if (input.pool !== undefined) {
+      const okStr = typeof input.pool === "string" && input.pool.length <= 300;
+      const okArr = Array.isArray(input.pool) && input.pool.length <= 20 && input.pool.every(item => typeof item === "string" && item.length <= 16);
+      if (!okStr && !okArr) return "ETF 轮动风险池参数无效";
+    }
+    if (input.safeAsset !== undefined && (typeof input.safeAsset !== "string" || input.safeAsset.length > 16)) return "防守资产代码无效";
+    if (input.rebalance !== undefined && !["weekly", "monthly"].includes(input.rebalance)) return "调仓周期参数无效";
+    for (const [field, low, high] of [["lookback", 5, 500], ["topN", 1, 10], ["bufferPct", 0, 20], ["costBps", 0, 100], ["years", 1, 15]]) {
+      const value = input[field];
+      if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value) || value < low || value > high)) return `ETF 轮动参数 ${field} 超出范围`;
+    }
+    if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length > 128)) return "请求编号无效";
+    return null;
+  }],
+  ["screen:factors", args => {
+    const input = args[0];
+    if (input === undefined || input === null) return null;
+    if (!isPlainObject(input)) return "多因子选股参数必须为对象";
+    if (input.strategyId !== undefined && (typeof input.strategyId !== "string" || input.strategyId.length > 40)) return "多因子策略编号无效";
+    if (input.top !== undefined && (typeof input.top !== "number" || !Number.isFinite(input.top) || input.top < 1 || input.top > 50)) return "多因子返回数量必须在 1 到 50 之间";
+    if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length > 128)) return "请求编号无效";
+    return null;
+  }],
+  ["agent:feeds", args => {
+    const input = args[0];
+    if (input === undefined || input === null) return null;
+    if (!isPlainObject(input)) return "自订资讯源参数必须为对象";
+    if (input.op !== undefined && !["list", "save", "remove", "test"].includes(input.op)) return "自订资讯源操作类型无效";
+    if (input.id !== undefined && (typeof input.id !== "string" || input.id.length > 64)) return "自订资讯源编号无效";
+    if (input.name !== undefined && (typeof input.name !== "string" || input.name.length > 80)) return "自订资讯源名称无效";
+    if (input.url !== undefined && (typeof input.url !== "string" || input.url.length > 500)) return "自订资讯源地址无效";
+    if (input.enabled !== undefined && typeof input.enabled !== "boolean") return "自订资讯源启用开关无效";
+    return null;
+  }],
+  ["agent:signals", args => {
+    const input = args[0];
+    if (input === undefined || input === null) return null;
+    if (!isPlainObject(input)) return "AI 建议池查询参数必须为对象";
+    if (input.status !== undefined && !["", "active", "expired", "invalidated", "closed"].includes(input.status)) return "AI 建议状态筛选无效";
+    if (input.code !== undefined && (typeof input.code !== "string" || (input.code !== "" && !/^\d{6}$/.test(input.code)))) return "AI 建议股票代码无效";
+    if (input.evaluate !== undefined && typeof input.evaluate !== "boolean") return "AI 建议验证参数无效";
+    if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length > 128)) return "请求编号无效";
+    return null;
+  }],
+  ["agent:signal-update", args => {
+    const input = args[0];
+    if (!isPlainObject(input)) return "AI 建议更新参数必须为对象";
+    if (typeof input.id !== "string" || !input.id.trim() || input.id.length > 64) return "AI 建议编号无效";
+    if (input.status !== undefined && !["closed", "invalidated"].includes(input.status)) return "AI 建议状态无效";
+    if (input.feedback !== undefined && input.feedback !== null && !["useful", "not_useful"].includes(input.feedback)) return "AI 建议反馈值无效";
+    if (input.remove !== undefined && typeof input.remove !== "boolean") return "AI 建议删除参数无效";
+    return null;
+  }]
 ]);
 
 const NO_ARG_CHANNELS = new Set([

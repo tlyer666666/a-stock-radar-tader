@@ -50,3 +50,10 @@ test('AI 整理在只写了股票名称且模型未给出代码时，通过本�
   assert.equal(tolerated.code, null);
   assert.equal(tolerated.text, '明早看宁德时代能否站上260');
 });
+
+test("AI note parsing keeps a boolean sessionOnly and ignores anything else", () => {
+  const { sanitizeNoteParse } = require("./ai-notes.cjs");
+  assert.equal(sanitizeNoteParse({ text: "盘中做T", sessionOnly: true }).sessionOnly, true);
+  assert.equal(sanitizeNoteParse({ text: "收盘复盘", sessionOnly: false }).sessionOnly, false);
+  assert.equal("sessionOnly" in sanitizeNoteParse({ text: "x", sessionOnly: "yes" }), false);
+});

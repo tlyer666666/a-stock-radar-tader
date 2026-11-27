@@ -33,6 +33,8 @@ export type Note = {
   /** 条件满足、已经提醒的时间（ISO）和当时的说明；为 null 表示还在盯。 */
   conditionHit: { at: string; detail: string } | null;
   ai: NoteAi | null;
+  /** 只在盘中提醒：交易日 9:30–11:30、13:00–15:00 以外到点的提醒顺延到下一个盘中时点（分钟循环跳过休市和午休）。 */
+  sessionOnly: boolean;
 };
 export type NotesStore = { notes: Note[]; voice: boolean; systemNotify: boolean; aiAuto: boolean };
 
@@ -52,6 +54,18 @@ export function repeatLabel(repeat: NoteRepeat, intervalMinutes?: number | null)
 }
 
 const CN_OFFSET = 8 * 3600_000;
+
+/**
+ * 盘中才有意义的事：明确写了盘中、做T、T+0、高抛低吸、盯盘、日内、分时、盘口。这类随心记默认「只在盘中提醒」（界面上可以关）。
+ * 只要同时提到盘外的时点（盘前、盘后、收盘后、复盘、竞价、晚上、今晚、明早、周末、开盘前），就不自动打开——
+ * 「收盘后复盘今天的分时」「明早 9:15 挂单」都是有意在盘外看的，自动顺延反而会错过。
+ */
+const INTRADAY_RE = /盘中|做\s*[Tt](?![a-zA-Z])|[Tt]\s*\+\s*0|高抛低吸|盯盘|日内|分时|盘口/;
+const OFF_SESSION_RE = /盘前|盘后|收盘后|收盘以后|复盘|竞价|晚上|今晚|明早|早上|周末|周六|周日|开盘前|午休/;
+export function isIntradayText(text: string): boolean {
+  const value = String(text || "").normalize("NFKC");
+  return INTRADAY_RE.test(value) && !OFF_SESSION_RE.test(value);
+}
 const DAY = 86400_000;
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -416,7 +430,9 @@ export function normalizeNote(value: unknown): Note | null {
     lastFiredAt: iso(value.lastFiredAt),
     condition: stock ? normalizeCondition(value.condition) : null,
     conditionHit: isRecord(value.conditionHit) && iso(value.conditionHit.at) ? { at: iso(value.conditionHit.at)!, detail: String(value.conditionHit.detail || "").slice(0, 120) } : null,
-    ai: normalizeAi(value.ai)
+    ai: normalizeAi(value.ai),
+    // 老数据没有这个字段：按文字判断（「盘中做T注意…」这类自动改为只在盘中提醒）。
+    sessionOnly: typeof value.sessionOnly === "boolean" ? value.sessionOnly : isIntradayText(text)
   };
 }
 
@@ -440,9 +456,21 @@ export function normalizeNotes(value: unknown): NotesStore {
   return { notes, voice: value.voice !== false, systemNotify: value.systemNotify !== false, aiAuto: value.aiAuto === true };
 }
 
-/** 到期且还没提醒过的。 */
+/** 到期且还没提醒过的。「只在盘中提醒」的在盘外不算到期（由 deferOutOfSession 顺延）。 */
 export function dueToFire(notes: Note[], now: number): Note[] {
-  return notes.filter(note => !note.done && note.remindAt && Date.parse(note.remindAt) <= now && note.firedFor !== note.remindAt);
+  return notes.filter(note => !note.done && note.remindAt && Date.parse(note.remindAt) <= now && note.firedFor !== note.remindAt
+    && !(note.sessionOnly && !inTradingSession(now)));
+}
+
+/**
+ * 「只在盘中提醒」且已经到点、但现在不在盘中的：把这一次顺延到下一个盘中时点（不提醒、不算触发）。
+ * 返回需要改动的 { id, remindAt }，没有就返回空数组。
+ */
+export function deferOutOfSession(notes: Note[], now: number): Array<{ id: string; remindAt: string }> {
+  if (inTradingSession(now)) return [];
+  const next = new Date(nextSessionMoment(now)).toISOString();
+  return notes.filter(note => note.sessionOnly && !note.done && note.remindAt && Date.parse(note.remindAt) <= now && note.firedFor !== note.remindAt)
+    .map(note => ({ id: note.id, remindAt: next }));
 }
 /** 提醒过、还等你处理的（不重复的提醒）。 */
 export function awaiting(notes: Note[]): Note[] {
@@ -457,7 +485,9 @@ export function isAwaiting(note: Note): boolean {
 export function markFired(note: Note, now: number): Note {
   if (!note.remindAt) return note;
   if (note.repeat !== "none") {
-    const next = nextOccurrence(Date.parse(note.remindAt), note.repeat, now, note.intervalMinutes);
+    const raw = nextOccurrence(Date.parse(note.remindAt), note.repeat, now, note.intervalMinutes);
+    // 只在盘中提醒的：下一次落在盘外就挪到下一个盘中时点（如 11:30 后挪到 13:00，收盘后挪到下个交易日 9:30）。
+    const next = raw !== null && note.sessionOnly ? nextSessionMoment(raw) : raw;
     return { ...note, remindAt: next ? new Date(next).toISOString() : null, firedFor: null, lastFiredAt: note.remindAt };
   }
   return { ...note, firedFor: note.remindAt, lastFiredAt: note.remindAt };
@@ -494,4 +524,15 @@ export function aiQuestion(note: Note, now = Date.now()): string {
 export function inTradingSession(now = Date.now()): boolean {
   const { date, minutes } = cnParts(now);
   return isTradingDay(date) && ((minutes >= 9 * 60 + 30 && minutes <= 11 * 60 + 30) || (minutes >= 13 * 60 && minutes <= 15 * 60));
+}
+
+/** ms 在盘中就原样返回；否则返回下一个盘中开始时刻（当天 9:30 / 13:00，或下一个交易日 9:30）。 */
+export function nextSessionMoment(ms: number): number {
+  if (inTradingSession(ms)) return ms;
+  const { date, minutes } = cnParts(ms);
+  if (isTradingDay(date)) {
+    if (minutes < 9 * 60 + 30) return cnTime(date, 9 * 60 + 30);
+    if (minutes > 11 * 60 + 30 && minutes < 13 * 60) return cnTime(date, 13 * 60);
+  }
+  return cnTime(nextTradingDay(date), 9 * 60 + 30);
 }

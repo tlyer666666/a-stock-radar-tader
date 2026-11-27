@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import EtfRotationPanel from "./EtfRotationPanel";
 import { ArrowLeftRight, ChevronRight, CircleAlert, Layers, RefreshCw, Search, X } from "lucide-react";
 import QuickPlanModal, { usePlannedCodes, type QuickPlanTarget } from "../../components/QuickPlanModal";
 import StockRowActions from "../../components/StockRowActions";
@@ -161,6 +162,7 @@ export default function EtfView({ onOpenSecurity, favoriteCodes, onToggleFavorit
         {item.name} <em className={tone(item.changePct)}>{signed(item.changePct)}</em></button>)}
       <small>成交额 1 亿以上的行业主题 ETF</small>
     </section>}
+    <EtfRotationPanel />
     <section className="panel etf-t0-board" aria-label="T+0 ETF 板块">
       <header>
         <b><ArrowLeftRight size={14} /> T+0 板块</b>

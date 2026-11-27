@@ -159,10 +159,31 @@ function inTradingSession(ms, isTradingDate) {
   return isTradingDate(date) && ((minute >= 570 && minute <= 690) || (minute >= 780 && minute <= 900));
 }
 
+/** ms 在盘中原样返回；否则返回下一个盘中开始时刻（当天 9:30 / 13:00，或之后第一个交易日 9:30）。 */
+function nextSessionStart(ms, isTradingDate) {
+  if (inTradingSession(ms, isTradingDate)) return ms;
+  const CN = 8 * 3600_000;
+  const cn = new Date(ms + CN);
+  let date = cn.toISOString().slice(0, 10);
+  const minute = cn.getUTCHours() * 60 + cn.getUTCMinutes();
+  const at = (day, minutes) => Date.parse(`${day}T00:00:00Z`) - CN + minutes * 60_000;
+  if (isTradingDate(date)) {
+    if (minute < 570) return at(date, 570);
+    if (minute > 690 && minute < 780) return at(date, 780);
+  }
+  for (let guard = 0; guard < 40; guard += 1) {
+    date = new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
+    if (isTradingDate(date)) return at(date, 570);
+  }
+  return at(date, 570);
+}
+
 // 分钟循环由主进程计时，最小化或关闭 macOS 窗口也能通知。
 function createIntervalReminderScheduler({
   now = Date.now,
   notify = () => {},
+  // 「只在盘中提醒」的条目用：是否交易日（默认周一到周五，主进程注入交易日历）。
+  isTradingDate = date => { const day = new Date(`${date}T00:00:00Z`).getUTCDay(); return day !== 0 && day !== 6; },
   setTimer = setTimeout,
   clearTimer = clearTimeout
 } = {}) {
@@ -178,9 +199,16 @@ function createIntervalReminderScheduler({
     const due = [];
     for (const item of items.values()) {
       if (item.nextAt <= currentTime) {
-        item.lastFiredAt = item.nextAt;
+        // 只在盘中提醒：盘外到点的这一次不通知，直接排到下一个盘中时点。
+        const fire = !item.sessionOnly || inTradingSession(currentTime, isTradingDate);
+        if (fire) { item.lastFiredAt = item.nextAt; due.push(item.text); }
+        item.skipped = !fire;
         item.nextAt += (Math.floor((currentTime - item.nextAt) / item.intervalMs) + 1) * item.intervalMs;
-        due.push(item.text);
+        if (item.sessionOnly) {
+          const shifted = nextSessionStart(item.nextAt, isTradingDate);
+          // 落在午休或收盘后：挪到 13:00 / 下个交易日 9:30，并记下挪到的时刻（页面回传它时仍算同一排程）。
+          if (shifted !== item.nextAt) { item.nextAt = shifted; item.shiftedTo = shifted; }
+        }
       }
       nextWake = Math.min(nextWake, item.nextAt);
     }
@@ -210,22 +238,25 @@ function createIntervalReminderScheduler({
           !Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 1440) continue;
       const intervalMs = intervalMinutes * 60_000;
       const text = String(raw.text || "").slice(0, 80);
+      const sessionOnly = raw.sessionOnly === true;
       const existing = items.get(id);
       // 渲染进程可能在下一次通知后才确认前一次的排程。
-      const sameSchedule = existing && existing.intervalMs === intervalMs && (
-        existing.at === at || (at >= existing.at && at <= existing.nextAt && (at - existing.at) % intervalMs === 0)
+      // 盘外顺延后，页面会把顺延后的时刻（shiftedTo）当作新的 at 回传，视为同一排程。
+      const sameSchedule = existing && existing.intervalMs === intervalMs && existing.sessionOnly === sessionOnly && (
+        existing.at === at || (existing.shiftedTo !== undefined && at === existing.shiftedTo) || (at >= existing.at && at <= existing.nextAt && (at - existing.at) % intervalMs === 0)
       );
       next.set(id, sameSchedule
         ? { ...existing, text, at, lastFiredAt: existing.lastFiredAt >= at ? existing.lastFiredAt : null }
-        : { id, text, at, intervalMs, nextAt: at, lastFiredAt: null });
+        : { id, text, at, intervalMs, nextAt: at, lastFiredAt: null, sessionOnly });
     }
     items = next;
     tick();
-    return [...items.values()].filter(item => item.lastFiredAt !== null)
-      .map(({ id, at, lastFiredAt, nextAt }) => ({ id, at, lastFiredAt, nextAt }));
+    // 盘外被顺延（没提醒）的也回给页面，让页面把下次提醒时间改成顺延后的时刻；skipped=true 时页面不弹窗。
+    return [...items.values()].filter(item => item.lastFiredAt !== null || (item.skipped === true && item.at < item.nextAt))
+      .map(({ id, at, lastFiredAt, nextAt }) => ({ id, at, lastFiredAt: lastFiredAt ?? null, nextAt, ...(lastFiredAt === null ? { skipped: true } : {}) }));
   }
 
   return { sync, tick, stop() { items.clear(); tick(); } };
 }
 
-module.exports = { createNoteWatcher, evaluateCondition, normalizeItem, inTradingSession, createIntervalReminderScheduler };
+module.exports = { createNoteWatcher, evaluateCondition, normalizeItem, inTradingSession, nextSessionStart, createIntervalReminderScheduler };

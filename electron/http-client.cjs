@@ -97,7 +97,7 @@ async function readResponseBytesWithinLimit(response, limit = DEFAULT_MAX_RESPON
 
 function isRetryableRequestError(error) {
   if (error instanceof SyntaxError || error?.name === 'SyntaxError' || error?.code === 'ERR_INVALID_URL') return false;
-  if (["QUEUE_FULL", "QUEUE_TIMEOUT", "RESPONSE_TOO_LARGE", "INVALID_CONTENT_ENCODING"].includes(error?.code)) return false;
+  if (["QUEUE_FULL", "QUEUE_TIMEOUT", "RESPONSE_TOO_LARGE", "INVALID_CONTENT_ENCODING", "PUBLIC_IP_REQUIRED"].includes(error?.code)) return false;
   const status = Number(error?.status || 0);
   return !status || status === 408 || status === 425 || status === 429 || status >= 500;
 }
@@ -227,7 +227,7 @@ async function runWithPolicy(url, options = {}, policy = {}, consume = null) {
         signal,
         headers: Object.fromEntries(headers)
       };
-      response = nativeTransportRequired
+      response = (nativeTransportRequired || requestOptions.publicOnly === true)
         ? await fetchNative(url, requestOptions, maxResponseBytes)
         : await fetch(url, requestOptions);
       throwIfAborted(signal);
